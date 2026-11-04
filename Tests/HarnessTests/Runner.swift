@@ -20,6 +20,12 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Approved edits and stale-file protection", { try await FileEditTests().approvedEditsRejectStaleFilesAndPreserveMode() }),
+            ("Edit creation and diff boundaries", { try FileEditTests().creationAndDiffBoundaries() }),
+            ("Session restore and follow-up", { try await SessionTests().conversationAndWorkspaceSurviveRestart() }),
+            ("Interrupted session recovery", { try await SessionTests().interruptedActionsAreRecordedNotReplayed() }),
+            ("Session corruption and account isolation", { try await SessionTests().incompatibleOrCorruptSessionsAreNotOverwritten() }),
+            ("Checkpoint failure safety", { try await SessionTests().failedCheckpointPreventsModelAndToolExecution() }),
             ("Read-only tool boundaries", { try ToolTests().readToolsStayWithinWorkspace() }),
             ("Shell output, timeout and cancellation", { try await ToolTests().shellOutputTimeoutAndCancellation() }),
             ("Shell approval", { try await ToolTests().everyShellCommandRequiresApproval() }),

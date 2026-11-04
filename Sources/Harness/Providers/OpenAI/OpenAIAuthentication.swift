@@ -29,6 +29,12 @@ import Security
     private var session: Session?
     private var refreshTask: Task<Session, Error>?
     var account: String? { session.map { $0.email ?? $0.subject } }
+    var conversationIdentity: String? {
+        session.map {
+            let hash = SHA256.hash(data: Data(($0.subject + "\0" + $0.accountID).utf8))
+            return "openai.codex:" + hash.map { String(format: "%02x", $0) }.joined()
+        }
+    }
 
     init(keychain: any CredentialStore = KeychainStore(), http: URLSession = OpenAIHTTP.session) throws {
         self.keychain = keychain

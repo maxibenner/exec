@@ -30,7 +30,7 @@ Click **Choose Folder…** to select a project. The workspace bar shows its full
 - Only `<selected folder>/AGENTS.md` is loaded—not ancestor or nested instruction files. Missing instructions are allowed; unreadable, non-UTF-8, oversized (over 64 KiB), or symlinked instruction files are rejected without replacing the current workspace/chat.
 - Instructions are a snapshot. **Workspace → Reload Instructions** loads changes explicitly.
 - Changing, closing, or reloading a workspace starts a fresh conversation and clears the draft, with confirmation if either contains content. **New** keeps the current workspace and instructions.
-- Selection is optional: without a workspace the app remains a normal chat. Workspace selection and conversation history are not persisted across app restarts yet.
+- Selection is optional: without a workspace the app remains a normal chat. The current workspace selection, instruction snapshot, and conversation are restored across app restarts.
 - The built-in file tools enforce workspace-relative paths and refuse symlinks. This is not an OS sandbox. Shell commands have normal user access and require separate approval.
 
 ### Coding tools and approval
@@ -38,15 +38,31 @@ Click **Choose Folder…** to select a project. The workspace bar shows its full
 With a workspace selected, the model can use:
 
 - **`list_files`**: one directory at a time; at most 2,000 entries / 32 KiB of output.
-- **`read_file`**: UTF-8 text, line-numbered ranges of up to 400 lines, files up to 1 MiB, output up to 32 KiB.
+- **`read_file`**: UTF-8 text, line-numbered ranges of up to 400 lines, files up to 1 MiB, output up to 32 KiB. Includes a full-file content revision for edits.
 - **`search_text`**: case-sensitive literal search, bounded to 2,000 visited entries, 100 matches, 16 directory levels, 32 KiB of output and a five-second scan budget. Hidden entries, `node_modules`, `dist`, symlinks, oversized and non-text files are skipped. Filesystem calls themselves may still wait on a slow volume.
+- **`edit_file`**: proposes one exact, unique text replacement in a workspace file and shows the complete unified diff for approval (up to 64 KiB). It requires the revision returned by `read_file`; stale revisions are rejected. New files use revision `new` and empty `old_text`; their parent directory must already exist. Arguments must fit in 32 KiB; split larger changes. No fuzzy patching, file deletion, or implicit approval.
 - **`shell`**: displays the exact command and working directory for **Approve Once** or **Deny**. Runs `/bin/bash --noprofile --norc` with a minimal environment, no interactive stdin, a 30-second timeout and 32 KiB of combined stdout/stderr. The app's inherited environment and OAuth tokens are not passed to commands.
 
-**Shell approval is not a sandbox:** commands can read/write outside the workspace, access the network, or delete data. There is no automatic approval or command allowlist. Read-only inspection needs no per-call approval; modifications currently require an approved shell command, not a dedicated editing tool.
+**Shell approval is not a sandbox:** commands can read/write outside the workspace, access the network, or delete data. There is no automatic approval or command allowlist. Read-only inspection needs no per-call approval. Each edit and shell command requires its own approval.
+
+Edits are checked again after approval and staged beside the target for atomic replacement. Existing ownership, mode bits, ACLs and extended attributes are preserved; inability to preserve them aborts the edit. New files are owner-readable/writable. Symlinks and special files are refused, and new-file creation never overwrites an existing path. Content/identity checks reject changes observed before replacement, but this is not a filesystem-wide compare-and-swap lock: an unrelated writer can still race the final check/rename. Avoid concurrent edits to the same file.
 
 Tool calls execute sequentially, only after the model response completes. Each user turn is limited to eight model requests and sixteen executed tool calls. Expand a tool result in the conversation to see its arguments and output.
 
-**Stop** cancels requests and pending approvals and sends termination to the shell process group, including ordinary child processes. It also cleans up ordinary background jobs after command exit. This is not containment: deliberately detached or privilege-elevated processes may escape that group. Commands may have changed files before cancellation or timeout; nothing is rolled back. Completed model/tool steps and interrupted-call records remain in the current conversation even if a subsequent model request fails. There are no automatic execution retries and no durable recovery across app restarts yet.
+**Stop** cancels requests and pending approvals and sends termination to the shell process group, including ordinary child processes. It also cleans up ordinary background jobs after command exit. This is not containment: deliberately detached or privilege-elevated processes may escape that group. Commands may have changed files before cancellation or timeout; nothing is rolled back. Completed model/tool steps and interrupted-call records remain in the current conversation even if a subsequent model request fails. There are no automatic execution retries. Session checkpoints preserve tool outcomes and record interrupted operations on restart.
+
+### Session persistence
+
+Harness saves **one current session** at `~/Library/Application Support/Harness/session.json`. It restores the conversation, workspace/instruction snapshot, last checkpointed model selection, tool results, and provider-owned opaque response context. It never resumes model requests, approvals, or commands automatically.
+
+- Checkpoints are atomic and run off the UI actor, before requests/tool execution and after tool outcomes. If saving fails, the agent stops rather than continuing with unrecorded actions.
+- On restart, unfinished replies are marked interrupted and excluded from model context. Unresolved tool calls receive interruption records. An operation may have taken effect before its result was saved; inspect the workspace before retrying.
+- Checkpoints occur at operation boundaries, not every streamed token. A force quit may lose partial text; unsent drafts are not saved.
+- **New**, changing/reloading/closing a workspace, or signing out replaces the saved conversation. There is no archive/history browser yet. New keeps the selected workspace; sign-out clears conversation/provider context but retains workspace selection.
+- Corrupt/incompatible saves are not silently overwritten. Choose **New** to explicitly replace one. Conversations are bound to the Codex account/workspace identity and cannot be restored into another account.
+- The session directory uses mode `0700` and snapshots `0600`. Chat text, code, tool arguments/results and instructions are stored locally **without application-level encryption** and may contain sensitive data. Managed authentication credentials remain in Keychain; conversation/tool content is not automatically redacted. Use FileVault if you need encrypted storage.
+
+The session file is limited to 32 MiB; start a new conversation if it grows too large. Use one app instance at a time. These checkpoints do not provide a multi-file transaction, undo system, or recovery of shell processes that deliberately escaped their process group.
 
 ### Stable signing and Keychain prompts
 
@@ -76,7 +92,7 @@ Sources/Harness/
   App/                SwiftUI and observable conversation state
   Core/               Provider/tool interfaces, workspace file access, approval and shell execution
   Providers/OpenAI/   Codex OAuth, identity verification and Responses transport
-  Storage/            Small Keychain utility
+  Storage/            Keychain credentials and atomic conversation checkpoints
 ```
 
 `ChatStore` depends only on `ChatProvider`. To add a provider, implement that protocol and inject it in `HarnessApp`. Authentication, model discovery, connection-button text, wire formats, and opaque conversation data belong to the provider. There is no provider registry, plugin system, or generic OAuth layer.
@@ -109,13 +125,15 @@ Network/SSE processing runs off the main actor. UI text updates are batched. Onl
 ./scripts/test.sh
 ```
 
-The dependency-free runner works with Command Line Tools alone. The focused checks cover workspace instruction loading/context isolation, authentication/identity validation, refresh and restart, token-rotation failures, offline sign-out, opaque follow-up/tool context, workspace boundaries, shell approval/process cancellation, SSE errors and cancellation. The added lifecycle checks use an in-memory credential store and an intercepted URLSession—not the user's Keychain or live model calls.
+The dependency-free runner works with Command Line Tools alone. The focused checks cover workspace instruction loading/context isolation, authentication/identity validation, refresh and restart, token-rotation failures, offline sign-out, opaque follow-up/tool context, workspace boundaries, shell approval/process cancellation, approved edits/stale-file rejection, session recovery/checkpoint failures, SSE errors and cancellation. The added lifecycle checks use an in-memory credential store and an intercepted URLSession—not the user's Keychain or live model calls.
 
 The user has verified live sign-in and messaging. Automated lifecycle checks are not a substitute for these final manual checks:
 
 - Choose a folder, verify the displayed path, and cancel a workspace-change confirmation to keep the current chat.
 - In a disposable project, ask the model to inspect a file and search for a symbol, then approve/deny harmless shell commands. Verify the actual approval UI and live Codex tool behavior; protocol tests use a fake transport, not the service.
-- Relaunch: account restores; conversation and workspace selection intentionally start empty.
+- Approve an edit in a disposable project; inspect the resulting diff. Modify the file while another edit is pending and verify approval rejects the stale edit.
+- Relaunch: verify the conversation/workspace restores and a contextual follow-up works with live Codex.
+- Quit during a pending approval or model response: verify interruption is reported and nothing executes on reopen. Native approval dialogs and live-service recovery still need manual validation.
 - Send a contextual follow-up, stop a reply, then send again: only completed turns should be remembered.
 - Disconnect the network during a reply: an error appears without committing a partial turn; reconnect and retry manually.
 - Let the session expire and send again: refresh succeeds, or the app clearly asks to reconnect.
@@ -126,8 +144,8 @@ No live sign-in, token rotation, revocation or inference is performed by the bui
 
 ## Deliberate v1 limits
 
-- One connected account and one in-memory conversation.
-- No dedicated editing/diff tool, Markdown renderer, durable tool journal or history database. File changes can be made through explicitly approved shell commands.
+- One connected account and one saved conversation; no history browser or multi-instance coordination.
+- No multi-file edit transactions, undo manager or Markdown renderer. Editing supports exact replacement and file creation, not file deletion or directory creation.
 - No automatic request retries or context compaction; start a new conversation if context grows too large.
 - No distribution signing or usage dashboard.
 

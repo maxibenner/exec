@@ -18,7 +18,7 @@ import Foundation
         try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("linked"), withDestinationURL: parent.appendingPathComponent("outside"))
         let files = WorkspaceFiles(root: root)
         try expect(files.list(".").contains("code.swift"))
-        try expect(files.read("code.swift", start: 2, end: 2) == "2: needle café\n")
+        try expect(files.read("code.swift", start: 2, end: 2).hasSuffix("2: needle café\n"))
         try expectFailure { _ = try files.read("../outside", start: 1, end: 2) }
         try expectFailure { _ = try files.read(parent.path + "/outside", start: 1, end: 2) }
         try expectFailure { _ = try files.read("escape/outside", start: 1, end: 2) }

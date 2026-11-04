@@ -26,7 +26,7 @@ import SwiftUI
 
     private func start() {
         do {
-            store = ChatStore(provider: try OpenAIProvider())
+            store = ChatStore(provider: try OpenAIProvider(), sessions: try SessionStore.applicationStore())
             startupError = nil
         } catch {
             startupError = error.localizedDescription

@@ -1,11 +1,12 @@
 import Foundation
 
-@MainActor private final class FakeProvider: ChatProvider {
+@MainActor final class FakeProvider: ChatProvider {
     let connectionTitle = "Connect to Test"
     var account: String? = "test@example.com"
     var inputs: [[Message]] = []
     var instructions: [String] = []
     var scripted: [[ChatEvent]] = []
+    var onSend: (() -> Void)?
     var shouldFail = false
     var holdOpen = false
     var pending: AsyncThrowingStream<ChatEvent, Error>.Continuation?
@@ -16,6 +17,7 @@ import Foundation
     func send(_ messages: [Message], model: String, instructions: String, tools: [ToolDefinition]) -> AsyncThrowingStream<ChatEvent, Error> {
         inputs.append(messages)
         self.instructions.append(instructions)
+        onSend?()
         if !scripted.isEmpty {
             let events = scripted.removeFirst()
             return AsyncThrowingStream { continuation in
@@ -157,6 +159,7 @@ import Foundation
         try expect(provider.inputs.last?.map(\.text) == ["Fresh question"])
         try expect(provider.instructions.last?.contains("Updated rules") == true)
         store.newConversation()
+        try await settle(store)
         try expect(store.workspace?.instructions == "Updated rules")
         let other = root.appendingPathComponent("other-project")
         try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
@@ -165,6 +168,7 @@ import Foundation
         try expect(store.workspace?.root.path.hasSuffix("/other-project") == true)
         try expect(store.workspace?.instructions == nil && store.messages.isEmpty)
         store.closeWorkspace()
+        try await settle(store)
         try expect(store.workspace == nil && store.messages.isEmpty)
         store.draft = "Chat only"
         store.send()
@@ -190,6 +194,7 @@ import Foundation
         try await settle(store)
         try expect(provider.inputs.last?.map(\.text) == ["First", "Hello world", "Second"])
         store.newConversation()
+        try await settle(store)
         store.draft = "Fresh"
         store.send()
         try await settle(store)

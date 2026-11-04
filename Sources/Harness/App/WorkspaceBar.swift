@@ -48,7 +48,7 @@ import SwiftUI
         panel.canCreateDirectories = false
         panel.directoryURL = store.workspace?.root
         panel.prompt = "Choose Workspace"
-        panel.message = "The model can read and search files in this folder. File contents, the folder path, and root AGENTS.md may be sent to your model. Shell commands require separate approval."
+        panel.message = "The model can read and search files in this folder. File contents, the folder path, and root AGENTS.md may be sent to your model. Edits and shell commands require separate approval."
         let completion: (NSApplication.ModalResponse) -> Void = { response in
             if response == .OK, let url = panel.url { requestChange(to: url) }
         }

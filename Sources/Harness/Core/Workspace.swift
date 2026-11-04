@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 /// A snapshot of the selected project's root instructions, not a filesystem sandbox.
-struct Workspace: Sendable {
+struct Workspace: Codable, Sendable {
     static let instructionByteLimit = 64 * 1024
     let root: URL
     let instructions: String?

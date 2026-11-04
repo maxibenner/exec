@@ -10,6 +10,25 @@ import Foundation
     private var outputs: [UUID: Data] = [:]
     let connectionTitle = "Connect to Codex"
     var account: String? { authentication.account }
+    var conversationIdentity: String? { authentication.conversationIdentity }
+
+    func encodeConversationState() throws -> Data? {
+        try JSONEncoder().encode(outputs)
+    }
+
+    func clearConversationState() { outputs.removeAll() }
+
+    func restoreConversationState(_ data: Data?) throws {
+        do {
+            let restored = try data.map { try JSONDecoder().decode([UUID: Data].self, from: $0) } ?? [:]
+            for output in restored.values {
+                guard try JSONSerialization.jsonObject(with: output) is [[String: Any]] else {
+                    throw HarnessError("Invalid saved response output.")
+                }
+            }
+            outputs = restored
+        } catch { throw HarnessError("Saved Codex response context could not be read. Start a new conversation.") }
+    }
 
     init(authentication: OpenAIAuthentication? = nil, http: URLSession = OpenAIHTTP.session) throws {
         self.authentication = try authentication ?? OpenAIAuthentication(http: http)
@@ -17,7 +36,7 @@ import Foundation
     }
     func connect() async throws { try await authentication.connect() }
     func disconnect() async throws {
-        outputs.removeAll()
+        defer { if authentication.account == nil { outputs.removeAll() } }
         try await authentication.disconnect()
     }
 

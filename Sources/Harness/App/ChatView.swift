@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ChatView: View {
     @Bindable var store: ChatStore
+    @State private var confirmingNew = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,7 +26,14 @@ struct ChatView: View {
                     }
                     .labelsHidden().frame(maxWidth: 200).disabled(store.busy)
                 }
-                Button("New", action: store.newConversation).disabled(store.busy)
+                Button("New") { confirmingNew = true }
+                    .disabled(store.busy)
+                    .confirmationDialog("Replace the saved conversation?", isPresented: $confirmingNew, titleVisibility: .visible) {
+                        Button("New Conversation", role: .destructive, action: store.newConversation)
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("The current conversation will be cleared. Your workspace stays selected.")
+                    }
             }
             .padding()
             Divider()

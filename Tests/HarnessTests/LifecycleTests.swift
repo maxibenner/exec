@@ -152,15 +152,21 @@ import Foundation
         try expect(received == [call])
         let assistant = Message(role: .assistant, text: "", toolCalls: received)
         let result = Message(role: .tool, text: "file.swift", toolResult: ToolResult(call: call, text: "file.swift"))
+        let savedState = try provider.encodeConversationState()
+        let resumed = try OpenAIProvider(authentication: auth, http: http)
+        try resumed.restoreConversationState(savedState)
+        let savedMessages = try JSONEncoder().encode([user, assistant, result])
+        let restoredMessages = try JSONDecoder().decode([Message].self, from: savedMessages)
+        try expect(restoredMessages.first?.id == user.id)
         var snapshots: [String] = []
-        for try await event in provider.send([user, assistant, result], model: "test", tools: CodingTools.definitions) {
+        for try await event in resumed.send(restoredMessages, model: "test", tools: CodingTools.definitions) {
             if case .textSnapshot(let text) = event { snapshots.append(text) }
         }
         try expect(snapshots == [finalText])
         let requests = HTTPStub.state.requests
         try expect(requests.count == 2)
         let first = try JSONSerialization.jsonObject(with: HTTPStub.body(of: requests[0])) as! [String: Any]
-        try expect((first["tools"] as? [[String: Any]])?.count == 4)
+        try expect((first["tools"] as? [[String: Any]])?.count == 5)
         try expect(first["parallel_tool_calls"] as? Bool == false)
         let second = try JSONSerialization.jsonObject(with: HTTPStub.body(of: requests[1])) as! [String: Any]
         let input = second["input"] as! [[String: Any]]
@@ -168,6 +174,9 @@ import Foundation
         try expect(input[2]["type"] as? String == "function_call")
         try expect(input[3]["type"] as? String == "function_call_output")
         try expect(input[3]["call_id"] as? String == call.id && input[3]["output"] as? String == "file.swift")
+        try expectFailure {
+            try resumed.restoreConversationState(JSONEncoder().encode([user.id: Data("corrupt".utf8)]))
+        }
     }
 
     func streamCancellationClosesRequestAndPrematureEOFIsFailure() async throws {

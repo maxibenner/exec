@@ -1,6 +1,6 @@
 import Foundation
 
-struct ToolCall: Sendable, Equatable {
+struct ToolCall: Codable, Sendable, Equatable {
     let id: String
     let name: String
     let arguments: String
@@ -17,7 +17,7 @@ struct ToolDefinition: Sendable {
     let parameters: [Parameter]
 }
 
-struct ToolResult: Sendable {
+struct ToolResult: Codable, Sendable {
     let call: ToolCall
     let text: String
 }
@@ -27,7 +27,7 @@ enum CodingTools {
         .init(name: "list_files", description: "List one workspace directory. Paths are relative; use '.' for the root. Symlinks are not followed.", parameters: [
             .init(name: "path", type: "string", description: "Relative directory path")
         ]),
-        .init(name: "read_file", description: "Read UTF-8 text with line numbers. At most 400 lines and 32 KiB of output; files must be at most 1 MiB. Symlinks are not followed.", parameters: [
+        .init(name: "read_file", description: "Read UTF-8 text with line numbers and a full-file Revision for edit_file. At most 400 lines and 32 KiB of output; files must be at most 1 MiB. Symlinks are not followed.", parameters: [
             .init(name: "path", type: "string", description: "Relative file path"),
             .init(name: "start_line", type: "integer", description: "First line, starting at 1"),
             .init(name: "end_line", type: "integer", description: "Last line, inclusive")
@@ -35,6 +35,12 @@ enum CodingTools {
         .init(name: "search_text", description: "Search UTF-8 files for a case-sensitive literal string, not a regex. Bounded recursive search; skips hidden entries, node_modules, dist, symlinks, binary files and files over 1 MiB. Reports incomplete searches.", parameters: [
             .init(name: "path", type: "string", description: "Relative directory path; '.' for root"),
             .init(name: "query", type: "string", description: "Nonempty literal text")
+        ]),
+        .init(name: "edit_file", description: "Propose one exact replacement with a user-approved diff. First read_file and pass its Revision as expected_revision. old_text must occur exactly once. For a new file, use expected_revision 'new' and empty old_text; the parent directory must exist. Arguments must fit within 32 KiB; split large changes. Never retry interrupted edits automatically.", parameters: [
+            .init(name: "path", type: "string", description: "Relative file path"),
+            .init(name: "expected_revision", type: "string", description: "Revision from read_file, or 'new' to create a file"),
+            .init(name: "old_text", type: "string", description: "Exact unique text to replace"),
+            .init(name: "new_text", type: "string", description: "Replacement text")
         ]),
         .init(name: "shell", description: "Request explicit user approval to run a bash command in the workspace. Not sandboxed. Commands have a 30-second timeout and bounded combined output. Never automatically retry commands or assume a cancelled command had no effects.", parameters: [
             .init(name: "command", type: "string", description: "Exact shell command to show for approval")
@@ -68,7 +74,7 @@ enum CodingTools {
         }
     }
 
-    private static func decode<T: Decodable>(_ type: T.Type, _ call: ToolCall) throws -> T {
+    static func decode<T: Decodable>(_ type: T.Type, _ call: ToolCall) throws -> T {
         guard call.arguments.utf8.count <= 32_768 else { throw HarnessError("Tool arguments exceeded 32 KiB.") }
         do { return try JSONDecoder().decode(type, from: Data(call.arguments.utf8)) }
         catch { throw HarnessError("Invalid arguments for \(call.name).") }

@@ -1,19 +1,32 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 /// Descriptor-relative traversal prevents symlink escapes, including replacement
 /// between validation and reading. These constraints do not apply to the shell.
 struct WorkspaceFiles: Sendable {
     let root: URL
-    private let fileLimit = 1_048_576
+    static let fileLimit = 1_048_576
     private let outputLimit = 32_768
 
-    private func openPath(_ path: String, directory: Bool) throws -> Int32 {
+    private static func components(_ path: String) throws -> [Substring] {
         guard !path.hasPrefix("/"), !path.contains("\0"), path.utf8.count <= 4096 else {
             throw HarnessError("Use a relative workspace path.")
         }
         let parts = path.split(separator: "/").filter { $0 != "." }
         guard !parts.contains("..") else { throw HarnessError("Paths may not leave the workspace.") }
+        return parts
+    }
+
+    // The caller owns returned descriptors.
+    func parent(of path: String) throws -> (descriptor: Int32, name: String) {
+        let parts = try Self.components(path)
+        guard let name = parts.last else { throw HarnessError("Specify a file path, not the workspace root.") }
+        return (try openPath(parts.dropLast().joined(separator: "/"), directory: true), String(name))
+    }
+
+    func openPath(_ path: String, directory: Bool) throws -> Int32 {
+        let parts = try Self.components(path)
         // Walk the canonical root too: an ancestor replaced with a symlink
         // after folder selection must not redirect a read outside the project.
         let rootParts = root.path.split(separator: "/")
@@ -68,8 +81,17 @@ struct WorkspaceFiles: Sendable {
 
     private func text(_ path: String) throws -> String {
         let fd = try openPath(path, directory: false)
-        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        defer { try? file.close() }
+        defer { close(fd) }
+        return String(decoding: try Self.readTextData(fd), as: UTF8.self)
+    }
+
+    static func revision(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func readTextData(_ fd: Int32) throws -> Data {
+        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+        guard lseek(fd, 0, SEEK_SET) == 0 else { throw HarnessError("Cannot read file.") }
         var info = stat()
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size <= fileLimit else {
             throw HarnessError("Read requires a regular text file of at most 1 MiB.")
@@ -81,17 +103,20 @@ struct WorkspaceFiles: Sendable {
             if chunk.isEmpty { break }
             data.append(chunk)
         }
-        guard data.count <= fileLimit, !data.contains(0), let text = String(data: data, encoding: .utf8) else {
+        guard data.count <= fileLimit, !data.contains(0), String(data: data, encoding: .utf8) != nil else {
             throw HarnessError("File is not UTF-8 text or exceeds 1 MiB.")
         }
-        return text
+        return data
     }
 
     func read(_ path: String, start: Int, end: Int) throws -> String {
         guard start >= 1, end >= start, end - start < 400 else { throw HarnessError("Request 1–400 lines, starting at line 1 or later.") }
-        let lines = try text(path).components(separatedBy: "\n")
+        let fd = try openPath(path, directory: false)
+        defer { close(fd) }
+        let data = try Self.readTextData(fd)
+        let lines = String(decoding: data, as: UTF8.self).components(separatedBy: "\n")
         guard start <= lines.count else { return "Requested range is past end of file (\(lines.count) lines)." }
-        var output = ""
+        var output = "Revision: \(Self.revision(data))\n"
         for index in (start - 1)..<min(end, lines.count) {
             let line = "\(index + 1): \(lines[index])\n"
             if output.utf8.count + line.utf8.count > outputLimit { return output + "[Output truncated at 32 KiB.]" }
