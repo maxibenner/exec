@@ -2,9 +2,51 @@ import SwiftUI
 
 struct ChatView: View {
     @Bindable var store: ChatStore
-    @State private var confirmingNew = false
+    @State private var confirmingNavigation = false
+    @State private var pendingSession: UUID?
+    @State private var pendingDeletion: SessionSummary?
+    @State private var confirmingDeletion = false
 
     var body: some View {
+        NavigationSplitView {
+            SessionSidebar(store: store, open: { requestNavigation(to: $0) }, delete: {
+                pendingDeletion = $0; confirmingDeletion = true
+            })
+        } detail: {
+            conversation
+        }
+        .frame(minWidth: 740, minHeight: 480)
+        .confirmationDialog("Discard unsaved content?", isPresented: $confirmingNavigation, titleVisibility: .visible) {
+            Button("Continue", role: .destructive) { navigate() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your saved conversations will be kept. Unsent text and changes that could not be saved will be discarded.")
+        }
+        .confirmationDialog("Delete this conversation?", isPresented: $confirmingDeletion, titleVisibility: .visible) {
+            Button("Delete Conversation", role: .destructive) {
+                if let session = pendingDeletion { store.deleteSession(session.id) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("“\(pendingDeletion?.title ?? "")” will be permanently deleted from this Mac. Files changed by its tools will not be undone.")
+        }
+        .task { store.restore() }
+        .onDisappear { store.stop() }
+    }
+
+    private func requestNavigation(to id: UUID?) {
+        guard !store.busy, id == nil || id != store.currentSessionID else { return }
+        pendingSession = id
+        if !store.draft.isEmpty || store.hasUnsavedChanges { confirmingNavigation = true }
+        else { navigate() }
+    }
+
+    private func navigate() {
+        if let pendingSession { store.openSession(pendingSession) }
+        else { store.newConversation() }
+    }
+
+    private var conversation: some View {
         VStack(spacing: 0) {
             HStack {
                 if let account = store.account {
@@ -26,14 +68,9 @@ struct ChatView: View {
                     }
                     .labelsHidden().frame(maxWidth: 200).disabled(store.busy)
                 }
-                Button("New") { confirmingNew = true }
+                Button("New") { requestNavigation(to: nil) }
+                    .keyboardShortcut("n", modifiers: .command)
                     .disabled(store.busy)
-                    .confirmationDialog("Replace the saved conversation?", isPresented: $confirmingNew, titleVisibility: .visible) {
-                        Button("New Conversation", role: .destructive, action: store.newConversation)
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("The current conversation will be cleared. Your workspace stays selected.")
-                    }
             }
             .padding()
             Divider()
@@ -92,8 +129,6 @@ struct ChatView: View {
             }
             .padding()
         }
-        .frame(minWidth: 540, minHeight: 400)
-        .task { store.restore() }
-        .onDisappear { store.stop() }
+        .frame(minWidth: 500, minHeight: 400)
     }
 }

@@ -59,16 +59,18 @@ Tool calls execute sequentially, only after the model response completes. Each u
 
 ### Session persistence
 
-Harness saves **one current session** at `~/Library/Application Support/Harness/session.json`. It restores the conversation, workspace/instruction snapshot, last checkpointed model selection, tool results, and provider-owned opaque response context. It never resumes model requests, approvals, or commands automatically.
+The **Sessions** sidebar lists saved conversations for the connected account. Select a conversation to restore it; use its trash button or context menu to delete it after confirmation. Switching and deleting are disabled during active requests/tools. **New** (⌘N) keeps earlier conversations and the selected workspace.
+
+Harness stores one `<UUID>.json` snapshot per conversation plus a small `index.json` in `~/Library/Application Support/Harness/`. The previous single-file `session.json` is imported without changing message IDs or provider context. The index can be rebuilt from snapshots after an interrupted write; deleting a session removes its snapshot, so a stale index cannot bring it back. It restores the conversation, workspace/instruction snapshot, last checkpointed model selection, tool results, and provider-owned opaque response context. It never resumes model requests, approvals, or commands automatically.
 
 - Checkpoints are atomic and run off the UI actor, before requests/tool execution and after tool outcomes. If saving fails, the agent stops rather than continuing with unrecorded actions.
 - On restart, unfinished replies are marked interrupted and excluded from model context. Unresolved tool calls receive interruption records. An operation may have taken effect before its result was saved; inspect the workspace before retrying.
 - Checkpoints occur at operation boundaries, not every streamed token. A force quit may lose partial text; unsent drafts are not saved.
-- **New**, changing/reloading/closing a workspace, or signing out replaces the saved conversation. There is no archive/history browser yet. New keeps the selected workspace; sign-out clears conversation/provider context but retains workspace selection.
-- Corrupt/incompatible saves are not silently overwritten. Choose **New** to explicitly replace one. Conversations are bound to the Codex account/workspace identity and cannot be restored into another account.
+- **New** and workspace changes preserve earlier saved conversations. Unsent drafts and changes that failed to save require confirmation before discarding. Empty chats without a workspace are not added to the sidebar. Sign-out clears the visible conversation/workspace, not the local archive; reconnect to the same account to see it again.
+- Corrupt/incompatible saves are not silently overwritten. Open another session or choose **New**, and explicitly delete unreadable sessions if desired. Conversations are bound to the Codex account/workspace identity and cannot be restored into another account. Deletion removes the local save, not any files changed by tools; it is not a secure erase or server-side deletion.
 - The session directory uses mode `0700` and snapshots `0600`. Chat text, code, tool arguments/results and instructions are stored locally **without application-level encryption** and may contain sensitive data. Managed authentication credentials remain in Keychain; conversation/tool content is not automatically redacted. Use FileVault if you need encrypted storage.
 
-The session file is limited to 32 MiB; start a new conversation if it grows too large. Use one app instance at a time. These checkpoints do not provide a multi-file transaction, undo system, or recovery of shell processes that deliberately escaped their process group.
+Each session snapshot is limited to 32 MiB; start a new conversation if it grows too large. Use one app instance at a time. These checkpoints do not provide a multi-file transaction, undo system, or recovery of shell processes that deliberately escaped their process group.
 
 ### Stable signing and Keychain prompts
 
@@ -138,7 +140,7 @@ The user has verified live sign-in and messaging. Automated lifecycle checks are
 - Choose a folder, verify the displayed path, and cancel a workspace-change confirmation to keep the current chat.
 - In a disposable project, ask the model to inspect a file and search for a symbol, then approve/deny harmless shell commands. Verify the actual approval UI and live Codex tool behavior; protocol tests use a fake transport, not the service.
 - Approve an edit in a disposable project; inspect the resulting diff. Modify the file while another edit is pending and verify approval rejects the stale edit.
-- Relaunch: verify the conversation/workspace restores and a contextual follow-up works with live Codex.
+- Create two sessions, switch between them, and verify their messages/workspaces remain separate. Delete one and relaunch: the other should remain, with its follow-up context intact.
 - Quit during a pending approval or model response: verify interruption is reported and nothing executes on reopen. Native approval dialogs and live-service recovery still need manual validation.
 - Send a contextual follow-up, stop a reply, then send again: only completed turns should be remembered.
 - Disconnect the network during a reply: an error appears without committing a partial turn; reconnect and retry manually.
@@ -150,7 +152,7 @@ No live sign-in, token rotation, revocation or inference is performed by the bui
 
 ## Deliberate v1 limits
 
-- One connected account and one saved conversation; no history browser or multi-instance coordination.
+- One connected account and one active conversation at a time; no multi-instance coordination.
 - No multi-file edit transactions or undo manager. Editing supports exact replacement and file creation, not file deletion or directory creation.
 - No automatic request retries or context compaction; start a new conversation if context grows too large.
 - No distribution signing or usage dashboard.

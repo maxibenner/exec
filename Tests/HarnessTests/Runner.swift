@@ -27,6 +27,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Session restore and follow-up", { try await SessionTests().conversationAndWorkspaceSurviveRestart() }),
             ("Interrupted session recovery", { try await SessionTests().interruptedActionsAreRecordedNotReplayed() }),
             ("Session corruption and account isolation", { try await SessionTests().incompatibleOrCorruptSessionsAreNotOverwritten() }),
+            ("Session switching, deletion and migration", { try await SessionTests().sessionsSwitchDeleteAndMigrateWithoutLosingHistory() }),
+            ("Session index recovery", { try await SessionTests().indexRecoveryDoesNotReplayOrResurrectDeletedSessions() }),
             ("Checkpoint failure safety", { try await SessionTests().failedCheckpointPreventsModelAndToolExecution() }),
             ("Read-only tool boundaries", { try ToolTests().readToolsStayWithinWorkspace() }),
             ("Shell output, timeout and cancellation", { try await ToolTests().shellOutputTimeoutAndCancellation() }),

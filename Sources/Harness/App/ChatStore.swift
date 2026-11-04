@@ -11,6 +11,9 @@ import Observation
     var error: String?
     private(set) var busy = false
     private(set) var workspace: Workspace?
+    private(set) var sessionList: [SessionSummary] = []
+    private(set) var currentSessionID: UUID?
+    private(set) var hasUnsavedChanges = false
     let tools = ToolExecutor()
     private var history: [Message] = []
     private let provider: any ChatProvider
@@ -37,10 +40,12 @@ import Observation
         run(restoreSession: false) {
             try await self.provider.connect()
             self.account = self.provider.account
-            if !self.loadedSession || self.restorationBlocked {
+            if self.conversationIdentity != self.provider.conversationIdentity {
+                self.newConversationForWorkspace(nil)
+                self.loadedSession = false
+                try await self.loadSavedSession(mostRecent: true)
+            } else if !self.loadedSession || self.restorationBlocked {
                 try await self.loadSavedSession()
-            } else if self.conversationIdentity != self.provider.conversationIdentity {
-                self.newConversationForWorkspace(self.workspace)
             }
             try await self.loadModels()
         }
@@ -52,7 +57,8 @@ import Observation
                 self.account = self.provider.account
                 if self.account == nil {
                     self.models = []; self.selectedModel = ""
-                    self.newConversationForWorkspace(self.workspace)
+                    self.newConversationForWorkspace(nil)
+                    self.sessionList = []
                 }
             }
             try await self.provider.disconnect()
@@ -77,6 +83,9 @@ import Observation
     }
 
     private func newConversationForWorkspace(_ workspace: Workspace?) {
+        if !messages.isEmpty || restorationBlocked || conversationIdentity != provider.conversationIdentity || currentSessionID == nil {
+            currentSessionID = UUID()
+        }
         self.workspace = workspace
         messages = []; history = []; draft = ""; error = nil
         activeTurn = false; activeCallID = nil
@@ -224,12 +233,44 @@ import Observation
 
     private func checkpoint() async throws {
         guard let sessions else { return }
-        guard !restorationBlocked else { throw HarnessError("Choose New to replace the unreadable or incompatible saved session.") }
-        do { try await sessions.save(snapshot()) }
-        catch { throw HarnessError("Could not save the session. No further tools will run until saving succeeds. \(error.localizedDescription)") }
+        guard !restorationBlocked else { throw HarnessError("Open another session or choose New. The unreadable save has not been changed.") }
+        do {
+            if messages.isEmpty && workspace == nil {
+                try await sessions.clearSelection()
+            } else {
+                let id = currentSessionID ?? UUID()
+                currentSessionID = id
+                try await sessions.save(snapshot(), id: id)
+            }
+            hasUnsavedChanges = false
+            sessionList = try await sessions.list(identity: provider.conversationIdentity)
+        } catch {
+            hasUnsavedChanges = true
+            throw HarnessError("Could not save the session. No further tools will run until saving succeeds. \(error.localizedDescription)")
+        }
     }
 
-    private func loadSavedSession() async throws {
+    private func applySavedSession(_ id: UUID) async throws {
+        guard let sessions, var saved = try await sessions.load(id: id) else {
+            throw HarnessError("The saved conversation no longer exists.")
+        }
+        guard saved.identity == provider.conversationIdentity else {
+            throw HarnessError("Saved conversation belongs to another account. Reconnect to that account to open it.")
+        }
+        // Provider restoration must succeed before replacing any visible conversation state.
+        try provider.restoreConversationState(saved.providerState)
+        let interrupted = saved.recoverInterruptedTurn()
+        workspace = saved.workspace
+        selectedModel = saved.selectedModel
+        messages = saved.messages; history = saved.history; draft = ""
+        conversationIdentity = saved.identity
+        currentSessionID = id
+        activeTurn = false; activeCallID = nil
+        loadedSession = true; restorationBlocked = false
+        if interrupted { error = "The previous turn was interrupted. No operations were resumed; inspect any possible file changes before retrying." }
+    }
+
+    private func loadSavedSession(mostRecent: Bool = false) async throws {
         guard !loadedSession || restorationBlocked else { return }
         guard let sessions else {
             conversationIdentity = provider.conversationIdentity
@@ -237,25 +278,46 @@ import Observation
             return
         }
         do {
-            if var saved = try await sessions.load() {
-                guard saved.identity == provider.conversationIdentity else {
-                    throw HarnessError("Saved conversation belongs to another account. Reconnect to that account, or choose New to replace it.")
-                }
-                try provider.restoreConversationState(saved.providerState)
-                let interrupted = saved.recoverInterruptedTurn()
-                workspace = saved.workspace
-                selectedModel = saved.selectedModel
-                messages = saved.messages; history = saved.history
-                conversationIdentity = saved.identity
-                if interrupted { error = "The previous turn was interrupted. No operations were resumed; inspect any possible file changes before retrying." }
+            sessionList = try await sessions.list(identity: provider.conversationIdentity)
+            if let id = try await sessions.preferredID(identity: provider.conversationIdentity, mostRecent: mostRecent) {
+                try await applySavedSession(id)
             } else {
                 conversationIdentity = provider.conversationIdentity
+                currentSessionID = UUID()
             }
             loadedSession = true
             restorationBlocked = false
         } catch {
             restorationBlocked = true
-            throw HarnessError("Could not restore the saved session. Choose New to replace it. \(error.localizedDescription)")
+            throw HarnessError("Could not restore the saved session. Open another session, or choose New. \(error.localizedDescription)")
+        }
+    }
+
+    func openSession(_ id: UUID) {
+        guard !busy, id != currentSessionID || restorationBlocked else { return }
+        run(restoreSession: false) {
+            if self.loadedSession && !self.restorationBlocked { try await self.checkpoint() }
+            try await self.applySavedSession(id)
+            if self.models.isEmpty && self.account != nil { try await self.loadModels() }
+            if !self.models.isEmpty && !self.models.contains(where: { $0.id == self.selectedModel }) {
+                self.selectedModel = self.models.first?.id ?? ""
+            }
+        }
+    }
+
+    func deleteSession(_ id: UUID) {
+        guard !busy, let sessions, sessionList.contains(where: { $0.id == id }) else { return }
+        run(restoreSession: false) {
+            var deletionError: Error?
+            do { try await sessions.delete(id: id) }
+            catch { deletionError = error }
+            self.sessionList = try await sessions.list(identity: self.provider.conversationIdentity)
+            // Even if the index write failed, never recreate a successfully deleted snapshot.
+            if !self.sessionList.contains(where: { $0.id == id }), self.currentSessionID == id || self.restorationBlocked {
+                self.currentSessionID = nil
+                self.newConversationForWorkspace(nil)
+            }
+            if let deletionError { throw deletionError }
         }
     }
 

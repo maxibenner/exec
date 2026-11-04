@@ -21,7 +21,7 @@ import SwiftUI
             }
             .task { if store == nil && startupError == nil { start() } }
         }
-        .defaultSize(width: 760, height: 580)
+        .defaultSize(width: 980, height: 700)
     }
 
     private func start() {

@@ -33,10 +33,10 @@ import SwiftUI
         }
         .padding(.horizontal).padding(.vertical, 10)
         .confirmationDialog("Start a fresh conversation?", isPresented: $confirmingChange, titleVisibility: .visible) {
-            Button("Start New Conversation", role: .destructive) { applyChange(pendingFolder) }
+            Button("Start New Conversation") { applyChange(pendingFolder) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Changing, closing, or reloading a workspace clears this conversation and its draft. Project instructions will be included with future messages.")
+            Text("Changing, closing, or reloading a workspace starts a new conversation. The previous saved conversation is kept. Unsent text and changes that could not be saved will be discarded.")
         }
     }
 
@@ -58,7 +58,7 @@ import SwiftUI
 
     private func requestChange(to folder: URL?) {
         guard !store.busy else { return }
-        if !store.messages.isEmpty || !store.draft.isEmpty {
+        if !store.messages.isEmpty || !store.draft.isEmpty || store.hasUnsavedChanges {
             pendingFolder = folder
             confirmingChange = true
         } else { applyChange(folder) }
