@@ -36,8 +36,10 @@ import Observation
         run {
             defer {
                 self.account = self.provider.account
-                self.models = []; self.selectedModel = ""
-                self.history = []; self.messages = []
+                if self.account == nil {
+                    self.models = []; self.selectedModel = ""
+                    self.history = []; self.messages = []
+                }
             }
             try await self.provider.disconnect()
         }
@@ -49,14 +51,19 @@ import Observation
         let user = Message(role: .user, text: text)
         let input = history + [user]
         messages.append(user)
-        messages.append(Message(role: .assistant, text: ""))
+        messages.append(Message(role: .assistant, text: "", status: .streaming))
         let index = messages.count - 1
         draft = ""
         run {
             var fullText = ""
             var lastUpdate = ContinuousClock.now
             var completed = false
-            defer { self.messages[index].text = fullText }
+            defer {
+                self.messages[index].text = fullText
+                if self.messages[index].status == .streaming {
+                    self.messages[index].status = Task.isCancelled ? .interrupted : .failed
+                }
+            }
             for try await event in self.provider.send(input, model: self.selectedModel) {
                 try Task.checkCancellation()
                 switch event {
@@ -69,7 +76,9 @@ import Observation
                 case .completed: completed = true
                 }
             }
+            try Task.checkCancellation()
             guard completed else { throw HarnessError("Response did not complete.") }
+            self.messages[index].status = .complete
             self.history = input + [Message(role: .assistant, text: fullText)]
         }
     }
@@ -82,8 +91,10 @@ import Observation
     }
 
     private func loadModels() async throws {
-        models = try await provider.models()
-        selectedModel = models.first?.id ?? ""
+        let available = try await provider.models()
+        try Task.checkCancellation()
+        models = available
+        if !models.contains(where: { $0.id == selectedModel }) { selectedModel = models.first?.id ?? "" }
         if models.isEmpty { throw HarnessError("The provider returned no selectable models. Try reconnecting or updating Harness.") }
     }
 
@@ -92,10 +103,22 @@ import Observation
         busy = true
         error = nil
         task = Task {
-            defer { self.busy = false; self.task = nil }
+            defer {
+                self.account = self.provider.account
+                self.busy = false
+                self.task = nil
+            }
             do { try await operation() }
             catch {
-                self.error = Task.isCancelled ? "Stopped. The unfinished turn won't be included in the next message." : error.localizedDescription
+                if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                    self.error = "Stopped. Any unfinished turn is excluded from follow-up context."
+                } else if let network = error as? URLError {
+                    self.error = network.code == .timedOut
+                        ? "The connection timed out. Your completed conversation is intact; try again when ready."
+                        : "Could not reach the provider. Check your connection and try again."
+                } else {
+                    self.error = error.localizedDescription
+                }
             }
         }
     }

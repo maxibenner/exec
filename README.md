@@ -16,11 +16,29 @@ Quit an already-running copy before reopening the rebuilt app. Choose **Connect 
 - **⌘Return:** send.
 - **Stop:** cancel sign-in or the current request.
 - **New:** clear the conversation once the current operation ends.
-- **Account menu:** reconnect or sign out. Sign out before changing accounts/workspaces.
+- **Account menu:** refresh the model list, reconnect or sign out. Sign out before changing accounts/workspaces.
+- Failed/stopped replies remain visible and are labeled as excluded from follow-up context.
 
 The callback requires local port **1455**. If another app is signing in on that port, finish or close that sign-in and retry. The app never terminates another listener or forwards callbacks to it.
 
-The build script creates an ad-hoc signed local app, not a notarized distribution. Keychain may ask for permission again after rebuilding it. Open `Package.swift` in Xcode if you prefer IDE development; the script is sufficient without Xcode.
+Open `Package.swift` in Xcode if you prefer IDE development; the script is sufficient without Xcode. The app is not notarized for distribution.
+
+### Stable signing and Keychain prompts
+
+By default, local builds use ad-hoc signing and print a warning: a rebuild can change the identity Keychain recognizes. To use a stable certificate:
+
+1. Create an **Apple Development** signing certificate in Xcode → Settings → Accounts → Manage Certificates, or import an existing code-signing certificate and its private key into your login keychain.
+2. List available identities: `security find-identity -v -p codesigning`.
+3. Pin the chosen certificate locally (this configuration is not committed):
+
+```sh
+git config --local harness.signingIdentity "<certificate SHA-1>"
+REQUIRE_STABLE_SIGNING=1 ./scripts/build-app.sh
+```
+
+For a one-off override, set `SIGNING_IDENTITY` to the certificate name or SHA-1. The build keeps the same bundle identifier and enables hardened runtime for certificate-signed builds. It verifies the signature and never falls back to ad-hoc signing after a configured certificate fails. `REQUIRE_STABLE_SIGNING=1` rejects an unconfigured/ad-hoc build before compilation.
+
+The switch from ad-hoc signing may require one more Keychain approval. Locked keychains or changed permissions can still prompt. This Mac had no valid signing identity at implementation time, so certificate-signed rebuilds still need to be verified after installing a certificate.
 
 ## Structure
 
@@ -46,7 +64,11 @@ Uses the direct Codex protocol used by Pi's `openai-codex` provider:
 
 The app identifies itself as `swift_harness` in the originator header. It doesn't run Pi or Codex, read their credential files, or reuse the previous dynamic-registration connection's credentials. Its Keychain account is `openai.codex.session`; any old `openai.registration` record remains untouched and unused.
 
-Sign-out attempts remote revocation before deleting local credentials. If revocation cannot be confirmed, the app reports that explicitly. Credentials and authorization URLs are not logged.
+Sign-out attempts remote revocation before deleting local credentials, including when offline. If revocation cannot be confirmed, the app reports that explicitly. A failed Keychain deletion is reported rather than claiming successful local sign-out. Credentials and authorization URLs are not logged.
+
+Refreshes are shared and not automatically retried. Before a rotating-token exchange, a marker is saved so a crash or lost response cannot replay the old refresh token on restart. An uncertain exchange requires **Reconnect**. If newly rotated tokens cannot be saved, they remain in memory and only the Keychain write is retried; unlock Keychain and retry before quitting.
+
+API requests use an ephemeral URLSession with no shared cookies or disk cache, a 60-second inactivity timeout and a 10-minute resource timeout. Stop cancels the active stream/request. Authentication, permission, rate-limit and network errors have actionable messages; failed model discovery can be retried with **Refresh models** without browser sign-in.
 
 This is a Codex-compatible backend integration, not the public API-key Responses API contract. Provider changes may require updates. Successful local builds/tests do not establish subscription eligibility or successful sign-in.
 
@@ -58,9 +80,18 @@ Network/SSE processing runs off the main actor. UI text updates are batched. Onl
 ./scripts/test.sh
 ```
 
-The dependency-free runner works with Command Line Tools alone. Checks cover Codex OAuth/request fields, callback validation, account routing metadata, SSE framing/Unicode/size limits, terminal events, RSA signature/claim validation, conversation history, failed turns and cancellation. Tests do not contact OpenAI or access Keychain.
+The dependency-free runner works with Command Line Tools alone. The focused checks cover authentication/identity validation, refresh and restart, token-rotation failures, offline sign-out, opaque follow-up context, SSE errors and cancellation. The added lifecycle checks use an in-memory credential store and an intercepted URLSession—not the user's Keychain or live model calls.
 
-Browser sign-in has been exercised by the user; a read-only live check confirmed model discovery with the saved session. **Manual validation still required:** first response and follow-up, Stop, restart/session restoration, refresh and sign-out. No live sign-in or inference is performed by the build or test scripts.
+The user has verified live sign-in and messaging. Automated lifecycle checks are not a substitute for these final manual checks:
+
+- Relaunch: account restores; conversation intentionally starts empty.
+- Send a contextual follow-up, stop a reply, then send again: only completed turns should be remembered.
+- Disconnect the network during a reply: an error appears without committing a partial turn; reconnect and retry manually.
+- Let the session expire and send again: refresh succeeds, or the app clearly asks to reconnect.
+- Sign out: local credentials are removed; offline sign-out warns if revocation is unconfirmed.
+- Rebuild with the same certificate and reopen: verify Keychain access remains stable.
+
+No live sign-in, token rotation, revocation or inference is performed by the build or test scripts.
 
 ## Deliberate v1 limits
 

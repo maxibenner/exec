@@ -7,7 +7,7 @@ enum IDTokenValidator {
     struct Identity { let subject: String; let email: String?; let accountID: String? }
 
     static func validate(_ token: String, clientID: String, nonce: String) async throws -> Identity {
-        let (data, response) = try await URLSession.shared.data(from: URL(string: "https://auth.openai.com/.well-known/jwks.json")!)
+        let (data, response) = try await OpenAIHTTP.session.data(from: URL(string: "https://auth.openai.com/.well-known/jwks.json")!)
         try OpenAIHTTP.check(response)
         return try verify(token, clientID: clientID, nonce: nonce, jwks: data)
     }

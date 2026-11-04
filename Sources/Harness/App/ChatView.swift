@@ -8,6 +8,7 @@ struct ChatView: View {
             HStack {
                 if let account = store.account {
                     Menu {
+                        Button("Refresh models", action: store.restore)
                         Button("Reconnect", action: store.connect)
                         Button("Sign out", action: store.disconnect)
                     } label: {
@@ -32,8 +33,12 @@ struct ChatView: View {
                 LazyVStack(alignment: .leading, spacing: 20) {
                     ForEach(store.messages) { message in
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(message.role == .user ? "You" : "Assistant")
-                                .font(.caption).foregroundStyle(.secondary)
+                            HStack {
+                                Text(message.role == .user ? "You" : "Assistant")
+                                if message.status == .interrupted { Text("Stopped · excluded from context") }
+                                if message.status == .failed { Text("Failed · excluded from context") }
+                            }
+                            .font(.caption).foregroundStyle(.secondary)
                             Text(message.text.isEmpty ? "…" : message.text)
                                 .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                         }

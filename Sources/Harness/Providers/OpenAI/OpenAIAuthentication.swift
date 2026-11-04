@@ -10,6 +10,8 @@ import Security
         var access: String
         var refresh: String
         var expires: Date
+        // A lost refresh response must not cause reuse of a consumed token.
+        var requiresReconnect: Bool?
     }
     private struct TokenResponse: Decodable {
         let access_token: String
@@ -18,16 +20,22 @@ import Security
         let expires_in: Double
         let token_type: String?
     }
-    private let keychain = KeychainStore()
+    private let keychain: any CredentialStore
+    private let http: URLSession
+    private var needsPersistence = false
+    private var signingOut = false
     // Do not load, migrate or reinterpret dynamic-registration tokens as Codex tokens.
     private let credentialKey = "openai.codex.session"
     private var session: Session?
     private var refreshTask: Task<Session, Error>?
     var account: String? { session.map { $0.email ?? $0.subject } }
 
-    init() throws {
+    init(keychain: any CredentialStore = KeychainStore(), http: URLSession = OpenAIHTTP.session) throws {
+        self.keychain = keychain
+        self.http = http
         if let data = try keychain.read(credentialKey) {
-            session = try JSONDecoder().decode(Session.self, from: data)
+            do { session = try JSONDecoder().decode(Session.self, from: data) }
+            catch { throw HarnessError("Saved Codex credentials could not be read. Remove the openai.codex.session item from Keychain Access, then reopen Harness to sign in again.") }
         }
     }
 
@@ -63,9 +71,20 @@ import Security
     }
 
     func credentials() async throws -> Session {
-        if let refreshTask { return try await refreshTask.value }
+        try Task.checkCancellation()
+        guard !signingOut else { throw HarnessError("Sign-out is in progress.") }
+        if let refreshTask { return try await waitForRefresh(refreshTask) }
+        if needsPersistence { try persist() }
         guard let current = session else { throw HarnessError("Connect to Codex first.") }
+        guard current.requiresReconnect != true else {
+            throw HarnessError("Your session needs to be renewed. Choose Reconnect from the account menu.")
+        }
         if current.expires.timeIntervalSinceNow > 60 { return current }
+        var pending = current
+        pending.requiresReconnect = true
+        // If this write fails, don't start a rotating-token exchange.
+        try keychain.write(JSONEncoder().encode(pending), account: credentialKey)
+        session = pending
         let task = Task { @MainActor in
             let response = try await token(CodexConnection.refreshFields(current.refresh))
             guard try CodexConnection.accountID(in: response.access_token) == current.accountID else {
@@ -75,15 +94,29 @@ import Security
             updated.access = response.access_token
             updated.refresh = response.refresh_token ?? current.refresh
             updated.expires = Date().addingTimeInterval(response.expires_in)
+            updated.requiresReconnect = nil
             try save(updated)
             return updated
         }
         refreshTask = task
         defer { refreshTask = nil }
-        return try await task.value
+        return try await waitForRefresh(task)
+    }
+
+    private func waitForRefresh(_ task: Task<Session, Error>) async throws -> Session {
+        try await withTaskCancellationHandler {
+            let value = try await task.value
+            try Task.checkCancellation()
+            return value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     func disconnect() async throws {
+        guard !signingOut else { return }
+        signingOut = true
+        defer { signingOut = false }
         // Complete a rotating refresh before revoking its latest token.
         if let refreshTask { _ = try? await refreshTask.value }
         guard let current = session else { return }
@@ -91,17 +124,18 @@ import Security
         do {
             _ = try await OpenAIHTTP.post("/api/accounts/oauth/revoke", fields: [
                 "token": current.refresh, "token_type_hint": "refresh_token", "client_id": CodexConnection.clientID
-            ])
+            ], session: http)
         } catch { revocationFailed = true }
         try keychain.delete(credentialKey)
         session = nil
+        needsPersistence = false
         if revocationFailed {
             throw HarnessError("Signed out locally; remote revocation was not confirmed. Review your sessions in ChatGPT Settings.")
         }
     }
 
     private func token(_ fields: [String: String]) async throws -> TokenResponse {
-        let data = try await OpenAIHTTP.post("/oauth/token", fields: fields)
+        let data = try await OpenAIHTTP.post("/oauth/token", fields: fields, session: http)
         let response = try JSONDecoder().decode(TokenResponse.self, from: data)
         guard response.expires_in.isFinite, response.expires_in > 0, !response.access_token.isEmpty,
               response.token_type == nil || response.token_type?.lowercased() == "bearer",
@@ -112,8 +146,21 @@ import Security
     }
 
     private func save(_ value: Session) throws {
-        try keychain.write(JSONEncoder().encode(value), account: credentialKey)
+        // Keep newly rotated tokens in memory even if Keychain is temporarily
+        // locked. Retry only persistence, never the consumed refresh token.
         session = value
+        needsPersistence = true
+        try persist()
+    }
+
+    private func persist() throws {
+        guard let session else { return }
+        do {
+            try keychain.write(JSONEncoder().encode(session), account: credentialKey)
+            needsPersistence = false
+        } catch {
+            throw HarnessError("The current session could not be saved to Keychain. Unlock your keychain and try again before quitting Harness.")
+        }
     }
 
     private static func random() throws -> String {

@@ -2,9 +2,11 @@ import Foundation
 
 struct Message: Identifiable, Sendable {
     enum Role: String, Sendable { case user, assistant }
+    enum Status: Sendable { case complete, streaming, interrupted, failed }
     let id = UUID()
     let role: Role
     var text: String
+    var status: Status = .complete
 }
 
 struct ChatModel: Identifiable, Sendable {

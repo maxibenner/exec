@@ -2,13 +2,17 @@ import Foundation
 
 @MainActor final class OpenAIProvider: ChatProvider {
     private let authentication: OpenAIAuthentication
+    private let http: URLSession
     // Preserve Responses output (including encrypted reasoning) without leaking
     // provider-specific conversation state into the UI or shared message model.
     private var outputs: [UUID: Data] = [:]
     let connectionTitle = "Connect to Codex"
     var account: String? { authentication.account }
 
-    init() throws { authentication = try OpenAIAuthentication() }
+    init(authentication: OpenAIAuthentication? = nil, http: URLSession = OpenAIHTTP.session) throws {
+        self.authentication = try authentication ?? OpenAIAuthentication(http: http)
+        self.http = http
+    }
     func connect() async throws { try await authentication.connect() }
     func disconnect() async throws {
         outputs.removeAll()
@@ -22,7 +26,7 @@ import Foundation
         }
         let credentials = try await authentication.credentials()
         let request = CodexConnection.modelsRequest(accessToken: credentials.access, accountID: credentials.accountID)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await http.data(for: request)
         try OpenAIHTTP.check(response)
         return try JSONDecoder().decode(Catalog.self, from: data).models
             .filter { $0.visibility == nil || $0.visibility == "list" }
@@ -54,7 +58,7 @@ import Foundation
                         input: input, model: model, sessionID: messages.first?.id.uuidString ?? UUID().uuidString,
                         accessToken: credentials.access, accountID: credentials.accountID
                     )
-                    for try await event in OpenAITransport.stream(request) {
+                    for try await event in OpenAITransport.stream(request, session: http) {
                         try Task.checkCancellation()
                         switch event {
                         case .text(let delta): continuation.yield(.text(delta))

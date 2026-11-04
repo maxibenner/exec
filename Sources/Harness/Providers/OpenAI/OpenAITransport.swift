@@ -8,11 +8,12 @@ enum OpenAITransport {
         case completed(Data)
     }
 
-    static func stream(_ request: URLRequest) -> AsyncThrowingStream<Event, Error> {
+    static func stream(_ request: URLRequest, session: URLSession = OpenAIHTTP.session) -> AsyncThrowingStream<Event, Error> {
         AsyncThrowingStream { continuation in
             let task = Task.detached {
                 do {
-                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    let (bytes, response) = try await session.bytes(for: request)
+                    defer { bytes.task.cancel() }
                     try OpenAIHTTP.check(response)
                     var parser = SSEParser()
                     var completed = false

@@ -57,19 +57,23 @@ import Foundation
 
     func failedTurnsStayVisibleButAreExcludedFromContext() async throws {
         let provider = FakeProvider()
-        provider.shouldFail = true
         let store = ChatStore(provider: provider)
         store.selectedModel = "test"
+        store.draft = "First"
+        store.send()
+        try await settle(store)
+        provider.shouldFail = true
         store.draft = "Failed"
         store.send()
         try await settle(store)
         try expect(store.error == "failed")
         try expect(store.messages.last?.text == "Hello world")
+        try expect(store.messages.last?.status == .failed)
         provider.shouldFail = false
         store.draft = "Retry"
         store.send()
         try await settle(store)
-        try expect(provider.inputs.last?.map(\.text) == ["Retry"])
+        try expect(provider.inputs.last?.map(\.text) == ["First", "Hello world", "Retry"])
     }
 
     func stopCancelsAndDoesNotCommitPartialTurn() async throws {
@@ -88,6 +92,7 @@ import Foundation
         try await settle(store)
         try expect(!store.busy)
         try expect(store.error?.contains("Stopped") == true)
+        try expect(store.messages.last?.status == .interrupted)
         provider.holdOpen = false
         provider.pending?.finish()
         store.draft = "Next"

@@ -16,10 +16,16 @@ func expectFailure(_ operation: () throws -> Void) throws {
 
 // Runs with Apple's Command Line Tools alone; no Xcode or test dependencies.
 @main struct TestRunner {
-    @MainActor static func main() async throws {
+    @MainActor static func main() async {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Refresh and restart", { try await LifecycleTests().refreshIsSharedAndSurvivesRestart() }),
+            ("Interrupted refresh recovery", { try await LifecycleTests().interruptedRefreshIsNotReplayedAfterRestart() }),
+            ("Rotated token persistence", { try await LifecycleTests().rotatedTokensSurviveTemporaryKeychainFailure() }),
+            ("Offline sign-out", { try await LifecycleTests().signOutClearsLocalSessionWhenOffline() }),
+            ("Provider follow-up context", { try await LifecycleTests().providerPreservesOpaqueFollowupContext() }),
+            ("Network stream cancellation and EOF", { try await LifecycleTests().streamCancellationClosesRequestAndPrematureEOFIsFailure() }),
             ("Codex OAuth fields", { try CodexConnectionTests().authorizationUsesCodexFlow() }),
             ("OAuth callback validation", { try CodexConnectionTests().callbackRequiresExactStateAndPath() }),
             ("Codex catalog compatibility version", { try CodexConnectionTests().catalogUsesCompatibilityVersionNotAppVersion() }),
@@ -38,8 +44,12 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Cancellation", { try await chat.stopCancelsAndDoesNotCommitPartialTurn() })
         ]
         for (name, check) in checks {
-            try await check()
-            print("PASS \(name)")
+            do { try await check() }
+            catch {
+                FileHandle.standardError.write(Data("FAIL \(name): \(error)\n".utf8))
+                exit(1)
+            }
+            FileHandle.standardOutput.write(Data("PASS \(name)\n".utf8))
         }
         print("\(checks.count) checks passed.")
     }

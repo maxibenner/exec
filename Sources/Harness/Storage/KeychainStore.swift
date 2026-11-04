@@ -1,7 +1,13 @@
 import Foundation
 import Security
 
-struct KeychainStore {
+protocol CredentialStore {
+    func read(_ account: String) throws -> Data?
+    func write(_ data: Data, account: String) throws
+    func delete(_ account: String) throws
+}
+
+struct KeychainStore: CredentialStore {
     private let service = "local.swift-harness"
 
     func read(_ account: String) throws -> Data? {
