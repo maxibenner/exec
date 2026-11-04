@@ -104,16 +104,19 @@ import Foundation
         let auth = try OpenAIAuthentication(keychain: credentials(), http: http)
         let provider = try OpenAIProvider(authentication: auth, http: http)
         let user = Message(role: .user, text: "First")
-        for try await _ in provider.send([user], model: "test") {}
+        for try await _ in provider.send([user], model: "test", instructions: "Project-specific rules") {}
         for try await _ in provider.send([user, Message(role: .assistant, text: "Hello"), Message(role: .user, text: "Second")], model: "test") {}
         for try await _ in provider.send([Message(role: .user, text: "New")], model: "test") {}
         let requests = HTTPStub.state.requests
         try expect(requests.count == 3)
+        let first = try JSONSerialization.jsonObject(with: HTTPStub.body(of: requests[0])) as! [String: Any]
+        try expect((first["instructions"] as? String)?.contains("Project-specific rules") == true)
         let followup = try JSONSerialization.jsonObject(with: HTTPStub.body(of: requests[1])) as! [String: Any]
         let input = followup["input"] as! [[String: Any]]
         try expect(input.count == 4 && input[1]["encrypted_content"] as? String == "opaque")
         let fresh = try JSONSerialization.jsonObject(with: HTTPStub.body(of: requests[2])) as! [String: Any]
         try expect((fresh["input"] as? [[String: Any]])?.count == 1)
+        try expect((fresh["instructions"] as? String)?.contains("Project-specific rules") == false)
     }
 
     func streamCancellationClosesRequestAndPrematureEOFIsFailure() async throws {

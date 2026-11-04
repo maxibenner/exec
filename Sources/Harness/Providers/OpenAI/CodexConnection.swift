@@ -47,7 +47,7 @@ enum CodexConnection {
     }
 
     static func responsesRequest(input: [[String: Any]], model: String, sessionID: String,
-                                 accessToken: String, accountID: String) throws -> URLRequest {
+                                 accessToken: String, accountID: String, instructions: String = "") throws -> URLRequest {
         var request = request(path: "/responses", accessToken: accessToken, accountID: accountID)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -57,7 +57,7 @@ enum CodexConnection {
         request.setValue(UUID().uuidString, forHTTPHeaderField: "x-client-request-id")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": model, "input": input, "store": false, "stream": true,
-            "instructions": "You are a helpful assistant.",
+            "instructions": "You are a helpful assistant." + (instructions.isEmpty ? "" : "\n\n" + instructions),
             "include": ["reasoning.encrypted_content"], "prompt_cache_key": sessionID
         ])
         return request

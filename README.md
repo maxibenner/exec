@@ -16,12 +16,22 @@ Quit an already-running copy before reopening the rebuilt app. Choose **Connect 
 - **⌘Return:** send.
 - **Stop:** cancel sign-in or the current request.
 - **New:** clear the conversation once the current operation ends.
-- **Account menu:** refresh the model list, reconnect or sign out. Sign out before changing accounts/workspaces.
+- **Account menu:** refresh the model list, reconnect or sign out. Sign out before changing ChatGPT accounts/organizations.
 - Failed/stopped replies remain visible and are labeled as excluded from follow-up context.
 
 The callback requires local port **1455**. If another app is signing in on that port, finish or close that sign-in and retry. The app never terminates another listener or forwards callbacks to it.
 
 Open `Package.swift` in Xcode if you prefer IDE development; the script is sufficient without Xcode. The app is not notarized for distribution.
+
+### Project workspaces
+
+Click **Choose Folder…** to select a project. The workspace bar shows its full path (hover if truncated) and whether a root `AGENTS.md` was loaded. The selected path and those instructions are sent to the model with subsequent messages; no other project files are loaded.
+
+- Only `<selected folder>/AGENTS.md` is loaded—not ancestor or nested instruction files. Missing instructions are allowed; unreadable, non-UTF-8, oversized (over 64 KiB), or symlinked instruction files are rejected without replacing the current workspace/chat.
+- Instructions are a snapshot. **Workspace → Reload Instructions** loads changes explicitly.
+- Changing, closing, or reloading a workspace starts a fresh conversation and clears the draft, with confirmation if either contains content. **New** keeps the current workspace and instructions.
+- Selection is optional: without a workspace the app remains a normal chat. Workspace selection and conversation history are not persisted across app restarts yet.
+- This is context selection, not a security sandbox or permission to run commands. File-reading tools, editing, and shell execution are not implemented yet.
 
 ### Stable signing and Keychain prompts
 
@@ -49,7 +59,7 @@ Self-signed builds are for this Mac; they do not provide Apple Developer ID trus
 ```text
 Sources/Harness/
   App/                SwiftUI and observable conversation state
-  Core/               ChatProvider, messages, models and stream events
+  Core/               Provider interface, chat types and workspace instructions
   Providers/OpenAI/   Codex OAuth, identity verification and Responses transport
   Storage/            Small Keychain utility
 ```
@@ -84,11 +94,12 @@ Network/SSE processing runs off the main actor. UI text updates are batched. Onl
 ./scripts/test.sh
 ```
 
-The dependency-free runner works with Command Line Tools alone. The focused checks cover authentication/identity validation, refresh and restart, token-rotation failures, offline sign-out, opaque follow-up context, SSE errors and cancellation. The added lifecycle checks use an in-memory credential store and an intercepted URLSession—not the user's Keychain or live model calls.
+The dependency-free runner works with Command Line Tools alone. The focused checks cover workspace instruction loading/context isolation, authentication/identity validation, refresh and restart, token-rotation failures, offline sign-out, opaque follow-up context, SSE errors and cancellation. The added lifecycle checks use an in-memory credential store and an intercepted URLSession—not the user's Keychain or live model calls.
 
 The user has verified live sign-in and messaging. Automated lifecycle checks are not a substitute for these final manual checks:
 
-- Relaunch: account restores; conversation intentionally starts empty.
+- Choose a folder, verify the displayed path/instruction status, and cancel a workspace-change confirmation to keep the current chat. Folder-picker interaction still needs manual validation.
+- Relaunch: account restores; conversation and workspace selection intentionally start empty.
 - Send a contextual follow-up, stop a reply, then send again: only completed turns should be remembered.
 - Disconnect the network during a reply: an error appears without committing a partial turn; reconnect and retry manually.
 - Let the session expire and send again: refresh succeeds, or the app clearly asks to reconnect.
@@ -100,7 +111,7 @@ No live sign-in, token rotation, revocation or inference is performed by the bui
 ## Deliberate v1 limits
 
 - One connected account and one in-memory conversation.
-- No tools, workspace file operations, shell commands, Markdown renderer or history database.
+- No coding tools, project file access beyond root instructions, shell commands, Markdown renderer or history database.
 - No automatic request retries or context compaction; start a new conversation if context grows too large.
 - No distribution signing or usage dashboard.
 

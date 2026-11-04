@@ -10,6 +10,7 @@ import Observation
     var connectionTitle: String { provider.connectionTitle }
     var error: String?
     private(set) var busy = false
+    private(set) var workspace: Workspace?
     private var history: [Message] = []
     private let provider: any ChatProvider
     private var task: Task<Void, Never>?
@@ -45,6 +46,28 @@ import Observation
         }
     }
 
+    /// Selection is transactional: a failed load leaves the old chat and workspace intact.
+    func selectWorkspace(_ url: URL) {
+        run {
+            let loading = Task.detached(priority: .userInitiated) { try Workspace.load(url) }
+            let workspace = try await withTaskCancellationHandler {
+                try await loading.value
+            } onCancel: { loading.cancel() }
+            try Task.checkCancellation()
+            self.newConversationForWorkspace(workspace)
+        }
+    }
+
+    func closeWorkspace() {
+        guard !busy else { return }
+        newConversationForWorkspace(nil)
+    }
+
+    private func newConversationForWorkspace(_ workspace: Workspace?) {
+        self.workspace = workspace
+        messages = []; history = []; draft = ""; error = nil
+    }
+
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !busy, account != nil, !selectedModel.isEmpty else { return }
@@ -64,7 +87,7 @@ import Observation
                     self.messages[index].status = Task.isCancelled ? .interrupted : .failed
                 }
             }
-            for try await event in self.provider.send(input, model: self.selectedModel) {
+            for try await event in self.provider.send(input, model: self.selectedModel, instructions: self.workspace?.modelInstructions ?? "") {
                 try Task.checkCancellation()
                 switch event {
                 case .text(let delta):

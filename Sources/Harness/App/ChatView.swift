@@ -29,6 +29,8 @@ struct ChatView: View {
             }
             .padding()
             Divider()
+            WorkspaceBar(store: store)
+            Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 20) {
                     ForEach(store.messages) { message in

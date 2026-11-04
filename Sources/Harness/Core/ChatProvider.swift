@@ -26,7 +26,7 @@ enum ChatEvent: Sendable {
     func connect() async throws
     func disconnect() async throws
     func models() async throws -> [ChatModel]
-    func send(_ messages: [Message], model: String) -> AsyncThrowingStream<ChatEvent, Error>
+    func send(_ messages: [Message], model: String, instructions: String) -> AsyncThrowingStream<ChatEvent, Error>
 }
 
 struct HarnessError: LocalizedError, Sendable {

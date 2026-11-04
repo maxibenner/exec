@@ -33,7 +33,7 @@ import Foundation
             .map { ChatModel(id: $0.slug, name: $0.display_name ?? $0.slug) }
     }
 
-    func send(_ messages: [Message], model: String) -> AsyncThrowingStream<ChatEvent, Error> {
+    func send(_ messages: [Message], model: String, instructions: String = "") -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
                 do {
@@ -56,7 +56,7 @@ import Foundation
                     }
                     let request = try CodexConnection.responsesRequest(
                         input: input, model: model, sessionID: messages.first?.id.uuidString ?? UUID().uuidString,
-                        accessToken: credentials.access, accountID: credentials.accountID
+                        accessToken: credentials.access, accountID: credentials.accountID, instructions: instructions
                     )
                     for try await event in OpenAITransport.stream(request, session: http) {
                         try Task.checkCancellation()
