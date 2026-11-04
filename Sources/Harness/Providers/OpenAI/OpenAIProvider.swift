@@ -5,6 +5,8 @@ import Foundation
     private let http: URLSession
     // Preserve Responses output (including encrypted reasoning) without leaking
     // provider-specific conversation state into the UI or shared message model.
+    // Key each model step by its final input message (user or tool result), so
+    // successive tool rounds don't overwrite earlier opaque reasoning/output.
     private var outputs: [UUID: Data] = [:]
     let connectionTitle = "Connect to Codex"
     var account: String? { authentication.account }
@@ -33,7 +35,7 @@ import Foundation
             .map { ChatModel(id: $0.slug, name: $0.display_name ?? $0.slug) }
     }
 
-    func send(_ messages: [Message], model: String, instructions: String = "") -> AsyncThrowingStream<ChatEvent, Error> {
+    func send(_ messages: [Message], model: String, instructions: String = "", tools: [ToolDefinition] = []) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
                 do {
@@ -42,28 +44,44 @@ import Foundation
                     let ids = Set(messages.map(\.id))
                     outputs = outputs.filter { ids.contains($0.key) }
                     var input: [[String: Any]] = []
-                    var userID: UUID?
+                    var previousID: UUID?
                     for message in messages {
-                        if message.role == .user { userID = message.id }
-                        if message.role == .assistant, let userID, let output = outputs[userID] {
+                        defer { previousID = message.id }
+                        if let result = message.toolResult {
+                            input.append(["type": "function_call_output", "call_id": result.call.id, "output": result.text])
+                        } else if message.role == .assistant, let previousID, let output = outputs[previousID] {
                             guard let items = try JSONSerialization.jsonObject(with: output) as? [[String: Any]] else {
                                 throw HarnessError("Invalid saved response.")
                             }
                             input.append(contentsOf: items)
                         } else {
-                            input.append(["role": message.role.rawValue, "content": message.text])
+                            if !message.text.isEmpty { input.append(["role": message.role.rawValue, "content": message.text]) }
+                            for call in message.toolCalls {
+                                input.append(["type": "function_call", "call_id": call.id, "name": call.name, "arguments": call.arguments])
+                            }
                         }
                     }
                     let request = try CodexConnection.responsesRequest(
                         input: input, model: model, sessionID: messages.first?.id.uuidString ?? UUID().uuidString,
-                        accessToken: credentials.access, accountID: credentials.accountID, instructions: instructions
+                        accessToken: credentials.access, accountID: credentials.accountID, instructions: instructions, tools: tools
                     )
                     for try await event in OpenAITransport.stream(request, session: http) {
                         try Task.checkCancellation()
                         switch event {
                         case .text(let delta): continuation.yield(.text(delta))
                         case .completed(let output):
-                            if let userID { outputs[userID] = output }
+                            guard let items = try JSONSerialization.jsonObject(with: output) as? [[String: Any]] else {
+                                throw HarnessError("Invalid tool response.")
+                            }
+                            for item in items where item["type"] as? String == "function_call" {
+                                guard let id = item["call_id"] as? String, !id.isEmpty,
+                                      let name = item["name"] as? String, !name.isEmpty,
+                                      let arguments = item["arguments"] as? String else {
+                                    throw HarnessError("Invalid tool call.")
+                                }
+                                continuation.yield(.toolCall(ToolCall(id: id, name: name, arguments: arguments)))
+                            }
+                            if let previousID = messages.last?.id { outputs[previousID] = output }
                             continuation.yield(.completed)
                         }
                     }

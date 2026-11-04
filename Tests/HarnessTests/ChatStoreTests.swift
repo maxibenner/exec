@@ -5,6 +5,7 @@ import Foundation
     var account: String? = "test@example.com"
     var inputs: [[Message]] = []
     var instructions: [String] = []
+    var scripted: [[ChatEvent]] = []
     var shouldFail = false
     var holdOpen = false
     var pending: AsyncThrowingStream<ChatEvent, Error>.Continuation?
@@ -12,9 +13,16 @@ import Foundation
     func connect() async throws { account = "test@example.com" }
     func disconnect() async throws { account = nil }
     func models() async throws -> [ChatModel] { [ChatModel(id: "test", name: "Test")] }
-    func send(_ messages: [Message], model: String, instructions: String) -> AsyncThrowingStream<ChatEvent, Error> {
+    func send(_ messages: [Message], model: String, instructions: String, tools: [ToolDefinition]) -> AsyncThrowingStream<ChatEvent, Error> {
         inputs.append(messages)
         self.instructions.append(instructions)
+        if !scripted.isEmpty {
+            let events = scripted.removeFirst()
+            return AsyncThrowingStream { continuation in
+                for event in events { continuation.yield(event) }
+                continuation.finish()
+            }
+        }
         return AsyncThrowingStream { continuation in
             continuation.yield(.text("Hello"))
             continuation.yield(.text(" world"))
@@ -32,6 +40,60 @@ import Foundation
             try await Task.sleep(for: .milliseconds(5))
         }
         throw HarnessError("Operation did not settle")
+    }
+
+    func interruptedToolTurnRetainsResultsWithoutReexecution() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "source text".write(to: root.appendingPathComponent("source"), atomically: true, encoding: .utf8)
+        let provider = FakeProvider()
+        let read = ToolCall(id: "read-1", name: "read_file", arguments: #"{"path":"source","start_line":1,"end_line":2}"#)
+        let shell = ToolCall(id: "shell-1", name: "shell", arguments: #"{"command":"touch unexpected"}"#)
+        provider.scripted = [[.toolCall(read), .toolCall(shell), .completed]]
+        let store = ChatStore(provider: provider)
+        store.selectedModel = "test"
+        store.selectWorkspace(root)
+        try await settle(store)
+        store.draft = "Inspect project"
+        store.send()
+        for _ in 0..<200 {
+            if store.tools.pendingApproval != nil { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try expect(store.tools.pendingApproval != nil)
+        store.stop()
+        try await settle(store)
+        try expect(store.messages.contains { $0.toolResult?.call.id == read.id && $0.text.contains("source text") })
+        try expect(store.tools.pendingApproval == nil)
+        store.draft = "Continue without shell"
+        store.send()
+        try await settle(store)
+        let context = provider.inputs.last!
+        try expect(context.contains { $0.toolResult?.call.id == read.id && $0.text.contains("source text") })
+        try expect(context.contains { $0.toolResult?.call.id == shell.id && $0.text.contains("Interrupted") })
+        try expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("unexpected").path))
+        try expect(provider.inputs.count == 2)
+
+        let approvedCall = ToolCall(id: "shell-2", name: "shell", arguments: #"{"command":"printf x >> effect"}"#)
+        provider.scripted = [[.toolCall(approvedCall), .completed]]
+        provider.shouldFail = true // The model request after the command fails.
+        store.draft = "Run approved command"
+        store.send()
+        for _ in 0..<200 {
+            if store.tools.pendingApproval != nil { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try expect(store.tools.pendingApproval != nil)
+        store.tools.resolveApproval(id: store.tools.pendingApproval!.id, approved: true)
+        try await settle(store)
+        try expect(store.error == "failed")
+        provider.shouldFail = false
+        store.draft = "What happened?"
+        store.send()
+        try await settle(store)
+        try expect(provider.inputs.last!.contains { $0.toolResult?.call.id == approvedCall.id && $0.text.contains("Exit code: 0") })
+        try expect(try String(contentsOf: root.appendingPathComponent("effect"), encoding: .utf8) == "x")
     }
 
     func workspaceChangesKeepInstructionsAndHistoryIsolated() async throws {
@@ -80,7 +142,7 @@ import Foundation
         try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
         store.selectWorkspace(other)
         try await settle(store)
-        try expect(store.workspace?.root == other.resolvingSymlinksInPath())
+        try expect(store.workspace?.root.path.hasSuffix("/other-project") == true)
         try expect(store.workspace?.instructions == nil && store.messages.isEmpty)
         store.closeWorkspace()
         try expect(store.workspace == nil && store.messages.isEmpty)

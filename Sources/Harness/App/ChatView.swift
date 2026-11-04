@@ -36,17 +36,29 @@ struct ChatView: View {
                     ForEach(store.messages) { message in
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
-                                Text(message.role == .user ? "You" : "Assistant")
+                                Text(message.role == .user ? "You" : message.role == .tool ? "Tool" : "Assistant")
                                 if message.status == .interrupted { Text("Stopped · excluded from context") }
                                 if message.status == .failed { Text("Failed · excluded from context") }
                             }
                             .font(.caption).foregroundStyle(.secondary)
-                            Text(message.text.isEmpty ? "…" : message.text)
-                                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            if let result = message.toolResult {
+                                DisclosureGroup(result.call.name) {
+                                    Text(result.call.arguments).font(.system(.caption, design: .monospaced))
+                                        .textSelection(.enabled)
+                                    Text(result.text).font(.system(.body, design: .monospaced))
+                                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            } else if !message.text.isEmpty {
+                                Text(message.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
                 }
                 .padding()
+            }
+            if let approval = store.tools.pendingApproval {
+                Divider()
+                ToolApprovalView(approval: approval, executor: store.tools)
             }
             if let error = store.error {
                 Text(error).font(.callout).foregroundStyle(.red)

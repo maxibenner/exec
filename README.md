@@ -17,7 +17,7 @@ Quit an already-running copy before reopening the rebuilt app. Choose **Connect 
 - **Stop:** cancel sign-in or the current request.
 - **New:** clear the conversation once the current operation ends.
 - **Account menu:** refresh the model list, reconnect or sign out. Sign out before changing ChatGPT accounts/organizations.
-- Failed/stopped replies remain visible and are labeled as excluded from follow-up context.
+- Failed/stopped replies remain visible and are labeled as excluded from follow-up context. Completed tool steps and interruption records remain in context so their effects aren't silently forgotten.
 
 The callback requires local port **1455**. If another app is signing in on that port, finish or close that sign-in and retry. The app never terminates another listener or forwards callbacks to it.
 
@@ -25,13 +25,28 @@ Open `Package.swift` in Xcode if you prefer IDE development; the script is suffi
 
 ### Project workspaces
 
-Click **Choose Folder…** to select a project. The workspace bar shows its full path (hover if truncated) and whether a root `AGENTS.md` was loaded. The selected path and those instructions are sent to the model with subsequent messages; no other project files are loaded.
+Click **Choose Folder…** to select a project. The workspace bar shows its full path (hover if truncated). The selected path and root `AGENTS.md` are sent to the model with subsequent messages. Selecting a workspace also permits the model to read/search its files; tool results are sent back to the model. Select trusted projects and consider what sensitive data they contain.
 
 - Only `<selected folder>/AGENTS.md` is loaded—not ancestor or nested instruction files. Missing instructions are allowed; unreadable, non-UTF-8, oversized (over 64 KiB), or symlinked instruction files are rejected without replacing the current workspace/chat.
 - Instructions are a snapshot. **Workspace → Reload Instructions** loads changes explicitly.
 - Changing, closing, or reloading a workspace starts a fresh conversation and clears the draft, with confirmation if either contains content. **New** keeps the current workspace and instructions.
 - Selection is optional: without a workspace the app remains a normal chat. Workspace selection and conversation history are not persisted across app restarts yet.
-- This is context selection, not a security sandbox or permission to run commands. File-reading tools, editing, and shell execution are not implemented yet.
+- The built-in file tools enforce workspace-relative paths and refuse symlinks. This is not an OS sandbox. Shell commands have normal user access and require separate approval.
+
+### Coding tools and approval
+
+With a workspace selected, the model can use:
+
+- **`list_files`**: one directory at a time; at most 2,000 entries / 32 KiB of output.
+- **`read_file`**: UTF-8 text, line-numbered ranges of up to 400 lines, files up to 1 MiB, output up to 32 KiB.
+- **`search_text`**: case-sensitive literal search, bounded to 2,000 visited entries, 100 matches, 16 directory levels, 32 KiB of output and a five-second scan budget. Hidden entries, `node_modules`, `dist`, symlinks, oversized and non-text files are skipped. Filesystem calls themselves may still wait on a slow volume.
+- **`shell`**: displays the exact command and working directory for **Approve Once** or **Deny**. Runs `/bin/bash --noprofile --norc` with a minimal environment, no interactive stdin, a 30-second timeout and 32 KiB of combined stdout/stderr. The app's inherited environment and OAuth tokens are not passed to commands.
+
+**Shell approval is not a sandbox:** commands can read/write outside the workspace, access the network, or delete data. There is no automatic approval or command allowlist. Read-only inspection needs no per-call approval; modifications currently require an approved shell command, not a dedicated editing tool.
+
+Tool calls execute sequentially, only after the model response completes. Each user turn is limited to eight model requests and sixteen executed tool calls. Expand a tool result in the conversation to see its arguments and output.
+
+**Stop** cancels requests and pending approvals and sends termination to the shell process group, including ordinary child processes. It also cleans up ordinary background jobs after command exit. This is not containment: deliberately detached or privilege-elevated processes may escape that group. Commands may have changed files before cancellation or timeout; nothing is rolled back. Completed model/tool steps and interrupted-call records remain in the current conversation even if a subsequent model request fails. There are no automatic execution retries and no durable recovery across app restarts yet.
 
 ### Stable signing and Keychain prompts
 
@@ -59,7 +74,7 @@ Self-signed builds are for this Mac; they do not provide Apple Developer ID trus
 ```text
 Sources/Harness/
   App/                SwiftUI and observable conversation state
-  Core/               Provider interface, chat types and workspace instructions
+  Core/               Provider/tool interfaces, workspace file access, approval and shell execution
   Providers/OpenAI/   Codex OAuth, identity verification and Responses transport
   Storage/            Small Keychain utility
 ```
@@ -94,11 +109,12 @@ Network/SSE processing runs off the main actor. UI text updates are batched. Onl
 ./scripts/test.sh
 ```
 
-The dependency-free runner works with Command Line Tools alone. The focused checks cover workspace instruction loading/context isolation, authentication/identity validation, refresh and restart, token-rotation failures, offline sign-out, opaque follow-up context, SSE errors and cancellation. The added lifecycle checks use an in-memory credential store and an intercepted URLSession—not the user's Keychain or live model calls.
+The dependency-free runner works with Command Line Tools alone. The focused checks cover workspace instruction loading/context isolation, authentication/identity validation, refresh and restart, token-rotation failures, offline sign-out, opaque follow-up/tool context, workspace boundaries, shell approval/process cancellation, SSE errors and cancellation. The added lifecycle checks use an in-memory credential store and an intercepted URLSession—not the user's Keychain or live model calls.
 
 The user has verified live sign-in and messaging. Automated lifecycle checks are not a substitute for these final manual checks:
 
-- Choose a folder, verify the displayed path/instruction status, and cancel a workspace-change confirmation to keep the current chat. Folder-picker interaction still needs manual validation.
+- Choose a folder, verify the displayed path, and cancel a workspace-change confirmation to keep the current chat.
+- In a disposable project, ask the model to inspect a file and search for a symbol, then approve/deny harmless shell commands. Verify the actual approval UI and live Codex tool behavior; protocol tests use a fake transport, not the service.
 - Relaunch: account restores; conversation and workspace selection intentionally start empty.
 - Send a contextual follow-up, stop a reply, then send again: only completed turns should be remembered.
 - Disconnect the network during a reply: an error appears without committing a partial turn; reconnect and retry manually.
@@ -111,7 +127,7 @@ No live sign-in, token rotation, revocation or inference is performed by the bui
 ## Deliberate v1 limits
 
 - One connected account and one in-memory conversation.
-- No coding tools, project file access beyond root instructions, shell commands, Markdown renderer or history database.
+- No dedicated editing/diff tool, Markdown renderer, durable tool journal or history database. File changes can be made through explicitly approved shell commands.
 - No automatic request retries or context compaction; start a new conversation if context grows too large.
 - No distribution signing or usage dashboard.
 

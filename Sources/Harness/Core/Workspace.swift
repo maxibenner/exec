@@ -17,8 +17,12 @@ struct Workspace: Sendable {
 
     static func load(_ url: URL) throws -> Workspace {
         guard url.isFileURL else { throw HarnessError("Choose a local project folder.") }
-        let root = url.standardizedFileURL.resolvingSymlinksInPath()
-        let directory = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        // Foundation can shorten /private/var back to the /var symlink. Keep
+        // the actual POSIX path so file tools can refuse symlinks in every component.
+        guard let resolved = realpath(url.path, nil) else { throw HarnessError("The project folder is unavailable.") }
+        defer { free(resolved) }
+        let root = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+        let directory = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directory >= 0 else { throw HarnessError("Could not open the project folder. Check that it exists and you have permission to read it.") }
         defer { close(directory) }
 

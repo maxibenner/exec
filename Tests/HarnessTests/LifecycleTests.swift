@@ -119,6 +119,42 @@ import Foundation
         try expect((fresh["instructions"] as? String)?.contains("Project-specific rules") == false)
     }
 
+    func providerEncodesToolsAndPreservesToolRoundTrips() async throws {
+        func terminal(_ output: [[String: Any]]) throws -> Data {
+            let event: [String: Any] = ["type": "response.completed", "response": ["status": "completed", "output": output]]
+            return Data("data: ".utf8) + (try JSONSerialization.data(withJSONObject: event)) + Data("\n\n".utf8)
+        }
+        let call = ToolCall(id: "call-1", name: "list_files", arguments: #"{"path":"."}"#)
+        let output: [[String: Any]] = [
+            ["type": "reasoning", "encrypted_content": "opaque-reasoning"],
+            ["type": "function_call", "call_id": call.id, "name": call.name, "arguments": call.arguments]
+        ]
+        let http = HTTPStub.makeSession([.init(chunks: [try terminal(output)]), .init(chunks: [try terminal([])])])
+        defer { http.invalidateAndCancel() }
+        let auth = try OpenAIAuthentication(keychain: credentials(), http: http)
+        let provider = try OpenAIProvider(authentication: auth, http: http)
+        let user = Message(role: .user, text: "Inspect project")
+        var received: [ToolCall] = []
+        for try await event in provider.send([user], model: "test", tools: CodingTools.definitions) {
+            if case .toolCall(let call) = event { received.append(call) }
+        }
+        try expect(received == [call])
+        let assistant = Message(role: .assistant, text: "", toolCalls: received)
+        let result = Message(role: .tool, text: "file.swift", toolResult: ToolResult(call: call, text: "file.swift"))
+        for try await _ in provider.send([user, assistant, result], model: "test", tools: CodingTools.definitions) {}
+        let requests = HTTPStub.state.requests
+        try expect(requests.count == 2)
+        let first = try JSONSerialization.jsonObject(with: HTTPStub.body(of: requests[0])) as! [String: Any]
+        try expect((first["tools"] as? [[String: Any]])?.count == 4)
+        try expect(first["parallel_tool_calls"] as? Bool == false)
+        let second = try JSONSerialization.jsonObject(with: HTTPStub.body(of: requests[1])) as! [String: Any]
+        let input = second["input"] as! [[String: Any]]
+        try expect(input.count == 4 && input[1]["encrypted_content"] as? String == "opaque-reasoning")
+        try expect(input[2]["type"] as? String == "function_call")
+        try expect(input[3]["type"] as? String == "function_call_output")
+        try expect(input[3]["call_id"] as? String == call.id && input[3]["output"] as? String == "file.swift")
+    }
+
     func streamCancellationClosesRequestAndPrematureEOFIsFailure() async throws {
         let delta = Data("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n".utf8)
         // URLProtocol buffers small payloads with AsyncBytes. Fill its buffer

@@ -14,8 +14,6 @@ import SwiftUI
                     .font(.callout).lineLimit(1).truncationMode(.middle)
                     .help(store.workspace?.root.path ?? "Choose a project folder to load its instructions.")
                     .textSelection(.enabled)
-                Text(instructionStatus)
-                    .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
             Group {
@@ -42,12 +40,6 @@ import SwiftUI
         }
     }
 
-    private var instructionStatus: String {
-        guard let workspace = store.workspace else { return "Chat only · no file or shell tools yet" }
-        let status = workspace.instructions == nil ? "No root AGENTS.md" : "Root AGENTS.md loaded"
-        return status + " · no file or shell tools yet"
-    }
-
     private func chooseFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -56,7 +48,7 @@ import SwiftUI
         panel.canCreateDirectories = false
         panel.directoryURL = store.workspace?.root
         panel.prompt = "Choose Workspace"
-        panel.message = "The folder's root AGENTS.md and path will be included with messages sent to your model. No other project files are loaded."
+        panel.message = "The model can read and search files in this folder. File contents, the folder path, and root AGENTS.md may be sent to your model. Shell commands require separate approval."
         let completion: (NSApplication.ModalResponse) -> Void = { response in
             if response == .OK, let url = panel.url { requestChange(to: url) }
         }

@@ -20,12 +20,17 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Read-only tool boundaries", { try ToolTests().readToolsStayWithinWorkspace() }),
+            ("Shell output, timeout and cancellation", { try await ToolTests().shellOutputTimeoutAndCancellation() }),
+            ("Shell approval", { try await ToolTests().everyShellCommandRequiresApproval() }),
+            ("Tool interruption and recovery", { try await chat.interruptedToolTurnRetainsResultsWithoutReexecution() }),
             ("Workspace instruction loading", { try WorkspaceTests().loadsOnlyRootInstructionsAndRejectsUnsafeFiles() }),
             ("Workspace context isolation", { try await chat.workspaceChangesKeepInstructionsAndHistoryIsolated() }),
             ("Refresh and restart", { try await LifecycleTests().refreshIsSharedAndSurvivesRestart() }),
             ("Interrupted refresh recovery", { try await LifecycleTests().interruptedRefreshIsNotReplayedAfterRestart() }),
             ("Rotated token persistence", { try await LifecycleTests().rotatedTokensSurviveTemporaryKeychainFailure() }),
             ("Offline sign-out", { try await LifecycleTests().signOutClearsLocalSessionWhenOffline() }),
+            ("Provider tool round trip", { try await LifecycleTests().providerEncodesToolsAndPreservesToolRoundTrips() }),
             ("Provider follow-up context", { try await LifecycleTests().providerPreservesOpaqueFollowupContext() }),
             ("Network stream cancellation and EOF", { try await LifecycleTests().streamCancellationClosesRequestAndPrematureEOFIsFailure() }),
             ("Codex OAuth fields", { try CodexConnectionTests().authorizationUsesCodexFlow() }),

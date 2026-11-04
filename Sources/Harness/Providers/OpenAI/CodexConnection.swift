@@ -47,7 +47,7 @@ enum CodexConnection {
     }
 
     static func responsesRequest(input: [[String: Any]], model: String, sessionID: String,
-                                 accessToken: String, accountID: String, instructions: String = "") throws -> URLRequest {
+                                 accessToken: String, accountID: String, instructions: String = "", tools: [ToolDefinition] = []) throws -> URLRequest {
         var request = request(path: "/responses", accessToken: accessToken, accountID: accountID)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -55,11 +55,23 @@ enum CodexConnection {
         request.setValue("responses=experimental", forHTTPHeaderField: "OpenAI-Beta")
         request.setValue(sessionID, forHTTPHeaderField: "session-id")
         request.setValue(UUID().uuidString, forHTTPHeaderField: "x-client-request-id")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
+        var body: [String: Any] = [
             "model": model, "input": input, "store": false, "stream": true,
             "instructions": "You are a helpful assistant." + (instructions.isEmpty ? "" : "\n\n" + instructions),
             "include": ["reasoning.encrypted_content"], "prompt_cache_key": sessionID
-        ])
+        ]
+        if !tools.isEmpty {
+            body["parallel_tool_calls"] = false
+            body["tools"] = tools.map { tool -> [String: Any] in
+                let properties = Dictionary(uniqueKeysWithValues: tool.parameters.map {
+                    ($0.name, ["type": $0.type, "description": $0.description])
+                })
+                return ["type": "function", "name": tool.name, "description": tool.description, "strict": true,
+                        "parameters": ["type": "object", "properties": properties,
+                                       "required": tool.parameters.map(\.name), "additionalProperties": false]]
+            }
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request
     }
 
