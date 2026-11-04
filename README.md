@@ -38,7 +38,11 @@ REQUIRE_STABLE_SIGNING=1 ./scripts/build-app.sh
 
 For a one-off override, set `SIGNING_IDENTITY` to the certificate name or SHA-1. The build keeps the same bundle identifier and enables hardened runtime for certificate-signed builds. It verifies the signature and never falls back to ad-hoc signing after a configured certificate fails. `REQUIRE_STABLE_SIGNING=1` rejects an unconfigured/ad-hoc build before compilation.
 
-The switch from ad-hoc signing may require one more Keychain approval. Locked keychains or changed permissions can still prompt. This Mac had no valid signing identity at implementation time, so certificate-signed rebuilds still need to be verified after installing a certificate.
+A locally trusted self-signed code-signing certificate also works for development without Xcode or an Apple Developer subscription. This workspace is configured locally to use **Harness Local Development**, a five-year certificate in the login Keychain, trusted only for code signing in the user domain. The private key stays in Keychain; no certificate/key files or machine-specific signing configuration are committed.
+
+The signed app's designated requirement is tied to the bundle identifier and certificate, not a changing binary hash. Keep using the same certificate across builds. The switch from ad-hoc signing may require one more Keychain approval—choose **Always Allow** if you trust this app. Locked keychains or changed permissions can still prompt.
+
+Self-signed builds are for this Mac; they do not provide Apple Developer ID trust or notarization for distribution. You can inspect the current signing requirement with `codesign -d -r- dist/Harness.app`.
 
 ## Structure
 
