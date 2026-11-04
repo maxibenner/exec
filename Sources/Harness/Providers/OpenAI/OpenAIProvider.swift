@@ -73,6 +73,18 @@ import Foundation
                             guard let items = try JSONSerialization.jsonObject(with: output) as? [[String: Any]] else {
                                 throw HarnessError("Invalid tool response.")
                             }
+                            // Final message content is authoritative. Some streams omit
+                            // deltas or supply only a prefix; replace rather than append.
+                            let parts = items.filter { $0["type"] as? String == "message" }
+                                .flatMap { $0["content"] as? [[String: Any]] ?? [] }
+                                .compactMap { part -> String? in
+                                    switch part["type"] as? String {
+                                    case "output_text": return part["text"] as? String
+                                    case "refusal": return part["refusal"] as? String
+                                    default: return nil
+                                    }
+                                }
+                            if !parts.isEmpty { continuation.yield(.textSnapshot(parts.joined())) }
                             for item in items where item["type"] as? String == "function_call" {
                                 guard let id = item["call_id"] as? String, !id.isEmpty,
                                       let name = item["name"] as? String, !name.isEmpty,

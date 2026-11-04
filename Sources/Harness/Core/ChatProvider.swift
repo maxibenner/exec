@@ -18,6 +18,7 @@ struct ChatModel: Identifiable, Sendable {
 
 enum ChatEvent: Sendable {
     case text(String)
+    case textSnapshot(String)
     case toolCall(ToolCall)
     case completed
 }

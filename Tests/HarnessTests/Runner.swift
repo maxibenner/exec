@@ -42,6 +42,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("SSE framing and Unicode", { try streaming.framesCommentsMultilineAndUnicode() }),
             ("Partial SSE frame", { try streaming.partialFrameDoesNotEmit() }),
             ("SSE size limit", { try streaming.oversizedEventIsRejected() }),
+            ("Completed output item reconciliation", { try streaming.completedItemsMergeWithoutDuplicatingOrLosingContext() }),
+            ("Final text and empty response handling", { try await chat.finalTextReplacesDeltasAndEmptyResponsesFail() }),
             ("Semantic events and opaque output", { try streaming.semanticEvents() }),
             ("Failure events", { try streaming.errorsAndIncompleteAreNotSuccess() }),
             ("OAuth form encoding", { try streaming.formEncodingEscapesReservedCharacters() }),

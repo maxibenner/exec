@@ -129,7 +129,18 @@ import Foundation
             ["type": "reasoning", "encrypted_content": "opaque-reasoning"],
             ["type": "function_call", "call_id": call.id, "name": call.name, "arguments": call.arguments]
         ]
-        let http = HTTPStub.makeSession([.init(chunks: [try terminal(output)]), .init(chunks: [try terminal([])])])
+        let itemEvents = try output.enumerated().reduce(into: Data()) { data, entry in
+            let event: [String: Any] = ["type": "response.output_item.done", "output_index": entry.offset, "item": entry.element]
+            data += Data("data: ".utf8) + (try JSONSerialization.data(withJSONObject: event)) + Data("\n\n".utf8)
+        }
+        let finalText = "Project contains file.swift."
+        let finalMessage: [[String: Any]] = [["type": "message", "role": "assistant", "content": [["type": "output_text", "text": finalText]]]]
+        // Reproduce Codex item completions followed by an empty terminal output,
+        // then a text answer present only in the final response (no deltas).
+        let http = HTTPStub.makeSession([
+            .init(chunks: [itemEvents, try terminal([])]),
+            .init(chunks: [try terminal(finalMessage)])
+        ])
         defer { http.invalidateAndCancel() }
         let auth = try OpenAIAuthentication(keychain: credentials(), http: http)
         let provider = try OpenAIProvider(authentication: auth, http: http)
@@ -141,7 +152,11 @@ import Foundation
         try expect(received == [call])
         let assistant = Message(role: .assistant, text: "", toolCalls: received)
         let result = Message(role: .tool, text: "file.swift", toolResult: ToolResult(call: call, text: "file.swift"))
-        for try await _ in provider.send([user, assistant, result], model: "test", tools: CodingTools.definitions) {}
+        var snapshots: [String] = []
+        for try await event in provider.send([user, assistant, result], model: "test", tools: CodingTools.definitions) {
+            if case .textSnapshot(let text) = event { snapshots.append(text) }
+        }
+        try expect(snapshots == [finalText])
         let requests = HTTPStub.state.requests
         try expect(requests.count == 2)
         let first = try JSONSerialization.jsonObject(with: HTTPStub.body(of: requests[0])) as! [String: Any]

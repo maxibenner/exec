@@ -16,10 +16,11 @@ enum OpenAITransport {
                     defer { bytes.task.cancel() }
                     try OpenAIHTTP.check(response)
                     var parser = SSEParser()
+                    var decoder = ResponseDecoder()
                     var completed = false
                     for try await byte in bytes {
                         try Task.checkCancellation()
-                        guard let data = try parser.push(byte), let event = try decode(data) else { continue }
+                        guard let data = try parser.push(byte), let event = try decoder.decode(data) else { continue }
                         continuation.yield(event)
                         if case .completed = event { completed = true; break }
                     }
@@ -32,24 +33,64 @@ enum OpenAITransport {
     }
 
     static func decode(_ data: Data) throws -> Event? {
-        let event = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        switch event["type"] as? String {
-        case "response.output_text.delta", "response.refusal.delta":
-            guard let delta = event["delta"] as? String else { throw HarnessError("Invalid text event.") }
-            return .text(delta)
-        case "response.completed", "response.done":
-            guard let response = event["response"] as? [String: Any],
-                  response["status"] as? String == "completed",
-                  let output = response["output"] as? [[String: Any]] else {
-                throw HarnessError("Invalid completion event.")
+        var decoder = ResponseDecoder()
+        return try decoder.decode(data)
+    }
+
+    // Codex can finish items individually and omit them from the terminal output.
+    // Keep those completed items until the response itself succeeds; never execute
+    // a tool just because its arguments or output_item.done event arrived.
+    struct ResponseDecoder {
+        private var items: [Int: [String: Any]] = [:]
+
+        mutating func decode(_ data: Data) throws -> Event? {
+            let event = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            switch event["type"] as? String {
+            case "response.output_text.delta", "response.refusal.delta":
+                guard let delta = event["delta"] as? String else { throw HarnessError("Invalid text event.") }
+                return .text(delta)
+            case "response.output_item.done":
+                guard let index = event["output_index"] as? Int, index >= 0, index < 256,
+                      let item = event["item"] as? [String: Any] else {
+                    throw HarnessError("Invalid completed output item.")
+                }
+                items[index] = item
+                _ = try serializedOutput()
+                return nil
+            case "response.completed", "response.done":
+                guard let response = event["response"] as? [String: Any],
+                      response["status"] as? String == "completed" else {
+                    throw HarnessError("Invalid completion event.")
+                }
+                if let rawOutput = response["output"] {
+                    guard let output = rawOutput as? [[String: Any]], output.count <= 256 else {
+                        throw HarnessError("Invalid completion output.")
+                    }
+                    for (index, item) in output.enumerated() {
+                        let id = item["id"] as? String
+                        let matchingIndex = id.flatMap { id in items.first(where: { $0.value["id"] as? String == id })?.key }
+                        let sameSlot = items[index] == nil ||
+                            (items[index]?["id"] as? String == id && items[index]?["type"] as? String == item["type"] as? String)
+                        let slot = matchingIndex ?? (sameSlot ? index : (items.keys.max() ?? -1) + 1)
+                        items[slot] = (items[slot] ?? [:]).merging(item) { _, final in final }
+                    }
+                }
+                return .completed(try serializedOutput())
+            case "response.failed", "response.incomplete", "error":
+                let response = event["response"] as? [String: Any]
+                let error = (response?["error"] as? [String: Any]) ?? (event["error"] as? [String: Any])
+                let code = error?["code"] as? String ?? event["code"] as? String ?? "incomplete_response"
+                throw HarnessError("OpenAI: \(code)")
+            default: return nil
             }
-            return .completed(try JSONSerialization.data(withJSONObject: output))
-        case "response.failed", "response.incomplete", "error":
-            let response = event["response"] as? [String: Any]
-            let error = (response?["error"] as? [String: Any]) ?? (event["error"] as? [String: Any])
-            let code = error?["code"] as? String ?? event["code"] as? String ?? "incomplete_response"
-            throw HarnessError("OpenAI: \(code)")
-        default: return nil
+        }
+
+        private func serializedOutput() throws -> Data {
+            guard items.count <= 256 else { throw HarnessError("Response exceeded the output item limit.") }
+            let output = items.keys.sorted().compactMap { items[$0] }
+            let data = try JSONSerialization.data(withJSONObject: output)
+            guard data.count <= 4 * 1024 * 1024 else { throw HarnessError("Response output exceeded the size limit.") }
+            return data
         }
     }
 }

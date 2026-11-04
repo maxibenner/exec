@@ -147,6 +147,9 @@ import Observation
                     messages[index].text = fullText
                     lastUpdate = .now
                 }
+            case .textSnapshot(let text):
+                fullText = text
+                messages[index].text = text
             case .toolCall(let call):
                 guard calls.count < 16, call.id.utf8.count <= 256, call.name.utf8.count <= 128,
                       call.arguments.utf8.count <= 32_768, !calls.contains(where: { $0.id == call.id }) else {
@@ -158,6 +161,9 @@ import Observation
         }
         try Task.checkCancellation()
         guard completed else { throw HarnessError("Response did not complete.") }
+        guard !fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !calls.isEmpty else {
+            throw HarnessError("The provider completed without text or a tool call. The empty reply was not added to context. Try another model or send again.")
+        }
         messages[index].status = .complete
         messages[index].text = fullText
         messages[index].toolCalls = calls

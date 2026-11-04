@@ -33,7 +33,7 @@ struct ChatView: View {
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 20) {
-                    ForEach(store.messages) { message in
+                    ForEach(store.messages.filter { $0.role != .assistant || !$0.text.isEmpty || $0.toolCalls.isEmpty }) { message in
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
                                 Text(message.role == .user ? "You" : message.role == .tool ? "Tool" : "Assistant")

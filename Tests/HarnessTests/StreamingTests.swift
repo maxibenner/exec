@@ -33,6 +33,26 @@ struct StreamingTests {
         try expect(items?.first?["encrypted_content"] == "opaque")
     }
 
+    func completedItemsMergeWithoutDuplicatingOrLosingContext() throws {
+        var decoder = OpenAITransport.ResponseDecoder()
+        let message = Data(#"{"type":"response.output_item.done","output_index":1,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}}"#.utf8)
+        let reasoning = Data(#"{"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[]}}"#.utf8)
+        try expect(decoder.decode(message) == nil)
+        try expect(decoder.decode(reasoning) == nil)
+        let terminal = Data(#"{"type":"response.completed","response":{"status":"completed","output":[{"id":"rs_1","type":"reasoning","encrypted_content":"opaque"},{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}]}}"#.utf8)
+        guard case .completed(let data) = try decoder.decode(terminal) else { throw HarnessError("Missing completion") }
+        let output = try JSONSerialization.jsonObject(with: data) as! [[String: Any]]
+        try expect(output.count == 2)
+        try expect(output[0]["encrypted_content"] as? String == "opaque" && output[0]["summary"] != nil)
+        try expect(output[1]["id"] as? String == "msg_1")
+
+        var failed = OpenAITransport.ResponseDecoder()
+        try expect(failed.decode(Data(#"{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"}}"#.utf8)) == nil)
+        try expectFailure {
+            _ = try failed.decode(Data(#"{"type":"response.failed","response":{"status":"failed"}}"#.utf8))
+        }
+    }
+
     func errorsAndIncompleteAreNotSuccess() throws {
         for type in ["response.failed", "response.incomplete", "error", "response.completed"] {
             try expectFailure {

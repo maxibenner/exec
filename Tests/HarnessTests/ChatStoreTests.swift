@@ -42,6 +42,26 @@ import Foundation
         throw HarnessError("Operation did not settle")
     }
 
+    func finalTextReplacesDeltasAndEmptyResponsesFail() async throws {
+        let provider = FakeProvider()
+        provider.scripted = [[.text("Partial draft"), .textSnapshot("Final answer"), .completed], [.completed]]
+        let store = ChatStore(provider: provider)
+        store.selectedModel = "test"
+        store.draft = "First"
+        store.send()
+        try await settle(store)
+        try expect(store.messages.last?.text == "Final answer")
+        store.draft = "Empty response"
+        store.send()
+        try await settle(store)
+        try expect(store.error?.contains("without text or a tool call") == true)
+        try expect(store.messages.last?.status == .failed)
+        store.draft = "Follow-up"
+        store.send()
+        try await settle(store)
+        try expect(provider.inputs.last?.map(\.text) == ["First", "Final answer", "Follow-up"])
+    }
+
     func interruptedToolTurnRetainsResultsWithoutReexecution() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
