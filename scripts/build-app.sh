@@ -22,10 +22,26 @@ fi
 swift build -c release --product Harness
 bin="$(swift build -c release --show-bin-path)"
 app="$PWD/dist/Harness.app"
-mkdir -p "$app/Contents/MacOS"
-cp "$bin/Harness" "$app/Contents/MacOS/Harness"
-cp Resources/Info.plist "$app/Contents/Info.plist"
+mkdir -p "$PWD/dist"
+staging="$(mktemp -d "$PWD/dist/.harness-build.XXXXXX")"
+trap 'rm -rf "$staging"' EXIT
+built="$staging/Harness.app"
+mkdir -p "$built/Contents/MacOS"
+cp "$bin/Harness" "$built/Contents/MacOS/Harness"
+cp Resources/Info.plist "$built/Contents/Info.plist"
 bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Resources/Info.plist)"
-codesign "${options[@]}" --sign "$identity" --identifier "$bundle_id" "$app"
-codesign --verify --strict "$app"
+codesign "${options[@]}" --sign "$identity" --identifier "$bundle_id" "$built"
+codesign --verify --strict "$built"
+# Never truncate a running, signed executable: macOS can kill it for invalid code pages.
+# Publish only after signing succeeds; old processes keep their original executable inode.
+if [[ -e "$app" ]]; then mv "$app" "$staging/Previous.app"; fi
+if ! mv "$built" "$app"; then
+    if [[ -e "$staging/Previous.app" ]]; then
+        if ! mv "$staging/Previous.app" "$app"; then
+            printf 'Could not restore the previous build. It remains at %s\n' "$staging/Previous.app" >&2
+            trap - EXIT
+        fi
+    fi
+    exit 1
+fi
 printf '\nBuilt %s\nRun: open "%s"\n' "$app" "$app"
