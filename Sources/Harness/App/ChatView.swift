@@ -57,7 +57,11 @@ struct ChatView: View {
                                         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                                 }
                             } else if !message.text.isEmpty {
-                                Text(message.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                                if message.role == .assistant {
+                                    MarkdownView(source: message.text)
+                                } else {
+                                    Text(verbatim: message.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                                }
                             }
                         }
                     }

@@ -20,6 +20,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Markdown blocks and streaming code", { try MarkdownTests().preservesBlocksAndStreamingCode() }),
+            ("Markdown link and image safety", { try MarkdownTests().stripsActiveContentAndUnsafeLinks() }),
             ("Approved edits and stale-file protection", { try await FileEditTests().approvedEditsRejectStaleFilesAndPreserveMode() }),
             ("Edit creation and diff boundaries", { try FileEditTests().creationAndDiffBoundaries() }),
             ("Session restore and follow-up", { try await SessionTests().conversationAndWorkspaceSurviveRestart() }),

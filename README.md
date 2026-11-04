@@ -23,6 +23,12 @@ The callback requires local port **1455**. If another app is signing in on that 
 
 Open `Package.swift` in Xcode if you prefer IDE development; the script is sufficient without Xcode. The app is not notarized for distribution.
 
+### Markdown
+
+Assistant replies render native Markdown: headings, emphasis, inline/fenced code, lists, quotes, tables and links. Code blocks scroll horizontally and have a Copy button. Parsing runs off the UI actor and accepts unfinished streamed fences; unusually large or deeply nested output falls back to literal text. User messages and tool output remain literal.
+
+HTML is inert text and images are alt text only—nothing is fetched automatically. Only HTTP(S) and mail links can be opened, by clicking. No WebView or third-party renderer is used. Visual layout, selection and clipboard behavior still need a manual app check.
+
 ### Project workspaces
 
 Click **Choose Folder…** to select a project. The workspace bar shows its full path (hover if truncated). The selected path and root `AGENTS.md` are sent to the model with subsequent messages. Selecting a workspace also permits the model to read/search its files; tool results are sent back to the model. Select trusted projects and consider what sensitive data they contain.
@@ -145,7 +151,7 @@ No live sign-in, token rotation, revocation or inference is performed by the bui
 ## Deliberate v1 limits
 
 - One connected account and one saved conversation; no history browser or multi-instance coordination.
-- No multi-file edit transactions, undo manager or Markdown renderer. Editing supports exact replacement and file creation, not file deletion or directory creation.
+- No multi-file edit transactions or undo manager. Editing supports exact replacement and file creation, not file deletion or directory creation.
 - No automatic request retries or context compaction; start a new conversation if context grows too large.
 - No distribution signing or usage dashboard.
 
