@@ -23,15 +23,24 @@ The callback requires local port **1455**. If another app is signing in on that 
 
 Open `Package.swift` in Xcode if you prefer IDE development; the script is sufficient without Xcode. The app is not notarized for distribution.
 
+### Interface
+
+Account controls live at the bottom of the sidebar. Model and workspace controls sit beside the composer. User messages are right-aligned with a very faint neutral background; assistant replies are left-aligned, without repeated speaker labels.
+
+- **⌘N** starts a conversation, **⌘Return** sends, **⌘.** stops, and **Escape** denies a pending tool approval. Approval is never the default Return action.
+- Reading earlier messages pauses automatic scrolling; the down-arrow returns to the latest reply. Resizing and streamed Markdown use measured layouts rather than estimated row heights.
+- Switching sessions preserves keyboard focus in the sidebar. Draft entry remains available during a reply, but is disabled while changing/restoring conversations.
+- Closing with **Quit** asks before discarding an unsent draft or unsaved changes. Active operations are cancelled and their cleanup/checkpoint is awaited before quitting.
+
 ### Markdown
 
 Assistant replies render native Markdown: headings, emphasis, inline/fenced code, lists, quotes, tables and links. Code blocks scroll horizontally and have a Copy button. Parsing runs off the UI actor and accepts unfinished streamed fences; unusually large or deeply nested output falls back to literal text. User messages and tool output remain literal.
 
-HTML is inert text and images are alt text only—nothing is fetched automatically. Only HTTP(S) and mail links can be opened, by clicking. No WebView or third-party renderer is used. Visual layout, selection and clipboard behavior still need a manual app check.
+HTML is inert text and images are alt text only—nothing is fetched automatically. Only HTTP(S) and mail links can be opened, by clicking. No WebView or third-party renderer is used. Wide/compact layouts, light/dark appearance, approval/error panels and the scroll-follow policy were checked using native views with isolated fixtures. Clipboard, full keyboard navigation and VoiceOver still need a manual check.
 
 ### Project workspaces
 
-Click **Choose Folder…** to select a project. The workspace bar shows its full path (hover if truncated). The selected path and root `AGENTS.md` are sent to the model with subsequent messages. Selecting a workspace also permits the model to read/search its files; tool results are sent back to the model. Select trusted projects and consider what sensitive data they contain.
+Click **Workspace…** beside the composer to select a project. Its folder name is shown there; hover for the full path. The adjacent menu provides workspace settings and Reveal in Finder. The selected path and root `AGENTS.md` are sent to the model with subsequent messages. Selecting a workspace also permits the model to read/search its files; tool results are sent back to the model. Select trusted projects and consider what sensitive data they contain.
 
 - Only `<selected folder>/AGENTS.md` is loaded—not ancestor or nested instruction files. Missing instructions are allowed; unreadable, non-UTF-8, oversized (over 64 KiB), or symlinked instruction files are rejected without replacing the current workspace/chat.
 - Instructions are a snapshot. **Workspace → Reload Instructions** loads changes explicitly.
@@ -59,7 +68,7 @@ Tool calls execute sequentially, only after the model response completes. Each u
 
 ### Session persistence
 
-The **Sessions** sidebar lists saved conversations for the connected account. Select a conversation to restore it; use its trash button or context menu to delete it after confirmation. Switching and deleting are disabled during active requests/tools. **New** (⌘N) keeps earlier conversations and the selected workspace.
+The **Sessions** sidebar lists saved conversations for the connected account, ordered by the last user-message time. Opening a conversation does not move it in the list. New checkpoints also store the activity timestamp in the snapshot so index recovery preserves it. Select a conversation to restore it; use its trash button or context menu to delete it after confirmation. Switching and deleting are disabled during active requests/tools. **New** (⌘N) keeps earlier conversations and the selected workspace.
 
 Harness stores one `<UUID>.json` snapshot per conversation plus a small `index.json` in `~/Library/Application Support/Harness/`. The previous single-file `session.json` is imported without changing message IDs or provider context. The index can be rebuilt from snapshots after an interrupted write; deleting a session removes its snapshot, so a stale index cannot bring it back. It restores the conversation, workspace/instruction snapshot, last checkpointed model selection, tool results, and provider-owned opaque response context. It never resumes model requests, approvals, or commands automatically.
 
@@ -89,7 +98,9 @@ For a one-off override, set `SIGNING_IDENTITY` to the certificate name or SHA-1.
 
 A locally trusted self-signed code-signing certificate also works for development without Xcode or an Apple Developer subscription. This workspace is configured locally to use **Harness Local Development**, a five-year certificate in the login Keychain, trusted only for code signing in the user domain. The private key stays in Keychain; no certificate/key files or machine-specific signing configuration are committed.
 
-The signed app's designated requirement is tied to the bundle identifier and certificate, not a changing binary hash. Keep using the same certificate across builds. The switch from ad-hoc signing may require one more Keychain approval—choose **Always Allow** if you trust this app. Locked keychains or changed permissions can still prompt.
+Builds are signed and verified in a staging bundle before publication. They do not overwrite a running executable in place, which can otherwise cause macOS to terminate it for an invalid code-signature page. Quit and reopen to use the new build.
+
+The signed app's designated requirement is tied to the bundle identifier and certificate, not a changing binary hash. Keep using the same certificate across builds. The switch from ad-hoc signing may require one more Keychain approval—choose **Always Allow** if you trust this app. Locked keychains or changed permissions can still prompt. Startup reads Keychain off the UI thread so a system permission prompt does not freeze the window. Permission must still be approved or denied by the user; access controls are not relaxed.
 
 Self-signed builds are for this Mac; they do not provide Apple Developer ID trust or notarization for distribution. You can inspect the current signing requirement with `codesign -d -r- dist/Harness.app`.
 

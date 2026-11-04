@@ -161,8 +161,12 @@ import Foundation
         let secondID = store.currentSessionID!
         try expect(secondID != legacyID && store.sessionList.count == 2)
         try expect(provider.inputs.last?.map(\.text) == ["Separate conversation"])
+        let order = store.sessionList.map(\.id)
+        let dates = store.sessionList.map(\.updatedAt)
         store.openSession(legacyID)
         try await settle(store)
+        try expect(store.sessionList.map(\.id) == order)
+        try expect(store.sessionList.map(\.updatedAt) == dates)
         store.draft = "Continue legacy"
         store.send()
         try await settle(store)
@@ -183,13 +187,14 @@ import Foundation
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let sessions = SessionStore(directory: root)
-        let snapshot = SessionSnapshot(identity: "test", selectedModel: "test", messages: [Message(role: .user, text: "Recover me")], history: [], activeTurn: true)
+        let snapshot = SessionSnapshot(identity: "test", selectedModel: "test", messages: [Message(role: .user, text: "Recover me")], history: [], activeTurn: true, activityDate: Date(timeIntervalSince1970: 100))
         let id = try await sessions.save(snapshot)
         let staleIndex = try Data(contentsOf: root.appendingPathComponent("index.json"))
         try FileManager.default.removeItem(at: root.appendingPathComponent("index.json"))
         let recovered = SessionStore(directory: root)
         let list = try await recovered.list(identity: "test")
         try expect(list.count == 1 && list.first?.id == id)
+        try expect(list.first?.updatedAt == snapshot.activityDate)
         let loaded = try await recovered.load(id: id)
         try expect(loaded?.activeTurn == true) // Storage itself never executes or normalizes operations.
         try await recovered.delete(id: id)

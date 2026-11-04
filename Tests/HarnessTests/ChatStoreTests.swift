@@ -233,11 +233,13 @@ import Foundation
             if provider.pending != nil { break }
             try await Task.sleep(for: .milliseconds(5))
         }
-        try expect(provider.pending != nil)
+        try expect(provider.pending != nil && store.isSending)
+        store.draft = "A draft for the next turn"
         store.stop()
         try await settle(store)
-        try expect(!store.busy)
-        try expect(store.error?.contains("Stopped") == true)
+        try expect(!store.busy && !store.isSending)
+        try expect(store.draft == "A draft for the next turn")
+        try expect(store.error == nil)
         try expect(store.messages.last?.status == .interrupted)
         provider.holdOpen = false
         provider.pending?.finish()

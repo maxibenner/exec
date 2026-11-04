@@ -6,21 +6,45 @@ struct ChatView: View {
     @State private var pendingSession: UUID?
     @State private var pendingDeletion: SessionSummary?
     @State private var confirmingDeletion = false
+    @FocusState private var composerFocused: Bool
+    @State private var errorHeight: CGFloat = 20
 
     var body: some View {
         NavigationSplitView {
             SessionSidebar(store: store, open: { requestNavigation(to: $0) }, delete: {
+                guard !store.busy else { return }
                 pendingDeletion = $0; confirmingDeletion = true
             })
         } detail: {
-            conversation
+            VStack(spacing: 0) {
+                TranscriptView(messages: store.messages, sessionID: store.currentSessionID)
+                if let approval = store.tools.pendingApproval {
+                    Divider()
+                    ToolApprovalView(approval: approval, executor: store.tools).layoutPriority(1)
+                }
+                if let error = store.error { errorView(error) }
+                composer
+            }
+            .frame(minWidth: 460)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { requestNavigation(to: nil) } label: {
+                        Label("New Conversation", systemImage: "square.and.pencil")
+                    }
+                    .keyboardShortcut("n", modifiers: .command)
+                    .help("New conversation (⌘N)")
+                    .disabled(store.busy)
+                }
+            }
+            .toolbarBackground(Color(nsColor: .windowBackgroundColor), for: .windowToolbar)
+            .toolbarBackground(.visible, for: .windowToolbar)
         }
-        .frame(minWidth: 740, minHeight: 480)
+        .frame(minWidth: 720, minHeight: 480)
         .confirmationDialog("Discard unsaved content?", isPresented: $confirmingNavigation, titleVisibility: .visible) {
             Button("Continue", role: .destructive) { navigate() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Your saved conversations will be kept. Unsent text and changes that could not be saved will be discarded.")
+            Text("Saved conversations will be kept. Unsent text and changes that could not be saved will be discarded.")
         }
         .confirmationDialog("Delete this conversation?", isPresented: $confirmingDeletion, titleVisibility: .visible) {
             Button("Delete Conversation", role: .destructive) {
@@ -30,8 +54,76 @@ struct ChatView: View {
         } message: {
             Text("“\(pendingDeletion?.title ?? "")” will be permanently deleted from this Mac. Files changed by its tools will not be undone.")
         }
-        .task { store.restore() }
+        .task { store.restore(); composerFocused = true }
         .onDisappear { store.stop() }
+    }
+
+    private var composer: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                WorkspaceBar(store: store)
+                if !store.models.isEmpty || !store.selectedModel.isEmpty {
+                    Picker("Model", selection: $store.selectedModel) {
+                        ForEach(store.models) { Text($0.name).tag($0.id) }
+                        if !store.selectedModel.isEmpty && !store.models.contains(where: { $0.id == store.selectedModel }) {
+                            Text(store.selectedModel).tag(store.selectedModel)
+                        }
+                    }
+                    .labelsHidden().pickerStyle(.menu).controlSize(.small)
+                    .frame(maxWidth: 180, alignment: .trailing).disabled(store.busy)
+                    .accessibilityLabel("Model")
+                }
+            }
+            HStack(alignment: .bottom, spacing: 12) {
+                TextField("Message", text: $store.draft, axis: .vertical)
+                    .lineLimit(1...8).textFieldStyle(.plain).font(.body)
+                    .focused($composerFocused)
+                    .disabled(store.busy && !store.isSending)
+                    .accessibilityLabel("Message")
+                    .onSubmit { store.send() }
+                    .padding(.vertical, 5)
+                if store.busy {
+                    if store.tools.pendingApproval == nil {
+                        ProgressView().controlSize(.small).padding(.bottom, 6).accessibilityLabel("Working")
+                    }
+                    Button(action: store.stop) { Image(systemName: "stop.fill").frame(width: 18, height: 18) }
+                        .buttonStyle(.bordered).buttonBorderShape(.circle)
+                        .keyboardShortcut(".", modifiers: .command)
+                        .help("Stop (⌘.)").accessibilityLabel("Stop")
+                } else {
+                    Button(action: store.send) { Image(systemName: "arrow.up").fontWeight(.semibold).frame(width: 18, height: 18) }
+                        .buttonStyle(.borderedProminent).buttonBorderShape(.circle)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Send message (⌘Return)").accessibilityLabel("Send message")
+                        .disabled(store.account == nil || store.selectedModel.isEmpty || store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 0.5) }
+        .frame(maxWidth: 820)
+        .padding(.horizontal, 20).padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func errorView(_ error: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
+            ScrollView {
+                Text(verbatim: error).font(.callout).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { errorHeight = $0 }
+            }
+            .defaultScrollAnchor(.topLeading)
+            .frame(height: min(100, max(20, errorHeight)))
+            Button { store.error = nil } label: { Image(systemName: "xmark") }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help("Dismiss error").accessibilityLabel("Dismiss error")
+        }
+        .padding(12).background(.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .frame(maxWidth: 820).padding(.horizontal, 20).padding(.top, 8)
+        .frame(maxWidth: .infinity)
     }
 
     private func requestNavigation(to id: UUID?) {
@@ -43,92 +135,6 @@ struct ChatView: View {
 
     private func navigate() {
         if let pendingSession { store.openSession(pendingSession) }
-        else { store.newConversation() }
-    }
-
-    private var conversation: some View {
-        VStack(spacing: 0) {
-            HStack {
-                if let account = store.account {
-                    Menu {
-                        Button("Refresh models", action: store.restore)
-                        Button("Reconnect", action: store.connect)
-                        Button("Sign out", action: store.disconnect)
-                    } label: {
-                        Text(account).lineLimit(1)
-                    }
-                    .disabled(store.busy)
-                } else {
-                    Button(store.connectionTitle, action: store.connect).disabled(store.busy)
-                }
-                Spacer()
-                if !store.models.isEmpty {
-                    Picker("Model", selection: $store.selectedModel) {
-                        ForEach(store.models) { Text($0.name).tag($0.id) }
-                    }
-                    .labelsHidden().frame(maxWidth: 200).disabled(store.busy)
-                }
-                Button("New") { requestNavigation(to: nil) }
-                    .keyboardShortcut("n", modifiers: .command)
-                    .disabled(store.busy)
-            }
-            .padding()
-            Divider()
-            WorkspaceBar(store: store)
-            Divider()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    ForEach(store.messages.filter { $0.role != .assistant || !$0.text.isEmpty || $0.toolCalls.isEmpty }) { message in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text(message.role == .user ? "You" : message.role == .tool ? "Tool" : "Assistant")
-                                if message.status == .interrupted { Text("Stopped · excluded from context") }
-                                if message.status == .failed { Text("Failed · excluded from context") }
-                            }
-                            .font(.caption).foregroundStyle(.secondary)
-                            if let result = message.toolResult {
-                                DisclosureGroup(result.call.name) {
-                                    Text(result.call.arguments).font(.system(.caption, design: .monospaced))
-                                        .textSelection(.enabled)
-                                    Text(result.text).font(.system(.body, design: .monospaced))
-                                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                            } else if !message.text.isEmpty {
-                                if message.role == .assistant {
-                                    MarkdownView(source: message.text)
-                                } else {
-                                    Text(verbatim: message.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding()
-            }
-            if let approval = store.tools.pendingApproval {
-                Divider()
-                ToolApprovalView(approval: approval, executor: store.tools)
-            }
-            if let error = store.error {
-                Text(error).font(.callout).foregroundStyle(.red)
-                    .textSelection(.enabled).padding(.horizontal).padding(.bottom, 8)
-            }
-            Divider()
-            HStack(alignment: .bottom) {
-                TextField("Message", text: $store.draft, axis: .vertical)
-                    .lineLimit(1...6).textFieldStyle(.plain)
-                    .onSubmit { store.send() }
-                if store.busy {
-                    ProgressView().controlSize(.small)
-                    Button("Stop", action: store.stop)
-                } else {
-                    Button("Send", action: store.send)
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(store.account == nil || store.selectedModel.isEmpty || store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-            .padding()
-        }
-        .frame(minWidth: 500, minHeight: 400)
+        else { store.newConversation(); composerFocused = true }
     }
 }

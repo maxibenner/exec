@@ -7,31 +7,30 @@ import SwiftUI
     @State private var confirmingChange = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "folder")
-            VStack(alignment: .leading, spacing: 3) {
-                Text(store.workspace?.root.path ?? "No workspace selected")
-                    .font(.callout).lineLimit(1).truncationMode(.middle)
-                    .help(store.workspace?.root.path ?? "Choose a project folder to load its instructions.")
-                    .textSelection(.enabled)
+        HStack(spacing: 6) {
+            if let workspace = store.workspace {
+                Image(systemName: "folder").foregroundStyle(.secondary)
+                Text(workspace.root.lastPathComponent.isEmpty ? workspace.root.path : workspace.root.lastPathComponent)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                    .help(workspace.root.path).textSelection(.enabled)
+                Menu {
+                    Button("Change Folder…", action: chooseFolder)
+                    Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([workspace.root]) }
+                    Button("Reload Instructions") { requestChange(to: workspace.root) }
+                    Divider()
+                    Button("Close Workspace") { requestChange(to: nil) }
+                } label: { Image(systemName: "ellipsis.circle") }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .help("Workspace settings").accessibilityLabel("Workspace settings")
+            } else {
+                Button(action: chooseFolder) { Label("Workspace…", systemImage: "folder.badge.plus") }
+                    .buttonStyle(.borderless).help("Choose a project folder")
             }
-            Spacer(minLength: 8)
-            Group {
-                if let workspace = store.workspace {
-                    Menu("Workspace") {
-                        Button("Change Folder…", action: chooseFolder)
-                        Button("Reload Instructions") { requestChange(to: workspace.root) }
-                        Divider()
-                        Button("Close Workspace") { requestChange(to: nil) }
-                    }
-                    .fixedSize()
-                } else {
-                    Button("Choose Folder…", action: chooseFolder)
-                }
-            }
-            .disabled(store.busy)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal).padding(.vertical, 10)
+        .controlSize(.small)
+        .disabled(store.busy)
         .confirmationDialog("Start a fresh conversation?", isPresented: $confirmingChange, titleVisibility: .visible) {
             Button("Start New Conversation") { applyChange(pendingFolder) }
             Button("Cancel", role: .cancel) {}

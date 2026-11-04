@@ -10,6 +10,7 @@ import Observation
     var connectionTitle: String { provider.connectionTitle }
     var error: String?
     private(set) var busy = false
+    private(set) var isSending = false
     private(set) var workspace: Workspace?
     private(set) var sessionList: [SessionSummary] = []
     private(set) var currentSessionID: UUID?
@@ -22,6 +23,7 @@ import Observation
     private var loadedSession = false
     private var restorationBlocked = false
     private var conversationIdentity: String?
+    private var sessionActivityDate = Date()
     private var activeTurn = false
     private var activeCallID: String?
 
@@ -85,6 +87,7 @@ import Observation
     private func newConversationForWorkspace(_ workspace: Workspace?) {
         if !messages.isEmpty || restorationBlocked || conversationIdentity != provider.conversationIdentity || currentSessionID == nil {
             currentSessionID = UUID()
+            sessionActivityDate = Date()
         }
         self.workspace = workspace
         messages = []; history = []; draft = ""; error = nil
@@ -98,12 +101,13 @@ import Observation
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !busy, account != nil, !selectedModel.isEmpty else { return }
         let user = Message(role: .user, text: text)
-        run {
+        run(sending: true) {
             guard self.conversationIdentity == self.provider.conversationIdentity else {
                 throw HarnessError("The connected account changed. Choose New before sending this conversation.")
             }
             var input = self.history + [user]
             self.messages.append(user)
+            self.sessionActivityDate = Date()
             self.draft = ""
             self.activeTurn = true
             try await self.checkpoint()
@@ -228,7 +232,7 @@ import Observation
     private func snapshot() throws -> SessionSnapshot {
         SessionSnapshot(identity: conversationIdentity, workspace: workspace, selectedModel: selectedModel,
                         messages: messages, history: history, providerState: try provider.encodeConversationState(),
-                        activeTurn: activeTurn, activeCallID: activeCallID)
+                        activeTurn: activeTurn, activeCallID: activeCallID, activityDate: sessionActivityDate)
     }
 
     private func checkpoint() async throws {
@@ -265,6 +269,7 @@ import Observation
         messages = saved.messages; history = saved.history; draft = ""
         conversationIdentity = saved.identity
         currentSessionID = id
+        sessionActivityDate = saved.activityDate ?? sessionList.first(where: { $0.id == id })?.updatedAt ?? Date()
         activeTurn = false; activeCallID = nil
         loadedSession = true; restorationBlocked = false
         if interrupted { error = "The previous turn was interrupted. No operations were resumed; inspect any possible file changes before retrying." }
@@ -321,14 +326,16 @@ import Observation
         }
     }
 
-    private func run(restoreSession: Bool = true, _ operation: @escaping @MainActor () async throws -> Void) {
+    private func run(restoreSession: Bool = true, sending: Bool = false, _ operation: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }
         busy = true
+        isSending = sending
         error = nil
         task = Task {
             defer {
                 self.account = self.provider.account
                 self.busy = false
+                self.isSending = false
                 self.task = nil
             }
             do {
@@ -336,7 +343,7 @@ import Observation
                 try await operation()
             } catch {
                 if error is CancellationError || (error as? URLError)?.code == .cancelled {
-                    self.error = "Stopped. Unfinished replies are excluded; completed tool steps and interruption records are retained."
+                    self.error = nil
                 } else if let network = error as? URLError {
                     self.error = network.code == .timedOut
                         ? "The connection timed out. Your completed conversation is intact; try again when ready."

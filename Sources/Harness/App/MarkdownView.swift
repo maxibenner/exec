@@ -35,7 +35,9 @@ private struct MarkdownBlockView: View {
     var body: some View {
         switch block.kind {
         case .header(let level):
-            inline(block.text).font(.system(size: level == 1 ? 24 : level == 2 ? 20 : 16, weight: .semibold))
+            let size: CGFloat = level == 1 ? 24 : level == 2 ? 20 : 16
+            inline(block.text, codeFont: .system(size: size, weight: .semibold, design: .monospaced))
+                .font(.system(size: size, weight: .semibold)).accessibilityAddTraits(.isHeader)
         case .codeBlock(let language):
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
@@ -45,7 +47,7 @@ private struct MarkdownBlockView: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(String(block.text.characters), forType: .string)
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.borderless).foregroundStyle(.primary)
                     .accessibilityLabel("Copy code")
                 }
                 .font(.caption).foregroundStyle(.secondary).padding(10)
@@ -102,13 +104,16 @@ private struct MarkdownBlockView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func inline(_ text: AttributedString) -> some View {
+    private func inline(_ text: AttributedString, codeFont: Font = .system(.body, design: .monospaced)) -> some View {
         var styled = text
         for run in text.runs where run.inlinePresentationIntent?.contains(.code) == true {
-            styled[run.range].font = .system(.body, design: .monospaced)
+            var font = codeFont
+            if run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true { font = font.bold() }
+            if run.inlinePresentationIntent?.contains(.emphasized) == true { font = font.italic() }
+            styled[run.range].font = font
             styled[run.range].backgroundColor = Color.secondary.opacity(0.12)
         }
-        return Text(styled).textSelection(.enabled)
+        return Text(styled).textSelection(.enabled).lineSpacing(3)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 

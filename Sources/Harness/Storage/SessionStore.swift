@@ -11,6 +11,7 @@ struct SessionSnapshot: Codable, Sendable {
     var providerState: Data?
     var activeTurn: Bool
     var activeCallID: String?
+    var activityDate: Date?
 
     /// Only the last completed model step can have unanswered tool calls.
     /// Missing outcomes are never inferred to be successful or re-executed.
@@ -51,7 +52,7 @@ struct SessionSummary: Codable, Identifiable, Sendable {
         title = prompt.isEmpty ? "New conversation" : String(prompt.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(80))
         workspace = snapshot.workspace?.root.path
         identity = snapshot.identity
-        updatedAt = Date()
+        updatedAt = snapshot.activityDate ?? Date()
     }
 
     init(unreadable id: UUID) {
@@ -104,12 +105,14 @@ actor SessionStore {
 
     @discardableResult
     func save(_ snapshot: SessionSnapshot, id: UUID? = nil) throws -> UUID {
+        var snapshot = snapshot
         var catalog = try readCatalog()
         let current = catalog.sessions.first { $0.id == catalog.activeID && $0.identity == snapshot.identity }
         let id = id ?? current?.id ?? UUID()
         if let existing = catalog.sessions.first(where: { $0.id == id }), existing.identity != snapshot.identity || existing.unreadable {
             throw HarnessError("Cannot overwrite a conversation belonging to another account or an unreadable save.")
         }
+        snapshot.activityDate = snapshot.activityDate ?? catalog.sessions.first(where: { $0.id == id })?.updatedAt ?? Date()
         try write(JSONEncoder().encode(snapshot), name: "\(id).json")
         catalog.sessions.removeAll { $0.id == id }
         catalog.sessions.append(SessionSummary(id: id, snapshot: snapshot))
