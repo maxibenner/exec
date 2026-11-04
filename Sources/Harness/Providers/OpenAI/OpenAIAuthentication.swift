@@ -25,7 +25,7 @@ import Security
     private var needsPersistence = false
     private var signingOut = false
     // Do not load, migrate or reinterpret dynamic-registration tokens as Codex tokens.
-    private let credentialKey = "openai.codex.session"
+    private nonisolated static let credentialKey = "openai.codex.session"
     private var session: Session?
     private var refreshTask: Task<Session, Error>?
     var account: String? { session.map { $0.email ?? $0.subject } }
@@ -36,10 +36,23 @@ import Security
         }
     }
 
-    init(keychain: any CredentialStore = KeychainStore(), http: URLSession = OpenAIHTTP.session) throws {
+    convenience init(keychain: any CredentialStore = KeychainStore(), http: URLSession = OpenAIHTTP.session) throws {
+        try self.init(restoredData: keychain.read(Self.credentialKey), keychain: keychain, http: http)
+    }
+
+    /// Keychain may display a system permission prompt. Keep startup responsive while it waits.
+    static func restored() async throws -> OpenAIAuthentication {
+        let data = try await Task.detached(priority: .userInitiated) {
+            try KeychainStore().read(Self.credentialKey)
+        }.value
+        try Task.checkCancellation()
+        return try OpenAIAuthentication(restoredData: data, keychain: KeychainStore(), http: OpenAIHTTP.session)
+    }
+
+    private init(restoredData: Data?, keychain: any CredentialStore, http: URLSession) throws {
         self.keychain = keychain
         self.http = http
-        if let data = try keychain.read(credentialKey) {
+        if let data = restoredData {
             do { session = try JSONDecoder().decode(Session.self, from: data) }
             catch { throw HarnessError("Saved Codex credentials could not be read. Remove the openai.codex.session item from Keychain Access, then reopen Harness to sign in again.") }
         }
@@ -89,7 +102,7 @@ import Security
         var pending = current
         pending.requiresReconnect = true
         // If this write fails, don't start a rotating-token exchange.
-        try keychain.write(JSONEncoder().encode(pending), account: credentialKey)
+        try keychain.write(JSONEncoder().encode(pending), account: Self.credentialKey)
         session = pending
         let task = Task { @MainActor in
             let response = try await token(CodexConnection.refreshFields(current.refresh))
@@ -132,7 +145,7 @@ import Security
                 "token": current.refresh, "token_type_hint": "refresh_token", "client_id": CodexConnection.clientID
             ], session: http)
         } catch { revocationFailed = true }
-        try keychain.delete(credentialKey)
+        try keychain.delete(Self.credentialKey)
         session = nil
         needsPersistence = false
         if revocationFailed {
@@ -162,7 +175,7 @@ import Security
     private func persist() throws {
         guard let session else { return }
         do {
-            try keychain.write(JSONEncoder().encode(session), account: credentialKey)
+            try keychain.write(JSONEncoder().encode(session), account: Self.credentialKey)
             needsPersistence = false
         } catch {
             throw HarnessError("The current session could not be saved to Keychain. Unlock your keychain and try again before quitting Harness.")

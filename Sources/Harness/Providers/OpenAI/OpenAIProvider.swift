@@ -34,6 +34,10 @@ import Foundation
         self.authentication = try authentication ?? OpenAIAuthentication(http: http)
         self.http = http
     }
+    static func restored() async throws -> OpenAIProvider {
+        try await OpenAIProvider(authentication: OpenAIAuthentication.restored())
+    }
+
     func connect() async throws { try await authentication.connect() }
     func disconnect() async throws {
         defer { if authentication.account == nil { outputs.removeAll() } }
