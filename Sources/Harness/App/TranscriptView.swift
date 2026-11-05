@@ -120,7 +120,7 @@ private struct MessageView: View {
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
                     if let edit = result.edit {
-                        Label("Edited \(edit.path)", systemImage: "doc.badge.checkmark").font(.callout.weight(.medium))
+                        Label("Edited \(edit.path)", systemImage: "pencil").font(.callout.weight(.medium))
                     } else if let search = result.webSearch {
                         Label("Web search", systemImage: "magnifyingglass").font(.callout.weight(.medium))
                         Text(verbatim: search.query).font(.caption).foregroundStyle(.secondary).lineLimit(1)
