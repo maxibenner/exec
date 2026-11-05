@@ -5,16 +5,6 @@ struct QueuedMessagesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Queued · \(store.current.queuedMessages.count)")
-                Spacer()
-                if !store.isWorking {
-                    Button(action: store.resumeQueuedMessages) {
-                        Image(systemName: "play.fill")
-                    }
-                    .help("Send queued messages").accessibilityLabel("Send queued messages")
-                }
-            }
             ScrollView {
                 VStack(spacing: 6) {
                     ForEach(store.current.queuedMessages) { message in
@@ -23,6 +13,12 @@ struct QueuedMessagesView: View {
                             if !message.images.isEmpty {
                                 Label("\(message.images.count)", systemImage: "photo")
                                     .accessibilityLabel("\(message.images.count) attached images")
+                            }
+                            if !store.isWorking, message.id == store.current.queuedMessages.first?.id {
+                                Button(action: store.resumeQueuedMessages) {
+                                    Image(systemName: "play.fill")
+                                }
+                                .help("Send queued messages").accessibilityLabel("Send queued messages")
                             }
                             Button { store.current.removeQueuedMessage(message.id) } label: {
                                 Image(systemName: "xmark")
