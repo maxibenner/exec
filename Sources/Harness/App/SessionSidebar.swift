@@ -111,8 +111,6 @@ private struct SessionRow: View {
         .contentShape(Rectangle())
         .contextMenu {
             Button("Rename…", action: rename).disabled(session.unreadable || store.navigating)
-            Button("Close Conversation") { store.closeSession(session.id) }
-                .disabled(store.navigating || !store.canCloseSession(session.id))
             Divider()
             Button("Delete Conversation", role: .destructive, action: delete).disabled(running)
         }

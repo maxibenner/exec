@@ -81,6 +81,7 @@ import Foundation
 
         let approvalCall = ToolCall(id: "approval-check", name: "shell", arguments: #"{"command":"touch unexpected"}"#)
         provider.scripted = [[.toolCall(approvalCall), .completed]]
+        restored.setAutoApproveTools(false)
         restored.draft = "Ask for approval"
         restored.send()
         for _ in 0..<400 {

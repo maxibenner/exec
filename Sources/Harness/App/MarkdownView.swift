@@ -3,7 +3,14 @@ import SwiftUI
 
 struct MarkdownView: View {
     let source: String
-    @State private var blocks: [MarkdownBlock] = []
+    private let cache: MarkdownCache?
+    @State private var blocks: [MarkdownBlock]
+
+    init(source: String, cache: MarkdownCache? = nil) {
+        self.source = source
+        self.cache = cache
+        _blocks = State(initialValue: cache?.value(for: source) ?? [])
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -15,6 +22,7 @@ struct MarkdownView: View {
             MarkdownDocument.allowsLink(url) ? .systemAction : .discarded
         })
         .task(id: source) {
+            if let cached = cache?.value(for: source) { blocks = cached; return }
             let source = source
             let parsing = Task.detached(priority: .userInitiated) {
                 guard !Task.isCancelled else { return [MarkdownBlock]() }
@@ -23,7 +31,10 @@ struct MarkdownView: View {
             let result = await withTaskCancellationHandler {
                 await parsing.value
             } onCancel: { parsing.cancel() }
-            if !Task.isCancelled { blocks = result }
+            if !Task.isCancelled {
+                cache?.insert(result, for: source)
+                blocks = result
+            }
         }
     }
 }
@@ -131,5 +142,19 @@ private struct MarkdownBlockView: View {
         case .right: .trailing
         default: .leading
         }
+    }
+}
+
+/// Bounded parsed-data cache; recycled rows can remount without a plain-text flash.
+@MainActor final class MarkdownCache {
+    private final class Entry {
+        let blocks: [MarkdownBlock]
+        init(_ blocks: [MarkdownBlock]) { self.blocks = blocks }
+    }
+    private let entries = NSCache<NSString, Entry>()
+    init() { entries.countLimit = 64; entries.totalCostLimit = 2 * 1024 * 1024 }
+    func value(for source: String) -> [MarkdownBlock]? { entries.object(forKey: source as NSString)?.blocks }
+    func insert(_ blocks: [MarkdownBlock], for source: String) {
+        entries.setObject(Entry(blocks), forKey: source as NSString, cost: source.utf8.count)
     }
 }

@@ -39,21 +39,19 @@ You can also open `Package.swift` in Xcode. Builds are not notarized for distrib
 
 Switching conversations does not stop background work. Each conversation keeps its own runner, model context, workspace, draft, approval queue, and auto-approval setting. Stop affects only the displayed conversation. Account changes are blocked while a turn is running.
 
-Opened conversations stay resident until closed, deleted, or the account changes/app exits. Switching between them changes selection immediately, without loading or saving full snapshots. Their transcript views retain scroll position, expanded tool results, and parsed Markdown; hidden transcripts pause display updates while their runners continue. Only opening archived history requires a disk read. Rapid selections supersede an unfinished archive load.
+The eight most recently visited conversations stay resident for immediate switching without loading or saving full snapshots. Older idle sessions unload automatically and reopen from their saved snapshot when selected. Running work, drafts, queued messages, pending saves, and unsaved changes are protected, so the resident count may temporarily exceed eight. There is no manual close action; deletion remains explicit.
 
-Use **Close Conversation** in a sidebar row's context menu to release its resident state without deleting saved history. Closing is disabled while work, saving, drafts, queued messages, or unsaved changes remain. Closed conversations remain in the sidebar and can be reopened. Reading positions and open-view state are kept in memory, not restored after quitting.
+Resident presentation state retains scroll position, expanded tool results, measured heights, and a bounded parsed-Markdown cache; inactive transcripts unmount their views while their runners continue. Rapid selections supersede an unfinished archive load. Reading positions and expanded-tool state are kept in memory and reset when a session is evicted or the app quits.
 
-The sidebar is ordered by the last user-message time, not the last time you opened a conversation. Renaming preserves that order. Selection changes only the highlight, not the title's font weight. Running conversations must be stopped before deletion; there are no inline trash buttons.
-
-Reading earlier messages pauses automatic scrolling. Use the down-arrow to return to the latest reply. Quit asks before discarding drafts or unsaved changes, cancels operations across all conversations, and waits for their cleanup and checkpoints.
+The transcript mounts only visible messages and a small buffer. Inactive conversations retain scroll anchors and lightweight presentation data, without hidden view trees. Reading earlier messages pauses automatic scrolling. Use the down-arrow to return to the latest reply. Quit asks before discarding drafts or unsaved changes, cancels operations across all conversations, and waits for their cleanup and checkpoints.
 
 Messages submitted during an active turn queue inside that conversation's composer. Use **×** to remove an unsent item. Queued text and attachments run in order only after the preceding turn completes and saves successfully, including while the conversation is in the background. Stop, provider errors, and checkpoint failures pause the queue; use its **play** button to resume explicitly. Queued messages, like drafts, are kept only in memory and are included in the quit warning.
 
 ### Composer commands and usage
 
-Type `/` at the start of a message to open the command menu above the input. `/model`, `/reasoning` (alias `/effort`), and `/auto-approve` (aliases `/approve`, `/approval`) select their settings. Prefixes such as `/r` filter the menu. Arrow keys navigate, Return selects, and Escape dismisses the menu before stopping a turn. These commands are handled locally, not sent as messages.
+Type `/` at the start of a message to open the command menu above the input. `/model`, `/reasoning` (alias `/effort`), and `/auto-approve` (aliases `/approve`, `/approval`) select their settings. Prefixes such as `/r` filter the menu. Arrow keys navigate, Return selects, and Escape dismisses the menu before stopping a turn. `/compact` compacts completed context immediately, without waiting for the automatic threshold. It is available when the conversation is idle and has completed history; visible messages remain intact. Stop cancels it, and failures are not retried. These commands are handled locally, not sent as messages.
 
-Model, reasoning, and approval state are non-clickable labels inside the input. Reasoning choices come from the selected model's Codex catalog entry. **Default** leaves the choice to the provider; the catalog's default level is shown when available. Model and reasoning selections are checkpointed per conversation; new conversations inherit the supported setting. Both are locked during an active turn. Auto-approval starts off and is changed only through its menu.
+Model, reasoning, and approval state are non-clickable labels inside the input. Reasoning choices come from the selected model's Codex catalog entry. **Default** leaves the choice to the provider; the catalog's default level is shown when available. Model and reasoning selections are checkpointed per conversation; new conversations inherit the supported setting. Both are locked during an active turn. Auto-approval defaults to on for new and reopened workspace conversations. Selecting `/auto-approve` toggles it directly; there is no submenu. The setting stays scoped to each resident conversation.
 
 The footer shows workspace, context usage, and available account-limit percentages reported by Codex. Account usage is separate from context size; it refreshes after account operations and conversation activity, and expired or unavailable readings are hidden. The provider integration follows [Codex's usage endpoint](https://raw.githubusercontent.com/openai/codex/main/codex-rs/backend-client/src/client/rate_limit_resets.rs); live usage availability still needs manual verification. The animated working indicator reproduces the eight-cell, 80 ms bounce from `../pi-config` and respects Reduce Motion.
 
@@ -119,9 +117,9 @@ Changing, closing, or reloading a workspace starts another conversation, with co
 
 Use `search_text` to locate relevant lines, then read the surrounding range. Only the requested lines enter model context. The reader still reads the bounded full file locally to validate UTF-8 and compute the full-file revision used for safe edits.
 
-Read-only tools do not require per-call approval. Edits and shell commands require **Approve Once** by default. Approval is never the default Return action. App credentials and the inherited environment are not passed to shell commands.
+Read-only tools do not require per-call approval. Edits and shell commands require **Approve Once** when auto-approval is off. Approval is never the default Return action. App credentials and the inherited environment are not passed to shell commands.
 
-**Auto-approve** is enabled explicitly through `/auto-approve` and applies only to the selected conversation, including its background work. It is off by default, is not transferred to other conversations, and is not saved across restarts. It does not bypass path, revision, checkpoint, or cancellation checks. Turning it off affects future approvals; use Stop to cancel current work.
+**Auto-approve** defaults to on for workspace conversations and is toggled directly through `/auto-approve`. It applies only to that conversation, including its background work. A toggle is not transferred to other resident conversations or saved across restarts; newly opened workspace conversations start on. It does not bypass path, revision, checkpoint, or cancellation checks. Turning it off affects future approvals; use Stop to cancel current work.
 
 ### Safety boundaries
 
@@ -154,11 +152,11 @@ Snapshots contain the transcript, sent images, workspace instructions, tool outc
 
 Each snapshot is limited to **32 MiB**. Image data is base64-encoded in both the transcript and completed history, so image-heavy conversations can reach this limit quickly. Start a new conversation if saving fails because of size. Use one app instance at a time; there is no multi-instance coordination or undo system.
 
-### Automatic context compaction
+### Context compaction
 
 Before each model request, Harness checks usage against **95% of the selected model's usable context window**. It prefers server-reported input/output usage, estimates newly added text, and budgets images separately rather than counting base64 bytes as text tokens. These estimates are not an exact tokenizer. Missing model-limit metadata stops the request and asks you to refresh models.
 
-At the threshold, Codex's `/responses/compact` endpoint compacts completed history. Pending input and unresolved tool calls are not summarized. The returned opaque context is checkpointed before inference continues. The visible transcript, images, diffs, and tool outcomes remain intact: **compaction reduces model context, not local archive size**.
+At the threshold, or when `/compact` is selected in an idle conversation, Codex's `/responses/compact` endpoint compacts completed history. Pending input and unresolved tool calls are not summarized. The returned opaque context is checkpointed before inference continues. The visible transcript, images, diffs, and tool outcomes remain intact: **compaction reduces model context, not local archive size**.
 
 Failed or cancelled compaction keeps the original context and stops the turn without an automatic retry. Summarization is lossy, and very large inputs can still exceed server limits. Live Codex compaction remains unverified.
 
@@ -209,14 +207,14 @@ Sign-out attempts remote revocation and local credential deletion, including off
 
 ### Verification status
 
-The **80 automated checks** cover authentication, refresh/restart safety, cancellation, session integrity, concurrent conversations, tool approval and edits, compaction, streaming, Markdown, diffs, image normalization, request encoding, attachment persistence, pending-drop conversation isolation, effort discovery, request encoding, and session isolation, plus web-search authentication routing, bounded sources, context separation, persistence, cancellation, and failure without retries. The signed app builds successfully. Isolated native fixtures also render the image previews and effort controls at wide and narrow widths. These checks do not establish live-service behavior.
+The automated checks cover authentication, refresh/restart safety, cancellation, session integrity, concurrent conversations, tool approval and edits, compaction, streaming, Markdown, diffs, image normalization, request encoding, attachment persistence, pending-drop conversation isolation, effort discovery, request encoding, and session isolation, plus web-search authentication routing, bounded sources, context separation, persistence, cancellation, and failure without retries. Run the full checks and signed build in the normal local environment; restricted environments may not expose macOS item-provider registration, Security-framework key generation, or the configured signing identity. Isolated native fixtures also render the image previews and effort controls at wide and narrow widths. These checks do not establish live-service behavior.
 
 Live sign-in and text messaging were previously verified by the user. Remaining manual checks include:
 
 - Drag images from Finder and another app into the actual input field; remove one, send an image-only message, and confirm the model can describe it. Switch conversations during an import, then relaunch after sending.
 - Check sidebar selection with wrapping titles, light/dark appearance, keyboard navigation, clipboard behavior, and VoiceOver. Change effort levels with a live model and confirm the advertised options are accepted.
 - In a disposable workspace, approve/deny edits and shell commands; verify stale-file rejection and rendered diffs.
-- Open seven long conversations, including streaming turns, and rapidly switch between them. Check responsiveness, retained reading positions and expanded tools, and memory usage; then close/reopen one. Automated tests verify synchronous resident selection without snapshot rewrites, sidebar observation isolation, superseded loads, and durable recovery—not frame timing or native scroll behavior.
+- Open seven long conversations, including streaming turns, and rapidly switch between them. Check responsiveness, retained reading positions and expanded tools, and memory usage; then visit more than eight sessions and reopen an evicted one. Automated tests verify bounded native row mounting, pixel-anchor restoration, synchronous resident selection without snapshot rewrites, sidebar observation isolation, superseded loads, and durable recovery. Frame timing still requires a visible-app benchmark.
 - Run concurrent live turns and confirm Stop, drafts, auto-approval, and pending approvals remain isolated. Rename a running session; delete an idle one and relaunch.
 - Ask a public current-information question and confirm a real search returns working source links. Stop a search in flight, then reopen the conversation to verify its interruption record. Test an unsupported model/account without falling back to another service.
 - Exercise live compaction, interrupted replies, network failure, token expiry, and offline sign-out. Confirm no operation resumes or retries automatically.

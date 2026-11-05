@@ -62,7 +62,7 @@ import Foundation
         try await wait { !library.hasRunningOperations }
         library.selectWorkspace(root)
         try await wait { !library.hasRunningOperations }
-        try expect(!library.autoApproveTools)
+        try expect(library.autoApproveTools)
         library.setAutoApproveTools(true)
         let first = library.current
         let firstProvider = provider.children[0]
@@ -74,7 +74,7 @@ import Foundation
         library.newConversation()
         try await wait { !library.navigating }
         let foreground = library.current
-        try expect(foreground !== first && !library.autoApproveTools)
+        try expect(foreground !== first && library.autoApproveTools)
         library.draft = "Foreground draft"
         firstProvider.holdOpen = false
         firstProvider.pending?.yield(.completed); firstProvider.pending?.finish()

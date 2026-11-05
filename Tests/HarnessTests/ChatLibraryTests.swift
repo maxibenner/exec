@@ -86,6 +86,7 @@ import Observation
         let first = library.current
         let firstID = library.currentSessionID!
         provider.children.last!.scripted = [[.toolCall(ToolCall(id: "a", name: "shell", arguments: #"{"command":"printf A >> effect-a"}"#)), .completed]]
+        library.setAutoApproveTools(false)
         library.draft = "First command"
         library.send()
         try await wait { first.tools.pendingApproval != nil }
@@ -94,6 +95,7 @@ import Observation
         try await wait { !library.navigating }
         let second = library.current
         provider.children.last!.scripted = [[.toolCall(ToolCall(id: "b", name: "shell", arguments: #"{"command":"printf B >> effect-b"}"#)), .completed]]
+        library.setAutoApproveTools(false)
         library.draft = "Second command"
         library.send()
         try await wait { second.tools.pendingApproval != nil }
@@ -112,7 +114,7 @@ import Observation
         try expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("effect-a").path))
         library.newConversation()
         try await wait { !library.navigating }
-        try expect(!library.autoApproveTools)
+        try expect(library.autoApproveTools)
         let lastProvider = provider.children.last!
         library.draft = "Cancel before starting"
         library.send()
@@ -164,7 +166,7 @@ import Observation
         try expect(library.current === fresh && library.currentSessionID == freshID)
         try expect(library.draft == "New draft")
         try expect(library.workspace?.root.resolvingSymlinksInPath().path == secondFolder.resolvingSymlinksInPath().path)
-        try expect(library.canSelectWorkspace && running.busy && !library.autoApproveTools)
+        try expect(library.canSelectWorkspace && running.busy && library.autoApproveTools)
         library.send()
         try await wait { !library.navigating && !fresh.busy }
         try expect(!library.canSelectWorkspace && running.busy)
@@ -220,15 +222,20 @@ import Observation
         let selected = try await sessions.preferredID(identity: provider.conversationIdentity)
         try expect(selected == ids.last)
 
-        // Closing releases only resident state; history can be reopened on demand.
-        library.closeSession(ids[0])
-        try expect(library.openConversations.count == 6 && library.sessionList.contains { $0.id == ids[0] })
+        // Opening two more saved sessions evicts the least recently visited one.
+        for index in 0..<2 {
+            let messages = [Message(role: .user, text: "Extra \(index)")]
+            let extra = try await sessions.save(SessionSnapshot(identity: provider.conversationIdentity,
+                selectedModel: "test", messages: messages, history: messages, activeTurn: false), id: UUID(), select: false)
+            library.openSession(extra)
+            try await wait { !library.hasRunningOperations }
+        }
+        try expect(library.openConversations.count == 8 && library.sessionList.contains { $0.id == ids[0] })
+        try expect(!library.openConversations.contains { $0 === opened[0] })
         library.openSession(ids[0])
         try await wait { !library.hasRunningOperations }
         try expect(library.current !== opened[0] && library.messages == opened[0].messages)
         library.draft = "Keep this draft"
-        library.closeSession(ids[0])
-        try expect(library.currentSessionID == ids[0] && library.draft == "Keep this draft")
 
         // Preferences persist where they change, without requiring navigation away.
         library.selectedModel = "another-model"
@@ -253,7 +260,7 @@ import Observation
             messages: messages, history: [], activeTurn: true), id: UUID(), select: false)
         let other = try await sessions.save(SessionSnapshot(identity: provider.conversationIdentity, selectedModel: "test",
             messages: [Message(role: .user, text: "Other")], history: [], activeTurn: false), id: UUID(), select: false)
-        let library = try ChatLibrary(provider: provider, sessions: sessions)
+        let library = try ChatLibrary(provider: provider, sessions: sessions, residentLimit: 1)
         library.restore()
         try await wait { !library.hasRunningOperations }
         let original = library.current
@@ -277,13 +284,40 @@ import Observation
         try expect(provider.children.allSatisfy { $0.inputs.isEmpty })
 
         library.openSession(other)
-        library.closeSession(interrupted)
+        try await wait { !library.hasRunningOperations }
+        try expect(!library.openConversations.contains { $0.currentSessionID == interrupted })
         try Data("not JSON".utf8).write(to: root.appendingPathComponent("\(interrupted).json"))
         library.openSession(interrupted)
         try await wait { !library.hasRunningOperations }
         try expect(library.currentSessionID == other && library.error != nil)
         library.openSession(other)
         try expect(library.error == nil && !library.navigating)
+    }
+
+    func residentLimitProtectsRunningWorkAndDrafts() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = FakeProvider()
+        let library = try ChatLibrary(provider: provider, sessions: SessionStore(directory: root), residentLimit: 1)
+        library.restore(); try await wait { !library.hasRunningOperations }
+        let first = library.current
+        let runner = provider.children.last!
+        runner.holdOpen = true
+        library.draft = "First"; library.send()
+        try await wait { runner.pending != nil }
+        library.draft = "Keep this draft"
+        library.newConversation()
+        try await wait { !library.navigating }
+        try expect(library.openConversations.contains { $0 === first })
+        runner.pending?.yield(.completed); runner.pending?.finish()
+        try await wait { !first.busy }
+        try expect(library.openConversations.contains { $0 === first })
+        try expect(first.draft == "Keep this draft")
+        first.draft = ""
+        library.newConversation()
+        try expect(!library.openConversations.contains { $0 === first })
+        try expect(library.sessionList.contains { $0.id == first.currentSessionID })
+        library.stopAll(); try await wait { !library.hasRunningOperations }
     }
 
     func streamingDoesNotInvalidateSidebarSummaries() async throws {

@@ -88,12 +88,19 @@ enum ChatEvent: Sendable {
     func searchWeb(query: String, model: String, effort: String?) async throws -> WebSearchResult
     // Compact only completed history, never pending input or unresolved tool calls.
     // A true result must be checkpointed before sending another inference request.
+    var supportsCompaction: Bool { get }
+    func compact(_ history: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) async throws
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
                          instructions: String, tools: [ToolDefinition]) async throws -> Bool
     func send(_ messages: [Message], model: String, effort: String?, instructions: String, tools: [ToolDefinition]) -> AsyncThrowingStream<ChatEvent, Error>
 }
 
 extension ChatProvider {
+    var supportsCompaction: Bool { false }
+    func compact(_ history: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) async throws {
+        throw HarnessError("This provider does not support manual compaction.")
+    }
+
     func accountUsage() async throws -> AccountUsage? { nil }
     var conversationIdentity: String? { account }
     var supportsWebSearch: Bool { false }

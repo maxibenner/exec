@@ -22,9 +22,11 @@ import Observation
     private var usageRequest = 0
     private(set) var accountUsage: AccountUsage?
     private let provider: any ChatProvider
+    private let residentLimit: Int
     private let sessions: SessionStore
 
-    init(provider: any ChatProvider, sessions: SessionStore) throws {
+    init(provider: any ChatProvider, sessions: SessionStore, residentLimit: Int = 8) throws {
+        self.residentLimit = max(1, residentLimit)
         self.provider = provider
         self.sessions = sessions
         current = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions, selectOnCheckpoint: false)
@@ -138,6 +140,12 @@ import Observation
         }
     }
 
+    var canCompact: Bool { canModify && current.canCompact }
+    func compact() {
+        guard canCompact else { return }
+        current.compact()
+    }
+
     func stop() {
         guard !navigating else { return }
         if authenticating { accountTask?.cancel() }
@@ -216,22 +224,15 @@ import Observation
         } catch { navigationError = error.localizedDescription }
     }
 
-    func canCloseSession(_ id: UUID) -> Bool {
-        guard let conversation = conversation(id) else { return false }
-        return !conversation.busy && !conversation.isSaving && !conversation.hasUnsentDraft && !conversation.hasUnsavedChanges
-    }
-
-    /// Closing releases resident UI/provider state, but leaves saved history intact.
-    func closeSession(_ id: UUID) {
-        guard canModify, canCloseSession(id), let closing = conversation(id) else { return }
-        do {
-            if closing === current {
-                let next = try openConversations.last(where: { $0 !== closing }) ?? makeConversation()
-                activate(next)
-            }
-            closing.setAutoApproveTools(false)
-            openConversations.removeAll { $0 === closing }
-        } catch { navigationError = error.localizedDescription }
+    /// Evict least recently visited idle sessions; runners and unsaved input never
+    /// depend on the cache limit. Saved conversations remain in the sidebar.
+    private func trimConversations() {
+        for conversation in openConversations {
+            guard openConversations.count > residentLimit else { break }
+            guard conversation !== current, !conversation.busy, !conversation.isSaving,
+                  !conversation.hasUnsentDraft, !conversation.hasUnsavedChanges else { continue }
+            openConversations.removeAll { $0 === conversation }
+        }
     }
 
     func selectWorkspace(_ url: URL) {
@@ -295,7 +296,10 @@ import Observation
 
     private func observe(_ conversation: ChatStore) {
         conversation.didCheckpoint = { [weak self] in try await self?.refreshCatalog() }
-        conversation.didFinish = { [weak self] in self?.refreshAccountUsage() }
+        conversation.didFinish = { [weak self] in
+            self?.trimConversations()
+            self?.refreshAccountUsage()
+        }
     }
 
     private func refreshAccountUsage() {
@@ -321,13 +325,15 @@ import Observation
 
     private func activate(_ conversation: ChatStore) {
         current = conversation
-        remember(conversation)
-        // An untouched blank isn't an open document. Everything else stays resident until closed.
+        openConversations.removeAll { $0 === conversation }
+        openConversations.append(conversation) // Oldest visit first, most recent last.
+        // An untouched blank isn't an open document.
         openConversations.removeAll { conversation in
             conversation !== current && conversation.summary == nil && !conversation.busy && !conversation.isSaving &&
             !conversation.hasUnsavedChanges && conversation.error == nil &&
             !savedSummaries.contains(where: { $0.id == conversation.currentSessionID })
         }
+        trimConversations()
         persistSelection()
     }
 

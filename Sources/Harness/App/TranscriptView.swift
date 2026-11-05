@@ -1,132 +1,224 @@
 import AppKit
 import SwiftUI
+import Observation
+
+/// Only data survives a conversation switch. No hidden scroll views or row hosts.
+@MainActor @Observable final class TranscriptState {
+    var followsLatest = true
+    var jumpRequest = 0
+    @ObservationIgnored var anchor: TranscriptLayout.Anchor?
+    @ObservationIgnored var layout = TranscriptLayout()
+    @ObservationIgnored var expanded: [UUID: Bool] = [:]
+    @ObservationIgnored let markdown = MarkdownCache()
+    func jumpToLatest() { followsLatest = true; jumpRequest += 1 }
+}
 
 struct TranscriptView: View {
     let messages: [Message]
-    let sessionID: UUID?
-    var isActive = true
-    @State private var followsLatest = true
-    @State private var scrollTask: Task<Void, Never>?
-    @State private var scrollTarget: UUID?
-    private var visibleMessages: [Message] {
-        messages.filter { $0.role != .assistant || !$0.text.isEmpty || $0.toolCalls.isEmpty }
-    }
-
+    let state: TranscriptState
     var body: some View {
-        let visible = visibleMessages
-        ScrollViewReader { proxy in
-            ScrollView {
-                // Stable measured heights avoid lazy-stack jumps as streamed Markdown changes layout.
-                VStack(alignment: .leading, spacing: 24) {
-                    ForEach(visible) { message in
-                        MessageView(message: message, followsLatest: $followsLatest)
-                            .equatable()
-                            .padding(.bottom, message.id == visible.last?.id ? 12 : 0)
-                            .id(message.id)
-                    }
-                }
-                .frame(maxWidth: 820, alignment: .leading)
-                .padding(20)
-                .frame(maxWidth: .infinity)
-                .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in follow(proxy) }
-                .background(ScrollTrackingView { nearBottom in followsLatest = nearBottom })
-            }
-            .modifier(InitialTranscriptAnchor())
-            .clipped()
-            .onDisappear { scrollTask?.cancel(); scrollTask = nil }
-            .onChange(of: isActive) {
-                if isActive { follow(proxy) }
-                else { scrollTask?.cancel(); scrollTask = nil }
-            }
-            .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in follow(proxy) }
-            .onChange(of: sessionID) {
-                followsLatest = true
-                follow(proxy)
-            }
-            .onChange(of: messages.last?.id) {
-                if messages.last?.role == .user { followsLatest = true }
-                follow(proxy)
-            }
+        VirtualTranscript(messages: messages, state: state, jumpRequest: state.jumpRequest)
             .overlay(alignment: .bottomTrailing) {
-                if !followsLatest {
-                    Button {
-                        followsLatest = true
-                        follow(proxy)
-                    } label: { Image(systemName: "arrow.down") }
-                    .buttonStyle(.bordered).buttonBorderShape(.circle)
-                    .help("Jump to latest message").accessibilityLabel("Jump to latest message")
-                    .padding(16)
+                if !state.followsLatest {
+                    Button(action: state.jumpToLatest) { Image(systemName: "arrow.down") }
+                        .buttonStyle(.bordered).buttonBorderShape(.circle)
+                        .help("Jump to latest message").accessibilityLabel("Jump to latest message")
+                        .padding(16)
                 }
             }
+    }
+}
+
+private struct VirtualTranscript: NSViewRepresentable {
+    let messages: [Message]
+    let state: TranscriptState
+    let jumpRequest: Int
+    func makeNSView(context: Context) -> TranscriptScrollView { TranscriptScrollView(state: state) }
+    func updateNSView(_ view: TranscriptScrollView, context: Context) {
+        view.update(messages: messages, jumpRequest: jumpRequest)
+    }
+    static func dismantleNSView(_ view: TranscriptScrollView, coordinator: ()) { view.detach() }
+}
+
+/// A native scroll surface with a viewport-sized pool of SwiftUI message hosts.
+/// Offscreen messages have geometry only. Height corrections preserve the top
+/// message and its pixel offset, or the bottom edge when following a response.
+@MainActor final class TranscriptScrollView: NSScrollView {
+    private final class DocumentView: NSView {
+        override var isFlipped: Bool { true }
+    }
+    private let content = DocumentView()
+    let state: TranscriptState
+    private var messages: [Message] = []
+    private var rows: [UUID: MessageHost] = [:]
+    private var reuse: [MessageHost] = []
+    private var scheduled = false
+    private var updating = false
+    private var initialized = false
+    private var detached = false
+    private var lastSize = CGSize.zero
+    private var jumpRequest = 0
+    private var lastMessageID: UUID?
+    var mountedRowCount: Int { rows.count }
+
+    init(state: TranscriptState) {
+        self.state = state
+        super.init(frame: .zero)
+        drawsBackground = false
+        borderType = .noBorder
+        hasVerticalScroller = true
+        autohidesScrollers = true
+        documentView = content
+        contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrolled),
+            name: NSView.boundsDidChangeNotification, object: contentView)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func update(messages: [Message], jumpRequest: Int) {
+        let filtered = messages.filter { $0.role != .assistant || !$0.text.isEmpty || $0.toolCalls.isEmpty }
+        if initialized, let last = filtered.last, last.id != lastMessageID, last.role == .user { state.followsLatest = true }
+        lastMessageID = filtered.last?.id
+        self.messages = filtered
+        if jumpRequest != self.jumpRequest { state.followsLatest = true; self.jumpRequest = jumpRequest }
+        refresh()
+    }
+    override func layout() {
+        super.layout()
+        if contentSize != lastSize { scheduleRefresh() }
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { scheduleRefresh() }
+    }
+    func detach() {
+        detached = true
+        rememberAnchor()
+        NotificationCenter.default.removeObserver(self)
+        for row in rows.values { row.didLayout = nil; row.removeFromSuperview() }
+        rows.removeAll()
+        reuse.removeAll()
+    }
+    @objc private func scrolled() {
+        guard !updating else { return }
+        // Our own geometry corrections run under `updating`. Other offset changes
+        // include keyboard, wheel and scrollbar navigation; resizing isn't a scroll.
+        if initialized, contentSize == lastSize {
+            let nearBottom = content.bounds.height - contentView.bounds.maxY <= 40
+            if state.followsLatest != nearBottom { state.followsLatest = nearBottom }
+        }
+        rememberAnchor()
+        scheduleRefresh()
+    }
+    private func rememberAnchor() {
+        if initialized { state.anchor = state.layout.anchor(at: contentView.bounds.minY) }
+    }
+    private func scheduleRefresh() {
+        guard !scheduled, !detached else { return }
+        scheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.scheduled = false
+            self.refresh()
         }
     }
 
-    private func follow(_ proxy: ScrollViewProxy) {
-        scrollTarget = visibleMessages.last?.id
-        guard isActive, followsLatest, scrollTask == nil else { return }
-        scrollTask = Task { @MainActor in
-            // Coalesce layout changes into at most one follow per display frame.
-            do { try await Task.sleep(for: .milliseconds(16)) }
-            catch { return }
-            scrollTask = nil
-            if followsLatest, let id = scrollTarget {
-                proxy.scrollTo(id, anchor: .bottom)
+    func refresh() {
+        guard !updating, !detached, contentSize.width > 0, contentSize.height > 0 else { return }
+        updating = true
+        defer { updating = false }
+        let size = contentSize
+        let width = max(1, min(820, size.width - 40))
+        let anchor = initialized ? state.layout.anchor(at: contentView.bounds.minY) : state.anchor
+        state.layout.update(messages: messages, width: width)
+        lastSize = size
+        setDocumentSize()
+        restore(anchor)
+        initialized = true
+        // Measuring estimates can reveal another row; settle a bounded number of
+        // passes, then continue on the next run-loop turn if more work is needed.
+        var changed = false
+        for _ in 0..<3 {
+            let range = state.layout.visibleRange(y: contentView.bounds.minY, height: size.height, overscan: size.height * 0.5)
+            let wanted = Set(range.map { messages[$0].id })
+            for id in Array(rows.keys) where !wanted.contains(id) {
+                if let row = rows.removeValue(forKey: id) {
+                    row.didLayout = nil
+                    row.removeFromSuperview()
+                    row.rootView = TranscriptRow(message: nil, state: state, width: width)
+                    if reuse.count < 4 { reuse.append(row) }
+                }
             }
-        }
-    }
-}
-
-/// Establish the initial position during layout, before the first frame is shown.
-/// On newer systems only the initial offset is affected: short transcripts stay
-/// top-aligned and reading older messages still opts out of following new content.
-private struct InitialTranscriptAnchor: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(macOS 15.0, *) {
-            content.defaultScrollAnchor(.bottom, for: .initialOffset)
-        } else {
-            content.defaultScrollAnchor(.bottom)
-        }
-    }
-}
-
-/// Track user scrolling, not content growth or programmatic scrollTo calls (macOS 14+).
-/// This keeps streaming from pulling the reader away from an earlier message.
-private struct ScrollTrackingView: NSViewRepresentable {
-    var scrolled: (Bool) -> Void
-
-    func makeNSView(context: Context) -> TrackingView { TrackingView() }
-    func updateNSView(_ view: TrackingView, context: Context) { view.scrolled = scrolled }
-    static func dismantleNSView(_ view: TrackingView, coordinator: ()) { NotificationCenter.default.removeObserver(view) }
-
-    final class TrackingView: NSView {
-        var scrolled: ((Bool) -> Void)?
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            NotificationCenter.default.removeObserver(self)
-            if window != nil, let scroll = enclosingScrollView {
-                NotificationCenter.default.addObserver(self, selector: #selector(didScroll),
-                                                       name: NSScrollView.didLiveScrollNotification, object: scroll)
+            changed = false
+            for index in range {
+                let message = messages[index]
+                let row: MessageHost
+                if let existing = rows[message.id] { row = existing }
+                else {
+                    row = reuse.popLast() ?? MessageHost(rootView: TranscriptRow(message: nil, state: state, width: width))
+                    rows[message.id] = row
+                    content.addSubview(row)
+                    row.didLayout = { [weak self] in self?.scheduleRefresh() }
+                }
+                if row.rootView.message != message || row.rootView.width != width {
+                    row.rootView = TranscriptRow(message: message, state: state, width: width)
+                }
+                let height = row.fittingSize.height
+                if state.layout.measure(message.id, height: height) { changed = true }
             }
+            setDocumentSize()
+            restore(anchor)
+            for index in range {
+                let frame = CGRect(x: (size.width - width) / 2, y: state.layout.offsets[index],
+                                   width: width, height: state.layout.heights[index])
+                if rows[messages[index].id]?.frame != frame { rows[messages[index].id]?.frame = frame }
+            }
+            if !changed { break }
         }
-
-        @objc private func didScroll(_ notification: Notification) {
-            guard let scroll = notification.object as? NSScrollView, let document = scroll.documentView else { return }
-            scrolled?(document.bounds.height - scroll.contentView.bounds.maxY <= 40)
+        rememberAnchor()
+        if changed { scheduleRefresh() }
+    }
+    private func setDocumentSize() {
+        let size = CGSize(width: contentSize.width, height: max(contentSize.height, state.layout.totalHeight))
+        if content.frame.size != size { content.setFrameSize(size) }
+    }
+    private func restore(_ anchor: TranscriptLayout.Anchor?) {
+        let maximum = max(0, content.bounds.height - contentView.bounds.height)
+        let y = state.followsLatest ? maximum : anchor.flatMap { state.layout.position(of: $0) } ?? contentView.bounds.minY
+        let origin = NSPoint(x: 0, y: min(maximum, max(0, y)))
+        if contentView.bounds.origin != origin {
+            contentView.scroll(to: origin)
+            reflectScrolledClipView(contentView)
         }
     }
 }
 
-private struct MessageView: View, Equatable {
-    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.message == rhs.message
+private struct TranscriptRow: View {
+    let message: Message?
+    let state: TranscriptState
+    let width: CGFloat
+    var body: some View {
+        Group {
+            if let message { MessageView(message: message, state: state).id(message.id) }
+        }
+        .frame(width: width, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
+}
+
+private final class MessageHost: NSHostingView<TranscriptRow> {
+    var didLayout: (() -> Void)?
+    override func layout() { super.layout(); didLayout?() }
+}
+
+private struct MessageView: View {
 
     let message: Message
-    @Binding var followsLatest: Bool
+    let state: TranscriptState
     var body: some View {
         if let result = message.toolResult {
-            ToolMessageView(result: result, followsLatest: $followsLatest)
+            ToolMessageView(result: result, state: state, messageID: message.id)
         } else if message.role == .user {
             HStack {
                 Spacer(minLength: 40)
@@ -153,7 +245,7 @@ private struct MessageView: View, Equatable {
                     Label("Failed · excluded from context", systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.red)
                 }
-                if !message.text.isEmpty { MarkdownView(source: message.text) }
+                if !message.text.isEmpty { MarkdownView(source: message.text, cache: state.markdown) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityLabel("Assistant reply")
@@ -161,17 +253,18 @@ private struct MessageView: View, Equatable {
     }
 }
 
-// Keep disclosure state outside the equatable message wrapper so local interactions
-// never depend on changes to the persisted message value.
+// Disclosure state belongs to the conversation, not to a recycled row host.
 private struct ToolMessageView: View {
     let result: ToolResult
-    @Binding var followsLatest: Bool
+    let state: TranscriptState
+    let messageID: UUID
     @State private var expanded: Bool
 
-    init(result: ToolResult, followsLatest: Binding<Bool>) {
+    init(result: ToolResult, state: TranscriptState, messageID: UUID) {
         self.result = result
-        _followsLatest = followsLatest
-        _expanded = State(initialValue: result.edit != nil || result.webSearch != nil)
+        self.state = state
+        self.messageID = messageID
+        _expanded = State(initialValue: state.expanded[messageID] ?? (result.edit != nil || result.webSearch != nil))
     }
 
     var body: some View {
@@ -215,7 +308,10 @@ private struct ToolMessageView: View {
             transaction.animation = nil
             transaction.disablesAnimations = true
         }
-        .onChange(of: expanded) { if expanded { followsLatest = false } }
+        .onChange(of: expanded) {
+            state.expanded[messageID] = expanded
+            if expanded { state.followsLatest = false }
+        }
         .padding(12)
         .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
     }

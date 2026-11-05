@@ -20,6 +20,10 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Resident eviction protects work and drafts", { try await ChatLibraryTests().residentLimitProtectsRunningWorkAndDrafts() }),
+            ("Virtual transcript geometry and scroll anchors", { try TranscriptTests().geometryPreservesAnchors() }),
+            ("Virtual transcript mounts only viewport rows", { try await TranscriptTests().mountsBoundedRowsAndRestoresPosition() }),
+            ("Manual compaction and cancellation", { try await CompactionTests().manualCompactionBypassesThresholdAndPreservesTranscript() }),
             ("Web search request, context isolation and persistence", { try await WebSearchTests().roundTripKeepsSearchSeparateAndSavesSources() }),
             ("Web search failure and no-retry behavior", { try await WebSearchTests().failuresStopWithoutRetriesOrFalseSuccess() }),
             ("Web search cancellation and restart safety", { try await WebSearchTests().cancellationAndRestartDoNotResumeSearch() }),

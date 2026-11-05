@@ -151,6 +151,54 @@ import Foundation
         try expect(catalog.first?.contextWindow == 16_000)
     }
 
+    func manualCompactionBypassesThresholdAndPreservesTranscript() async throws {
+        let response = try JSONSerialization.data(withJSONObject: ["output": compacted])
+        let http = HTTPStub.makeSession([.init(chunks: [response])])
+        defer { http.invalidateAndCancel() }
+        let provider = try provider(http: http)
+        let history = [Message(role: .user, text: "Question"), Message(role: .assistant, text: "Answer")]
+        try provider.restoreConversationState(state(history, tokens: 100), history: history)
+        try await provider.compact(history, model: model, instructions: "Keep instructions", tools: [])
+        try expect(HTTPStub.state.requests.count == 1)
+        try expect(try CodexConversationState.restore(provider.encodeConversationState()).prefix?.throughID == history.last?.id)
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = SessionStore(directory: root)
+        let fake = FakeProvider()
+        let store = ChatStore(provider: fake, sessions: sessions)
+        store.restore(); await store.waitUntilIdle()
+        try expect(!store.canCompact)
+        store.draft = "First"; store.send(); await store.waitUntilIdle()
+        let transcript = store.messages
+        store.draft = "Keep my draft"
+        var requests = 0
+        fake.manualCompactionAction = { history in
+            requests += 1
+            try expect(history == transcript)
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        store.compact()
+        try expect(store.busy && !store.canCompact && !store.isSending)
+        store.compact() // Repeated activation cannot issue a second request.
+        await store.waitUntilIdle()
+        try expect(requests == 1 && store.messages == transcript && store.draft == "Keep my draft")
+        try expect(fake.inputs.count == 1 && store.error == nil)
+        let saved = try await sessions.load(id: store.currentSessionID)
+        try expect(saved?.messages == transcript && saved?.history == transcript)
+        fake.manualCompactionAction = { _ in
+            requests += 1
+            try await Task.sleep(for: .seconds(60))
+        }
+        store.compact()
+        for _ in 0..<100 {
+            if requests == 2 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        store.stop(); await store.waitUntilIdle()
+        try expect(requests == 2 && store.messages == transcript && store.error == nil && !store.busy)
+    }
+
     func checkpointFailurePreventsInferenceAfterCompaction() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

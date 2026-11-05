@@ -20,8 +20,11 @@ struct ChatComposer: View {
     private var paletteVisible: Bool {
         store.canNavigate && command != nil && dismissedDraft != store.draft && focused
     }
-    private var page: ComposerCommand.Page? { command?.page }
-    private var query: String { command?.query ?? "" }
+    private var page: ComposerCommand.Page? { command?.page.flatMap { $0.hasOptions ? $0 : nil } }
+    private var query: String {
+        if let action = command?.page, !action.hasOptions { return action.commandName }
+        return command?.query ?? ""
+    }
     private var modelName: String { store.models.first { $0.id == store.selectedModel }?.name ?? store.selectedModel }
     private var effortName: String {
         let model = store.current.model
@@ -36,7 +39,8 @@ struct ChatComposer: View {
         case nil:
             items = [Choice(id: "model", title: "Model", detail: modelName),
                      Choice(id: "effort", title: "Reasoning", detail: effortName),
-                     Choice(id: "approve", title: "Auto-approve", detail: store.autoApproveTools ? "On" : "Off")]
+                     Choice(id: "approve", title: "Auto-approve", detail: store.autoApproveTools ? "On" : "Off", enabled: canApprove),
+                     Choice(id: "compact", title: "compact", enabled: store.canCompact)]
         case .model:
             var models = store.models.map { Choice(id: $0.id, title: $0.name, selected: $0.id == store.selectedModel, enabled: !store.busy) }
             if !store.selectedModel.isEmpty && !models.contains(where: { $0.id == store.selectedModel }) {
@@ -48,9 +52,9 @@ struct ChatComposer: View {
             items = [Choice(id: "", title: "Default", selected: store.current.selectedEffort == nil, enabled: available)] + (store.current.model?.efforts ?? []).map {
                 Choice(id: $0.id, title: $0.name, selected: store.current.selectedEffort == $0.id, enabled: available)
             }
-        case .approve:
-            items = [Choice(id: "off", title: "Off", detail: "Ask before edits and shell commands", selected: !store.autoApproveTools, enabled: canApprove),
-                     Choice(id: "on", title: "On", detail: "Approve edits and shell commands in this conversation", selected: store.autoApproveTools, enabled: canApprove)]
+        case .approve, .compact:
+            items = [] // Actions stay in the root command list.
+
         }
         return items.filter {
             if page == nil { return ComposerCommand.Page(rawValue: $0.id)?.matches(query) == true }
@@ -147,15 +151,12 @@ struct ChatComposer: View {
     }
 
     private var information: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: 12) {
-                workingControl
-                Spacer(minLength: 0)
-                sessionInformation
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                workingControl
-                sessionInformation.frame(maxWidth: .infinity, alignment: .trailing)
+        HStack(alignment: .top, spacing: 12) {
+            workingControl
+            Spacer(minLength: 0)
+            VStack(alignment: .trailing, spacing: 6) {
+                usageInformation
+                workspaceInformation
             }
         }
         .font(.caption).foregroundStyle(.secondary)
@@ -173,19 +174,6 @@ struct ChatComposer: View {
                     .allowsHitTesting(false)
             }
             .fixedSize()
-        }
-    }
-
-    private var sessionInformation: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 16) {
-                usageInformation
-                workspaceInformation
-            }
-            VStack(alignment: .trailing, spacing: 6) {
-                usageInformation
-                workspaceInformation
-            }
         }
     }
 
@@ -218,8 +206,14 @@ struct ChatComposer: View {
                                     Text(choice.title)
                                     Spacer(minLength: 4)
                                     Text(choice.detail).foregroundStyle(.secondary).lineLimit(1)
-                                    Image(systemName: page == nil ? "chevron.right" : choice.selected ? "checkmark" : "")
-                                        .frame(width: 12)
+                                    Group {
+                                        if page == nil, ComposerCommand.Page(rawValue: choice.id)?.hasOptions == true {
+                                            Image(systemName: "chevron.right")
+                                        } else if choice.selected {
+                                            Image(systemName: "checkmark")
+                                        } else { Color.clear }
+                                    }
+                                    .frame(width: 12)
                                 }
                                 .padding(8).contentShape(Rectangle())
                                 .background(index == highlighted ? Color.accentColor.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
@@ -259,15 +253,28 @@ struct ChatComposer: View {
         guard store.canNavigate, choice.enabled else { return }
         guard let page else {
             guard let destination = ComposerCommand.Page(rawValue: choice.id) else { return }
-            store.draft = "/\(destination.commandName) "
+            switch destination {
+            case .approve:
+                guard canApprove else { return }
+                store.setAutoApproveTools(!store.autoApproveTools)
+                store.draft = ""
+                close()
+            case .compact:
+                guard store.canCompact else { return }
+                store.draft = ""
+                close()
+                store.compact()
+            case .model, .effort:
+                store.draft = "/\(destination.commandName) "
+                highlighted = 0
+            }
             focused = true
-            highlighted = 0
             return
         }
         switch page {
         case .model: guard !store.busy else { return }; store.selectedModel = choice.id
         case .effort: guard !store.busy else { return }; store.selectedEffort = choice.id.isEmpty ? nil : choice.id
-        case .approve: guard canApprove else { return }; store.setAutoApproveTools(choice.id == "on")
+        case .approve, .compact: return
         }
         store.draft = ""
         close(); focused = true

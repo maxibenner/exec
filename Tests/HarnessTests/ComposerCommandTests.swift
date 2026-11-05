@@ -25,6 +25,9 @@ struct ComposerCommandTests {
         }
         try expect(ComposerCommand.Page.effort.matches("r"))
         try expect(ComposerCommand.Page.approve.matches("auto"))
+        try expect(ComposerCommand("/compact")?.page == .compact)
+        try expect(!ComposerCommand.Page.approve.hasOptions && !ComposerCommand.Page.compact.hasOptions)
+        try expect(ComposerCommand.Page.model.hasOptions && ComposerCommand.Page.effort.hasOptions)
         let approve = try unwrap(ComposerCommand("/approve off"))
         try expect(approve.page == .approve && approve.query == "off")
         for draft in ["", "hello /model", " /model", "/Users/me/project", "/model/file", "/tmp", "/unknown", "/m prose", "/model\nhello", "/approve\roff"] {

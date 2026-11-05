@@ -3,15 +3,17 @@ import Foundation
 /// Only a leading, single-line command is interpreted locally. Paths and prose stay drafts.
 struct ComposerCommand: Equatable {
     enum Page: String, CaseIterable {
-        case model, effort, approve
+        case model, effort, approve, compact
 
         var names: [String] {
             switch self {
             case .model: ["model"]
             case .effort: ["reasoning", "effort"]
             case .approve: ["auto-approve", "approve", "approval"]
+            case .compact: ["compact"]
             }
         }
+        var hasOptions: Bool { self == .model || self == .effort }
         var commandName: String { names[0] }
         func matches(_ query: String) -> Bool { names.contains { $0.hasPrefix(query.lowercased()) } }
     }

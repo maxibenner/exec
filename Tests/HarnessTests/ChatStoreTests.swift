@@ -14,6 +14,11 @@ import Foundation
     var children: [FakeProvider] = []
     var usageAction: (() async throws -> AccountUsage?)?
     func accountUsage() async throws -> AccountUsage? { try await usageAction?() }
+    var supportsCompaction: Bool { true }
+    var manualCompactionAction: (([Message]) async throws -> Void)?
+    func compact(_ history: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) async throws {
+        try await manualCompactionAction?(history)
+    }
     var compactionAction: (() throws -> Bool)?
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
                          instructions: String, tools: [ToolDefinition]) async throws -> Bool {
@@ -162,6 +167,7 @@ import Foundation
         store.selectedModel = "test"
         store.selectWorkspace(root)
         try await settle(store)
+        store.setAutoApproveTools(false)
         store.draft = "Inspect project"
         store.send()
         for _ in 0..<200 {

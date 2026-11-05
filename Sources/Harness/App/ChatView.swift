@@ -32,7 +32,7 @@ struct ChatView: View {
                     .id(ObjectIdentifier(store.current))
                     .disabled(store.navigating)
             }
-            // Keep transcript identities alive; only transient composer controls are replaced.
+            // Keep per-conversation scroll state; only the selected transcript mounts views.
             .transaction(value: ObjectIdentifier(store.current)) { transaction in
                 transaction.animation = nil
                 transaction.disablesAnimations = true
@@ -80,23 +80,16 @@ struct ChatView: View {
     }
 }
 
-/// Keep the native scroll view and parsed message views mounted across tab switches.
-/// A hidden transcript holds its last display snapshot instead of observing background tokens.
+/// Keep only lightweight presentation state for inactive conversations. Their runners,
+/// drafts and provider context remain resident in ChatLibrary, independently of the UI.
 private struct ResidentTranscript: View {
     let conversation: ChatStore
     let isActive: Bool
-    @State private var displayedMessages: [Message] = []
+    @State private var presentation = TranscriptState()
 
     var body: some View {
-        let liveMessages = isActive ? conversation.messages : nil
-        TranscriptView(messages: displayedMessages,
-                       sessionID: conversation.currentSessionID, isActive: isActive)
-            .opacity(isActive ? 1 : 0)
-            .allowsHitTesting(isActive)
-            .disabled(!isActive)
-            .accessibilityHidden(!isActive)
-            .onChange(of: liveMessages, initial: true) {
-                if let liveMessages { displayedMessages = liveMessages }
-            }
+        if isActive {
+            TranscriptView(messages: conversation.messages, state: presentation)
+        }
     }
 }

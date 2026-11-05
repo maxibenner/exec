@@ -142,8 +142,15 @@ import Foundation
         let overhead = Self.contextOverhead(instructions: instructions, tools: tools)
         let tokens = try context.estimatedTokens(history + pending, overhead: overhead)
         guard tokens >= Int(ceil(Double(window) * 0.95)) else { return false }
+        try await compact(history, model: model, instructions: instructions, tools: tools)
+        return true
+    }
+
+    var supportsCompaction: Bool { true }
+
+    func compact(_ history: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) async throws {
         guard let boundary = history.last?.id else {
-            throw HarnessError("The input is too large and there is no completed history to compact. Shorten the message.")
+            throw HarnessError("There is no completed history to compact.")
         }
         // Never summarize an unanswered call or treat compaction output as executable tools.
         var unanswered = Set<String>()
@@ -169,7 +176,6 @@ import Foundation
         try CodexConversationState.validateCompaction(compacted)
         try Task.checkCancellation()
         context = CodexConversationState(prefix: .init(throughID: boundary, output: compacted))
-        return true
     }
 
     func send(_ messages: [Message], model: String, effort: String? = nil, instructions: String = "", tools: [ToolDefinition] = []) -> AsyncThrowingStream<ChatEvent, Error> {
