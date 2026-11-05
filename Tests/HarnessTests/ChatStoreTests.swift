@@ -12,6 +12,8 @@ import Foundation
         set { connection.account = newValue }
     }
     var children: [FakeProvider] = []
+    var usageAction: (() async throws -> AccountUsage?)?
+    func accountUsage() async throws -> AccountUsage? { try await usageAction?() }
     var compactionAction: (() throws -> Bool)?
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
                          instructions: String, tools: [ToolDefinition]) async throws -> Bool {

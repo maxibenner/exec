@@ -4,10 +4,7 @@ import UniformTypeIdentifiers
 struct ChatComposer: View {
     @Bindable var store: ChatLibrary
     @FocusState.Binding var focused: Bool
-    @FocusState private var searchFocused: Bool
     @State private var imageDropTargeted = false
-    @State private var clickedPage: ComposerCommand.Page?
-    @State private var search = ""
     @State private var dismissedDraft: String?
     @State private var highlighted = 0
 
@@ -21,10 +18,10 @@ struct ChatComposer: View {
 
     private var command: ComposerCommand? { ComposerCommand(store.draft) }
     private var paletteVisible: Bool {
-        store.canNavigate && (clickedPage != nil || (command != nil && dismissedDraft != store.draft && focused))
+        store.canNavigate && command != nil && dismissedDraft != store.draft && focused
     }
-    private var page: ComposerCommand.Page? { clickedPage ?? command?.page }
-    private var query: String { clickedPage == nil ? command?.query ?? "" : search }
+    private var page: ComposerCommand.Page? { command?.page }
+    private var query: String { command?.query ?? "" }
     private var modelName: String { store.models.first { $0.id == store.selectedModel }?.name ?? store.selectedModel }
     private var effortName: String {
         let model = store.current.model
@@ -55,7 +52,10 @@ struct ChatComposer: View {
             items = [Choice(id: "off", title: "Off", detail: "Ask before edits and shell commands", selected: !store.autoApproveTools, enabled: canApprove),
                      Choice(id: "on", title: "On", detail: "Approve edits and shell commands in this conversation", selected: store.autoApproveTools, enabled: canApprove)]
         }
-        return items.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query) }
+        return items.filter {
+            if page == nil { return ComposerCommand.Page(rawValue: $0.id)?.matches(query) == true }
+            return query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query)
+        }
     }
 
     var body: some View {
@@ -63,7 +63,10 @@ struct ChatComposer: View {
             input
                 .overlay(alignment: .topLeading) {
                     if paletteVisible {
-                        palette.alignmentGuide(.top) { $0[.bottom] + 8 }
+                        palette
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.bottom, 8)
+                            .frame(height: 0, alignment: .bottom)
                     }
                 }
                 .zIndex(1)
@@ -73,20 +76,22 @@ struct ChatComposer: View {
         .padding(.horizontal, 20).padding(.vertical, 12)
         .frame(maxWidth: .infinity)
         .onChange(of: store.draft) { _, _ in highlighted = 0; dismissedDraft = nil }
-        .onChange(of: search) { _, _ in highlighted = 0 }
         .onChange(of: ObjectIdentifier(store.current)) { _, _ in close() }
         .onChange(of: store.canNavigate) { _, allowed in if !allowed { close() } }
         .onKeyPress(.upArrow) { move(-1) }
         .onKeyPress(.downArrow) { move(1) }
-        .onKeyPress(.escape) {
-            guard paletteVisible else { return .ignored }
-            close(); focused = true
-            return .handled
+        .onExitCommand {
+            if paletteVisible { close(); focused = true }
+            else if store.isWorking { store.stop() }
         }
     }
 
     private var input: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if !store.current.queuedMessages.isEmpty {
+                QueuedMessagesView(store: store)
+                    .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
+            }
             if !store.current.draftImages.isEmpty {
                 AttachmentStrip(images: store.current.draftImages) { id in
                     store.current.draftImages.removeAll { $0.id == id }
@@ -106,17 +111,17 @@ struct ChatComposer: View {
                 }
                 .padding(.vertical, 8)
             HStack(spacing: 6) {
-                Button(modelName.isEmpty ? "Model" : modelName) { open(.model) }
+                Text(modelName.isEmpty ? "Model" : modelName)
                     .accessibilityLabel("Model: \(modelName)")
                 Text("·")
-                Button(effortName) { open(.effort) }.accessibilityLabel("Reasoning: \(effortName)")
+                Text(effortName).accessibilityLabel("Reasoning: \(effortName)")
                 Spacer(minLength: 8)
-                Button(store.autoApproveTools ? "Auto-approve on" : "Auto-approve off") { open(.approve) }
+                Text(store.autoApproveTools ? "Auto-approve on" : "Auto-approve off")
                     .foregroundStyle(store.autoApproveTools ? Color.accentColor : Color.secondary)
+                    .layoutPriority(1)
             }
-            .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
-            .lineLimit(1).disabled(!store.canNavigate)
-            .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
+            .font(.caption).foregroundStyle(.secondary)
+            .lineLimit(1).allowsHitTesting(false)
         }
         .padding(12)
         .background {
@@ -142,35 +147,67 @@ struct ChatComposer: View {
     }
 
     private var information: some View {
-        HStack(spacing: 12) {
-            if store.isWorking {
-                Button(action: store.stop) { Image(systemName: "stop.fill") }
-                    .buttonStyle(.plain).keyboardShortcut(".", modifiers: .command)
-                    .help("Stop (⌘.)").accessibilityLabel("Stop")
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 12) {
+                workingControl
+                Spacer(minLength: 0)
+                sessionInformation
             }
-            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 6) {
+                workingControl
+                sessionInformation.frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .font(.caption).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder private var workingControl: some View {
+        if store.isWorking {
+            Button(action: store.stop) {
+                HStack(spacing: 8) {
+                    WorkingIndicator()
+                    Text("esc").font(.system(.caption, design: .monospaced))
+                }
+            }
+            .buttonStyle(.plain).keyboardShortcut(".", modifiers: .command)
+            .help("Stop (Esc or ⌘.)").accessibilityLabel("Stop")
+            .fixedSize()
+        }
+    }
+
+    private var sessionInformation: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) {
+                usageInformation
+                workspaceInformation
+            }
+            VStack(alignment: .trailing, spacing: 6) {
+                usageInformation
+                workspaceInformation
+            }
+        }
+    }
+
+    private var workspaceInformation: some View {
+        WorkspaceBar(store: store)
+            .frame(maxWidth: 300, alignment: .trailing)
+            .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var usageInformation: some View {
+        HStack(spacing: 16) {
+            if let usage = store.accountUsage { AccountUsageLabel(usage: usage) }
             if let usage = store.current.contextUsage {
                 Text("Context \(usage.isEstimated ? "~" : "")\(usage.percent)%")
                     .monospacedDigit().fixedSize()
                     .help("\(usage.isEstimated ? "Estimated" : "Reported") context: \(usage.tokens.formatted()) / \(usage.limit.formatted()) tokens. Excludes unsent drafts and unfinished responses.")
                     .accessibilityLabel("Context usage, \(usage.percent) percent")
             }
-            WorkspaceBar(store: store).frame(maxWidth: 300)
         }
-        .font(.caption).foregroundStyle(.secondary)
     }
 
     private var palette: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if clickedPage != nil {
-                HStack {
-                    TextField("Search", text: $search).textFieldStyle(.plain)
-                        .focused($searchFocused).onSubmit { chooseHighlighted() }
-                    Button { close(); focused = true } label: { Image(systemName: "xmark") }
-                        .buttonStyle(.plain).accessibilityLabel("Close command menu")
-                }.padding(8)
-                Divider()
-            }
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 2) {
@@ -202,12 +239,8 @@ struct ChatComposer: View {
         .accessibilityLabel("Composer commands")
     }
 
-    private func open(_ page: ComposerCommand.Page) {
-        clickedPage = page; search = ""; highlighted = 0; searchFocused = true
-    }
-
     private func close() {
-        clickedPage = nil; search = ""; dismissedDraft = store.draft; highlighted = 0
+        dismissedDraft = store.draft; highlighted = 0
     }
 
     private func move(_ delta: Int) -> KeyPress.Result {
@@ -224,7 +257,9 @@ struct ChatComposer: View {
     private func choose(_ choice: Choice) {
         guard store.canNavigate, choice.enabled else { return }
         guard let page else {
-            store.draft = "/\(choice.id) "
+            guard let destination = ComposerCommand.Page(rawValue: choice.id) else { return }
+            store.draft = "/\(destination.commandName) "
+            focused = true
             highlighted = 0
             return
         }
@@ -233,8 +268,7 @@ struct ChatComposer: View {
         case .effort: guard !store.busy else { return }; store.selectedEffort = choice.id.isEmpty ? nil : choice.id
         case .approve: guard canApprove else { return }; store.setAutoApproveTools(choice.id == "on")
         }
-        // A clicked settings menu never consumes the user's message draft.
-        if clickedPage == nil { store.draft = "" }
+        store.draft = ""
         close(); focused = true
     }
 }

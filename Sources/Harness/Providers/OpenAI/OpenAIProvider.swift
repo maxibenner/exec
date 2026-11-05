@@ -46,6 +46,14 @@ import Foundation
         try await authentication.disconnect()
     }
 
+    func accountUsage() async throws -> AccountUsage? {
+        let credentials = try await authentication.credentials()
+        try Task.checkCancellation()
+        let request = CodexUsage.request(accessToken: credentials.access, accountID: credentials.accountID)
+        let data = try await OpenAITransport.boundedResponse(request, session: http)
+        return try CodexUsage.decode(data)
+    }
+
     func models() async throws -> [ChatModel] {
         struct Catalog: Decodable {
             struct Model: Decodable {

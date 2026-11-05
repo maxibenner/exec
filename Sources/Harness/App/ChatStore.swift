@@ -6,7 +6,9 @@ import Observation
     var draft = ""
     var draftImages: [ImageAttachment] = []
     private(set) var isImportingImages = false
-    var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || isImportingImages }
+    private(set) var queuedMessages: [Message] = []
+    private(set) var isQueuePaused = false
+    var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || isImportingImages || !queuedMessages.isEmpty }
     var models: [ChatModel] = [] { didSet { reconcileEffort(); updateContextUsage() } }
     var selectedModel = "" { didSet { reconcileEffort(); updateContextUsage() } }
     var selectedEffort: String?
@@ -160,6 +162,7 @@ import Observation
         }
         self.workspace = workspace
         messages = []; history = []; draft = ""; draftImages = []; error = nil
+        queuedMessages = []; isQueuePaused = false
         activeTurn = false; activeCallID = nil
         loadedSession = true; restorationBlocked = false
         conversationIdentity = provider.conversationIdentity
@@ -190,18 +193,42 @@ import Observation
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !draftImages.isEmpty, !busy, !isImportingImages,
+        guard !text.isEmpty || !draftImages.isEmpty, !busy || isSending, !isImportingImages,
               account != nil, !selectedModel.isEmpty else { return }
         let user = Message(role: .user, text: text, images: draftImages)
+        queuedMessages.append(user)
+        draft = ""; draftImages = []
+        if !busy { resumeQueuedMessages() }
+    }
+
+    func removeQueuedMessage(_ id: UUID) {
+        queuedMessages.removeAll { $0.id == id }
+        if queuedMessages.isEmpty { isQueuePaused = false }
+    }
+
+    func resumeQueuedMessages() {
+        guard !busy, !queuedMessages.isEmpty, account != nil, !selectedModel.isEmpty else { return }
+        isQueuePaused = false
+        sendNextQueuedMessage()
+    }
+
+    private func sendNextQueuedMessage() {
+        guard !busy, !isQueuePaused, let user = queuedMessages.first,
+              account != nil, !selectedModel.isEmpty else { return }
+        sendMessage(user)
+    }
+
+    private func sendMessage(_ user: Message) {
         run(sending: true) {
             guard self.conversationIdentity == self.provider.conversationIdentity else {
                 throw HarnessError("The connected account changed. Choose New before sending this conversation.")
             }
+            // Removal can happen while restoring a session. Never send a removed item.
+            guard self.queuedMessages.first?.id == user.id else { return }
+            self.queuedMessages.removeFirst()
             var input = self.history + [user]
             self.messages.append(user)
             self.sessionActivityDate = Date()
-            self.draft = ""
-            self.draftImages = []
             self.activeTurn = true
             try await self.checkpoint()
             var usedCallIDs = Set<String>()
@@ -338,7 +365,10 @@ import Observation
         return messages[index]
     }
 
-    func stop() { task?.cancel() }
+    func stop() {
+        isQueuePaused = !queuedMessages.isEmpty
+        task?.cancel()
+    }
 
     func newConversation() {
         guard !busy else { return }
@@ -436,6 +466,7 @@ import Observation
         run(restoreSession: false) {
             if self.loadedSession && !self.restorationBlocked { try await self.checkpoint() }
             try await self.applySavedSession(id)
+            self.queuedMessages = []; self.isQueuePaused = false
             if loadModels && self.models.isEmpty && self.account != nil {
                 self.openingSessionID = nil // Model discovery remains cancellable, unlike local navigation.
                 try await self.loadModels()
@@ -468,18 +499,24 @@ import Observation
         isSending = sending
         error = nil
         task = Task {
+            var completed = false
             defer {
                 self.account = self.provider.account
                 self.busy = false
                 self.isSending = false
                 self.openingSessionID = nil
                 self.task = nil
+                if sending {
+                    if !completed || Task.isCancelled { self.isQueuePaused = !self.queuedMessages.isEmpty }
+                    else { self.sendNextQueuedMessage() }
+                }
                 self.didFinish?()
             }
             do {
                 if restoreSession { try await self.loadSavedSession() }
                 try Task.checkCancellation()
                 try await operation()
+                completed = true
             } catch {
                 if error is CancellationError || (error as? URLError)?.code == .cancelled {
                     self.error = nil
@@ -499,6 +536,7 @@ import Observation
                     self.activeTurn = false; self.activeCallID = nil
                     try await self.checkpoint()
                 } catch {
+                    completed = false
                     let message = error.localizedDescription
                     if let prior = self.error, prior != message { self.error = prior + "\n" + message }
                     else { self.error = message }

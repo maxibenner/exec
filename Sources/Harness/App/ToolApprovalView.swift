@@ -28,7 +28,6 @@ struct ToolApprovalView: View {
                 Button("Deny") {
                     if canResolve() { executor.resolveApproval(id: approval.id, approved: false) }
                 }
-                    .keyboardShortcut(.escape, modifiers: [])
                 Button("Approve Once") {
                     if canResolve() { executor.resolveApproval(id: approval.id, approved: true) }
                 }

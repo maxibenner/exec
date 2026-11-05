@@ -44,6 +44,7 @@ struct ChatView: View {
             }
         }
         .frame(minWidth: 720, minHeight: 480)
+        .onExitCommand { if store.isWorking { store.stop() } }
         .task { store.restore(); composerFocused = true }
     }
 

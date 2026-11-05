@@ -81,6 +81,7 @@ enum ChatEvent: Sendable {
     func connect() async throws
     func disconnect() async throws
     func models() async throws -> [ChatModel]
+    func accountUsage() async throws -> AccountUsage?
     var supportsWebSearch: Bool { get }
     func contextUsage(_ messages: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) -> ContextUsage?
     // A separate read-only request using provider-owned authentication, never conversation context.
@@ -93,6 +94,7 @@ enum ChatEvent: Sendable {
 }
 
 extension ChatProvider {
+    func accountUsage() async throws -> AccountUsage? { nil }
     var conversationIdentity: String? { account }
     var supportsWebSearch: Bool { false }
     func contextUsage(_ messages: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) -> ContextUsage? { nil }

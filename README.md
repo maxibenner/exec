@@ -31,9 +31,9 @@ You can also open `Package.swift` in Xcode. Builds are not notarized for distrib
 | Action | Control |
 | --- | --- |
 | New conversation | **⌘N** or the toolbar button |
-| Send | **⌘Return** or the send button |
-| Stop the current operation | **⌘.** or Stop |
-| Deny a pending tool approval | **Escape** |
+| Send (or queue while a reply is running) | **Return** |
+| Stop the current operation | **Escape**, **⌘.**, or the animated indicator |
+| Deny a pending tool approval | **Deny** button |
 | Rename or delete a conversation | Sidebar row context menu |
 | Refresh models, reconnect, or sign out | Account menu at the bottom of the sidebar |
 
@@ -43,11 +43,15 @@ The sidebar is ordered by the last user-message time, not the last time you open
 
 Reading earlier messages pauses automatic scrolling. Use the down-arrow to return to the latest reply. Quit asks before discarding drafts or unsaved changes, cancels operations across all conversations, and waits for their cleanup and checkpoints.
 
-### Model and effort
+Messages submitted during an active turn queue inside that conversation's composer. Use **×** to remove an unsent item. Queued text and attachments run in order only after the preceding turn completes and saves successfully, including while the conversation is in the background. Stop, provider errors, and checkpoint failures pause the queue; use its **play** button to resume explicitly. Queued messages, like drafts, are kept only in memory and are included in the quit warning.
 
-The model picker and **effort selector** sit beside the composer. Effort choices come from the selected model's Codex catalog entry, rather than a hard-coded list. **Default** leaves the choice to the provider; the catalog's default level is shown when available.
+### Composer commands and usage
 
-The selection is saved with conversation checkpoints and restored when you return. New conversations inherit the current supported setting. Switching to a model that does not support that level resets it to Default. Both selectors are locked during an active turn; models without advertised effort levels show a disabled default selector.
+Type `/` at the start of a message to open the command menu above the input. `/model`, `/reasoning` (alias `/effort`), and `/auto-approve` (aliases `/approve`, `/approval`) select their settings. Prefixes such as `/r` filter the menu. Arrow keys navigate, Return selects, and Escape dismisses the menu before stopping a turn. These commands are handled locally, not sent as messages.
+
+Model, reasoning, and approval state are non-clickable labels inside the input. Reasoning choices come from the selected model's Codex catalog entry. **Default** leaves the choice to the provider; the catalog's default level is shown when available. Model and reasoning selections are checkpointed per conversation; new conversations inherit the supported setting. Both are locked during an active turn. Auto-approval starts off and is changed only through its menu.
+
+The footer shows workspace, context usage, and available account-limit percentages reported by Codex. Account usage is separate from context size; it refreshes after account operations and conversation activity, and expired or unavailable readings are hidden. The provider integration follows [Codex's usage endpoint](https://raw.githubusercontent.com/openai/codex/main/codex-rs/backend-client/src/client/rate_limit_resets.rs); live usage availability still needs manual verification. The animated working indicator reproduces the eight-cell, 80 ms bounce from `../pi-config` and respects Reduce Motion.
 
 ### Images
 
@@ -113,7 +117,7 @@ Use `search_text` to locate relevant lines, then read the surrounding range. Onl
 
 Read-only tools do not require per-call approval. Edits and shell commands require **Approve Once** by default. Approval is never the default Return action. App credentials and the inherited environment are not passed to shell commands.
 
-**Auto-approve** requires confirmation and applies only to the selected conversation, including its background work. It is off by default, is not transferred to other conversations, and is not saved across restarts. It does not bypass path, revision, checkpoint, or cancellation checks. Turning it off affects future approvals; use Stop to cancel current work.
+**Auto-approve** is enabled explicitly through `/auto-approve` and applies only to the selected conversation, including its background work. It is off by default, is not transferred to other conversations, and is not saved across restarts. It does not bypass path, revision, checkpoint, or cancellation checks. Turning it off affects future approvals; use Stop to cancel current work.
 
 ### Safety boundaries
 

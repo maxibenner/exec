@@ -15,6 +15,9 @@ import Observation
     private var loading: ChatStore?
     private var navigationTask: Task<Void, Never>?
     private var accountTask: Task<Void, Never>?
+    private var usageTask: Task<Void, Never>?
+    private var usageRequest = 0
+    private(set) var accountUsage: AccountUsage?
     private let provider: any ChatProvider
     private let sessions: SessionStore
 
@@ -101,6 +104,7 @@ import Observation
 
     func send() {
         guard canNavigate else { return }
+        if current.isSending { current.send(); return }
         guard !current.busy else { return }
         navigate {
             // Select before starting; subsequent checkpoints (including background ones) only save data.
@@ -108,6 +112,16 @@ import Observation
             try Task.checkCancellation()
             self.remember(self.current)
             self.current.send()
+        }
+    }
+
+    func resumeQueuedMessages() {
+        guard canNavigate, !current.busy else { return }
+        navigate {
+            if let id = self.currentSessionID { try await self.sessions.select(id) }
+            try Task.checkCancellation()
+            self.remember(self.current)
+            self.current.resumeQueuedMessages()
         }
     }
 
@@ -120,6 +134,7 @@ import Observation
     func stopAll() {
         navigationTask?.cancel()
         accountTask?.cancel()
+        usageTask?.cancel()
         for conversation in conversations { conversation.stop() }
     }
 
@@ -132,10 +147,16 @@ import Observation
         let identity = provider.conversationIdentity
         for conversation in conversations { conversation.setAutoApproveTools(false) }
         authenticating = true
+        usageTask?.cancel()
+        usageRequest += 1
+        accountUsage = nil
         navigationError = nil
         start()
         accountTask = Task {
-            defer { authenticating = false; accountTask = nil; prune() }
+            defer {
+                authenticating = false; accountTask = nil; prune()
+                if !Task.isCancelled { refreshAccountUsage() }
+            }
             await current.waitUntilIdle()
             if identity != provider.conversationIdentity { retained.removeAll() }
             models = current.models
@@ -248,7 +269,27 @@ import Observation
 
     private func observe(_ conversation: ChatStore) {
         conversation.didCheckpoint = { [weak self] in try await self?.refreshCatalog() }
-        conversation.didFinish = { [weak self] in self?.prune() }
+        conversation.didFinish = { [weak self] in
+            self?.prune()
+            self?.refreshAccountUsage()
+        }
+    }
+
+    private func refreshAccountUsage() {
+        guard !authenticating else { return }
+        usageTask?.cancel()
+        usageRequest += 1
+        let request = usageRequest
+        let identity = provider.conversationIdentity
+        guard provider.account != nil else { accountUsage = nil; return }
+        usageTask = Task { [weak self, provider] in
+            // Optional account metadata must never fail a chat turn or retry inference.
+            let usage = try? await provider.accountUsage()
+            guard let self, !Task.isCancelled, request == self.usageRequest,
+                  identity == provider.conversationIdentity else { return }
+            self.accountUsage = usage
+            self.usageTask = nil
+        }
     }
 
     private func preserveCurrent() async {
