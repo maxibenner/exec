@@ -131,6 +131,11 @@ private struct MessageView: View {
                     }
                 }
             }
+            .disclosureGroupStyle(InstantToolDisclosureStyle())
+            .transaction { transaction in
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
             .onChange(of: expanded) { if expanded { followsLatest = false } }
             .padding(12)
             .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
@@ -164,6 +169,42 @@ private struct MessageView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityLabel("Assistant reply")
+        }
+    }
+}
+
+/// A full-width hit target without the system disclosure control's implicit animation.
+private struct InstantToolDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { configuration.isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(width: 12)
+                    configuration.label
+                        .labelStyle(ToolHeaderLabelStyle())
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
+            if configuration.isExpanded { configuration.content }
+        }
+    }
+}
+
+private struct ToolHeaderLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 8) {
+            configuration.icon.frame(width: 16)
+            configuration.title
         }
     }
 }

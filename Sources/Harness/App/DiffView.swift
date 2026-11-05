@@ -6,23 +6,14 @@ struct DiffView: View {
 
     var body: some View {
         let document = DiffDocument(source)
-        VStack(alignment: .trailing, spacing: 8) {
-            Button("Copy Diff") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(source, forType: .string)
-            }
-            .buttonStyle(.borderless).font(.caption)
-            ViewThatFits(in: .horizontal) {
-                pane(document, sideBySide: true).frame(minWidth: 680)
-                pane(document, sideBySide: false)
-            }
+        ViewThatFits(in: .horizontal) {
+            pane(document, sideBySide: true).frame(minWidth: 680)
+            pane(document, sideBySide: false)
         }
     }
 
     private func pane(_ document: DiffDocument, sideBySide: Bool) -> some View {
-        let font = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        let lineHeight = ceil(font.ascender - font.descender + font.leading)
-        return ScrollView(.vertical) {
+        Group {
             if sideBySide {
                 HStack(alignment: .top, spacing: 0) {
                     column("Before", lines: document.pairs.map(\.before))
@@ -33,7 +24,7 @@ struct DiffView: View {
                 code(document.unified.map(Optional.some), numbers: false)
             }
         }
-        .frame(height: min(340, CGFloat(sideBySide ? document.pairs.count : document.unified.count) * lineHeight + (sideBySide ? 46 : 20)))
+        .fixedSize(horizontal: false, vertical: true)
         .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
     }
 
