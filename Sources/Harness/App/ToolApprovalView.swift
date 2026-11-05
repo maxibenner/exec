@@ -4,6 +4,7 @@ import SwiftUI
 struct ToolApprovalView: View {
     let approval: ToolExecutor.Approval
     let executor: ToolExecutor
+    var canResolve: () -> Bool = { true }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -24,9 +25,13 @@ struct ToolApprovalView: View {
             }
             HStack(spacing: 10) {
                 Spacer()
-                Button("Deny") { executor.resolveApproval(id: approval.id, approved: false) }
+                Button("Deny") {
+                    if canResolve() { executor.resolveApproval(id: approval.id, approved: false) }
+                }
                     .keyboardShortcut(.escape, modifiers: [])
-                Button("Approve Once") { executor.resolveApproval(id: approval.id, approved: true) }
+                Button("Approve Once") {
+                    if canResolve() { executor.resolveApproval(id: approval.id, approved: true) }
+                }
                     .buttonStyle(.borderedProminent)
                 // Deliberately not the default Return action: approval must be explicit.
             }
@@ -44,16 +49,6 @@ struct ToolApprovalView: View {
     }
 
     private var preview: AttributedString {
-        guard approval.kind == .edit else { return AttributedString(approval.content) }
-        var result = AttributedString()
-        let lines = approval.content.split(separator: "\n", omittingEmptySubsequences: false)
-        for (index, line) in lines.enumerated() {
-            var text = AttributedString(String(line))
-            if line.hasPrefix("+") && !line.hasPrefix("+++") { text.backgroundColor = Color.green.opacity(0.12) }
-            if line.hasPrefix("-") && !line.hasPrefix("---") { text.backgroundColor = Color.red.opacity(0.1) }
-            result.append(text)
-            if index < lines.count - 1 { result.append(AttributedString("\n")) }
-        }
-        return result
+        approval.kind == .edit ? DiffView.highlighted(approval.content) : AttributedString(approval.content)
     }
 }

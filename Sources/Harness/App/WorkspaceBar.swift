@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @MainActor struct WorkspaceBar: View {
-    @Bindable var store: ChatStore
+    @Bindable var store: ChatLibrary
     @State private var pendingFolder: URL?
     @State private var confirmingChange = false
 
@@ -30,12 +30,12 @@ import SwiftUI
             Spacer(minLength: 0)
         }
         .controlSize(.small)
-        .disabled(store.busy)
+        .disabled(store.isWorking).allowsHitTesting(!store.busy)
         .confirmationDialog("Start a fresh conversation?", isPresented: $confirmingChange, titleVisibility: .visible) {
             Button("Start New Conversation") { applyChange(pendingFolder) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Changing, closing, or reloading a workspace starts a new conversation. The previous saved conversation is kept. Unsent text and changes that could not be saved will be discarded.")
+            Text("Changing, closing, or reloading a workspace starts a new conversation. The previous conversation and its unsent draft are kept.")
         }
     }
 
@@ -47,7 +47,7 @@ import SwiftUI
         panel.canCreateDirectories = false
         panel.directoryURL = store.workspace?.root
         panel.prompt = "Choose Workspace"
-        panel.message = "The model can read and search files in this folder. File contents, the folder path, and root AGENTS.md may be sent to your model. Edits and shell commands require separate approval."
+        panel.message = "The model can read and search files in this folder. File contents, the folder path, and root AGENTS.md may be sent to your model. Edits and shell commands require approval unless you explicitly enable auto-approve."
         let completion: (NSApplication.ModalResponse) -> Void = { response in
             if response == .OK, let url = panel.url { requestChange(to: url) }
         }

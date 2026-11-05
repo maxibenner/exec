@@ -36,7 +36,7 @@ private struct MarkdownBlockView: View {
         switch block.kind {
         case .header(let level):
             let size: CGFloat = level == 1 ? 24 : level == 2 ? 20 : 16
-            inline(block.text, codeFont: .system(size: size, weight: .semibold, design: .monospaced))
+            inline(block.text, codeFont: .system(size: size, weight: .semibold, design: .monospaced), fontSize: size, weight: .semibold)
                 .font(.system(size: size, weight: .semibold)).accessibilityAddTraits(.isHeader)
         case .codeBlock(let language):
             VStack(alignment: .leading, spacing: 0) {
@@ -79,7 +79,8 @@ private struct MarkdownBlockView: View {
                     ForEach(block.children) { row in
                         GridRow {
                             ForEach(columns.indices, id: \.self) { column in
-                                inline(row.children.first { $0.kind == .tableCell(columnIndex: column) }?.text ?? AttributedString())
+                                inline(row.children.first { $0.kind == .tableCell(columnIndex: column) }?.text ?? AttributedString(),
+                                       weight: row.kind == .tableHeaderRow ? .semibold : .regular)
                                     .fontWeight(row.kind == .tableHeaderRow ? .semibold : .regular)
                                     .fixedSize(horizontal: true, vertical: true)
                                     .gridColumnAlignment(alignment(columns[column].alignment))
@@ -104,7 +105,8 @@ private struct MarkdownBlockView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func inline(_ text: AttributedString, codeFont: Font = .system(.body, design: .monospaced)) -> some View {
+    private func inline(_ text: AttributedString, codeFont: Font = .system(.body, design: .monospaced),
+                        fontSize: CGFloat = NSFont.systemFontSize, weight: NSFont.Weight = .regular) -> some View {
         var styled = text
         for run in text.runs where run.inlinePresentationIntent?.contains(.code) == true {
             var font = codeFont
@@ -113,8 +115,14 @@ private struct MarkdownBlockView: View {
             styled[run.range].font = font
             styled[run.range].backgroundColor = Color.secondary.opacity(0.12)
         }
-        return Text(styled).textSelection(.enabled).lineSpacing(3)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        return Group {
+            if text.runs.contains(where: { $0.link != nil }) {
+                LinkedText(source: text, fontSize: fontSize, weight: weight)
+            } else {
+                Text(styled).textSelection(.enabled).lineSpacing(3)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func alignment(_ value: PresentationIntent.TableColumn.Alignment) -> HorizontalAlignment {

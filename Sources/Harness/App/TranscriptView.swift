@@ -95,21 +95,35 @@ private struct ScrollTrackingView: NSViewRepresentable {
 private struct MessageView: View {
     let message: Message
     @Binding var followsLatest: Bool
-    @State private var expanded = false
+    @State private var expanded: Bool
+
+    init(message: Message, followsLatest: Binding<Bool>) {
+        self.message = message
+        _followsLatest = followsLatest
+        _expanded = State(initialValue: message.toolResult?.edit != nil)
+    }
 
     var body: some View {
         if let result = message.toolResult {
             DisclosureGroup(isExpanded: $expanded) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(verbatim: result.call.arguments).font(.system(.caption, design: .monospaced))
-                    Text(verbatim: result.text).font(.system(.body, design: .monospaced))
+                if let edit = result.edit {
+                    DiffView(source: edit.diff).padding(.top, 8)
+                } else {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(verbatim: result.call.arguments).font(.system(.caption, design: .monospaced))
+                        Text(verbatim: result.text).font(.system(.body, design: .monospaced))
+                    }
+                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
                 }
-                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
-                    Label(result.call.name, systemImage: result.call.name == "shell" ? "terminal" : "doc.text").font(.callout.weight(.medium))
-                    Text(verbatim: String(result.text.split(separator: "\n").first ?? ""))
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    if let edit = result.edit {
+                        Label("Edited \(edit.path)", systemImage: "doc.badge.checkmark").font(.callout.weight(.medium))
+                    } else {
+                        Label(result.call.name, systemImage: result.call.name == "shell" ? "terminal" : "doc.text").font(.callout.weight(.medium))
+                        Text(verbatim: String(result.text.split(separator: "\n").first ?? ""))
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
             }
             .onChange(of: expanded) { if expanded { followsLatest = false } }

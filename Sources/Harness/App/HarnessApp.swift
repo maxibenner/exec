@@ -2,7 +2,7 @@ import SwiftUI
 
 @main struct HarnessApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @State private var store: ChatStore?
+    @State private var store: ChatLibrary?
     @State private var startupError: String?
     @State private var starting = false
 
@@ -36,7 +36,7 @@ import SwiftUI
             defer { starting = false }
             do {
                 let provider = try await OpenAIProvider.restored()
-                store = ChatStore(provider: provider, sessions: try SessionStore.applicationStore())
+                store = try ChatLibrary(provider: provider, sessions: try SessionStore.applicationStore())
                 delegate.store = store
             } catch {
                 startupError = error.localizedDescription

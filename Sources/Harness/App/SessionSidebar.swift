@@ -1,25 +1,36 @@
 import SwiftUI
 
 struct SessionSidebar: View {
-    @Bindable var store: ChatStore
+    @Bindable var store: ChatLibrary
     let open: (UUID) -> Void
     let delete: (SessionSummary) -> Void
     @State private var confirmingSignOut = false
+    @State private var renaming = false
+    @State private var renameID: UUID?
+    @State private var renameTitle = ""
 
     var body: some View {
-        List(selection: Binding(get: { store.currentSessionID }, set: { if let id = $0 { open(id) } })) {
+        List(selection: Binding(get: { store.sidebarSelectionID }, set: { if let id = $0 { open(id) } })) {
             Section("Sessions") {
                 ForEach(store.sessionList) { session in
-                    SessionRow(session: session, selected: session.id == store.currentSessionID, delete: { delete(session) })
+                    SessionRow(session: session, selected: session.id == store.sidebarSelectionID,
+                               running: store.isSessionRunning(session.id), needsApproval: store.needsApproval(session.id),
+                               needsAttention: store.needsAttention(session.id),
+                               rename: {
+                                   guard store.canNavigate else { return }
+                                   renameID = session.id; renameTitle = session.title; renaming = true
+                               }, delete: { delete(session) })
                         .tag(session.id)
                 }
             }
         }
         .listStyle(.sidebar)
-        .disabled(store.busy)
+        .disabled(store.authenticating)
+        .allowsHitTesting(store.canNavigate)
         .onDeleteCommand {
-            guard !store.busy else { return }
-            if let selected = store.sessionList.first(where: { $0.id == store.currentSessionID }) { delete(selected) }
+            guard store.canNavigate else { return }
+            if let selected = store.sessionList.first(where: { $0.id == store.currentSessionID }),
+               !store.isSessionRunning(selected.id) { delete(selected) }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
@@ -30,7 +41,9 @@ struct SessionSidebar: View {
                             Button("Refresh Models", action: store.restore)
                             Button("Reconnect", action: store.connect)
                             Divider()
-                            Button("Sign Out…", role: .destructive) { confirmingSignOut = true }
+                            Button("Sign Out…", role: .destructive) {
+                                if store.canNavigate && !store.accountBusy { confirmingSignOut = true }
+                            }
                         } label: {
                             Label { Text(verbatim: account).lineLimit(1).truncationMode(.middle) }
                             icon: { Image(systemName: "person.crop.circle") }
@@ -41,8 +54,17 @@ struct SessionSidebar: View {
                             .buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
                     }
                 }
-                .disabled(store.busy).padding(14)
+                .disabled(store.accountBusy).allowsHitTesting(store.canNavigate).padding(14)
             }
+        }
+        .alert("Rename Conversation", isPresented: $renaming) {
+            TextField("Name", text: $renameTitle)
+            Button("Rename") {
+                if let id = renameID { store.renameSession(id, title: renameTitle) }
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) {}
         }
         .confirmationDialog("Sign out?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
             Button("Sign Out", role: .destructive, action: store.disconnect)
@@ -57,8 +79,11 @@ struct SessionSidebar: View {
 private struct SessionRow: View {
     let session: SessionSummary
     let selected: Bool
+    let running: Bool
+    let needsApproval: Bool
+    let needsAttention: Bool
+    let rename: () -> Void
     let delete: () -> Void
-    @State private var hovered = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -77,10 +102,14 @@ private struct SessionRow: View {
                 .font(.caption2).foregroundStyle(.secondary)
             }
             Group {
-                if hovered || selected {
-                    Button(role: .destructive, action: delete) { Image(systemName: "trash") }
-                        .buttonStyle(.borderless).foregroundStyle(.secondary)
-                        .help("Delete conversation").accessibilityLabel("Delete \(session.title)")
+                if needsApproval {
+                    Image(systemName: "hand.raised").foregroundStyle(.orange)
+                        .help("Approval required").accessibilityLabel("Approval required")
+                } else if running {
+                    ProgressView().controlSize(.mini).accessibilityLabel("Running")
+                } else if needsAttention {
+                    Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+                        .help("Conversation needs attention").accessibilityLabel("Conversation needs attention")
                 } else {
                     Color.clear
                 }
@@ -89,8 +118,12 @@ private struct SessionRow: View {
         }
         .padding(.vertical, 5)
         .contentShape(Rectangle())
-        .onHover { hovered = $0 }
-        .contextMenu { Button("Delete Conversation…", role: .destructive, action: delete) }
-        .accessibilityAction(named: "Delete Conversation", delete)
+        .contextMenu {
+            Button("Rename…", action: rename).disabled(session.unreadable)
+            Divider()
+            Button("Delete Conversation…", role: .destructive, action: delete).disabled(running)
+        }
+        .accessibilityAction(named: "Rename Conversation") { if !session.unreadable { rename() } }
+        .accessibilityAction(named: "Delete Conversation") { if !running { delete() } }
     }
 }
