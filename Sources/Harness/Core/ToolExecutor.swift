@@ -10,7 +10,15 @@ import Observation
         let directory: URL
     }
     private(set) var pendingApproval: Approval?
+    private(set) var autoApprovedDirectory: URL?
     private var answer: CheckedContinuation<Bool, Never>?
+
+    func setAutoApproval(for directory: URL?) {
+        autoApprovedDirectory = directory
+        if let directory, let pending = pendingApproval, pending.directory == directory {
+            resolveApproval(id: pending.id, approved: true)
+        }
+    }
 
     func resolveApproval(id: UUID, approved: Bool) {
         guard pendingApproval?.id == id else { return }
@@ -20,31 +28,37 @@ import Observation
         continuation?.resume(returning: approved)
     }
 
-    func execute(_ call: ToolCall, workspace: Workspace?) async throws -> String {
+    func execute(_ call: ToolCall, workspace: Workspace?) async throws -> ToolResult {
         try Task.checkCancellation()
-        guard let workspace else { return "Error: select a workspace before using tools." }
+        guard let workspace else { return ToolResult(call: call, text: "Error: select a workspace before using tools.") }
         do {
             if call.name == "shell" {
                 let command = try CodingTools.command(call)
                 let approval = Approval(kind: .shell, content: command, directory: workspace.root)
-                guard try await requestApproval(approval) else { return "User denied this command. It was not executed. Do not retry it without a new user request." }
-                return try await background { try await ShellRunner.run(command, in: workspace.root) }
+                guard try await requestApproval(approval) else {
+                    return ToolResult(call: call, text: "User denied this command. It was not executed. Do not retry it without a new user request.")
+                }
+                return ToolResult(call: call, text: try await background { try await ShellRunner.run(command, in: workspace.root) })
             }
             if call.name == "edit_file" {
                 let arguments = try CodingTools.decode(FileEdit.Arguments.self, call)
                 let edit = try await background { try FileEdit.prepare(arguments, workspace: workspace) }
                 let approval = Approval(kind: .edit, content: edit.diff, directory: workspace.root)
-                guard try await requestApproval(approval) else { return "User denied this edit. Nothing was written. Do not retry without a new user request." }
-                return try await background { try edit.apply(workspace: workspace) }
+                guard try await requestApproval(approval) else {
+                    return ToolResult(call: call, text: "User denied this edit. Nothing was written. Do not retry without a new user request.")
+                }
+                let text = try await background { try await FileEditWriter.shared.apply(edit, workspace: workspace) }
+                return ToolResult(call: call, text: text, edit: .init(path: edit.path, diff: edit.diff))
             }
-            return try await background { try CodingTools.readOnly(call, workspace: workspace) }
+            return ToolResult(call: call, text: try await background { try CodingTools.readOnly(call, workspace: workspace) })
         } catch is CancellationError { throw CancellationError() }
-        catch { return "Tool error: \(error.localizedDescription)" }
+        catch { return ToolResult(call: call, text: "Tool error: \(error.localizedDescription)") }
     }
 
     private func requestApproval(_ approval: Approval) async throws -> Bool {
         try Task.checkCancellation()
         guard pendingApproval == nil else { throw HarnessError("Another operation is awaiting approval.") }
+        if autoApprovedDirectory == approval.directory { return true }
         let approved = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 pendingApproval = approval

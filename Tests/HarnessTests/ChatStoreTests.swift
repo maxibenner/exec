@@ -1,8 +1,28 @@
 import Foundation
 
+@MainActor final class FakeConnection {
+    var account: String? = "test@example.com"
+}
+
 @MainActor final class FakeProvider: ChatProvider {
     let connectionTitle = "Connect to Test"
-    var account: String? = "test@example.com"
+    private let connection: FakeConnection
+    var account: String? {
+        get { connection.account }
+        set { connection.account = newValue }
+    }
+    var children: [FakeProvider] = []
+    var compactionAction: (() throws -> Bool)?
+    func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
+                         instructions: String, tools: [ToolDefinition]) async throws -> Bool {
+        try compactionAction?() ?? false
+    }
+    init(connection: FakeConnection = FakeConnection()) { self.connection = connection }
+    func makeConversationProvider() throws -> any ChatProvider {
+        let child = FakeProvider(connection: connection)
+        children.append(child)
+        return child
+    }
     var inputs: [[Message]] = []
     var instructions: [String] = []
     var scripted: [[ChatEvent]] = []
@@ -42,6 +62,37 @@ import Foundation
             try await Task.sleep(for: .milliseconds(5))
         }
         throw HarnessError("Operation did not settle")
+    }
+
+    func longToolTurnsFinishWithoutArtificialCaps() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = FakeProvider()
+        provider.scripted = (0..<18).map { index in
+            [.toolCall(ToolCall(id: "read-\(index)", name: "list_files", arguments: #"{"path":"."}"#)), .completed]
+        } + [[.text("Finished"), .completed]]
+        let store = ChatStore(provider: provider)
+        store.selectWorkspace(root)
+        try await settle(store)
+        store.selectedModel = "test"
+        store.draft = "Inspect"
+        store.send()
+        try await settle(store)
+        try expect(store.error == nil && store.messages.last?.text == "Finished")
+        try expect(provider.inputs.count == 19 && store.messages.filter { $0.toolResult != nil }.count == 18)
+
+        store.newConversation()
+        try await settle(store)
+        let repeated = ToolCall(id: "duplicate", name: "list_files", arguments: #"{"path":"."}"#)
+        provider.scripted = [[.toolCall(repeated), .completed], [.toolCall(repeated), .completed]]
+        let before = provider.inputs.count
+        store.draft = "Check duplicate protection"
+        store.send()
+        try await settle(store)
+        try expect(store.error?.contains("repeated a tool call ID") == true)
+        try expect(provider.inputs.count == before + 2)
+        try expect(store.messages.last?.text == "Duplicate tool call ID; not executed.")
     }
 
     func finalTextReplacesDeltasAndEmptyResponsesFail() async throws {

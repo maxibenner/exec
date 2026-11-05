@@ -20,29 +20,51 @@ import Foundation
         try expect(try Data(contentsOf: file) == original)
         executor.resolveApproval(id: executor.pendingApproval!.id, approved: false)
         let denial = try await denied.value
-        try expect(denial.contains("denied"))
+        try expect(denial.text.contains("denied") && denial.edit == nil)
         try expect(try Data(contentsOf: file) == original)
 
         let approved = Task { try await executor.execute(call, workspace: workspace) }
         try await waitForApproval(executor)
         executor.resolveApproval(id: executor.pendingApproval!.id, approved: true)
         let result = try await approved.value
-        try expect(result.contains("Edited script"))
+        try expect(result.text.contains("Edited script") && result.edit?.path == "script")
         try expect(try String(contentsOf: file, encoding: .utf8) == "one\nnew\nthree\n")
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         try expect(attributes[.posixPermissions] as? Int == 0o755)
 
         // Reusing a prior read revision must not even present an approval.
+        executor.setAutoApproval(for: workspace.root)
         let stale = try await executor.execute(call, workspace: workspace)
-        try expect(stale.contains("File changed") && executor.pendingApproval == nil)
+        try expect(stale.text.contains("File changed") && stale.edit == nil && executor.pendingApproval == nil)
+        executor.setAutoApproval(for: nil)
+        let restored = try JSONDecoder().decode(ToolResult.self, from: JSONEncoder().encode(result))
+        try expect(restored.edit?.diff.contains("-old\n+new") == true)
         try original.write(to: file)
         let pending = Task { try await executor.execute(call, workspace: workspace) }
         try await waitForApproval(executor)
         try "external edit".write(to: file, atomically: true, encoding: .utf8)
         executor.resolveApproval(id: executor.pendingApproval!.id, approved: true)
         let changed = try await pending.value
-        try expect(changed.contains("File changed"))
+        try expect(changed.text.contains("File changed") && changed.edit == nil)
         try expect(try String(contentsOf: file, encoding: .utf8) == "external edit")
+    }
+
+    func concurrentPreparedEditsCannotOverwriteEachOther() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = try Workspace.load(root)
+        let file = root.appendingPathComponent("shared")
+        let original = Data("old".utf8)
+        try original.write(to: file)
+        let first = try FileEdit.prepare(.init(path: "shared", expected_revision: WorkspaceFiles.revision(original), old_text: "old", new_text: "first"), workspace: workspace)
+        let second = try FileEdit.prepare(.init(path: "shared", expected_revision: WorkspaceFiles.revision(original), old_text: "old", new_text: "second"), workspace: workspace)
+        let a = Task { try await FileEditWriter.shared.apply(first, workspace: workspace) }
+        let b = Task { try await FileEditWriter.shared.apply(second, workspace: workspace) }
+        let results = await [a.result, b.result]
+        try expect(results.filter { if case .success = $0 { return true }; return false }.count == 1)
+        let text = try String(contentsOf: file, encoding: .utf8)
+        try expect(text == "first" || text == "second")
     }
 
     func creationAndDiffBoundaries() throws {

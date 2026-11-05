@@ -20,6 +20,7 @@ struct Message: Identifiable, Codable, Sendable {
 struct ChatModel: Identifiable, Sendable {
     let id: String
     let name: String
+    var contextWindow: Int? = nil
 }
 
 enum ChatEvent: Sendable {
@@ -35,21 +36,29 @@ enum ChatEvent: Sendable {
     var connectionTitle: String { get }
     var account: String? { get }
     var conversationIdentity: String? { get }
+    // Share account authentication, but isolate mutable response context for each conversation.
+    func makeConversationProvider() throws -> any ChatProvider
     // Opaque bytes are interpreted only by the provider, never by UI/storage.
     func encodeConversationState() throws -> Data?
-    func restoreConversationState(_ data: Data?) throws
+    func restoreConversationState(_ data: Data?, history: [Message]) throws
     func clearConversationState()
     func connect() async throws
     func disconnect() async throws
     func models() async throws -> [ChatModel]
+    // Compact only completed history, never pending input or unresolved tool calls.
+    // A true result must be checkpointed before sending another inference request.
+    func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
+                         instructions: String, tools: [ToolDefinition]) async throws -> Bool
     func send(_ messages: [Message], model: String, instructions: String, tools: [ToolDefinition]) -> AsyncThrowingStream<ChatEvent, Error>
 }
 
 extension ChatProvider {
     var conversationIdentity: String? { account }
+    func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
+                         instructions: String, tools: [ToolDefinition]) async throws -> Bool { false }
     func encodeConversationState() throws -> Data? { nil }
     func clearConversationState() {}
-    func restoreConversationState(_ data: Data?) throws {
+    func restoreConversationState(_ data: Data?, history: [Message]) throws {
         guard data == nil else { throw HarnessError("This provider cannot restore the saved conversation state.") }
     }
 }

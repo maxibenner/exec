@@ -18,8 +18,13 @@ struct ToolDefinition: Sendable {
 }
 
 struct ToolResult: Codable, Sendable {
+    struct AppliedEdit: Codable, Sendable {
+        let path: String
+        let diff: String
+    }
     let call: ToolCall
     let text: String
+    var edit: AppliedEdit?
 }
 
 enum CodingTools {
@@ -36,13 +41,13 @@ enum CodingTools {
             .init(name: "path", type: "string", description: "Relative directory path; '.' for root"),
             .init(name: "query", type: "string", description: "Nonempty literal text")
         ]),
-        .init(name: "edit_file", description: "Propose one exact replacement with a user-approved diff. First read_file and pass its Revision as expected_revision. old_text must occur exactly once. For a new file, use expected_revision 'new' and empty old_text; the parent directory must exist. Arguments must fit within 32 KiB; split large changes. Never retry interrupted edits automatically.", parameters: [
+        .init(name: "edit_file", description: "Propose one exact replacement subject to the user's approval setting. First read_file and pass its Revision as expected_revision. old_text must occur exactly once. For a new file, use expected_revision 'new' and empty old_text; the parent directory must exist. Arguments must fit within 32 KiB; split large changes. Never retry interrupted edits automatically.", parameters: [
             .init(name: "path", type: "string", description: "Relative file path"),
             .init(name: "expected_revision", type: "string", description: "Revision from read_file, or 'new' to create a file"),
             .init(name: "old_text", type: "string", description: "Exact unique text to replace"),
             .init(name: "new_text", type: "string", description: "Replacement text")
         ]),
-        .init(name: "shell", description: "Request explicit user approval to run a bash command in the workspace. Not sandboxed. Commands have a 30-second timeout and bounded combined output. Never automatically retry commands or assume a cancelled command had no effects.", parameters: [
+        .init(name: "shell", description: "Run a bash command in the workspace subject to the user's approval setting. Not sandboxed. Commands have a 30-second timeout and bounded combined output. Never automatically retry commands or assume a cancelled command had no effects.", parameters: [
             .init(name: "command", type: "string", description: "Exact shell command to show for approval")
         ])
     ]

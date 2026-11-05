@@ -15,9 +15,10 @@ final class HTTPStub: URLProtocol, @unchecked Sendable {
         private var replies: [Reply] = []
         private var received: [URLRequest] = []
         private var stopped: [URL] = []
+        private var held: [HTTPStub] = []
 
         func reset(_ replies: [Reply]) {
-            lock.withLock { self.replies = replies; received = []; stopped = [] }
+            lock.withLock { self.replies = replies; received = []; stopped = []; held = [] }
         }
         func receive(_ request: URLRequest) -> Reply {
             lock.withLock {
@@ -25,7 +26,18 @@ final class HTTPStub: URLProtocol, @unchecked Sendable {
                 return replies.isEmpty ? Reply(error: URLError(.badServerResponse)) : replies.removeFirst()
             }
         }
-        func stop(_ url: URL?) { lock.withLock { if let url { stopped.append(url) } } }
+        func hold(_ response: HTTPStub) { lock.withLock { held.append(response) } }
+        func finishHeld() {
+            let responses = lock.withLock { let result = held; held = []; return result }
+            for response in responses { response.client?.urlProtocolDidFinishLoading(response) }
+        }
+        func stop(_ url: URL?) {
+            lock.withLock {
+                if let url { stopped.append(url) }
+                held.removeAll { $0.request.url == url }
+            }
+        }
+        var heldCount: Int { lock.withLock { held.count } }
         var requests: [URLRequest] { lock.withLock { received } }
         var stoppedURLs: [URL] { lock.withLock { stopped } }
     }
@@ -48,7 +60,8 @@ final class HTTPStub: URLProtocol, @unchecked Sendable {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         for chunk in reply.chunks { client?.urlProtocol(self, didLoad: chunk) }
         if let error = reply.error { client?.urlProtocol(self, didFailWithError: error) }
-        else if !reply.holdOpen { client?.urlProtocolDidFinishLoading(self) }
+        else if reply.holdOpen { Self.state.hold(self) }
+        else { client?.urlProtocolDidFinishLoading(self) }
     }
     override func stopLoading() { Self.state.stop(request.url) }
 

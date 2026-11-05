@@ -1,6 +1,15 @@
 import Foundation
 import Darwin
 
+/// Serialize this app's replacements so two conversations cannot both pass the final check
+/// against the same old file. Shell commands and external writers remain outside this lock.
+actor FileEditWriter {
+    static let shared = FileEditWriter()
+    func apply(_ edit: FileEdit, workspace: Workspace) throws -> String {
+        try edit.apply(workspace: workspace)
+    }
+}
+
 /// One exact replacement, or creation of a new file. No fuzzy patches or deletes.
 struct FileEdit: Sendable {
     struct Arguments: Decodable, Sendable {

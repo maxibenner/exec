@@ -28,7 +28,7 @@ struct StreamingTests {
         guard case .text(let delta) = text else { throw HarnessError("Missing text event") }
         try expect(delta == "hello")
         let completed = try OpenAITransport.decode(Data(#"{"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","encrypted_content":"opaque"}]}}"#.utf8))
-        guard case .completed(let output) = completed else { throw HarnessError("Missing completion") }
+        guard case .completed(let output, _) = completed else { throw HarnessError("Missing completion") }
         let items = try JSONSerialization.jsonObject(with: output) as? [[String: String]]
         try expect(items?.first?["encrypted_content"] == "opaque")
     }
@@ -40,7 +40,7 @@ struct StreamingTests {
         try expect(decoder.decode(message) == nil)
         try expect(decoder.decode(reasoning) == nil)
         let terminal = Data(#"{"type":"response.completed","response":{"status":"completed","output":[{"id":"rs_1","type":"reasoning","encrypted_content":"opaque"},{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}]}}"#.utf8)
-        guard case .completed(let data) = try decoder.decode(terminal) else { throw HarnessError("Missing completion") }
+        guard case .completed(let data, _) = try decoder.decode(terminal) else { throw HarnessError("Missing completion") }
         let output = try JSONSerialization.jsonObject(with: data) as! [[String: Any]]
         try expect(output.count == 2)
         try expect(output[0]["encrypted_content"] as? String == "opaque" && output[0]["summary"] != nil)

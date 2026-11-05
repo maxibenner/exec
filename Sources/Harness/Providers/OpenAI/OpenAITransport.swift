@@ -5,7 +5,7 @@ import Foundation
 enum OpenAITransport {
     enum Event: Sendable {
         case text(String)
-        case completed(Data)
+        case completed(Data, tokens: Int?)
     }
 
     static func stream(_ request: URLRequest, session: URLSession = OpenAIHTTP.session) -> AsyncThrowingStream<Event, Error> {
@@ -30,6 +30,22 @@ enum OpenAITransport {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    static func boundedResponse(_ request: URLRequest, session: URLSession) async throws -> Data {
+        let task = Task.detached {
+            let (bytes, response) = try await session.bytes(for: request)
+            defer { bytes.task.cancel() }
+            try OpenAIHTTP.check(response)
+            var data = Data()
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < 4 * 1024 * 1024 else { throw HarnessError("Compacted context exceeded the size limit.") }
+                data.append(byte)
+            }
+            return data
+        }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
     static func decode(_ data: Data) throws -> Event? {
@@ -75,7 +91,14 @@ enum OpenAITransport {
                         items[slot] = (items[slot] ?? [:]).merging(item) { _, final in final }
                     }
                 }
-                return .completed(try serializedOutput())
+                let usage = response["usage"] as? [String: Any]
+                let input = usage?["input_tokens"] as? Int
+                let output = usage?["output_tokens"] as? Int
+                let tokens: Int?
+                if let input, let output, (0...500_000_000).contains(input), (0...500_000_000).contains(output) {
+                    tokens = input + output // Cached input is still part of the context window.
+                } else { tokens = nil }
+                return .completed(try serializedOutput(), tokens: tokens)
             case "response.failed", "response.incomplete", "error":
                 let response = event["response"] as? [String: Any]
                 let error = (response?["error"] as? [String: Any]) ?? (event["error"] as? [String: Any])

@@ -126,9 +126,12 @@ import Foundation
         let corruptID = try await sessions.save(snapshot, id: UUID())
         let corruptFile = root.appendingPathComponent("\(corruptID).json")
         try Data("corrupt".utf8).write(to: corruptFile)
+        let previousID = store.currentSessionID
         store.openSession(corruptID)
+        try expect(store.sidebarSelectionID == corruptID && store.currentSessionID == previousID)
         try await settle(store)
         try expect(store.error != nil && store.messages.isEmpty)
+        try expect(store.openingSessionID == nil && store.sidebarSelectionID == previousID)
         store.newConversation()
         try await settle(store)
         try expect(try Data(contentsOf: corruptFile) == Data("corrupt".utf8))
@@ -164,7 +167,14 @@ import Foundation
         let order = store.sessionList.map(\.id)
         let dates = store.sessionList.map(\.updatedAt)
         store.openSession(legacyID)
+        try expect(store.busy && store.sidebarSelectionID == legacyID)
+        try expect(store.currentSessionID == secondID && store.messages.first?.text == "Separate conversation")
+        // A second navigation cannot replace the in-flight selection or its conversation.
+        store.openSession(secondID)
+        try expect(store.sidebarSelectionID == legacyID)
         try await settle(store)
+        try expect(store.openingSessionID == nil && store.sidebarSelectionID == legacyID)
+        try expect(store.currentSessionID == legacyID && store.messages.first?.id == user.id)
         try expect(store.sessionList.map(\.id) == order)
         try expect(store.sessionList.map(\.updatedAt) == dates)
         store.draft = "Continue legacy"
@@ -189,12 +199,15 @@ import Foundation
         let sessions = SessionStore(directory: root)
         let snapshot = SessionSnapshot(identity: "test", selectedModel: "test", messages: [Message(role: .user, text: "Recover me")], history: [], activeTurn: true, activityDate: Date(timeIntervalSince1970: 100))
         let id = try await sessions.save(snapshot)
+        try await sessions.rename(id: id, title: "Recovered name", identity: "test")
+        try await sessions.save(snapshot, id: id, select: false) // A running turn's older snapshot must retain the name.
         let staleIndex = try Data(contentsOf: root.appendingPathComponent("index.json"))
         try FileManager.default.removeItem(at: root.appendingPathComponent("index.json"))
         let recovered = SessionStore(directory: root)
         let list = try await recovered.list(identity: "test")
         try expect(list.count == 1 && list.first?.id == id)
         try expect(list.first?.updatedAt == snapshot.activityDate)
+        try expect(list.first?.title == "Recovered name")
         let loaded = try await recovered.load(id: id)
         try expect(loaded?.activeTurn == true) // Storage itself never executes or normalizes operations.
         try await recovered.delete(id: id)

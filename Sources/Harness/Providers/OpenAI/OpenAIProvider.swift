@@ -7,26 +7,24 @@ import Foundation
     // provider-specific conversation state into the UI or shared message model.
     // Key each model step by its final input message (user or tool result), so
     // successive tool rounds don't overwrite earlier opaque reasoning/output.
-    private var outputs: [UUID: Data] = [:]
+    private var context = CodexConversationState()
     let connectionTitle = "Connect to Codex"
     var account: String? { authentication.account }
     var conversationIdentity: String? { authentication.conversationIdentity }
 
     func encodeConversationState() throws -> Data? {
-        try JSONEncoder().encode(outputs)
+        try JSONEncoder().encode(context)
     }
 
-    func clearConversationState() { outputs.removeAll() }
+    func clearConversationState() { context = CodexConversationState() }
 
-    func restoreConversationState(_ data: Data?) throws {
+    func restoreConversationState(_ data: Data?, history: [Message]) throws {
         do {
-            let restored = try data.map { try JSONDecoder().decode([UUID: Data].self, from: $0) } ?? [:]
-            for output in restored.values {
-                guard try JSONSerialization.jsonObject(with: output) is [[String: Any]] else {
-                    throw HarnessError("Invalid saved response output.")
-                }
+            let restored = try CodexConversationState.restore(data)
+            if let prefix = restored.prefix, !history.contains(where: { $0.id == prefix.throughID }) {
+                throw HarnessError("Compacted context does not match the saved history.")
             }
-            outputs = restored
+            context = restored
         } catch { throw HarnessError("Saved Codex response context could not be read. Start a new conversation.") }
     }
 
@@ -38,15 +36,25 @@ import Foundation
         try await OpenAIProvider(authentication: OpenAIAuthentication.restored())
     }
 
+    func makeConversationProvider() throws -> any ChatProvider {
+        try OpenAIProvider(authentication: authentication, http: http)
+    }
+
     func connect() async throws { try await authentication.connect() }
     func disconnect() async throws {
-        defer { if authentication.account == nil { outputs.removeAll() } }
+        defer { if authentication.account == nil { clearConversationState() } }
         try await authentication.disconnect()
     }
 
     func models() async throws -> [ChatModel] {
         struct Catalog: Decodable {
-            struct Model: Decodable { let slug: String; let display_name: String?; let visibility: String? }
+            struct Model: Decodable {
+                let slug: String
+                let display_name: String?
+                let visibility: String?
+                let context_window: Int?
+                let effective_context_window_percent: Int?
+            }
             let models: [Model]
         }
         let credentials = try await authentication.credentials()
@@ -55,7 +63,57 @@ import Foundation
         try OpenAIHTTP.check(response)
         return try JSONDecoder().decode(Catalog.self, from: data).models
             .filter { $0.visibility == nil || $0.visibility == "list" }
-            .map { ChatModel(id: $0.slug, name: $0.display_name ?? $0.slug) }
+            .map {
+                let percent = $0.effective_context_window_percent ?? 100
+                let window = $0.context_window.flatMap { size -> Int? in
+                    guard (1...10_000_000).contains(size), (1...100).contains(percent) else { return nil }
+                    return size * percent / 100
+                }
+                return ChatModel(id: $0.slug, name: $0.display_name ?? $0.slug, contextWindow: window)
+            }
+    }
+
+    func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
+                         instructions: String, tools: [ToolDefinition]) async throws -> Bool {
+        guard let window = model.contextWindow, window > 0 else {
+            throw HarnessError("Codex did not provide a context limit for this model. Refresh models before sending.")
+        }
+        let toolBytes = tools.reduce(0) { total, tool in
+            total + tool.name.utf8.count + tool.description.utf8.count + 256 + tool.parameters.reduce(0) {
+                $0 + $1.name.utf8.count + $1.type.utf8.count + $1.description.utf8.count + 64
+            }
+        }
+        let overhead = (CodexConnection.systemInstructions(instructions).utf8.count + toolBytes + 2) / 3
+        let tokens = try context.estimatedTokens(history + pending, overhead: overhead)
+        guard tokens >= Int(ceil(Double(window) * 0.95)) else { return false }
+        guard let boundary = history.last?.id else {
+            throw HarnessError("The input is too large and there is no completed history to compact. Shorten the message.")
+        }
+        // Never summarize an unanswered call or treat compaction output as executable tools.
+        var unanswered = Set<String>()
+        for message in history {
+            unanswered.formUnion(message.toolCalls.map(\.id))
+            if let result = message.toolResult { unanswered.remove(result.call.id) }
+        }
+        guard unanswered.isEmpty else {
+            throw HarnessError("Cannot compact while tool results are unresolved.")
+        }
+        let credentials = try await authentication.credentials()
+        try Task.checkCancellation()
+        let request = try CodexConnection.compactRequest(
+            input: context.input(history), model: model.id, sessionID: history.first!.id.uuidString,
+            accessToken: credentials.access, accountID: credentials.accountID, instructions: instructions
+        )
+        let data = try await OpenAITransport.boundedResponse(request, session: http)
+        guard let response = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let output = response["output"] as? [[String: Any]] else {
+            throw HarnessError("Codex returned invalid compacted context. The original conversation was kept.")
+        }
+        let compacted = try JSONSerialization.data(withJSONObject: output)
+        try CodexConversationState.validateCompaction(compacted)
+        try Task.checkCancellation()
+        context = CodexConversationState(prefix: .init(throughID: boundary, output: compacted))
+        return true
     }
 
     func send(_ messages: [Message], model: String, instructions: String = "", tools: [ToolDefinition] = []) -> AsyncThrowingStream<ChatEvent, Error> {
@@ -65,25 +123,8 @@ import Foundation
                     let credentials = try await authentication.credentials()
                     try Task.checkCancellation()
                     let ids = Set(messages.map(\.id))
-                    outputs = outputs.filter { ids.contains($0.key) }
-                    var input: [[String: Any]] = []
-                    var previousID: UUID?
-                    for message in messages {
-                        defer { previousID = message.id }
-                        if let result = message.toolResult {
-                            input.append(["type": "function_call_output", "call_id": result.call.id, "output": result.text])
-                        } else if message.role == .assistant, let previousID, let output = outputs[previousID] {
-                            guard let items = try JSONSerialization.jsonObject(with: output) as? [[String: Any]] else {
-                                throw HarnessError("Invalid saved response.")
-                            }
-                            input.append(contentsOf: items)
-                        } else {
-                            if !message.text.isEmpty { input.append(["role": message.role.rawValue, "content": message.text]) }
-                            for call in message.toolCalls {
-                                input.append(["type": "function_call", "call_id": call.id, "name": call.name, "arguments": call.arguments])
-                            }
-                        }
-                    }
+                    context.outputs = context.outputs.filter { ids.contains($0.key) }
+                    let input = try context.input(messages)
                     let request = try CodexConnection.responsesRequest(
                         input: input, model: model, sessionID: messages.first?.id.uuidString ?? UUID().uuidString,
                         accessToken: credentials.access, accountID: credentials.accountID, instructions: instructions, tools: tools
@@ -92,7 +133,7 @@ import Foundation
                         try Task.checkCancellation()
                         switch event {
                         case .text(let delta): continuation.yield(.text(delta))
-                        case .completed(let output):
+                        case .completed(let output, let tokens):
                             guard let items = try JSONSerialization.jsonObject(with: output) as? [[String: Any]] else {
                                 throw HarnessError("Invalid tool response.")
                             }
@@ -116,7 +157,10 @@ import Foundation
                                 }
                                 continuation.yield(.toolCall(ToolCall(id: id, name: name, arguments: arguments)))
                             }
-                            if let previousID = messages.last?.id { outputs[previousID] = output }
+                            if let previousID = messages.last?.id {
+                                context.outputs[previousID] = output
+                                context.measurement = tokens.map { .init(inputID: previousID, tokens: $0) }
+                            }
                             continuation.yield(.completed)
                         }
                     }

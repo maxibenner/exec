@@ -64,12 +64,12 @@ import Foundation
         try expect(executor.pendingApproval != nil)
         executor.resolveApproval(id: executor.pendingApproval!.id, approved: false)
         let denial = try await denied.value
-        try expect(denial.contains("denied"))
+        try expect(denial.text.contains("denied"))
         let approved = Task { try await executor.execute(call, workspace: workspace) }
         try await waitUntil { executor.pendingApproval != nil }
         executor.resolveApproval(id: executor.pendingApproval!.id, approved: true)
         let result = try await approved.value
-        try expect(result.contains("Exit code: 0"))
+        try expect(result.text.contains("Exit code: 0"))
         let cancelled = Task { try await executor.execute(call, workspace: workspace) }
         try await waitUntil { executor.pendingApproval != nil }
         let staleApproval = executor.pendingApproval!.id
@@ -79,6 +79,35 @@ import Foundation
         catch is CancellationError {}
         try expect(executor.pendingApproval == nil)
         try expect(try String(contentsOf: root.appendingPathComponent("effect"), encoding: .utf8) == "x")
+    }
+
+    func autoApprovalIsScopedAndRevocable() async throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = try Workspace.load(root)
+        let other = root.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let otherWorkspace = try Workspace.load(other)
+        let executor = ToolExecutor()
+        let call = ToolCall(id: "auto", name: "shell", arguments: #"{"command":"printf x >> effect"}"#)
+        try expect(executor.autoApprovedDirectory == nil)
+        executor.setAutoApproval(for: workspace.root)
+        let first = try await executor.execute(call, workspace: workspace)
+        let second = try await executor.execute(call, workspace: workspace)
+        try expect(first.text.contains("Exit code: 0") && second.text.contains("Exit code: 0"))
+        try expect(executor.pendingApproval == nil)
+        let scoped = Task { try await executor.execute(call, workspace: otherWorkspace) }
+        try await waitUntil { executor.pendingApproval != nil }
+        executor.resolveApproval(id: executor.pendingApproval!.id, approved: false)
+        _ = try await scoped.value
+        try expect(!FileManager.default.fileExists(atPath: other.appendingPathComponent("effect").path))
+        executor.setAutoApproval(for: nil)
+        let manual = Task { try await executor.execute(call, workspace: workspace) }
+        try await waitUntil { executor.pendingApproval != nil }
+        manual.cancel()
+        do { _ = try await manual.value; throw CheckFailure(description: "Cancelled approval ran") }
+        catch is CancellationError {}
+        try expect(try String(contentsOf: root.appendingPathComponent("effect"), encoding: .utf8) == "xx")
     }
 
     private func waitUntil(_ predicate: () -> Bool) async throws {

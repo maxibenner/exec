@@ -42,6 +42,27 @@ import Foundation
         try expect(String(decoding: HTTPStub.body(of: revoke), as: UTF8.self).contains("token=new-refresh"))
     }
 
+    func cancellingOneCallerDoesNotCancelSharedRefresh() async throws {
+        let store = try credentials(expired: true)
+        let http = HTTPStub.makeSession([.init(chunks: [try refreshedToken()], holdOpen: true)])
+        defer { http.invalidateAndCancel() }
+        let auth = try OpenAIAuthentication(keychain: store, http: http)
+        let first = Task { try await auth.credentials() }
+        let second = Task { try await auth.credentials() }
+        try await waitUntil { HTTPStub.state.heldCount == 1 }
+        first.cancel()
+        try await Task.sleep(for: .milliseconds(20))
+        try expect(HTTPStub.state.stoppedURLs.isEmpty)
+        HTTPStub.state.finishHeld()
+        do { _ = try await first.value; throw CheckFailure(description: "Cancelled caller succeeded") }
+        catch is CancellationError {}
+        let result = try await second.value
+        try expect(result.refresh == "new-refresh" && HTTPStub.state.requests.count == 1)
+        let restarted = try OpenAIAuthentication(keychain: store, http: http)
+        let saved = try await restarted.credentials()
+        try expect(saved.refresh == "new-refresh" && HTTPStub.state.requests.count == 1)
+    }
+
     func interruptedRefreshIsNotReplayedAfterRestart() async throws {
         let store = try credentials(expired: true)
         let http = HTTPStub.makeSession([.init(holdOpen: true)])
@@ -50,6 +71,7 @@ import Foundation
         let refresh = Task { try await auth.credentials() }
         try await waitUntil { !HTTPStub.state.requests.isEmpty }
         refresh.cancel()
+        http.invalidateAndCancel() // Simulate a lost transport/process, not just one cancelled waiter.
         do {
             _ = try await refresh.value
             throw CheckFailure(description: "Cancelled refresh succeeded")
@@ -153,13 +175,19 @@ import Foundation
         let assistant = Message(role: .assistant, text: "", toolCalls: received)
         let result = Message(role: .tool, text: "file.swift", toolResult: ToolResult(call: call, text: "file.swift"))
         let savedState = try provider.encodeConversationState()
-        let resumed = try OpenAIProvider(authentication: auth, http: http)
-        try resumed.restoreConversationState(savedState)
+        let resumed = try provider.makeConversationProvider()
+        let emptyState = try resumed.encodeConversationState()!
+        try expect(try CodexConversationState.restore(emptyState).outputs.isEmpty)
+        try expect(resumed.conversationIdentity == provider.conversationIdentity)
+        try resumed.restoreConversationState(savedState, history: [user, assistant, result])
+        resumed.clearConversationState()
+        try expect(!(try CodexConversationState.restore(provider.encodeConversationState())).outputs.isEmpty)
+        try resumed.restoreConversationState(savedState, history: [user, assistant, result])
         let savedMessages = try JSONEncoder().encode([user, assistant, result])
         let restoredMessages = try JSONDecoder().decode([Message].self, from: savedMessages)
         try expect(restoredMessages.first?.id == user.id)
         var snapshots: [String] = []
-        for try await event in resumed.send(restoredMessages, model: "test", tools: CodingTools.definitions) {
+        for try await event in resumed.send(restoredMessages, model: "test", instructions: "", tools: CodingTools.definitions) {
             if case .textSnapshot(let text) = event { snapshots.append(text) }
         }
         try expect(snapshots == [finalText])
@@ -175,7 +203,7 @@ import Foundation
         try expect(input[3]["type"] as? String == "function_call_output")
         try expect(input[3]["call_id"] as? String == call.id && input[3]["output"] as? String == "file.swift")
         try expectFailure {
-            try resumed.restoreConversationState(JSONEncoder().encode([user.id: Data("corrupt".utf8)]))
+            try resumed.restoreConversationState(JSONEncoder().encode([user.id: Data("corrupt".utf8)]), history: [user])
         }
     }
 

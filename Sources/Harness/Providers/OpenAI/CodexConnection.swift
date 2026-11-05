@@ -57,7 +57,7 @@ enum CodexConnection {
         request.setValue(UUID().uuidString, forHTTPHeaderField: "x-client-request-id")
         var body: [String: Any] = [
             "model": model, "input": input, "store": false, "stream": true,
-            "instructions": "You are a helpful assistant." + (instructions.isEmpty ? "" : "\n\n" + instructions),
+            "instructions": systemInstructions(instructions),
             "include": ["reasoning.encrypted_content"], "prompt_cache_key": sessionID
         ]
         if !tools.isEmpty {
@@ -72,6 +72,24 @@ enum CodexConnection {
             }
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
+    static func systemInstructions(_ additional: String) -> String {
+        "You are a helpful assistant." + (additional.isEmpty ? "" : "\n\n" + additional)
+    }
+
+    static func compactRequest(input: [[String: Any]], model: String, sessionID: String,
+                               accessToken: String, accountID: String, instructions: String) throws -> URLRequest {
+        var request = request(path: "/responses/compact", accessToken: accessToken, accountID: accountID)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(sessionID, forHTTPHeaderField: "session-id")
+        request.setValue(UUID().uuidString, forHTTPHeaderField: "x-client-request-id")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": model, "input": input, "instructions": systemInstructions(instructions)
+        ])
         return request
     }
 

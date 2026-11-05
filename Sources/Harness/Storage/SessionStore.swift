@@ -12,6 +12,7 @@ struct SessionSnapshot: Codable, Sendable {
     var activeTurn: Bool
     var activeCallID: String?
     var activityDate: Date?
+    var title: String?
 
     /// Only the last completed model step can have unanswered tool calls.
     /// Missing outcomes are never inferred to be successful or re-executed.
@@ -40,7 +41,8 @@ struct SessionSnapshot: Codable, Sendable {
 
 struct SessionSummary: Codable, Identifiable, Sendable {
     let id: UUID
-    let title: String
+    var title: String
+    var customTitle: String?
     let workspace: String?
     let identity: String?
     let updatedAt: Date
@@ -49,7 +51,8 @@ struct SessionSummary: Codable, Identifiable, Sendable {
     init(id: UUID, snapshot: SessionSnapshot) {
         self.id = id
         let prompt = snapshot.messages.first { $0.role == .user }?.text ?? ""
-        title = prompt.isEmpty ? "New conversation" : String(prompt.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(80))
+        customTitle = snapshot.title
+        title = snapshot.title ?? (prompt.isEmpty ? "New conversation" : String(prompt.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(80)))
         workspace = snapshot.workspace?.root.path
         identity = snapshot.identity
         updatedAt = snapshot.activityDate ?? Date()
@@ -104,7 +107,7 @@ actor SessionStore {
     }
 
     @discardableResult
-    func save(_ snapshot: SessionSnapshot, id: UUID? = nil) throws -> UUID {
+    func save(_ snapshot: SessionSnapshot, id: UUID? = nil, select: Bool = true) throws -> UUID {
         var snapshot = snapshot
         var catalog = try readCatalog()
         let current = catalog.sessions.first { $0.id == catalog.activeID && $0.identity == snapshot.identity }
@@ -112,22 +115,42 @@ actor SessionStore {
         if let existing = catalog.sessions.first(where: { $0.id == id }), existing.identity != snapshot.identity || existing.unreadable {
             throw HarnessError("Cannot overwrite a conversation belonging to another account or an unreadable save.")
         }
-        snapshot.activityDate = snapshot.activityDate ?? catalog.sessions.first(where: { $0.id == id })?.updatedAt ?? Date()
+        let existing = catalog.sessions.first { $0.id == id }
+        snapshot.activityDate = snapshot.activityDate ?? existing?.updatedAt ?? Date()
+        snapshot.title = snapshot.title ?? existing?.customTitle
         try write(JSONEncoder().encode(snapshot), name: "\(id).json")
         catalog.sessions.removeAll { $0.id == id }
         catalog.sessions.append(SessionSummary(id: id, snapshot: snapshot))
-        catalog.activeID = id
+        if select { catalog.activeID = id }
         self.catalog = catalog
         try write(JSONEncoder().encode(catalog), name: "index.json")
         if id == legacyID { try remove("session.json") }
         return id
     }
 
-    func clearSelection() throws {
+    func clearSelection() throws { try select(nil) }
+
+    func select(_ id: UUID?) throws {
         var catalog = try readCatalog()
-        catalog.activeID = nil
+        guard catalog.activeID != id else { return }
+        // A new conversation can be selected just before its first durable checkpoint.
+        // On restart, readCatalog drops a selection whose snapshot was never written.
+        catalog.activeID = id
         self.catalog = catalog
         try write(JSONEncoder().encode(catalog), name: "index.json")
+    }
+
+    func rename(id: UUID, title: String, identity: String?) throws {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title.count <= 120, title.utf8.count <= 1_024,
+              !title.contains(where: \.isNewline) else {
+            throw HarnessError("Use a single-line conversation name of up to 120 characters.")
+        }
+        guard var snapshot = try readSnapshot(id), snapshot.identity == identity else {
+            throw HarnessError("This conversation cannot be renamed for the connected account.")
+        }
+        snapshot.title = title
+        try save(snapshot, id: id, select: false)
     }
 
     func delete(id: UUID) throws {

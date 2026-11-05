@@ -123,13 +123,11 @@ import Security
     }
 
     private func waitForRefresh(_ task: Task<Session, Error>) async throws -> Session {
-        try await withTaskCancellationHandler {
-            let value = try await task.value
-            try Task.checkCancellation()
-            return value
-        } onCancel: {
-            task.cancel()
-        }
+        // Rotation is shared across conversations. Finish and persist it even if one caller
+        // stops, rather than cancelling other callers or losing a possibly consumed token.
+        let value = try await task.value
+        try Task.checkCancellation()
+        return value
     }
 
     func disconnect() async throws {
