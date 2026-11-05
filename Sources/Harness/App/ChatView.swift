@@ -44,6 +44,7 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(spacing: 10) {
+            composerInput
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) {
                     WorkspaceBar(store: store)
@@ -54,6 +55,14 @@ struct ChatView: View {
                     HStack { Spacer(minLength: 0); modelControls }
                 }
             }
+        }
+        .frame(maxWidth: 820)
+        .padding(.horizontal, 20).padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var composerInput: some View {
+        VStack(spacing: 10) {
             if !store.current.draftImages.isEmpty {
                 AttachmentStrip(images: store.current.draftImages) { id in
                     store.current.draftImages.removeAll { $0.id == id }
@@ -89,19 +98,25 @@ struct ChatView: View {
             }
         }
         .padding(12)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+        .background {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.background.secondary)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard !store.navigating, !store.isWorking || store.isSending else { return }
+                    composerFocused = true
+                }
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(imageDropTargeted || composerFocused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: imageDropTargeted ? 2 : 1)
+                .allowsHitTesting(false)
         }
         .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: $imageDropTargeted) { providers in
             guard store.canNavigate else { return false }
             let destination = store.current
             return destination.importImages { try await ImageDrop.load(providers) } != nil
         }
-        .frame(maxWidth: 820)
-        .padding(.horizontal, 20).padding(.vertical, 12)
-        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder private var modelControls: some View {
