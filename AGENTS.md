@@ -1,4 +1,4 @@
-# Harness project instructions
+# Exec project instructions
 
 ## Git
 

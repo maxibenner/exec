@@ -1,4 +1,4 @@
-# Harness
+# Exec
 
 A native macOS chat and coding app for Codex. Built in Swift with SwiftUI and Apple's system frameworks—no Codex executable, Node runtime, agent framework, or third-party dependencies.
 
@@ -9,7 +9,7 @@ A native macOS chat and coding app for Codex. Built in Swift with SwiftUI and Ap
 - Inspect project files, approve exact edits, and review responsive inline diffs.
 - Save conversations locally and compact model context automatically near its limit.
 
-Harness uses your ChatGPT/Codex sign-in, not API-key billing. Account eligibility and usage limits are enforced by OpenAI. This is a Codex-compatible backend integration, not the public Responses API contract; provider changes may require updates.
+Exec uses your ChatGPT/Codex sign-in, not API-key billing. Account eligibility and usage limits are enforced by OpenAI. This is a Codex-compatible backend integration, not the public Responses API contract; provider changes may require updates.
 
 ## Build and run
 
@@ -17,14 +17,14 @@ Requires **macOS 14+** and a **Swift 6 toolchain** (Xcode or Apple Command Line 
 
 ```sh
 ./scripts/build-app.sh
-open dist/Harness.app
+open dist/Exec.app
 ```
 
-Quit any running copy before reopening a rebuilt app. Choose **Connect to Codex**, complete sign-in in your browser, select your authorized ChatGPT workspace, and choose a model. The callback uses local port **1455**; finish any other sign-in using that port before retrying. Harness never terminates another listener.
+Quit any running copy before reopening a rebuilt app. Choose **Connect to Codex**, complete sign-in in your browser, select your authorized ChatGPT workspace, and choose a model. The callback uses local port **1455**; finish any other sign-in using that port before retrying. Exec never terminates another listener.
 
 You can also open `Package.swift` in Xcode. Builds are not notarized for distribution. For consistent Keychain access across rebuilds, configure [stable signing](#signing-and-keychain) before building.
 
-## Using Harness
+## Using Exec
 
 ### Conversations
 
@@ -78,9 +78,9 @@ HTML is inert. Images embedded in assistant Markdown remain alt text; they are n
 
 ## Web search
 
-Ask a question that needs current information, or explicitly ask Harness to search the web. The model can call **`web_search`** in ordinary chat or a project conversation; no workspace or additional API key is required.
+Ask a question that needs current information, or explicitly ask Exec to search the web. The model can call **`web_search`** in ordinary chat or a project conversation; no workspace or additional API key is required.
 
-Harness makes a separate request to Codex using its existing Keychain-managed login, the selected model, and the selected effort. The request includes OpenAI's hosted `web_search` tool and requires a search. Only the generated query is sent as input to this separate request—not the conversation history, images, or workspace instructions. The model is instructed not to include secrets or private project content in queries; review what you ask it to research.
+Exec makes a separate request to Codex using its existing Keychain-managed login, the selected model, and the selected effort. The request includes OpenAI's hosted `web_search` tool and requires a search. Only the generated query is sent as input to this separate request—not the conversation history, images, or workspace instructions. The model is instructed not to include secrets or private project content in queries; review what you ask it to research.
 
 - The query, search answer, and source links appear in an expandable result in the transcript. Sources use native selectable links and are saved with the conversation.
 - Queries are limited to 2,048 UTF-8 bytes. Each result contains at most ten distinct HTTP(S) source URLs and a bounded answer, totaling no more than 32 KiB of model-facing text. This is not a full-page reader or a cached-content retrieval tool.
@@ -112,7 +112,7 @@ Changing, closing, or reloading a workspace starts another conversation, with co
 `read_file` already accepts inclusive, one-based line ranges. For example:
 
 ```json
-{"path":"Sources/Harness/App/ChatStore.swift","start_line":120,"end_line":200}
+{"path":"Sources/Exec/App/ChatStore.swift","start_line":120,"end_line":200}
 ```
 
 Use `search_text` to locate relevant lines, then read the surrounding range. Only the requested lines enter model context. The reader still reads the bounded full file locally to validate UTF-8 and compute the full-file revision used for safe edits.
@@ -125,13 +125,15 @@ Read-only tools do not require per-call approval. Edits and shell commands requi
 
 **Shell approval is not a sandbox.** Commands run with your normal user access: they can reach outside the workspace, use the network, and delete data. The built-in file tools enforce workspace-relative paths and refuse symlinks, but those restrictions do not constrain shell commands.
 
-Edits are checked again after approval and staged for atomic replacement. Existing ownership, mode bits, ACLs, and extended attributes are preserved; failure to preserve them aborts the edit. New files are owner-readable/writable and never overwrite an existing path. File replacements within Harness are serialized, but external writers can still race the final filesystem operation. Avoid concurrent edits to the same file.
+Edits are checked again after approval and staged for atomic replacement. Existing ownership, mode bits, ACLs, and extended attributes are preserved; failure to preserve them aborts the edit. New files are owner-readable/writable and never overwrite an existing path. File replacements within Exec are serialized, but external writers can still race the final filesystem operation. Avoid concurrent edits to the same file.
 
 Tool calls run sequentially within each conversation, only after a completed model response. A turn can continue through many model/tool steps until it finishes, fails, or is stopped; there is no fixed eight-step cap. Monitor usage during auto-approved runs.
 
 Stop cancels model requests and approvals and terminates the shell process group, including ordinary child processes. Deliberately detached or privilege-elevated processes may escape that group. Cancellation does not undo changes. Failed replies remain visible but are excluded from follow-up context; completed tool steps and interruption records remain so their effects are not forgotten. **Inference, compaction, rotating-token exchanges, and tool execution are not automatically retried.**
 
 ## Local storage and recovery
+
+Exec was previously named Harness. The legacy Application Support directory and `local.swift-harness` bundle/Keychain identifier intentionally remain unchanged so existing chats, credentials, and signing identity continue to work. Quit the old app before opening Exec; do not run both against the shared store.
 
 Conversations are stored in:
 
@@ -154,7 +156,7 @@ Each snapshot is limited to **32 MiB**. Image data is base64-encoded in both the
 
 ### Context compaction
 
-Before each model request, Harness checks usage against **95% of the selected model's usable context window**. It prefers server-reported input/output usage, estimates newly added text, and budgets images separately rather than counting base64 bytes as text tokens. These estimates are not an exact tokenizer. Missing model-limit metadata stops the request and asks you to refresh models.
+Before each model request, Exec checks usage against **95% of the selected model's usable context window**. It prefers server-reported input/output usage, estimates newly added text, and budgets images separately rather than counting base64 bytes as text tokens. These estimates are not an exact tokenizer. Missing model-limit metadata stops the request and asks you to refresh models.
 
 At the threshold, or when `/compact` is selected in an idle conversation, Codex's `/responses/compact` endpoint compacts completed history. Pending input and unresolved tool calls are not summarized. The returned opaque context is checkpointed before inference continues. The visible transcript, images, diffs, and tool outcomes remain intact: **compaction reduces model context, not local archive size**.
 
@@ -169,7 +171,7 @@ Unconfigured builds use ad-hoc signing and print a warning. Rebuilding can then 
 3. Pin one locally:
 
 ```sh
-git config --local harness.signingIdentity "<certificate SHA-1>"
+git config --local exec.signingIdentity "<certificate SHA-1>"
 REQUIRE_STABLE_SIGNING=1 ./scripts/build-app.sh
 ```
 
@@ -187,19 +189,19 @@ Keep using the same certificate. Switching from ad-hoc signing may require one m
 The dependency-free test runner works with Command Line Tools alone. Tests use isolated session stores, in-memory credentials, fake providers, and intercepted HTTP—not your Keychain or live inference.
 
 ```text
-Sources/Harness/
+Sources/Exec/
   App/                SwiftUI, image import, and observable conversation state
   Core/               Provider-neutral messages, attachments, tools, and workspace access
   Providers/OpenAI/   Codex authentication, model discovery, and Responses transport
   Storage/            Keychain credentials and atomic conversation checkpoints
-Tests/HarnessTests/   Focused regression checks and fake transports
+Tests/ExecTests/   Focused regression checks and fake transports
 ```
 
-`ChatLibrary` owns navigation and retains independent `ChatStore` runners. Both depend on `ChatProvider`; `makeConversationProvider()` shares authentication while isolating mutable response context. To add a provider, implement that protocol and inject it in `HarnessApp`. Wire formats, authentication, model discovery, and opaque context stay in `Providers/`. Web search is an explicit provider capability; coding tools remain workspace-scoped. There is no plugin registry.
+`ChatLibrary` owns navigation and retains independent `ChatStore` runners. Both depend on `ChatProvider`; `makeConversationProvider()` shares authentication while isolating mutable response context. To add a provider, implement that protocol and inject it in `ExecApp`. Wire formats, authentication, model discovery, and opaque context stay in `Providers/`. Web search is an explicit provider capability; coding tools remain workspace-scoped. There is no plugin registry.
 
 ### Connection details
 
-Harness uses browser OAuth with PKCE, state, nonce, and a loopback callback. It verifies ID-token signatures and claims, stores its own session in Keychain, fetches the model catalog, and streams directly from the Codex Responses endpoint with `store: false`. It does not run Pi or Codex or read their credential files. The separately pinned catalog compatibility version is `0.162.1`; the originator is `swift_harness`.
+Exec uses browser OAuth with PKCE, state, nonce, and a loopback callback. It verifies ID-token signatures and claims, stores its own session in Keychain, fetches the model catalog, and streams directly from the Codex Responses endpoint with `store: false`. It does not run Pi or Codex or read their credential files. The separately pinned catalog compatibility version is `0.162.1`; the originator is `swift_exec`.
 
 Refreshes are shared across conversations. Cancelling one caller does not cancel a rotating-token exchange needed by others. A durable pre-exchange marker prevents replay after an uncertain outcome; such a failure requires Reconnect. If rotated tokens cannot be saved, only their Keychain write can be retried—not the exchange.
 

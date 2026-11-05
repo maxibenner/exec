@@ -2,10 +2,10 @@
 import PackageDescription
 
 let package = Package(
-    name: "Harness",
+    name: "Exec",
     platforms: [.macOS(.v14)],
-    products: [.executable(name: "Harness", targets: ["Harness"])],
+    products: [.executable(name: "Exec", targets: ["Exec"])],
     targets: [
-        .executableTarget(name: "Harness")
+        .executableTarget(name: "Exec")
     ]
 )

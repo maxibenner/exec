@@ -4,11 +4,11 @@ cd "$(dirname "$0")/.."
 
 # Pin a certificate once in local Git config, or explicitly override it per build.
 # Never pick an arbitrary certificate or fall back after a signing failure.
-identity="${SIGNING_IDENTITY:-$(git config --local --get harness.signingIdentity 2>/dev/null || true)}"
+identity="${SIGNING_IDENTITY:-$(git config --local --get exec.signingIdentity 2>/dev/null || true)}"
 options=(--force)
 if [[ -z "$identity" || "$identity" == "-" ]]; then
     if [[ "${REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
-        printf 'Stable signing requires SIGNING_IDENTITY or git config harness.signingIdentity.\n' >&2
+        printf 'Stable signing requires SIGNING_IDENTITY or git config exec.signingIdentity.\n' >&2
         exit 1
     fi
     identity="-"
@@ -19,15 +19,15 @@ else
     printf 'Signing with configured identity: %s\n' "$identity"
 fi
 
-swift build -c release --product Harness
+swift build -c release --product Exec
 bin="$(swift build -c release --show-bin-path)"
-app="$PWD/dist/Harness.app"
+app="$PWD/dist/Exec.app"
 mkdir -p "$PWD/dist"
-staging="$(mktemp -d "$PWD/dist/.harness-build.XXXXXX")"
+staging="$(mktemp -d "$PWD/dist/.exec-build.XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
-built="$staging/Harness.app"
+built="$staging/Exec.app"
 mkdir -p "$built/Contents/MacOS"
-cp "$bin/Harness" "$built/Contents/MacOS/Harness"
+cp "$bin/Exec" "$built/Contents/MacOS/Exec"
 cp Resources/Info.plist "$built/Contents/Info.plist"
 bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Resources/Info.plist)"
 codesign "${options[@]}" --sign "$identity" --identifier "$bundle_id" "$built"
