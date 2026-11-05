@@ -65,6 +65,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var pendingContentFollow = false
     private var bottomInset: CGFloat = 0
     private var renderedBottomInset: CGFloat = 0
+    private var selectionClearing: TranscriptSelectionClearing?
     var mountedRowCount: Int { rows.count }
 
     init(state: TranscriptState) {
@@ -105,10 +106,17 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { scheduleRefresh() }
+        selectionClearing?.stop()
+        selectionClearing = nil
+        if window != nil, !detached {
+            selectionClearing = TranscriptSelectionClearing(self)
+            scheduleRefresh()
+        }
     }
     func detach() {
         detached = true
+        selectionClearing?.stop()
+        selectionClearing = nil
         rememberAnchor()
         NotificationCenter.default.removeObserver(self)
         for row in rows.values { row.didLayout = nil; row.removeFromSuperview() }
