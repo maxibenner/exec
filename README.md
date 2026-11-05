@@ -3,6 +3,7 @@
 A native macOS chat and coding app for Codex. Built in Swift with SwiftUI and Apple's system frameworks—no Codex executable, Node runtime, agent framework, or third-party dependencies.
 
 - Stream replies with selectable Markdown, code blocks, tables, and links.
+- Search the web through your existing Codex login, with saved queries and clickable sources.
 - Drag images into the composer, review thumbnails, and send them with or without text.
 - Run several conversations at once, each with its own draft, model effort, workspace, context, and approvals.
 - Inspect project files, approve exact edits, and review responsive inline diffs.
@@ -68,6 +69,21 @@ Assistant replies render headings, emphasis, code, lists, quotes, tables, and li
 Successful `edit_file` results include collapsible diffs: side-by-side with line numbers in wide layouts, unified in narrow layouts. Failed or uncertain edits are not shown as applied. Shell-driven changes do not generate automatic diffs.
 
 HTML is inert. Images embedded in assistant Markdown remain alt text; they are not fetched automatically. Only HTTP(S) and mail links open on click. No WebView is used.
+
+## Web search
+
+Ask a question that needs current information, or explicitly ask Harness to search the web. The model can call **`web_search`** in ordinary chat or a project conversation; no workspace or additional API key is required.
+
+Harness makes a separate request to Codex using its existing Keychain-managed login, the selected model, and the selected effort. The request includes OpenAI's hosted `web_search` tool and requires a search. Only the generated query is sent as input to this separate request—not the conversation history, images, or workspace instructions. The model is instructed not to include secrets or private project content in queries; review what you ask it to research.
+
+- The query, search answer, and source links appear in an expandable result in the transcript. Sources use native selectable links and are saved with the conversation.
+- Queries are limited to 2,048 UTF-8 bytes. Each result contains at most ten distinct HTTP(S) source URLs and a bounded answer, totaling no more than 32 KiB of model-facing text. This is not a full-page reader or a cached-content retrieval tool.
+- Search results are untrusted evidence. The model is instructed to cite returned URLs and not claim to have searched without a successful result. A model-only answer without a hosted search call is rejected.
+- Search uses your account's access and usage allowance. It does not require file/shell approval and does not fall back to API-key billing, Exa, or another provider.
+- Stop cancels the active search. Failed, unsupported, or interrupted searches stop the turn without automatic retries. Search requests are never resumed after restart.
+- Search output cannot replace the conversation's opaque response context. Only the completed, bounded tool result enters follow-up context.
+
+The implementation follows the Codex-backed approach in [Pi Web Access](https://github.com/nicobailon/pi-web-access), but runs natively in Swift without Pi, Node, or an MCP sidecar. Hosted search availability depends on the selected model and account. **Live Codex search remains unverified**; transport tests use synthetic responses.
 
 ## Working on a project
 
@@ -173,7 +189,7 @@ Sources/Harness/
 Tests/HarnessTests/   Focused regression checks and fake transports
 ```
 
-`ChatLibrary` owns navigation and retains independent `ChatStore` runners. Both depend on `ChatProvider`; `makeConversationProvider()` shares authentication while isolating mutable response context. To add a provider, implement that protocol and inject it in `HarnessApp`. Wire formats, authentication, model discovery, and opaque context stay in `Providers/`. There is no plugin registry or web-search tool yet.
+`ChatLibrary` owns navigation and retains independent `ChatStore` runners. Both depend on `ChatProvider`; `makeConversationProvider()` shares authentication while isolating mutable response context. To add a provider, implement that protocol and inject it in `HarnessApp`. Wire formats, authentication, model discovery, and opaque context stay in `Providers/`. Web search is an explicit provider capability; coding tools remain workspace-scoped. There is no plugin registry.
 
 ### Connection details
 
@@ -185,7 +201,7 @@ Sign-out attempts remote revocation and local credential deletion, including off
 
 ### Verification status
 
-The **58 automated checks** cover authentication, refresh/restart safety, cancellation, session integrity, concurrent conversations, tool approval and edits, compaction, streaming, Markdown, diffs, image normalization, request encoding, attachment persistence, pending-drop conversation isolation, and effort discovery, request encoding, and session isolation. The signed app builds successfully. Isolated native fixtures also render the image previews and effort controls at wide and narrow widths. These checks do not establish live-service behavior.
+The **63 automated checks** cover authentication, refresh/restart safety, cancellation, session integrity, concurrent conversations, tool approval and edits, compaction, streaming, Markdown, diffs, image normalization, request encoding, attachment persistence, pending-drop conversation isolation, effort discovery, request encoding, and session isolation, plus web-search authentication routing, bounded sources, context separation, persistence, cancellation, and failure without retries. The signed app builds successfully. Isolated native fixtures also render the image previews and effort controls at wide and narrow widths. These checks do not establish live-service behavior.
 
 Live sign-in and text messaging were previously verified by the user. Remaining manual checks include:
 
@@ -193,6 +209,7 @@ Live sign-in and text messaging were previously verified by the user. Remaining 
 - Check sidebar selection with wrapping titles, light/dark appearance, keyboard navigation, clipboard behavior, and VoiceOver. Change effort levels with a live model and confirm the advertised options are accepted.
 - In a disposable workspace, approve/deny edits and shell commands; verify stale-file rejection and rendered diffs.
 - Run concurrent live turns and confirm Stop, drafts, auto-approval, and pending approvals remain isolated. Rename a running session; delete an idle one and relaunch.
+- Ask a public current-information question and confirm a real search returns working source links. Stop a search in flight, then reopen the conversation to verify its interruption record. Test an unsupported model/account without falling back to another service.
 - Exercise live compaction, interrupted replies, network failure, token expiry, and offline sign-out. Confirm no operation resumes or retries automatically.
 - Rebuild with the same certificate and check that Keychain access remains stable.
 
@@ -203,3 +220,4 @@ Live sign-in and text messaging were previously verified by the user. Remaining 
 - [Codex compaction contract](https://github.com/openai/codex/blob/rust-v0.100.0/codex-rs/codex-api/src/endpoint/compact.rs)
 - [Responses compaction guide](https://developers.openai.com/api/docs/guides/compaction)
 - [Responses image inputs](https://developers.openai.com/api/docs/guides/images-vision)
+- [Responses hosted web search](https://developers.openai.com/api/docs/guides/tools-web-search) (public API documentation, not a Codex backend guarantee)

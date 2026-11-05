@@ -20,6 +20,11 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Web search request, context isolation and persistence", { try await WebSearchTests().roundTripKeepsSearchSeparateAndSavesSources() }),
+            ("Web search failure and no-retry behavior", { try await WebSearchTests().failuresStopWithoutRetriesOrFalseSuccess() }),
+            ("Web search cancellation and restart safety", { try await WebSearchTests().cancellationAndRestartDoNotResumeSearch() }),
+            ("Web search bounds and source safety", { try WebSearchTests().parsingBoundsAndSourceSafety() }),
+            ("Web search validation and checkpoint safety", { try await WebSearchTests().invalidInputAndCheckpointFailureMakeNoRequests() }),
             ("Effort catalog and request encoding", { try await EffortTests().catalogAndRequestEncoding() }),
             ("Effort persistence and conversation isolation", { try await EffortTests().selectionPersistenceAndIsolation() }),
             ("Image drop normalization and validation", { try await ImageAttachmentTests().normalizesAndRejectsInvalidDrops() }),

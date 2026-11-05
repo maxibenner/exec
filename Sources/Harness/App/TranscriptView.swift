@@ -100,7 +100,7 @@ private struct MessageView: View {
     init(message: Message, followsLatest: Binding<Bool>) {
         self.message = message
         _followsLatest = followsLatest
-        _expanded = State(initialValue: message.toolResult?.edit != nil)
+        _expanded = State(initialValue: message.toolResult?.edit != nil || message.toolResult?.webSearch != nil)
     }
 
     var body: some View {
@@ -108,6 +108,8 @@ private struct MessageView: View {
             DisclosureGroup(isExpanded: $expanded) {
                 if let edit = result.edit {
                     DiffView(source: edit.diff).padding(.top, 8)
+                } else if let search = result.webSearch {
+                    WebSearchView(result: search).padding(.top, 8)
                 } else {
                     VStack(alignment: .leading, spacing: 12) {
                         Text(verbatim: result.call.arguments).font(.system(.caption, design: .monospaced))
@@ -119,6 +121,9 @@ private struct MessageView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     if let edit = result.edit {
                         Label("Edited \(edit.path)", systemImage: "doc.badge.checkmark").font(.callout.weight(.medium))
+                    } else if let search = result.webSearch {
+                        Label("Web search", systemImage: "magnifyingglass").font(.callout.weight(.medium))
+                        Text(verbatim: search.query).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     } else {
                         Label(result.call.name, systemImage: result.call.name == "shell" ? "terminal" : "doc.text").font(.callout.weight(.medium))
                         Text(verbatim: String(result.text.split(separator: "\n").first ?? ""))

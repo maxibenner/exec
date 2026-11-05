@@ -70,6 +70,9 @@ enum ChatEvent: Sendable {
     func connect() async throws
     func disconnect() async throws
     func models() async throws -> [ChatModel]
+    var supportsWebSearch: Bool { get }
+    // A separate read-only request using provider-owned authentication, never conversation context.
+    func searchWeb(query: String, model: String, effort: String?) async throws -> WebSearchResult
     // Compact only completed history, never pending input or unresolved tool calls.
     // A true result must be checkpointed before sending another inference request.
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
@@ -79,6 +82,10 @@ enum ChatEvent: Sendable {
 
 extension ChatProvider {
     var conversationIdentity: String? { account }
+    var supportsWebSearch: Bool { false }
+    func searchWeb(query: String, model: String, effort: String?) async throws -> WebSearchResult {
+        throw HarnessError("This provider does not support web search.")
+    }
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
                          instructions: String, tools: [ToolDefinition]) async throws -> Bool { false }
     func encodeConversationState() throws -> Data? { nil }

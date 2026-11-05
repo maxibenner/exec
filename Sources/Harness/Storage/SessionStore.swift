@@ -26,9 +26,14 @@ struct SessionSnapshot: Codable, Sendable {
             let answered = Set(history.suffix(from: index + 1).compactMap { $0.toolResult?.call.id })
             for call in history[index].toolCalls where !answered.contains(call.id) {
                 interrupted = true
-                let text = call.id == activeCallID
-                    ? "Interrupted before a durable result was saved. This operation may have changed files; inspect before retrying. It was not resumed."
-                    : "Not executed: the previous turn was interrupted."
+                let text: String
+                if call.id != activeCallID {
+                    text = "Not executed: the previous turn was interrupted."
+                } else if call.name == WebSearchTool.definition.name {
+                    text = WebSearchTool.interrupted
+                } else {
+                    text = "Interrupted before a durable result was saved. This operation may have changed files; inspect before retrying. It was not resumed."
+                }
                 let message = Message(role: .tool, text: text, toolResult: ToolResult(call: call, text: text))
                 messages.append(message)
                 history.append(message)

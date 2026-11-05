@@ -87,6 +87,25 @@ import Foundation
             }
     }
 
+    let supportsWebSearch = true
+
+    func searchWeb(query: String, model: String, effort: String?) async throws -> WebSearchResult {
+        let query = try WebSearchTool.validatedQuery(query)
+        try Task.checkCancellation()
+        let credentials = try await authentication.credentials()
+        try Task.checkCancellation()
+        let request = try CodexConnection.webSearchRequest(query: query, model: model, effort: effort,
+            accessToken: credentials.access, accountID: credentials.accountID)
+        for try await event in OpenAITransport.stream(request, session: http) {
+            try Task.checkCancellation()
+            if case .completed(let output, _) = event {
+                return try CodexWebSearch.result(output, query: query)
+            }
+        }
+        try Task.checkCancellation()
+        throw HarnessError("Web search ended before completion. No retry was made.")
+    }
+
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
                          instructions: String, tools: [ToolDefinition]) async throws -> Bool {
         guard let window = model.contextWindow, window > 0 else {

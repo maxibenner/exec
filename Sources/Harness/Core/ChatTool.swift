@@ -25,6 +25,7 @@ struct ToolResult: Codable, Sendable {
     let call: ToolCall
     let text: String
     var edit: AppliedEdit?
+    var webSearch: WebSearchResult?
 }
 
 enum CodingTools {
