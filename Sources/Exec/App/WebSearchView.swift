@@ -5,11 +5,22 @@ struct WebSearchView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(verbatim: result.query).font(.callout.weight(.medium)).textSelection(.enabled)
-            if !result.answer.isEmpty { MarkdownView(source: result.answer) }
-            ForEach(Array(result.sources.enumerated()), id: \.offset) { index, source in
-                if let url = source.link {
-                    LinkedText(source: citation(index: index, source: source, url: url), fontSize: 12)
+            if !result.answer.isEmpty {
+                ToolSection(title: "Answer") { MarkdownView(source: result.answer) }
+            }
+            ToolSection(title: "Sources") {
+                VStack(alignment: .leading, spacing: 8) {
+                    if result.sources.isEmpty {
+                        Text("No sources returned").font(.callout).foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(result.sources.enumerated()), id: \.offset) { index, source in
+                        if let url = source.link {
+                            LinkedText(source: citation(index: index, source: source, url: url), fontSize: 12)
+                        } else {
+                            Text(verbatim: "[\(index + 1)] \(source.title)\n\(source.url)")
+                                .font(.caption).textSelection(.enabled)
+                        }
+                    }
                 }
             }
         }
