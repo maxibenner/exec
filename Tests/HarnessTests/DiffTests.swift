@@ -1,9 +1,13 @@
 import Foundation
 
 struct DiffTests {
-    func pairsReplacementsWithoutLosingMarkersOrPlusSigns() throws {
+    @MainActor func pairsReplacementsWithoutLosingMarkersOrPlusSigns() throws {
         let source = "--- \"file\"\n+++ \"file\"\n@@ -3,2 +3,3 @@\n context\n-old\n\\ No newline at end of file\n+++counter\n+second\n\\ No newline at end of file\n"
         let document = DiffDocument(source)
+        let rendered = DiffView.RenderedDiff(source)
+        try expect(String(rendered.unified.characters) + "\n" == source)
+        try expect(String(rendered.before.characters).contains("old"))
+        try expect(String(rendered.after.characters).contains("++counter"))
         try expect(document.unified.map(\.text).joined(separator: "\n") + "\n" == source)
         try expect(document.unified[6].kind == .added)
         try expect(document.pairs[1].before?.number == 3 && document.pairs[1].after?.number == 3)

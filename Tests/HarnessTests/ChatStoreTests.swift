@@ -99,6 +99,34 @@ import Foundation
         try expect(store.messages.last?.text == "Duplicate tool call ID; not executed.")
     }
 
+    func batchedSnapshotsFlushOnFailureAndCancellation() async throws {
+        let provider = FakeProvider()
+        provider.scripted = [[.text("Draft"), .textSnapshot("Latest partial answer")]]
+        let store = ChatStore(provider: provider)
+        store.selectedModel = "test"
+        store.draft = "First"
+        store.send()
+        try await settle(store)
+        try expect(store.messages.last?.text == "Latest partial answer")
+        try expect(store.messages.last?.status == .failed)
+
+        provider.holdOpen = true
+        store.draft = "Second"
+        store.send()
+        for _ in 0..<200 {
+            if provider.pending != nil { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try expect(provider.pending != nil)
+        provider.pending?.yield(.textSnapshot("Snapshot before stop"))
+        try await Task.sleep(for: .milliseconds(10))
+        store.stop()
+        try await settle(store)
+        try expect(store.messages.last?.text == "Snapshot before stop")
+        try expect(store.messages.last?.status == .interrupted)
+        provider.pending?.finish()
+    }
+
     func finalTextReplacesDeltasAndEmptyResponsesFail() async throws {
         let provider = FakeProvider()
         provider.scripted = [[.text("Partial draft"), .textSnapshot("Final answer"), .completed], [.completed]]

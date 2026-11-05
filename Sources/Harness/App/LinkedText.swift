@@ -52,34 +52,59 @@ struct LinkedText: NSViewRepresentable {
         if view.attributedString() != text {
             view.textStorage?.setAttributedString(text)
             view.invalidateIntrinsicContentSize()
+            context.coordinator.measurement.update(text)
         }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
-        Self.measuredSize(of: nsView.attributedString(), width: proposal.width)
+        context.coordinator.measurement.size(width: proposal.width)
     }
 
     static func measuredSize(of text: NSAttributedString, width: CGFloat?) -> CGSize {
-        // SwiftUI probes multiple widths, not necessarily ending with the displayed width.
-        // Never resize the live container here: a probe can leave its wrapping narrower
-        // than the frame whose height SwiftUI measured, drawing over the next block.
-        let storage = NSTextStorage(attributedString: text)
-        let layout = NSLayoutManager()
-        let container = NSTextContainer(size: CGSize(width: max(1, width ?? 10_000),
-                                                     height: .greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        storage.addLayoutManager(layout)
-        layout.addTextContainer(container)
-        layout.ensureLayout(for: container)
-        let used = layout.usedRect(for: container)
-        return CGSize(width: width ?? ceil(used.width), height: ceil(used.height))
+        let measurement = LinkedTextMeasurement()
+        measurement.update(text)
+        return measurement.size(width: width)
     }
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
+        let measurement = LinkedTextMeasurement()
         var open: ((URL) -> Void)?
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
             if let url = link as? URL, MarkdownDocument.allowsLink(url) { open?(url) }
             return true // Never let AppKit open a URL outside the allowlist.
         }
+    }
+}
+
+/// Separate from the live text view: sizing probes must never change displayed wrapping.
+@MainActor
+final class LinkedTextMeasurement {
+    private let storage = NSTextStorage()
+    private let layout = NSLayoutManager()
+    private let container = NSTextContainer()
+    private var sizes: [CGFloat?: CGSize] = [:]
+
+    init() {
+        container.lineFragmentPadding = 0
+        storage.addLayoutManager(layout)
+        layout.addTextContainer(container)
+    }
+
+    func update(_ text: NSAttributedString) {
+        guard !storage.isEqual(to: text) else { return }
+        storage.setAttributedString(text)
+        sizes.removeAll(keepingCapacity: true)
+    }
+
+    func size(width: CGFloat?) -> CGSize {
+        if let cached = sizes[width] { return cached }
+        container.containerSize = CGSize(width: max(1, width ?? 10_000), height: .greatestFiniteMagnitude)
+        layout.ensureLayout(for: container)
+        let used = layout.usedRect(for: container)
+        let result = CGSize(width: width ?? ceil(used.width), height: ceil(used.height))
+        // Resizing a window must not accumulate an unbounded set of widths.
+        if sizes.count >= 8 { sizes.removeAll(keepingCapacity: true) }
+        sizes[width] = result
+        return result
     }
 }

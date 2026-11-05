@@ -289,13 +289,8 @@ import Observation
             switch event {
             case .text(let delta):
                 fullText += delta
-                if lastUpdate.duration(to: .now) >= .milliseconds(40) {
-                    messages[index].text = fullText
-                    lastUpdate = .now
-                }
             case .textSnapshot(let text):
                 fullText = text
-                messages[index].text = text
             case .toolCall(let call):
                 guard calls.count < 16, call.id.utf8.count <= 256, call.name.utf8.count <= 128,
                       call.arguments.utf8.count <= 32_768, !calls.contains(where: { $0.id == call.id }) else {
@@ -303,6 +298,13 @@ import Observation
                 }
                 calls.append(call)
             case .completed: completed = true
+            }
+            // Snapshots and deltas share the same publication cadence. Always publish
+            // the first text promptly; defer flushes all text on every exit path.
+            if messages[index].text != fullText,
+               messages[index].text.isEmpty || lastUpdate.duration(to: .now) >= .milliseconds(50) {
+                messages[index].text = fullText
+                lastUpdate = .now
             }
         }
         try Task.checkCancellation()

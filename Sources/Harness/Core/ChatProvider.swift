@@ -1,6 +1,6 @@
 import Foundation
 
-struct Message: Identifiable, Codable, Sendable {
+struct Message: Identifiable, Codable, Sendable, Equatable {
     enum Role: String, Codable, Sendable { case user, assistant, tool }
     enum Status: String, Codable, Sendable { case complete, streaming, interrupted, failed }
     let id: UUID

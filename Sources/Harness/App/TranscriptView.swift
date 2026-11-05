@@ -6,6 +6,7 @@ struct TranscriptView: View {
     let sessionID: UUID?
     @State private var followsLatest = true
     @State private var scrollTask: Task<Void, Never>?
+    @State private var scrollTarget: UUID?
     private var visibleMessages: [Message] {
         messages.filter { $0.role != .assistant || !$0.text.isEmpty || $0.toolCalls.isEmpty }
     }
@@ -18,6 +19,7 @@ struct TranscriptView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     ForEach(visible) { message in
                         MessageView(message: message, followsLatest: $followsLatest)
+                            .equatable()
                             .padding(.bottom, message.id == visible.last?.id ? 12 : 0)
                             .id(message.id)
                     }
@@ -29,7 +31,7 @@ struct TranscriptView: View {
                 .background(ScrollTrackingView { nearBottom in followsLatest = nearBottom })
             }
             .clipped()
-            .onDisappear { scrollTask?.cancel() }
+            .onDisappear { scrollTask?.cancel(); scrollTask = nil }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in follow(proxy) }
             .onChange(of: sessionID) {
                 followsLatest = true
@@ -54,10 +56,14 @@ struct TranscriptView: View {
     }
 
     private func follow(_ proxy: ScrollViewProxy) {
-        scrollTask?.cancel()
+        scrollTarget = visibleMessages.last?.id
+        guard followsLatest, scrollTask == nil else { return }
         scrollTask = Task { @MainActor in
-            await Task.yield() // Wait for Markdown and viewport measurements to reach layout.
-            if !Task.isCancelled, followsLatest, let id = visibleMessages.last?.id {
+            // Coalesce layout changes into at most one follow per display frame.
+            do { try await Task.sleep(for: .milliseconds(16)) }
+            catch { return }
+            scrollTask = nil
+            if followsLatest, let id = scrollTarget {
                 proxy.scrollTo(id, anchor: .bottom)
             }
         }
@@ -92,7 +98,11 @@ private struct ScrollTrackingView: NSViewRepresentable {
     }
 }
 
-private struct MessageView: View {
+private struct MessageView: View, Equatable {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.message == rhs.message
+    }
+
     let message: Message
     @Binding var followsLatest: Bool
     @State private var expanded: Bool
@@ -124,6 +134,15 @@ private struct MessageView: View {
                     } else if let search = result.webSearch {
                         Label("Web search", systemImage: "magnifyingglass").font(.callout.weight(.medium))
                         Text(verbatim: search.query).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    } else if let read = ReadFileSummary(result) {
+                        HStack(spacing: 8) {
+                            Label("Read \(read.path)", systemImage: "doc.text")
+                                .font(.callout.weight(.medium))
+                                .lineLimit(1).truncationMode(.middle).help(read.path)
+                            if let lines = read.lineLabel {
+                                Text(lines).font(.caption).foregroundStyle(.secondary).fixedSize()
+                            }
+                        }
                     } else {
                         Label(result.call.name, systemImage: result.call.name == "shell" ? "terminal" : "doc.text").font(.callout.weight(.medium))
                         Text(verbatim: String(result.text.split(separator: "\n").first ?? ""))

@@ -17,8 +17,8 @@ struct ToolDefinition: Sendable {
     let parameters: [Parameter]
 }
 
-struct ToolResult: Codable, Sendable {
-    struct AppliedEdit: Codable, Sendable {
+struct ToolResult: Codable, Sendable, Equatable {
+    struct AppliedEdit: Codable, Sendable, Equatable {
         let path: String
         let diff: String
     }

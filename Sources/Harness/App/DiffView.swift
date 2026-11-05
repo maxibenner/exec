@@ -4,41 +4,61 @@ import SwiftUI
 struct DiffView: View {
     let source: String
 
+    @State private var rendered: RenderedDiff?
+
     var body: some View {
-        let document = DiffDocument(source)
-        ViewThatFits(in: .horizontal) {
-            pane(document, sideBySide: true).frame(minWidth: 680)
-            pane(document, sideBySide: false)
+        Group {
+            if let rendered {
+                ViewThatFits(in: .horizontal) {
+                    pane(rendered, sideBySide: true).frame(minWidth: 680)
+                    pane(rendered, sideBySide: false)
+                }
+            }
+        }
+        .onChange(of: source, initial: true) { rendered = RenderedDiff(source) }
+    }
+
+    // Kept with the view, not in a global cache retaining conversation contents.
+    @MainActor struct RenderedDiff {
+        let before: AttributedString
+        let after: AttributedString
+        let unified: AttributedString
+
+        init(_ source: String) {
+            let document = DiffDocument(source)
+            before = DiffView.styled(document.pairs.map(\.before), numbers: true)
+            after = DiffView.styled(document.pairs.map(\.after), numbers: true)
+            unified = DiffView.styled(document.unified.map(Optional.some), numbers: false)
         }
     }
 
-    private func pane(_ document: DiffDocument, sideBySide: Bool) -> some View {
+    private func pane(_ rendered: RenderedDiff, sideBySide: Bool) -> some View {
         Group {
             if sideBySide {
                 HStack(alignment: .top, spacing: 0) {
-                    column("Before", lines: document.pairs.map(\.before))
+                    column("Before", text: rendered.before)
                     Divider()
-                    column("After", lines: document.pairs.map(\.after))
+                    column("After", text: rendered.after)
                 }
             } else {
-                code(document.unified.map(Optional.some), numbers: false)
+                code(rendered.unified)
             }
         }
         .fixedSize(horizontal: false, vertical: true)
         .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
     }
 
-    private func column(_ title: String, lines: [DiffDocument.Line?]) -> some View {
+    private func column(_ title: String, text: AttributedString) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.caption.weight(.medium)).foregroundStyle(.secondary).padding(.horizontal, 10)
-            code(lines, numbers: true)
+            code(text)
         }
         .padding(.top, 8).frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func code(_ lines: [DiffDocument.Line?], numbers: Bool) -> some View {
+    private func code(_ text: AttributedString) -> some View {
         ScrollView(.horizontal) {
-            Text(Self.styled(lines, numbers: numbers)).font(.system(.body, design: .monospaced))
+            Text(text).font(.system(.body, design: .monospaced))
                 .textSelection(.enabled).fixedSize(horizontal: true, vertical: true).padding(10)
         }
         .fixedSize(horizontal: false, vertical: true)

@@ -31,7 +31,20 @@ struct LinkedTextTests {
             try expect(measured.height == ceil(layout.usedRect(for: container).height))
         }
 
+        let measurement = LinkedTextMeasurement()
+        measurement.update(text)
+        try expect(measurement.size(width: 390) == narrow)
+        try expect(measurement.size(width: 750) == wide)
+        try expect(measurement.size(width: 390) == narrow)
+        // Evict old widths, then verify recomputation still agrees with fresh layout.
+        for width in 400...420 { _ = measurement.size(width: CGFloat(width)) }
+        try expect(measurement.size(width: 390) == narrow)
+
         text.append(text.copy() as! NSAttributedString)
-        try expect(LinkedText.measuredSize(of: text, width: 390).height > narrow.height)
+        measurement.update(text)
+        try expect(measurement.size(width: 390).height > narrow.height)
+        text.addAttribute(.font, value: NSFont.systemFont(ofSize: 24), range: NSRange(location: 0, length: text.length))
+        measurement.update(text)
+        try expect(measurement.size(width: 390) == LinkedText.measuredSize(of: text, width: 390))
     }
 }

@@ -68,6 +68,7 @@ struct ChatView: View {
                     store.current.draftImages.removeAll { $0.id == id }
                 }
                 .disabled(!store.canNavigate)
+                .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
             }
             HStack(alignment: .bottom, spacing: 12) {
                 TextField("Message", text: $store.draft, axis: .vertical)
@@ -95,6 +96,7 @@ struct ChatView: View {
                     }
                 }
                 .frame(height: 32)
+                .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
             }
         }
         .padding(12)
@@ -106,6 +108,11 @@ struct ChatView: View {
                     guard !store.navigating, !store.isWorking || store.isSending else { return }
                     composerFocused = true
                 }
+        }
+        .backgroundPreferenceValue(ComposerControlBounds.self) { anchors in
+            GeometryReader { geometry in
+                ComposerCursor(exclusions: anchors.map { geometry[$0] })
+            }
         }
         .overlay {
             RoundedRectangle(cornerRadius: 12)
