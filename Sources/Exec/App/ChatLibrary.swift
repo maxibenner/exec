@@ -10,6 +10,7 @@ import Observation
     private(set) var authenticating = false
     private var navigationError: String?
     private var savedSummaries: [SessionSummary] = []
+    private var sidebarOrder: [UUID] = []
     private var catalogRequest = 0
     private(set) var openConversations: [ChatStore] = []
     private var loading: ChatStore?
@@ -73,6 +74,7 @@ import Observation
     // A cold open can be superseded by another selection; mutations still serialize.
     var canNavigate: Bool { !authenticating && (!navigating || openingSessionID != nil) }
     private var canModify: Bool { !navigating && !authenticating }
+    var canReorderSessions: Bool { canModify }
     var accountBusy: Bool { authenticating || conversations.contains { $0.busy || $0.isSaving } }
     var hasUnsavedChanges: Bool { conversations.contains { $0.hasUnsavedChanges } }
     var hasUnsentDrafts: Bool { conversations.contains { $0.hasUnsentDraft } }
@@ -97,9 +99,10 @@ import Observation
                 summaries[summary.id] = summary
             }
         }
-        return summaries.values.sorted {
-            $0.updatedAt == $1.updatedAt ? $0.id.uuidString < $1.id.uuidString : $0.updatedAt > $1.updatedAt
-        }
+        var ordered = sidebarOrder.compactMap { summaries.removeValue(forKey: $0) }
+        ordered += savedSummaries.compactMap { summaries.removeValue(forKey: $0.id) }
+        ordered += summaries.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        return ordered
     }
 
     // Shortcuts follow the same current ordering as the sidebar, never creation
@@ -257,6 +260,31 @@ import Observation
         }
     }
 
+    func moveSessions(from offsets: IndexSet, to destination: Int) {
+        let ids = sessionList.map(\.id)
+        guard canReorderSessions, !offsets.isEmpty,
+              offsets.allSatisfy({ ids.indices.contains($0) }),
+              (0...ids.count).contains(destination) else { return }
+        let moving = offsets.map { ids[$0] }
+        var reordered = ids.enumerated().filter { !offsets.contains($0.offset) }.map(\.element)
+        reordered.insert(contentsOf: moving, at: destination - offsets.filter { $0 < destination }.count)
+        guard reordered != ids else { return }
+        navigate {
+            // A visible draft may not have a snapshot yet. Save it before making
+            // its position durable, without interrupting any running conversation.
+            for id in ids where !self.savedSummaries.contains(where: { $0.id == id }) {
+                if let conversation = self.conversation(id) {
+                    await conversation.waitForPendingSave()
+                    try Task.checkCancellation()
+                    try await conversation.saveIfIdle(force: true)
+                }
+            }
+            try Task.checkCancellation()
+            try await self.sessions.reorder(reordered, identity: self.provider.conversationIdentity)
+            try await self.refreshCatalog()
+        }
+    }
+
     func renameSession(_ id: UUID, title: String) {
         guard canModify, sessionList.contains(where: { $0.id == id && !$0.unreadable }) else { return }
         navigate {
@@ -327,9 +355,14 @@ import Observation
 
     private func remember(_ conversation: ChatStore) {
         if !openConversations.contains(where: { $0 === conversation }) { openConversations.append(conversation) }
+        if let id = conversation.currentSessionID, !sidebarOrder.contains(id),
+           !savedSummaries.contains(where: { $0.id == id }) {
+            sidebarOrder.insert(id, at: 0)
+        }
     }
 
     private func activate(_ conversation: ChatStore) {
+        remember(conversation)
         current = conversation
         openConversations.removeAll { $0 === conversation }
         openConversations.append(conversation) // Oldest visit first, most recent last.
@@ -376,7 +409,14 @@ import Observation
         catalogRequest += 1
         let request = catalogRequest
         let summaries = try await sessions.list(identity: provider.conversationIdentity)
-        if request == catalogRequest { savedSummaries = summaries }
+        if request == catalogRequest {
+            let persisted = Set(summaries.map(\.id))
+            let resident = Set(conversations.filter { $0.conversationIdentity == provider.conversationIdentity }.compactMap(\.currentSessionID))
+            // New unsaved sessions retain their creation position until their
+            // first checkpoint. Resident LRU ordering is unrelated to the sidebar.
+            sidebarOrder = sidebarOrder.filter { !persisted.contains($0) && resident.contains($0) } + summaries.map(\.id)
+            savedSummaries = summaries
+        }
     }
 
     private func selectCurrent() async throws {

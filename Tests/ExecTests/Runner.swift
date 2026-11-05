@@ -20,6 +20,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Persistent session ordering, migration and write failures", { try await SessionOrderingTests().migratesAndPersistsOrderWithoutChangingSelectionOrOtherAccounts() }),
+            ("Session moves preserve running work, drafts and shortcuts", { try await SessionOrderingTests().movesStayStableDuringActivityAndKeepDraftsAndShortcuts() }),
             ("Tool summaries describe inputs and preserve results", { try ToolPresentationTests().describesInputsAndPreservesResults() }),
             ("Tool presentation preserves failures and unknown arguments", { try ToolPresentationTests().handlesFailuresAndUnknownArgumentsHonestly() }),
             ("Single-line tool headers and selectable expanded inputs", { try ToolPresentationTests().keepsHeadersOnOneLineAndBodiesSelectable() }),

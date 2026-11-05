@@ -20,6 +20,10 @@ struct SessionSidebar: View {
                                    renameID = session.id; renameTitle = session.title; renaming = true
                                }, delete: { delete(session) })
                         .tag(session.id)
+                        .moveDisabled(!store.canReorderSessions)
+                }
+                .onMove { offsets, destination in
+                    store.moveSessions(from: offsets, to: destination)
                 }
             }
         }

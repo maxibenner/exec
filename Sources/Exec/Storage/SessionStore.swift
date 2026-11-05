@@ -87,6 +87,8 @@ actor SessionStore {
         var version = 1
         var activeID: UUID?
         var sessions: [SessionSummary] = []
+        // Missing in older indexes, whose visible order was based on activity.
+        var stableOrder: Bool?
     }
     private var catalog: Catalog?
 
@@ -102,14 +104,18 @@ actor SessionStore {
 
     func list(identity: String?) throws -> [SessionSummary] {
         try readCatalog().sessions.filter { $0.identity == identity || $0.unreadable }
-            .sorted { $0.updatedAt == $1.updatedAt ? $0.id.uuidString < $1.id.uuidString : $0.updatedAt > $1.updatedAt }
     }
 
     func preferredID(identity: String?, mostRecent: Bool = false) throws -> UUID? {
         let catalog = try readCatalog()
         let available = try list(identity: identity)
-        if !mostRecent, catalog.activeID == nil { return nil }
-        if !mostRecent, available.contains(where: { $0.id == catalog.activeID }) { return catalog.activeID }
+        if mostRecent {
+            return available.sorted {
+                $0.updatedAt == $1.updatedAt ? $0.id.uuidString < $1.id.uuidString : $0.updatedAt > $1.updatedAt
+            }.first?.id
+        }
+        if catalog.activeID == nil { return nil }
+        if available.contains(where: { $0.id == catalog.activeID }) { return catalog.activeID }
         return available.first?.id
     }
 
@@ -131,13 +137,36 @@ actor SessionStore {
         snapshot.activityDate = snapshot.activityDate ?? existing?.updatedAt ?? Date()
         snapshot.title = snapshot.title ?? existing?.customTitle
         try write(JSONEncoder().encode(snapshot), name: "\(id).json")
-        catalog.sessions.removeAll { $0.id == id }
-        catalog.sessions.append(SessionSummary(id: id, snapshot: snapshot))
+        let summary = SessionSummary(id: id, snapshot: snapshot)
+        if let index = catalog.sessions.firstIndex(where: { $0.id == id }) {
+            catalog.sessions[index] = summary
+        } else {
+            catalog.sessions.insert(summary, at: 0)
+        }
         if select { catalog.activeID = id }
         self.catalog = catalog
         try write(JSONEncoder().encode(catalog), name: "index.json")
         if id == legacyID { try remove("session.json") }
         return id
+    }
+
+    func reorder(_ ids: [UUID], identity: String?) throws {
+        var catalog = try readCatalog()
+        let visible = catalog.sessions.filter { $0.identity == identity || $0.unreadable }
+        let visibleIDs = Set(visible.map(\.id))
+        guard ids.count == visible.count, Set(ids) == visibleIDs else {
+            throw ExecError("The session list changed before it could be reordered.")
+        }
+        let summaries = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0) })
+        var position = 0
+        // Reorder only this account's slots; other accounts keep their order.
+        for index in catalog.sessions.indices where visibleIDs.contains(catalog.sessions[index].id) {
+            catalog.sessions[index] = summaries[ids[position]]!
+            position += 1
+        }
+        // A failed write must not publish an order that will disappear on restart.
+        try write(JSONEncoder().encode(catalog), name: "index.json")
+        self.catalog = catalog
     }
 
     func clearSelection() throws { try select(nil) }
@@ -198,6 +227,14 @@ actor SessionStore {
             else { result.sessions.append(SessionSummary(unreadable: id)) }
         }
         if index == nil { result.activeID = result.sessions.last?.id }
+        if result.stableOrder != true {
+            // Keep the sidebar's existing order once when migrating, then never
+            // use activity dates to move rows again. New sessions go at the top.
+            result.sessions.sort {
+                $0.updatedAt == $1.updatedAt ? $0.id.uuidString < $1.id.uuidString : $0.updatedAt > $1.updatedAt
+            }
+            result.stableOrder = true
+        }
         if let active = result.activeID, !available.contains(active) { result.activeID = nil }
         catalog = result
         return result
