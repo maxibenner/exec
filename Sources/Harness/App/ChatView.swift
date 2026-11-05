@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ChatView: View {
@@ -35,6 +36,9 @@ struct ChatView: View {
                         .id(ObjectIdentifier(store.current))
                         .disabled(store.navigating)
                 }
+                // Keep every overlay background and control out of the native
+                // scrollbar lane, including when overlay scrollers expand on hover.
+                .padding(.trailing, NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy))
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
             }
             // Keep per-conversation scroll state; only the selected transcript mounts views.
