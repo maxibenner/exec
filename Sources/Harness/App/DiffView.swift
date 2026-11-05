@@ -4,18 +4,27 @@ import SwiftUI
 struct DiffView: View {
     let source: String
 
-    @State private var rendered: RenderedDiff?
+    @State private var cache = RenderCache()
 
     var body: some View {
-        Group {
-            if let rendered {
-                ViewThatFits(in: .horizontal) {
-                    pane(rendered, sideBySide: true).frame(minWidth: 680)
-                    pane(rendered, sideBySide: false)
-                }
-            }
+        let rendered = cache.value(for: source)
+        ViewThatFits(in: .horizontal) {
+            pane(rendered, sideBySide: true).frame(minWidth: 680)
+            pane(rendered, sideBySide: false)
         }
-        .onChange(of: source, initial: true) { rendered = RenderedDiff(source) }
+    }
+
+    @MainActor final class RenderCache {
+        private var source: String?
+        private var rendered: RenderedDiff?
+
+        func value(for source: String) -> RenderedDiff {
+            if self.source == source, let rendered { return rendered }
+            let value = RenderedDiff(source)
+            self.source = source
+            rendered = value
+            return value
+        }
     }
 
     // Kept with the view, not in a global cache retaining conversation contents.

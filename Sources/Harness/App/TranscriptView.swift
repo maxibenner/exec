@@ -105,59 +105,9 @@ private struct MessageView: View, Equatable {
 
     let message: Message
     @Binding var followsLatest: Bool
-    @State private var expanded: Bool
-
-    init(message: Message, followsLatest: Binding<Bool>) {
-        self.message = message
-        _followsLatest = followsLatest
-        _expanded = State(initialValue: message.toolResult?.edit != nil || message.toolResult?.webSearch != nil)
-    }
-
     var body: some View {
         if let result = message.toolResult {
-            DisclosureGroup(isExpanded: $expanded) {
-                if let edit = result.edit {
-                    DiffView(source: edit.diff).padding(.top, 8)
-                } else if let search = result.webSearch {
-                    WebSearchView(result: search).padding(.top, 8)
-                } else {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(verbatim: result.call.arguments).font(.system(.caption, design: .monospaced))
-                        Text(verbatim: result.text).font(.system(.body, design: .monospaced))
-                    }
-                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-                }
-            } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let edit = result.edit {
-                        Label("Edited \(edit.path)", systemImage: "pencil").font(.callout.weight(.medium))
-                    } else if let search = result.webSearch {
-                        Label("Web search", systemImage: "magnifyingglass").font(.callout.weight(.medium))
-                        Text(verbatim: search.query).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    } else if let read = ReadFileSummary(result) {
-                        HStack(spacing: 8) {
-                            Label("Read \(read.path)", systemImage: "doc.text")
-                                .font(.callout.weight(.medium))
-                                .lineLimit(1).truncationMode(.middle).help(read.path)
-                            if let lines = read.lineLabel {
-                                Text(lines).font(.caption).foregroundStyle(.secondary).fixedSize()
-                            }
-                        }
-                    } else {
-                        Label(result.call.name, systemImage: result.call.name == "shell" ? "terminal" : "doc.text").font(.callout.weight(.medium))
-                        Text(verbatim: String(result.text.split(separator: "\n").first ?? ""))
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                }
-            }
-            .disclosureGroupStyle(InstantToolDisclosureStyle())
-            .transaction { transaction in
-                transaction.animation = nil
-                transaction.disablesAnimations = true
-            }
-            .onChange(of: expanded) { if expanded { followsLatest = false } }
-            .padding(12)
-            .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+            ToolMessageView(result: result, followsLatest: $followsLatest)
         } else if message.role == .user {
             HStack {
                 Spacer(minLength: 40)
@@ -189,6 +139,66 @@ private struct MessageView: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityLabel("Assistant reply")
         }
+    }
+}
+
+// Keep disclosure state outside the equatable message wrapper so local interactions
+// never depend on changes to the persisted message value.
+private struct ToolMessageView: View {
+    let result: ToolResult
+    @Binding var followsLatest: Bool
+    @State private var expanded: Bool
+
+    init(result: ToolResult, followsLatest: Binding<Bool>) {
+        self.result = result
+        _followsLatest = followsLatest
+        _expanded = State(initialValue: result.edit != nil || result.webSearch != nil)
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            if let edit = result.edit {
+                DiffView(source: edit.diff).padding(.top, 8)
+            } else if let search = result.webSearch {
+                WebSearchView(result: search).padding(.top, 8)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(verbatim: result.call.arguments).font(.system(.caption, design: .monospaced))
+                    Text(verbatim: result.text).font(.system(.body, design: .monospaced))
+                }
+                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                if let edit = result.edit {
+                    Label("Edited \(edit.path)", systemImage: "pencil").font(.callout.weight(.medium))
+                } else if let search = result.webSearch {
+                    Label("Web search", systemImage: "magnifyingglass").font(.callout.weight(.medium))
+                    Text(verbatim: search.query).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                } else if let read = ReadFileSummary(result) {
+                    HStack(spacing: 8) {
+                        Label("Read \(read.path)", systemImage: "doc.text")
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1).truncationMode(.middle).help(read.path)
+                        if let lines = read.lineLabel {
+                            Text(lines).font(.caption).foregroundStyle(.secondary).fixedSize()
+                        }
+                    }
+                } else {
+                    Label(result.call.name, systemImage: result.call.name == "shell" ? "terminal" : "doc.text").font(.callout.weight(.medium))
+                    Text(verbatim: String(result.text.split(separator: "\n").first ?? ""))
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+        .disclosureGroupStyle(InstantToolDisclosureStyle())
+        .transaction { transaction in
+            transaction.animation = nil
+            transaction.disablesAnimations = true
+        }
+        .onChange(of: expanded) { if expanded { followsLatest = false } }
+        .padding(12)
+        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
