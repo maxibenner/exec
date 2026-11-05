@@ -23,6 +23,28 @@ import AppKit
         try expect(layout.visibleRange(y: 0, height: 600, overscan: 300).isEmpty && layout.anchor(at: 0) == nil)
     }
 
+    func preservesNearBottomScrolling() throws {
+        _ = NSApplication.shared
+        let messages = (0..<100).map { Message(role: .user, text: "Message \($0)") }
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        defer { view.detach() }
+        view.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        view.update(messages: messages, jumpRequest: 0)
+        view.layoutSubtreeIfNeeded(); view.refresh()
+        let bottom = view.documentView!.bounds.height - view.contentView.bounds.height
+        // Being near the bottom should enable following future content without
+        // snapping the current gesture to the edge.
+        view.contentView.setBoundsOrigin(NSPoint(x: 0, y: bottom - 15))
+        view.refresh()
+        let remaining = view.documentView!.bounds.height - view.contentView.bounds.maxY
+        try expect(state.followsLatest && abs(remaining - 15) < 1)
+        // Explicit navigation must still reach the edge after a user scroll.
+        state.jumpToLatest()
+        view.update(messages: messages, jumpRequest: state.jumpRequest)
+        try expect(abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 1)
+    }
+
     func mountsBoundedRowsAndRestoresPosition() async throws {
         _ = NSApplication.shared
         let messages = (0..<1_000).map { Message(role: .user, text: "Message \($0): a small stable row") }
@@ -48,9 +70,13 @@ import AppKit
         restored.layoutSubtreeIfNeeded(); restored.refresh()
         try expect(state.layout.anchor(at: restored.contentView.bounds.minY) == anchor)
         try expect(restored.mountedRowCount < 40)
+        restored.update(messages: messages, jumpRequest: 0, bottomInset: 180)
+        try expect(state.layout.anchor(at: restored.contentView.bounds.minY) == anchor)
         state.jumpToLatest()
-        restored.update(messages: messages, jumpRequest: state.jumpRequest)
+        restored.update(messages: messages, jumpRequest: state.jumpRequest, bottomInset: 180)
         try expect(abs(restored.contentView.bounds.maxY - restored.documentView!.bounds.height) < 2)
+        let lastBottom = state.layout.offsets.last! + state.layout.heights.last!
+        try expect(lastBottom <= restored.contentView.bounds.maxY - 180)
         restored.detach()
     }
 }

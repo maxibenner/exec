@@ -75,6 +75,7 @@ struct ChatComposer: View {
                 }
                 .zIndex(1)
             information
+                .background(.background)
         }
         .frame(maxWidth: 820)
         .padding(.horizontal, 20).padding(.vertical, 12)
@@ -129,7 +130,8 @@ struct ChatComposer: View {
         }
         .padding(12)
         .background {
-            RoundedRectangle(cornerRadius: 12).fill(.background.secondary)
+            RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor))
+                .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 2)
                 .contentShape(Rectangle()).onTapGesture {
                     guard store.canNavigate, !store.isWorking || store.isSending else { return }
                     focused = true
@@ -154,10 +156,8 @@ struct ChatComposer: View {
         HStack(alignment: .top, spacing: 12) {
             workingControl
             Spacer(minLength: 0)
-            VStack(alignment: .trailing, spacing: 6) {
-                usageInformation
-                workspaceInformation
-            }
+            usageInformation
+            workspaceInformation
         }
         .font(.caption).foregroundStyle(.secondary)
     }
@@ -180,7 +180,7 @@ struct ChatComposer: View {
     private var workspaceInformation: some View {
         WorkspaceBar(store: store)
             .frame(maxWidth: 300, alignment: .trailing)
-            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(-1)
     }
 
     private var usageInformation: some View {

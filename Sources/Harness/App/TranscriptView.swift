@@ -16,14 +16,15 @@ import Observation
 struct TranscriptView: View {
     let messages: [Message]
     let state: TranscriptState
+    var bottomInset: CGFloat = 0
     var body: some View {
-        VirtualTranscript(messages: messages, state: state, jumpRequest: state.jumpRequest)
+        VirtualTranscript(messages: messages, state: state, jumpRequest: state.jumpRequest, bottomInset: bottomInset)
             .overlay(alignment: .bottomTrailing) {
                 if !state.followsLatest {
                     Button(action: state.jumpToLatest) { Image(systemName: "arrow.down") }
                         .buttonStyle(.bordered).buttonBorderShape(.circle)
                         .help("Jump to latest message").accessibilityLabel("Jump to latest message")
-                        .padding(16)
+                        .padding(16).padding(.bottom, bottomInset)
                 }
             }
     }
@@ -33,9 +34,10 @@ private struct VirtualTranscript: NSViewRepresentable {
     let messages: [Message]
     let state: TranscriptState
     let jumpRequest: Int
+    let bottomInset: CGFloat
     func makeNSView(context: Context) -> TranscriptScrollView { TranscriptScrollView(state: state) }
     func updateNSView(_ view: TranscriptScrollView, context: Context) {
-        view.update(messages: messages, jumpRequest: jumpRequest)
+        view.update(messages: messages, jumpRequest: jumpRequest, bottomInset: bottomInset)
     }
     static func dismantleNSView(_ view: TranscriptScrollView, coordinator: ()) { view.detach() }
 }
@@ -59,6 +61,10 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var lastSize = CGSize.zero
     private var jumpRequest = 0
     private var lastMessageID: UUID?
+    private var requestedScroll = false
+    private var pendingContentFollow = false
+    private var bottomInset: CGFloat = 0
+    private var renderedBottomInset: CGFloat = 0
     var mountedRowCount: Int { rows.count }
 
     init(state: TranscriptState) {
@@ -67,6 +73,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         drawsBackground = false
         borderType = .noBorder
         hasVerticalScroller = true
+        verticalScrollElasticity = .allowed
         autohidesScrollers = true
         documentView = content
         contentView.postsBoundsChangedNotifications = true
@@ -75,12 +82,21 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(messages: [Message], jumpRequest: Int) {
+    func update(messages: [Message], jumpRequest: Int, bottomInset: CGFloat = 0) {
+        self.bottomInset = max(0, bottomInset)
         let filtered = messages.filter { $0.role != .assistant || !$0.text.isEmpty || $0.toolCalls.isEmpty }
-        if initialized, let last = filtered.last, last.id != lastMessageID, last.role == .user { state.followsLatest = true }
+        if initialized, let last = filtered.last, last.id != lastMessageID, last.role == .user {
+            state.followsLatest = true
+            requestedScroll = true
+        }
         lastMessageID = filtered.last?.id
+        if self.messages != filtered, state.followsLatest { pendingContentFollow = true }
         self.messages = filtered
-        if jumpRequest != self.jumpRequest { state.followsLatest = true; self.jumpRequest = jumpRequest }
+        if jumpRequest != self.jumpRequest {
+            state.followsLatest = true
+            self.jumpRequest = jumpRequest
+            requestedScroll = true
+        }
         refresh()
     }
     override func layout() {
@@ -104,7 +120,9 @@ private struct VirtualTranscript: NSViewRepresentable {
         // Our own geometry corrections run under `updating`. Other offset changes
         // include keyboard, wheel and scrollbar navigation; resizing isn't a scroll.
         if initialized, contentSize == lastSize {
-            let nearBottom = content.bounds.height - contentView.bounds.maxY <= 40
+            let maximum = max(0, content.bounds.height - contentView.bounds.height)
+            let position = min(maximum, max(0, contentView.bounds.minY))
+            let nearBottom = maximum - position <= 40
             if state.followsLatest != nearBottom { state.followsLatest = nearBottom }
         }
         rememberAnchor()
@@ -125,15 +143,26 @@ private struct VirtualTranscript: NSViewRepresentable {
 
     func refresh() {
         guard !updating, !detached, contentSize.width > 0, contentSize.height > 0 else { return }
+        let size = contentSize
+        // AppKit owns rubber-banding and its spring back. Defer content geometry
+        // changes until the clip view returns in bounds, unless explicitly jumping.
+        let bounds = contentView.bounds
+        if initialized, size == lastSize, !requestedScroll,
+           bounds.minY < 0 || bounds.maxY > content.bounds.height { return }
         updating = true
         defer { updating = false }
-        let size = contentSize
         let width = max(1, min(820, size.width - 40))
         let anchor = initialized ? state.layout.anchor(at: contentView.bounds.minY) : state.anchor
+        let oldHeight = state.layout.totalHeight
+        let needsRestore = !initialized || requestedScroll || size != lastSize || bottomInset != renderedBottomInset
+        let pinBottom = state.followsLatest && (needsRestore || pendingContentFollow || abs(content.bounds.height - bounds.maxY) < 1)
+        pendingContentFollow = false
+        renderedBottomInset = bottomInset
         state.layout.update(messages: messages, width: width)
         lastSize = size
         setDocumentSize()
-        restore(anchor)
+        if needsRestore || oldHeight != state.layout.totalHeight { restore(anchor, pinBottom: pinBottom) }
+        requestedScroll = false
         initialized = true
         // Measuring estimates can reveal another row; settle a bounded number of
         // passes, then continue on the next run-loop turn if more work is needed.
@@ -166,8 +195,10 @@ private struct VirtualTranscript: NSViewRepresentable {
                 let height = row.fittingSize.height
                 if state.layout.measure(message.id, height: height) { changed = true }
             }
-            setDocumentSize()
-            restore(anchor)
+            if changed {
+                setDocumentSize()
+                restore(anchor, pinBottom: pinBottom)
+            }
             for index in range {
                 let frame = CGRect(x: (size.width - width) / 2, y: state.layout.offsets[index],
                                    width: width, height: state.layout.heights[index])
@@ -179,12 +210,12 @@ private struct VirtualTranscript: NSViewRepresentable {
         if changed { scheduleRefresh() }
     }
     private func setDocumentSize() {
-        let size = CGSize(width: contentSize.width, height: max(contentSize.height, state.layout.totalHeight))
+        let size = CGSize(width: contentSize.width, height: max(contentSize.height, state.layout.totalHeight + bottomInset))
         if content.frame.size != size { content.setFrameSize(size) }
     }
-    private func restore(_ anchor: TranscriptLayout.Anchor?) {
+    private func restore(_ anchor: TranscriptLayout.Anchor?, pinBottom: Bool) {
         let maximum = max(0, content.bounds.height - contentView.bounds.height)
-        let y = state.followsLatest ? maximum : anchor.flatMap { state.layout.position(of: $0) } ?? contentView.bounds.minY
+        let y = pinBottom ? maximum : anchor.flatMap { state.layout.position(of: $0) } ?? contentView.bounds.minY
         let origin = NSPoint(x: 0, y: min(maximum, max(0, y)))
         if contentView.bounds.origin != origin {
             contentView.scroll(to: origin)
@@ -203,6 +234,10 @@ private struct TranscriptRow: View {
         }
         .frame(width: width, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
+        // A growing disclosure must overflow downward while the native host is
+        // remeasured, never center itself above the old, shorter row frame.
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .clipped()
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
 }
@@ -268,7 +303,12 @@ private struct ToolMessageView: View {
     }
 
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
+        DisclosureGroup(isExpanded: Binding(get: { expanded }, set: { value in
+            // Pause following before SwiftUI changes the disclosure geometry.
+            state.followsLatest = false
+            state.expanded[messageID] = value
+            expanded = value
+        })) {
             if let edit = result.edit {
                 DiffView(source: edit.diff).padding(.top, 8)
             } else if let search = result.webSearch {
@@ -307,10 +347,6 @@ private struct ToolMessageView: View {
         .transaction { transaction in
             transaction.animation = nil
             transaction.disablesAnimations = true
-        }
-        .onChange(of: expanded) {
-            state.expanded[messageID] = expanded
-            if expanded { state.followsLatest = false }
         }
         .padding(12)
         .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))

@@ -4,6 +4,7 @@ struct ChatView: View {
     @Bindable var store: ChatLibrary
     @FocusState private var composerFocused: Bool
     @State private var errorHeight: CGFloat = 20
+    @State private var composerHeight: CGFloat = 140
 
     var body: some View {
         NavigationSplitView {
@@ -12,25 +13,29 @@ struct ChatView: View {
                 store.deleteSession($0.id)
             })
         } detail: {
-            VStack(spacing: 0) {
+            ZStack(alignment: .bottom) {
                 ZStack {
                     ForEach(store.openConversations) { conversation in
-                        ResidentTranscript(conversation: conversation, isActive: conversation === store.current)
+                        ResidentTranscript(conversation: conversation, isActive: conversation === store.current, bottomInset: composerHeight)
                             .id(conversation.currentSessionID)
                     }
                 }
-                if let approval = store.tools.pendingApproval {
-                    let executor = store.tools
-                    Divider()
-                    ToolApprovalView(approval: approval, executor: executor,
-                                     canResolve: { !store.navigating && store.tools === executor })
-                        .id(approval.id)
-                        .disabled(store.navigating).layoutPriority(1)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 0) {
+                    if let approval = store.tools.pendingApproval {
+                        let executor = store.tools
+                        ToolApprovalView(approval: approval, executor: executor,
+                                         canResolve: { !store.navigating && store.tools === executor })
+                            .id(approval.id)
+                            .disabled(store.navigating).layoutPriority(1)
+                            .background(.background)
+                    }
+                    if let error = store.error { errorView(error).background(.background) }
+                    ChatComposer(store: store, focused: $composerFocused)
+                        .id(ObjectIdentifier(store.current))
+                        .disabled(store.navigating)
                 }
-                if let error = store.error { errorView(error) }
-                ChatComposer(store: store, focused: $composerFocused)
-                    .id(ObjectIdentifier(store.current))
-                    .disabled(store.navigating)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
             }
             // Keep per-conversation scroll state; only the selected transcript mounts views.
             .transaction(value: ObjectIdentifier(store.current)) { transaction in
@@ -85,11 +90,12 @@ struct ChatView: View {
 private struct ResidentTranscript: View {
     let conversation: ChatStore
     let isActive: Bool
+    let bottomInset: CGFloat
     @State private var presentation = TranscriptState()
 
     var body: some View {
         if isActive {
-            TranscriptView(messages: conversation.messages, state: presentation)
+            TranscriptView(messages: conversation.messages, state: presentation, bottomInset: bottomInset)
         }
     }
 }
