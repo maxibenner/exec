@@ -56,12 +56,23 @@ struct LinkedText: NSViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
-        guard let container = nsView.textContainer, let layout = nsView.layoutManager else { return nil }
-        let width = max(1, proposal.width ?? 10_000)
-        container.containerSize = CGSize(width: width, height: .greatestFiniteMagnitude)
+        Self.measuredSize(of: nsView.attributedString(), width: proposal.width)
+    }
+
+    static func measuredSize(of text: NSAttributedString, width: CGFloat?) -> CGSize {
+        // SwiftUI probes multiple widths, not necessarily ending with the displayed width.
+        // Never resize the live container here: a probe can leave its wrapping narrower
+        // than the frame whose height SwiftUI measured, drawing over the next block.
+        let storage = NSTextStorage(attributedString: text)
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: max(1, width ?? 10_000),
+                                                     height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        storage.addLayoutManager(layout)
+        layout.addTextContainer(container)
         layout.ensureLayout(for: container)
         let used = layout.usedRect(for: container)
-        return CGSize(width: proposal.width ?? ceil(used.width), height: ceil(used.height))
+        return CGSize(width: width ?? ceil(used.width), height: ceil(used.height))
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
