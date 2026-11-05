@@ -6,7 +6,7 @@ struct WebSearchView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if !result.answer.isEmpty {
-                ToolSection(title: "Answer") { MarkdownView(source: result.answer) }
+                MarkdownView(source: result.answer)
             }
             ToolSection(title: "Sources") {
                 VStack(alignment: .leading, spacing: 8) {

@@ -39,7 +39,7 @@ import SwiftUI
         web.webSearch = .init(query: "native layout", answer: "Answer", sources: [])
         let webPresentation = ToolPresentation(web)
         try expect(webPresentation.summary == "native layout")
-        try expect(webPresentation.inputs == [.init(title: "Query", text: "native layout")])
+        try expect(webPresentation.inputs.isEmpty && webPresentation.outputTitle == nil)
     }
 
     func handlesFailuresAndUnknownArgumentsHonestly() throws {
@@ -61,7 +61,7 @@ import SwiftUI
         try expect(denied.output == "User denied this edit. Nothing was written.")
         for name in ["shell", "read_file", "list_files", "search_text", "edit_file", "web_search", "unknown_tool"] {
             let malformed = ToolPresentation(result(name, "{broken", "Tool error: invalid arguments"))
-            if name == "read_file" || name == "edit_file" {
+            if ["read_file", "edit_file", "web_search"].contains(name) {
                 try expect(malformed.inputs.isEmpty && malformed.outputTitle == nil)
             } else {
                 try expect(malformed.inputs == [.init(title: "Arguments", text: "{broken")])

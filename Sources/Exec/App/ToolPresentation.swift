@@ -57,10 +57,8 @@ struct ToolPresentation {
             outputTitle = nil
         case "web_search":
             title = "Web search"; icon = "globe"
-            if let query = result.webSearch?.query ?? arguments?.query {
-                summary = query
-                inputs = [Field(title: "Query", text: query)]
-            }
+            summary = result.webSearch?.query ?? arguments?.query
+            outputTitle = nil
         default:
             title = result.call.name; icon = "wrench"
         }
