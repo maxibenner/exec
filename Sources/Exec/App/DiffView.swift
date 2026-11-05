@@ -54,7 +54,6 @@ struct DiffView: View {
             }
         }
         .fixedSize(horizontal: false, vertical: true)
-        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func column(_ title: String, text: AttributedString) -> some View {

@@ -1,7 +1,7 @@
 import Foundation
 
-/// Display-only interpretation of tool inputs. Stored results and model context
-/// remain untouched; unfamiliar or malformed inputs retain their raw arguments.
+/// Display-only interpretation of tool inputs and results. Stored tool data and
+/// model context remain untouched.
 struct ToolPresentation {
     struct Field: Equatable {
         let title: String
@@ -13,7 +13,7 @@ struct ToolPresentation {
     var summary: String?
     var detail: String?
     var inputs: [Field] = []
-    var outputTitle = "Result"
+    var outputTitle: String? = "Result"
     var output: String
 
     init(_ result: ToolResult) {
@@ -21,11 +21,6 @@ struct ToolPresentation {
             var path: String?
             var query: String?
             var command: String?
-            var start_line: Int?
-            var end_line: Int?
-            var expected_revision: String?
-            var old_text: String?
-            var new_text: String?
         }
         let arguments = try? CodingTools.decode(Arguments.self, result.call)
         output = result.text
@@ -37,17 +32,6 @@ struct ToolPresentation {
                 inputs = [Field(title: "Command", text: command)]
             }
             outputTitle = "Output"
-            // Only remove the runner's explicit numeric status line. Warnings,
-            // timeouts and unfamiliar/legacy output remain intact in the body.
-            let parts = result.text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
-            let first = String(parts.first ?? "")
-            for (prefix, label) in [("Exit code: ", "Exit "), ("Terminated by signal: ", "Signal ")] {
-                if first.hasPrefix(prefix), let number = Int(first.dropFirst(prefix.count)), number >= 0 {
-                    detail = label + String(number)
-                    output = parts.count > 1 ? String(parts[1]) : ""
-                    break
-                }
-            }
         case "list_files":
             title = "List"; icon = "folder"
             if let path = arguments?.path {
@@ -57,15 +41,9 @@ struct ToolPresentation {
             outputTitle = "Entries"
         case "read_file":
             title = "Read"; icon = "doc.text"
-            if let path = arguments?.path {
-                summary = path
-                inputs = [Field(title: "File", text: path)]
-                if let start = arguments?.start_line, let end = arguments?.end_line {
-                    inputs.append(Field(title: "Requested lines", text: start == end ? String(start) : "\(start)–\(end)"))
-                }
-            }
+            summary = arguments?.path
             detail = ReadFileSummary(result)?.lineLabel
-            outputTitle = "Contents"
+            outputTitle = nil
         case "search_text":
             title = "Search"; icon = "magnifyingglass"
             if let query = arguments?.query, let path = arguments?.path {
@@ -75,21 +53,8 @@ struct ToolPresentation {
             outputTitle = "Matches"
         case "edit_file":
             title = "Edit"; icon = "pencil"
-            if let edit = result.edit {
-                summary = edit.path
-                inputs = [Field(title: "File", text: edit.path)]
-                detail = "Applied"
-            } else if let path = arguments?.path {
-                summary = path
-                inputs = [Field(title: "File", text: path)]
-                if let revision = arguments?.expected_revision {
-                    inputs.append(Field(title: "Expected revision", text: revision))
-                }
-                if let old = arguments?.old_text, let new = arguments?.new_text {
-                    inputs.append(Field(title: "Text to replace", text: old))
-                    inputs.append(Field(title: "Replacement text", text: new))
-                }
-            }
+            summary = result.edit?.path ?? arguments?.path
+            outputTitle = nil
         case "web_search":
             title = "Web search"; icon = "globe"
             if let query = result.webSearch?.query ?? arguments?.query {
@@ -99,17 +64,20 @@ struct ToolPresentation {
         default:
             title = result.call.name; icon = "wrench"
         }
-        if inputs.isEmpty { inputs = [Field(title: "Arguments", text: result.call.arguments)] }
-        // These are terminal outcomes emitted by execution/recovery, not progress
-        // hints. Never call a requested edit "Applied" without the saved edit.
+        if inputs.isEmpty, outputTitle != nil {
+            inputs = [Field(title: "Arguments", text: result.call.arguments)]
+        }
+        // Preserve terminal failures, including edits that have no saved diff.
         if result.edit == nil, result.webSearch == nil, detail == nil {
             if result.text.hasPrefix("Tool error: ") || result.text.hasPrefix("Error: ") { detail = "Error" }
             else if result.text.hasPrefix("User denied this ") { detail = "Denied" }
             else if result.text.hasPrefix("Interrupted.") || result.text == WebSearchTool.interrupted { detail = "Interrupted" }
             else if result.text.hasPrefix("Not executed:") || result.text == "Duplicate tool call ID; not executed." { detail = "Not run" }
             else if result.call.name == "shell", result.text.hasPrefix("Command timed out;") { detail = "Timed out" }
-            if detail != nil { outputTitle = "Result" }
+            if detail != nil, outputTitle != nil { outputTitle = "Result" }
         }
+        // Shell outcomes stay in the expanded output, not beside the command.
+        if result.call.name == "shell" { detail = nil }
     }
 
     var singleLineSummary: String? {

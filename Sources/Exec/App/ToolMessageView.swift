@@ -22,16 +22,17 @@ struct ToolMessageView: View {
             expanded = value
         })) {
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(presentation.inputs.indices, id: \.self) { index in
-                    let field = presentation.inputs[index]
-                    ToolTextSection(title: field.title, text: field.text)
-                }
-                if let search = result.webSearch {
-                    WebSearchView(result: search)
+                if let edit = result.edit {
+                    DiffView(source: edit.diff)
                 } else {
-                    ToolTextSection(title: presentation.outputTitle, text: presentation.output, emptyText: "No output")
-                    if let edit = result.edit {
-                        ToolSection(title: "Changes") { DiffView(source: edit.diff) }
+                    ForEach(presentation.inputs.indices, id: \.self) { index in
+                        let field = presentation.inputs[index]
+                        ToolTextSection(title: field.title, text: field.text)
+                    }
+                    if let search = result.webSearch {
+                        WebSearchView(result: search)
+                    } else {
+                        ToolTextSection(title: presentation.outputTitle, text: presentation.output, emptyText: "No output")
                     }
                 }
             }
@@ -73,12 +74,14 @@ struct ToolCallHeader: View {
 }
 
 struct ToolSection<Content: View>: View {
-    let title: String
+    let title: String?
     @ViewBuilder var content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(verbatim: title).font(.caption).foregroundStyle(.secondary)
+            if let title {
+                Text(verbatim: title).font(.caption).foregroundStyle(.secondary)
+            }
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -86,7 +89,7 @@ struct ToolSection<Content: View>: View {
 }
 
 struct ToolTextSection: View {
-    let title: String
+    let title: String?
     let text: String
     var emptyText = "(empty)"
 
