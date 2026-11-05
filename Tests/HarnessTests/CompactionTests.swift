@@ -52,7 +52,7 @@ import Foundation
         let resumed = try provider.makeConversationProvider()
         try resumed.restoreConversationState(saved.providerState, history: saved.history)
         let next = Message(role: .user, text: "New pending question")
-        for try await _ in resumed.send(history + [next], model: "test", instructions: "Keep instructions", tools: []) {}
+        for try await _ in resumed.send(history + [next], model: "test", effort: nil, instructions: "Keep instructions", tools: []) {}
         let nextBody = try JSONSerialization.jsonObject(with: HTTPStub.body(of: HTTPStub.state.requests[1])) as! [String: Any]
         let nextInput = nextBody["input"] as! [[String: Any]]
         try expect(nextInput.count == 2 && nextInput[0]["type"] as? String == "compaction")

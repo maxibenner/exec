@@ -20,10 +20,13 @@ import Foundation
     init(connection: FakeConnection = FakeConnection()) { self.connection = connection }
     func makeConversationProvider() throws -> any ChatProvider {
         let child = FakeProvider(connection: connection)
+        child.availableModels = availableModels
         children.append(child)
         return child
     }
     var inputs: [[Message]] = []
+    var efforts: [String?] = []
+    var availableModels = [ChatModel(id: "test", name: "Test")]
     var instructions: [String] = []
     var scripted: [[ChatEvent]] = []
     var onSend: (() -> Void)?
@@ -33,9 +36,10 @@ import Foundation
 
     func connect() async throws { account = "test@example.com" }
     func disconnect() async throws { account = nil }
-    func models() async throws -> [ChatModel] { [ChatModel(id: "test", name: "Test")] }
-    func send(_ messages: [Message], model: String, instructions: String, tools: [ToolDefinition]) -> AsyncThrowingStream<ChatEvent, Error> {
+    func models() async throws -> [ChatModel] { availableModels }
+    func send(_ messages: [Message], model: String, effort: String?, instructions: String, tools: [ToolDefinition]) -> AsyncThrowingStream<ChatEvent, Error> {
         inputs.append(messages)
+        efforts.append(effort)
         self.instructions.append(instructions)
         onSend?()
         if !scripted.isEmpty {

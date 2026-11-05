@@ -7,8 +7,19 @@ import Observation
     var draftImages: [ImageAttachment] = []
     private(set) var isImportingImages = false
     var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || isImportingImages }
-    var models: [ChatModel] = []
-    var selectedModel = ""
+    var models: [ChatModel] = [] { didSet { reconcileEffort() } }
+    var selectedModel = "" { didSet { reconcileEffort() } }
+    var selectedEffort: String?
+    var model: ChatModel? { models.first { $0.id == selectedModel } }
+    var effectiveEffort: String? {
+        guard let selectedEffort, model?.efforts.contains(where: { $0.id == selectedEffort }) == true else { return nil }
+        return selectedEffort
+    }
+
+    private func reconcileEffort() {
+        // Preserve offline preferences until the catalog is available, but never send unknown levels.
+        if selectedModel.isEmpty || !models.isEmpty { selectedEffort = effectiveEffort }
+    }
     var account: String?
     var connectionTitle: String { provider.connectionTitle }
     var error: String?
@@ -257,7 +268,7 @@ import Observation
             try await checkpoint() // Compacted context must be durable before another inference request.
         }
         try Task.checkCancellation()
-        for try await event in provider.send(input, model: selectedModel, instructions: instructions, tools: definitions) {
+        for try await event in provider.send(input, model: selectedModel, effort: effectiveEffort, instructions: instructions, tools: definitions) {
             try Task.checkCancellation()
             switch event {
             case .text(let delta):
@@ -310,7 +321,7 @@ import Observation
     private func snapshot() throws -> SessionSnapshot {
         SessionSnapshot(identity: conversationIdentity, workspace: workspace, selectedModel: selectedModel,
                         messages: messages, history: history, providerState: try provider.encodeConversationState(),
-                        activeTurn: activeTurn, activeCallID: activeCallID, activityDate: sessionActivityDate)
+                        activeTurn: activeTurn, activeCallID: activeCallID, activityDate: sessionActivityDate, effort: selectedEffort)
     }
 
     private func checkpoint(force: Bool = false) async throws {
@@ -345,6 +356,8 @@ import Observation
         let interrupted = saved.recoverInterruptedTurn()
         workspace = saved.workspace
         selectedModel = saved.selectedModel
+        selectedEffort = saved.effort
+        reconcileEffort()
         messages = saved.messages; history = saved.history; draft = ""; draftImages = []
         conversationIdentity = saved.identity
         currentSessionID = id

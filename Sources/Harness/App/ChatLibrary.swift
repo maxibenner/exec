@@ -34,6 +34,13 @@ import Observation
         get { current.selectedModel }
         set { if !busy { current.selectedModel = newValue } }
     }
+    var selectedEffort: String? {
+        get { current.effectiveEffort }
+        set {
+            guard !busy, newValue == nil || current.model?.efforts.contains(where: { $0.id == newValue }) == true else { return }
+            current.selectedEffort = newValue
+        }
+    }
     var error: String? {
         get { navigationError ?? current.error }
         set { navigationError = nil; current.error = newValue }
@@ -246,6 +253,7 @@ import Observation
                                      selectOnCheckpoint: false, newConversation: true, workspace: workspace)
         conversation.models = models
         conversation.selectedModel = current.selectedModel.isEmpty ? models.first?.id ?? "" : current.selectedModel
+        conversation.selectedEffort = current.effectiveEffort
         observe(conversation)
         return conversation
     }

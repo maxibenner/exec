@@ -13,6 +13,7 @@ struct SessionSnapshot: Codable, Sendable {
     var activeCallID: String?
     var activityDate: Date?
     var title: String?
+    var effort: String?
 
     /// Only the last completed model step can have unanswered tool calls.
     /// Missing outcomes are never inferred to be successful or re-executed.

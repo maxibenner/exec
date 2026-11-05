@@ -34,10 +34,18 @@ struct Message: Identifiable, Codable, Sendable {
     }
 }
 
+struct ChatEffort: Identifiable, Sendable {
+    let id: String
+    let name: String
+    var description: String = ""
+}
+
 struct ChatModel: Identifiable, Sendable {
     let id: String
     let name: String
     var contextWindow: Int? = nil
+    var efforts: [ChatEffort] = []
+    var defaultEffort: String? = nil
 }
 
 enum ChatEvent: Sendable {
@@ -66,7 +74,7 @@ enum ChatEvent: Sendable {
     // A true result must be checkpointed before sending another inference request.
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
                          instructions: String, tools: [ToolDefinition]) async throws -> Bool
-    func send(_ messages: [Message], model: String, instructions: String, tools: [ToolDefinition]) -> AsyncThrowingStream<ChatEvent, Error>
+    func send(_ messages: [Message], model: String, effort: String?, instructions: String, tools: [ToolDefinition]) -> AsyncThrowingStream<ChatEvent, Error>
 }
 
 extension ChatProvider {

@@ -54,20 +54,14 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(spacing: 10) {
-            HStack(spacing: 12) {
-                WorkspaceBar(store: store)
-                if !store.models.isEmpty || !store.selectedModel.isEmpty {
-                    AutoApprovalToggle(store: store)
-                    Picker("Model", selection: $store.selectedModel) {
-                        ForEach(store.models) { Text($0.name).tag($0.id) }
-                        if !store.selectedModel.isEmpty && !store.models.contains(where: { $0.id == store.selectedModel }) {
-                            Text(store.selectedModel).tag(store.selectedModel)
-                        }
-                    }
-                    .labelsHidden().pickerStyle(.menu).controlSize(.small)
-                    .frame(maxWidth: 180, alignment: .trailing).fixedSize(horizontal: true, vertical: false)
-                    .disabled(store.isWorking).allowsHitTesting(!store.busy)
-                    .accessibilityLabel("Model")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    WorkspaceBar(store: store)
+                    modelControls
+                }
+                VStack(spacing: 10) {
+                    WorkspaceBar(store: store)
+                    HStack { Spacer(minLength: 0); modelControls }
                 }
             }
             if !store.current.draftImages.isEmpty {
@@ -118,6 +112,24 @@ struct ChatView: View {
         .frame(maxWidth: 820)
         .padding(.horizontal, 20).padding(.vertical, 12)
         .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder private var modelControls: some View {
+        if !store.models.isEmpty || !store.selectedModel.isEmpty {
+            HStack(spacing: 12) {
+                AutoApprovalToggle(store: store)
+                Picker("Model", selection: $store.selectedModel) {
+                    ForEach(store.models) { Text($0.name).tag($0.id) }
+                    if !store.selectedModel.isEmpty && !store.models.contains(where: { $0.id == store.selectedModel }) {
+                        Text(store.selectedModel).tag(store.selectedModel)
+                    }
+                }
+                .labelsHidden().pickerStyle(.menu).controlSize(.small)
+                .frame(maxWidth: 180, alignment: .trailing).fixedSize(horizontal: true, vertical: false)
+                .disabled(store.busy).accessibilityLabel("Model")
+                EffortPicker(store: store)
+            }
+        }
     }
 
     private func errorView(_ error: String) -> some View {

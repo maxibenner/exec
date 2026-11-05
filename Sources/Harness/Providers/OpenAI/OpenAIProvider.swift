@@ -54,6 +54,12 @@ import Foundation
                 let visibility: String?
                 let context_window: Int?
                 let effective_context_window_percent: Int?
+                struct Effort: Decodable {
+                    let effort: String
+                    let description: String?
+                }
+                let supported_reasoning_levels: [Effort]?
+                let default_reasoning_level: String?
             }
             let models: [Model]
         }
@@ -69,7 +75,15 @@ import Foundation
                     guard (1...10_000_000).contains(size), (1...100).contains(percent) else { return nil }
                     return size * percent / 100
                 }
-                return ChatModel(id: $0.slug, name: $0.display_name ?? $0.slug, contextWindow: window)
+                var seen = Set<String>()
+                let efforts = ($0.supported_reasoning_levels ?? []).compactMap { level -> ChatEffort? in
+                    guard !level.effort.isEmpty, level.effort.utf8.count <= 64,
+                          seen.insert(level.effort).inserted else { return nil }
+                    let name = level.effort == "xhigh" ? "Extra High" : level.effort.capitalized
+                    return ChatEffort(id: level.effort, name: name, description: level.description ?? "")
+                }
+                return ChatModel(id: $0.slug, name: $0.display_name ?? $0.slug, contextWindow: window,
+                                 efforts: efforts, defaultEffort: $0.default_reasoning_level)
             }
     }
 
@@ -116,7 +130,7 @@ import Foundation
         return true
     }
 
-    func send(_ messages: [Message], model: String, instructions: String = "", tools: [ToolDefinition] = []) -> AsyncThrowingStream<ChatEvent, Error> {
+    func send(_ messages: [Message], model: String, effort: String? = nil, instructions: String = "", tools: [ToolDefinition] = []) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { @MainActor in
                 do {
@@ -127,7 +141,8 @@ import Foundation
                     let input = try context.input(messages)
                     let request = try CodexConnection.responsesRequest(
                         input: input, model: model, sessionID: messages.first?.id.uuidString ?? UUID().uuidString,
-                        accessToken: credentials.access, accountID: credentials.accountID, instructions: instructions, tools: tools
+                        accessToken: credentials.access, accountID: credentials.accountID, instructions: instructions, tools: tools,
+                        effort: effort
                     )
                     for try await event in OpenAITransport.stream(request, session: http) {
                         try Task.checkCancellation()

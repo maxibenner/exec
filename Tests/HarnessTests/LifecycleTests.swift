@@ -187,7 +187,7 @@ import Foundation
         let restoredMessages = try JSONDecoder().decode([Message].self, from: savedMessages)
         try expect(restoredMessages.first?.id == user.id)
         var snapshots: [String] = []
-        for try await event in resumed.send(restoredMessages, model: "test", instructions: "", tools: CodingTools.definitions) {
+        for try await event in resumed.send(restoredMessages, model: "test", effort: nil, instructions: "", tools: CodingTools.definitions) {
             if case .textSnapshot(let text) = event { snapshots.append(text) }
         }
         try expect(snapshots == [finalText])

@@ -47,7 +47,8 @@ enum CodexConnection {
     }
 
     static func responsesRequest(input: [[String: Any]], model: String, sessionID: String,
-                                 accessToken: String, accountID: String, instructions: String = "", tools: [ToolDefinition] = []) throws -> URLRequest {
+                                 accessToken: String, accountID: String, instructions: String = "", tools: [ToolDefinition] = [],
+                                 effort: String? = nil) throws -> URLRequest {
         var request = request(path: "/responses", accessToken: accessToken, accountID: accountID)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -60,6 +61,7 @@ enum CodexConnection {
             "instructions": systemInstructions(instructions),
             "include": ["reasoning.encrypted_content"], "prompt_cache_key": sessionID
         ]
+        if let effort { body["reasoning"] = ["effort": effort] }
         if !tools.isEmpty {
             body["parallel_tool_calls"] = false
             body["tools"] = tools.map { tool -> [String: Any] in
