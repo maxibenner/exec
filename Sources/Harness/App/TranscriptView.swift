@@ -242,9 +242,41 @@ private struct TranscriptRow: View {
     }
 }
 
-private final class MessageHost: NSHostingView<TranscriptRow> {
+// SwiftUI's ideal-size/layout probes can temporarily grow the hosting view before
+// the virtual transcript has measured it and moved subsequent rows. A separate,
+// native clipping boundary must retain the last committed row frame throughout.
+private final class MessageHost: NSView {
+    private let hosted: ContentHost
     var didLayout: (() -> Void)?
-    override func layout() { super.layout(); didLayout?() }
+    var rootView: TranscriptRow {
+        get { hosted.rootView }
+        set { hosted.rootView = newValue }
+    }
+
+    init(rootView: TranscriptRow) {
+        hosted = ContentHost(rootView: rootView)
+        super.init(frame: .zero)
+        clipsToBounds = true
+        wantsLayer = true
+        layer?.masksToBounds = true
+        hosted.autoresizingMask = [.width, .height]
+        addSubview(hosted)
+        hosted.didLayout = { [weak self] in self?.didLayout?() }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override var isFlipped: Bool { true }
+    override var fittingSize: NSSize { hosted.fittingSize }
+
+    override func layout() {
+        hosted.frame = bounds
+        super.layout()
+    }
+
+    private final class ContentHost: NSHostingView<TranscriptRow> {
+        var didLayout: (() -> Void)?
+        override func layout() { super.layout(); didLayout?() }
+    }
 }
 
 private struct MessageView: View {

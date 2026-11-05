@@ -45,6 +45,47 @@ import AppKit
         try expect(abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 1)
     }
 
+    func expandedToolContentStaysInsideCommittedRowBounds() throws {
+        _ = NSApplication.shared
+        let output = (0..<12).map { "Output line \($0)" }.joined(separator: "\n")
+        let result = ToolResult(call: ToolCall(id: "shell", name: "shell", arguments: "{}"), text: output)
+        let shell = Message(role: .tool, text: output, toolResult: result)
+        let messages = [shell, Message(role: .assistant, text: "This reply must never be covered by shell output.")]
+        let state = TranscriptState()
+        state.followsLatest = false
+        state.expanded[shell.id] = true
+        let view = TranscriptScrollView(state: state)
+        defer { view.detach() }
+        view.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        view.update(messages: messages, jumpRequest: 0)
+        view.layoutSubtreeIfNeeded(); view.refresh()
+        let rows = view.documentView!.subviews.sorted { $0.frame.minY < $1.frame.minY }
+        try expect(rows.count == 2)
+        let row = rows[0]
+        let fullFrame = row.frame
+        let neighborFrame = rows[1].frame
+        try expect(fullFrame.height > 200 && neighborFrame.minY >= fullFrame.maxY)
+        try expect(row.clipsToBounds && row.layer?.masksToBounds == true)
+        try expect(row.subviews.count == 1)
+        let hosted = row.subviews[0]
+
+        // Reproduce the interval between SwiftUI expanding/measuring its content
+        // and the transcript committing a larger row frame. The native boundary
+        // must remain small even if the hosted view uses its full natural height.
+        row.setFrameSize(NSSize(width: fullFrame.width, height: 60))
+        hosted.frame = NSRect(origin: .zero, size: fullFrame.size)
+        let measured = row.fittingSize
+        try expect(measured.height > 200 && row.frame.height == 60)
+        try expect(hosted.visibleRect.height <= 60)
+        try expect(rows[1].frame == neighborFrame)
+
+        view.refresh()
+        view.layoutSubtreeIfNeeded(); view.refresh()
+        try expect(abs(row.frame.height - measured.height) < 1)
+        try expect(rows[1].frame.minY >= row.frame.maxY)
+        try expect(!state.followsLatest && state.expanded[shell.id] == true)
+    }
+
     func mountsBoundedRowsAndRestoresPosition() async throws {
         _ = NSApplication.shared
         let messages = (0..<1_000).map { Message(role: .user, text: "Message \($0): a small stable row") }
