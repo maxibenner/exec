@@ -54,6 +54,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Edit creation and diff boundaries", { try FileEditTests().creationAndDiffBoundaries() }),
             ("Concurrent edit protection", { try await FileEditTests().concurrentPreparedEditsCannotOverwriteEachOther() }),
             ("Diff column alignment and literal content", { try DiffTests().pairsReplacementsWithoutLosingMarkersOrPlusSigns() }),
+            ("Session shortcut ordering and navigation", { try await SessionShortcutTests().shortcutsFollowSidebarOrderAndPreserveNavigation() }),
             ("Session restore and follow-up", { try await SessionTests().conversationAndWorkspaceSurviveRestart() }),
             ("Interrupted session recovery", { try await SessionTests().interruptedActionsAreRecordedNotReplayed() }),
             ("Session corruption and account isolation", { try await SessionTests().incompatibleOrCorruptSessionsAreNotOverwritten() }),

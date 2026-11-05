@@ -26,6 +26,7 @@ import SwiftUI
             .task { if store == nil && startupError == nil { start() } }
         }
         .defaultSize(width: 980, height: 700)
+        .commands { SessionCommands(store: store) }
     }
 
     private func start() {

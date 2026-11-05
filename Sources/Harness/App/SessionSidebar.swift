@@ -9,10 +9,12 @@ struct SessionSidebar: View {
     @State private var renameTitle = ""
 
     var body: some View {
+        let shortcuts = store.sessionShortcuts
         List(selection: Binding(get: { store.sidebarSelectionID }, set: { if let id = $0 { open(id) } })) {
             Section("Sessions") {
                 ForEach(store.sessionList) { session in
                     SessionRow(session: session, store: store,
+                               shortcut: shortcuts.first { $0.session.id == session.id }?.number,
                                rename: {
                                    guard store.canNavigate else { return }
                                    renameID = session.id; renameTitle = session.title; renaming = true
@@ -70,6 +72,7 @@ struct SessionSidebar: View {
 private struct SessionRow: View {
     let session: SessionSummary
     let store: ChatLibrary
+    let shortcut: Int?
     private var running: Bool { store.isSessionRunning(session.id) }
     private var needsApproval: Bool { store.needsApproval(session.id) }
     private var needsAttention: Bool { store.needsAttention(session.id) }
@@ -81,6 +84,11 @@ private struct SessionRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(verbatim: session.title).font(.body.weight(.regular)).lineLimit(2)
                 HStack {
+                    if let shortcut {
+                        Text("⌘\(shortcut)").monospacedDigit().fixedSize()
+                            .help("Switch to session (⌘\(shortcut))")
+                            .accessibilityLabel("Keyboard shortcut: Command \(shortcut)")
+                    }
                     if let workspace = session.workspace {
                         Text(URL(fileURLWithPath: workspace).lastPathComponent).lineLimit(1).help(workspace)
                     }

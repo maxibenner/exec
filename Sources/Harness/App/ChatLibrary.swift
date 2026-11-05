@@ -102,6 +102,12 @@ import Observation
         }
     }
 
+    // Shortcuts follow the same current ordering as the sidebar, never creation
+    // order or the resident cache. There is deliberately no shortcut for row 10+.
+    var sessionShortcuts: [(number: Int, session: SessionSummary)] {
+        sessionList.prefix(9).enumerated().map { (number: $0.offset + 1, session: $0.element) }
+    }
+
     func isSessionRunning(_ id: UUID) -> Bool { conversation(id)?.busy == true }
     func needsApproval(_ id: UUID) -> Bool { conversation(id)?.tools.pendingApproval != nil }
     func needsAttention(_ id: UUID) -> Bool {
