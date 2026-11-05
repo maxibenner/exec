@@ -65,6 +65,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var pendingContentFollow = false
     private var bottomInset: CGFloat = 0
     private var renderedBottomInset: CGFloat = 0
+    private var scrollRouting: TranscriptScrollRouting?
     private var selectionClearing: TranscriptSelectionClearing?
     var mountedRowCount: Int { rows.count }
 
@@ -106,15 +107,20 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        scrollRouting?.stop()
+        scrollRouting = nil
         selectionClearing?.stop()
         selectionClearing = nil
         if window != nil, !detached {
+            scrollRouting = TranscriptScrollRouting(self)
             selectionClearing = TranscriptSelectionClearing(self)
             scheduleRefresh()
         }
     }
     func detach() {
         detached = true
+        scrollRouting?.stop()
+        scrollRouting = nil
         selectionClearing?.stop()
         selectionClearing = nil
         rememberAnchor()
