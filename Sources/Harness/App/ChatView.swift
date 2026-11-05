@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     @Bindable var store: ChatLibrary
@@ -6,6 +7,7 @@ struct ChatView: View {
     @State private var confirmingDeletion = false
     @FocusState private var composerFocused: Bool
     @State private var errorHeight: CGFloat = 20
+    @State private var imageDropTargeted = false
 
     var body: some View {
         NavigationSplitView {
@@ -68,6 +70,12 @@ struct ChatView: View {
                     .accessibilityLabel("Model")
                 }
             }
+            if !store.current.draftImages.isEmpty {
+                AttachmentStrip(images: store.current.draftImages) { id in
+                    store.current.draftImages.removeAll { $0.id == id }
+                }
+                .disabled(!store.canNavigate)
+            }
             HStack(alignment: .bottom, spacing: 12) {
                 TextField("Message", text: $store.draft, axis: .vertical)
                     .lineLimit(1...8).textFieldStyle(.plain).font(.body)
@@ -90,7 +98,7 @@ struct ChatView: View {
                             .buttonStyle(.borderedProminent).buttonBorderShape(.circle)
                             .keyboardShortcut(.return, modifiers: .command)
                             .help("Send message (⌘Return)").accessibilityLabel("Send message")
-                            .disabled(store.busy || store.account == nil || store.selectedModel.isEmpty || store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .disabled(store.busy || store.account == nil || store.selectedModel.isEmpty || store.current.isImportingImages || (store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.current.draftImages.isEmpty))
                     }
                 }
                 .frame(height: 32)
@@ -100,7 +108,12 @@ struct ChatView: View {
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(composerFocused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: 1)
+                .strokeBorder(imageDropTargeted || composerFocused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: imageDropTargeted ? 2 : 1)
+        }
+        .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: $imageDropTargeted) { providers in
+            guard store.canNavigate else { return false }
+            let destination = store.current
+            return destination.importImages { try await ImageDrop.load(providers) } != nil
         }
         .frame(maxWidth: 820)
         .padding(.horizontal, 20).padding(.vertical, 12)

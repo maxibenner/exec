@@ -9,11 +9,28 @@ struct Message: Identifiable, Codable, Sendable {
     var status: Status = .complete
     var toolCalls: [ToolCall] = []
     var toolResult: ToolResult?
+    var images: [ImageAttachment]
 
     init(id: UUID = UUID(), role: Role, text: String, status: Status = .complete,
-         toolCalls: [ToolCall] = [], toolResult: ToolResult? = nil) {
+         toolCalls: [ToolCall] = [], toolResult: ToolResult? = nil, images: [ImageAttachment] = []) {
         self.id = id; self.role = role; self.text = text; self.status = status
-        self.toolCalls = toolCalls; self.toolResult = toolResult
+        self.toolCalls = toolCalls; self.toolResult = toolResult; self.images = images
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, role, text, status, toolCalls, toolResult, images
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        role = try values.decode(Role.self, forKey: .role)
+        text = try values.decode(String.self, forKey: .text)
+        status = try values.decode(Status.self, forKey: .status)
+        toolCalls = try values.decode([ToolCall].self, forKey: .toolCalls)
+        toolResult = try values.decodeIfPresent(ToolResult.self, forKey: .toolResult)
+        images = try values.decodeIfPresent([ImageAttachment].self, forKey: .images) ?? []
+        try ImageAttachment.validate(images)
     }
 }
 

@@ -51,7 +51,7 @@ import Observation
     var canNavigate: Bool { !navigating && !authenticating }
     var accountBusy: Bool { authenticating || conversations.contains { $0.isSending } }
     var hasUnsavedChanges: Bool { conversations.contains { $0.hasUnsavedChanges } }
-    var hasUnsentDrafts: Bool { conversations.contains { !$0.draft.isEmpty } }
+    var hasUnsentDrafts: Bool { conversations.contains { $0.hasUnsentDraft } }
     var hasRunningOperations: Bool { navigating || authenticating || conversations.contains { $0.busy } }
 
     private var conversations: [ChatStore] {
@@ -269,7 +269,7 @@ import Observation
 
     private func prune() {
         retained = retained.filter { _, conversation in
-            conversation === current || conversation.busy || !conversation.draft.isEmpty ||
+            conversation === current || conversation.busy || conversation.hasUnsentDraft ||
             conversation.hasUnsavedChanges || conversation.error != nil || conversation.autoApproveTools
         }
     }

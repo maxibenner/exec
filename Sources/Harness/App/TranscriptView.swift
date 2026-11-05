@@ -132,12 +132,17 @@ private struct MessageView: View {
         } else if message.role == .user {
             HStack {
                 Spacer(minLength: 40)
-                Text(verbatim: message.text).lineSpacing(3)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
-                    .frame(maxWidth: 600, alignment: .trailing)
-                    .accessibilityLabel("You: \(message.text)")
+                VStack(alignment: .trailing, spacing: 8) {
+                    if !message.images.isEmpty { AttachmentStrip(images: message.images) }
+                    if !message.text.isEmpty {
+                        Text(verbatim: message.text).lineSpacing(3).textSelection(.enabled)
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+                .frame(maxWidth: 600, alignment: .trailing)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("You: \(message.text)")
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else {

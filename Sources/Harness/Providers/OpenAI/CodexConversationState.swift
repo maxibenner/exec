@@ -52,7 +52,18 @@ struct CodexConversationState: Codable {
             } else if message.role == .assistant, let previousID, let output = outputs[previousID] {
                 input.append(contentsOf: try Self.items(output))
             } else {
-                if !message.text.isEmpty { input.append(["role": message.role.rawValue, "content": message.text]) }
+                if !message.images.isEmpty {
+                    guard message.role == .user else { throw HarnessError("Only user messages can contain images.") }
+                    try ImageAttachment.validate(message.images)
+                    var content: [[String: Any]] = []
+                    if !message.text.isEmpty { content.append(["type": "input_text", "text": message.text]) }
+                    content += message.images.map {
+                        ["type": "input_image", "image_url": "data:\($0.mediaType);base64,\($0.data.base64EncodedString())"]
+                    }
+                    input.append(["role": "user", "content": content])
+                } else if !message.text.isEmpty {
+                    input.append(["role": message.role.rawValue, "content": message.text])
+                }
                 for call in message.toolCalls {
                     input.append(["type": "function_call", "call_id": call.id, "name": call.name, "arguments": call.arguments])
                 }
@@ -72,8 +83,19 @@ struct CodexConversationState: Codable {
     }
 
     static func estimate(_ input: [[String: Any]]) throws -> Int {
-        // Conservative text estimate, not a tokenizer. Prefer server usage whenever available.
-        (try JSONSerialization.data(withJSONObject: input).count + 2) / 3
+        // Base64 bytes are not text tokens. Budget images separately; prefer reported usage.
+        var imageTokens = 0
+        let textInput = input.map { item in
+            var item = item
+            if let content = item["content"] as? [[String: Any]] {
+                item["content"] = content.filter {
+                    if $0["type"] as? String == "input_image" { imageTokens += 4_096; return false }
+                    return true
+                }
+            }
+            return item
+        }
+        return (try JSONSerialization.data(withJSONObject: textInput).count + 2) / 3 + imageTokens
     }
 
     static func items(_ data: Data) throws -> [[String: Any]] {

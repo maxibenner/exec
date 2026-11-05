@@ -4,6 +4,9 @@ import Observation
 @MainActor @Observable final class ChatStore {
     var messages: [Message] = []
     var draft = ""
+    var draftImages: [ImageAttachment] = []
+    private(set) var isImportingImages = false
+    var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || isImportingImages }
     var models: [ChatModel] = []
     var selectedModel = ""
     var account: String?
@@ -54,7 +57,7 @@ import Observation
     }
 
     var summary: SessionSummary? {
-        guard let id = currentSessionID, !messages.isEmpty || workspace != nil || !draft.isEmpty else { return nil }
+        guard let id = currentSessionID, !messages.isEmpty || workspace != nil || hasUnsentDraft else { return nil }
         return SessionSummary(id: id, snapshot: SessionSnapshot(identity: conversationIdentity, workspace: workspace,
             selectedModel: selectedModel, messages: messages, history: [], activeTurn: false, activityDate: sessionActivityDate))
     }
@@ -126,17 +129,40 @@ import Observation
             sessionActivityDate = Date()
         }
         self.workspace = workspace
-        messages = []; history = []; draft = ""; error = nil
+        messages = []; history = []; draft = ""; draftImages = []; error = nil
         activeTurn = false; activeCallID = nil
         loadedSession = true; restorationBlocked = false
         conversationIdentity = provider.conversationIdentity
         provider.clearConversationState()
     }
 
+    // Capture the destination before asynchronous drop loading; navigation must not redirect attachments.
+    @discardableResult
+    func importImages(_ load: @escaping @MainActor () async throws -> [ImageAttachment]) -> Task<Void, Never>? {
+        guard !isImportingImages, !busy || isSending else { return nil }
+        let sessionID = currentSessionID
+        let identity = conversationIdentity
+        isImportingImages = true
+        return Task {
+            defer { isImportingImages = false; didFinish?() }
+            do {
+                let images = try await load()
+                guard currentSessionID == sessionID, conversationIdentity == identity else { return }
+                try ImageAttachment.validate(draftImages + images)
+                draftImages += images
+            } catch {
+                if currentSessionID == sessionID, conversationIdentity == identity {
+                    self.error = error.localizedDescription
+                }
+            }
+        }
+    }
+
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !busy, account != nil, !selectedModel.isEmpty else { return }
-        let user = Message(role: .user, text: text)
+        guard !text.isEmpty || !draftImages.isEmpty, !busy, !isImportingImages,
+              account != nil, !selectedModel.isEmpty else { return }
+        let user = Message(role: .user, text: text, images: draftImages)
         run(sending: true) {
             guard self.conversationIdentity == self.provider.conversationIdentity else {
                 throw HarnessError("The connected account changed. Choose New before sending this conversation.")
@@ -145,6 +171,7 @@ import Observation
             self.messages.append(user)
             self.sessionActivityDate = Date()
             self.draft = ""
+            self.draftImages = []
             self.activeTurn = true
             try await self.checkpoint()
             var usedCallIDs = Set<String>()
@@ -318,7 +345,7 @@ import Observation
         let interrupted = saved.recoverInterruptedTurn()
         workspace = saved.workspace
         selectedModel = saved.selectedModel
-        messages = saved.messages; history = saved.history; draft = ""
+        messages = saved.messages; history = saved.history; draft = ""; draftImages = []
         conversationIdentity = saved.identity
         currentSessionID = id
         sessionActivityDate = saved.activityDate ?? sessionList.first(where: { $0.id == id })?.updatedAt ?? Date()

@@ -20,6 +20,10 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Image drop normalization and validation", { try await ImageAttachmentTests().normalizesAndRejectsInvalidDrops() }),
+            ("Image wire format and legacy sessions", { try ImageAttachmentTests().wireFormatAndLegacyDecoding() }),
+            ("Image persistence and failed-turn isolation", { try await ImageAttachmentTests().sendsPersistsAndExcludesFailedImages() }),
+            ("Pending image drop conversation isolation", { try await ImageAttachmentTests().pendingDropsStayWithOriginalConversation() }),
             ("Markdown blocks and streaming code", { try MarkdownTests().preservesBlocksAndStreamingCode() }),
             ("Markdown link and image safety", { try MarkdownTests().stripsActiveContentAndUnsafeLinks() }),
             ("Approved edits and stale-file protection", { try await FileEditTests().approvedEditsRejectStaleFilesAndPreserveMode() }),
