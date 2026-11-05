@@ -63,7 +63,7 @@ struct ChatComposer: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 0) {
             input
                 .overlay(alignment: .topLeading) {
                     if paletteVisible {
@@ -73,12 +73,15 @@ struct ChatComposer: View {
                             .frame(height: 0, alignment: .bottom)
                     }
                 }
+                .frame(maxWidth: 820)
+                .padding(.horizontal, 20).padding(.top, 12)
                 .zIndex(1)
             information
+                .frame(maxWidth: 820)
+                .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12)
+                .frame(maxWidth: .infinity)
                 .background(.background)
         }
-        .frame(maxWidth: 820)
-        .padding(.horizontal, 20).padding(.vertical, 12)
         .frame(maxWidth: .infinity)
         .onChange(of: store.draft) { _, _ in highlighted = 0; dismissedDraft = nil }
         .onChange(of: ObjectIdentifier(store.current)) { _, _ in close() }
@@ -131,7 +134,6 @@ struct ChatComposer: View {
         .padding(12)
         .background {
             RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor))
-                .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 2)
                 .contentShape(Rectangle()).onTapGesture {
                     guard store.canNavigate, !store.isWorking || store.isSending else { return }
                     focused = true
