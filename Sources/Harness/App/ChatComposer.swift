@@ -116,7 +116,7 @@ struct ChatComposer: View {
                 Text("·")
                 Text(effortName).accessibilityLabel("Reasoning: \(effortName)")
                 Spacer(minLength: 8)
-                Text(store.autoApproveTools ? "Auto-approve on" : "Auto-approve off")
+                Text(store.autoApproveTools ? "Auto on" : "Auto off")
                     .foregroundStyle(store.autoApproveTools ? Color.accentColor : Color.secondary)
                     .layoutPriority(1)
             }
