@@ -160,13 +160,17 @@ struct ChatComposer: View {
     }
 
     private var information: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             workingControl
             Spacer(minLength: 0)
             usageInformation
             workspaceInformation
         }
         .font(.caption).foregroundStyle(.secondary)
+        .lineLimit(1)
+        // Reserve the same row for the indicator, usage text and folder control,
+        // including while idle or before usage/workspace information is available.
+        .frame(height: 20)
     }
 
     @ViewBuilder private var workingControl: some View {

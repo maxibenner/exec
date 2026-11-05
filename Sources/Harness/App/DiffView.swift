@@ -66,12 +66,9 @@ struct DiffView: View {
     }
 
     private func code(_ text: AttributedString) -> some View {
-        ScrollView(.horizontal) {
-            Text(text).font(.system(.body, design: .monospaced))
-                .textSelection(.enabled).fixedSize(horizontal: true, vertical: true).padding(10)
-        }
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        DiffCodeView(text: text)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     static func highlighted(_ source: String) -> AttributedString {
