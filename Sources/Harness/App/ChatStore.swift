@@ -116,6 +116,15 @@ import Observation
         }
     }
 
+    /// Configure an unsent conversation without replacing its identity or draft.
+    func setInitialWorkspace(_ workspace: Workspace) throws {
+        guard !busy, messages.isEmpty, !restorationBlocked else {
+            throw HarnessError("Choose a workspace in a new conversation.")
+        }
+        tools.setAutoApproval(for: nil)
+        self.workspace = workspace
+    }
+
     /// Selection is transactional: a failed load leaves the old chat and workspace intact.
     func selectWorkspace(_ url: URL) {
         run {

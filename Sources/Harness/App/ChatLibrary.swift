@@ -48,6 +48,7 @@ import Observation
     var account: String? { current.account }
     var connectionTitle: String { provider.connectionTitle }
     var workspace: Workspace? { current.workspace }
+    var canSelectWorkspace: Bool { canNavigate && !current.busy && current.messages.isEmpty }
     var tools: ToolExecutor { current.tools }
     var autoApproveTools: Bool { current.autoApproveTools }
     var currentSessionID: UUID? { current.currentSessionID }
@@ -194,31 +195,18 @@ import Observation
     }
 
     func selectWorkspace(_ url: URL) {
-        guard canNavigate else { return }
+        guard canSelectWorkspace else { return }
         navigate {
             let loading = Task.detached(priority: .userInitiated) { try Workspace.load(url) }
             let workspace = try await withTaskCancellationHandler {
                 try await loading.value
             } onCancel: { loading.cancel() }
             try Task.checkCancellation()
-            try await self.replaceWorkspace(workspace)
+            try self.current.setInitialWorkspace(workspace)
+            try await self.current.saveIfIdle()
+            try await self.refreshCatalog()
+            try await self.selectCurrent()
         }
-    }
-
-    func closeWorkspace() {
-        guard canNavigate else { return }
-        navigate { try await self.replaceWorkspace(nil) }
-    }
-
-    private func replaceWorkspace(_ workspace: Workspace?) async throws {
-        await preserveCurrent()
-        try Task.checkCancellation()
-        let next = try makeConversation(workspace: workspace)
-        current = next
-        remember(next)
-        try await next.saveIfIdle()
-        try await refreshCatalog()
-        try await selectCurrent()
     }
 
     func renameSession(_ id: UUID, title: String) {

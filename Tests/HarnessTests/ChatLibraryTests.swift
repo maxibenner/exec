@@ -142,29 +142,37 @@ import Foundation
         let runningID = library.currentSessionID!
         library.draft = "Keep this draft"
 
-        // Choosing a workspace from the active runner creates a separate conversation.
+        // A selected workspace is fixed, including while its conversation is running.
+        try expect(!library.canSelectWorkspace)
         library.selectWorkspace(secondFolder)
-        try await wait { !library.navigating }
-        try expect(library.current !== running && running.busy)
-        try expect(library.workspace?.root.resolvingSymlinksInPath().path == secondFolder.resolvingSymlinksInPath().path)
+        try expect(library.current === running && !library.navigating)
         try expect(running.workspace?.root.resolvingSymlinksInPath().path == firstFolder.resolvingSymlinksInPath().path)
-        try expect(running.draft == "Keep this draft")
 
-        // A new conversation can also choose or close its workspace with a background run.
         library.newConversation()
         try await wait { !library.navigating }
+        let fresh = library.current
+        let freshID = library.currentSessionID
+        try expect(library.workspace?.root == running.workspace?.root)
+        try expect(library.canSelectWorkspace && running.busy)
+        library.setAutoApproveTools(true)
+        try expect(library.autoApproveTools)
+        library.draft = "New draft"
+        library.selectWorkspace(secondFolder)
+        try await wait { !library.navigating }
+        try expect(library.current === fresh && library.currentSessionID == freshID)
+        try expect(library.draft == "New draft")
+        try expect(library.workspace?.root.resolvingSymlinksInPath().path == secondFolder.resolvingSymlinksInPath().path)
+        try expect(library.canSelectWorkspace && running.busy && !library.autoApproveTools)
+        library.send()
+        try await wait { !library.navigating && !fresh.busy }
+        try expect(!library.canSelectWorkspace && running.busy)
         library.selectWorkspace(firstFolder)
-        try await wait { !library.navigating }
-        try expect(library.workspace?.root.resolvingSymlinksInPath().path == firstFolder.resolvingSymlinksInPath().path && running.busy)
-        library.closeWorkspace()
-        try await wait { !library.navigating }
-        try expect(library.workspace == nil && running.busy)
+        try expect(!library.navigating)
+        try expect(library.workspace?.root.resolvingSymlinksInPath().path == secondFolder.resolvingSymlinksInPath().path)
+
         library.openSession(runningID)
         try await wait { !library.navigating }
         try expect(library.current === running && library.draft == "Keep this draft")
-        library.closeWorkspace()
-        try await wait { !library.navigating }
-        try expect(library.workspace == nil && running.busy)
         runner.pending?.yield(.completed)
         runner.pending?.finish()
         try await wait { !running.busy }
