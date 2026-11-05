@@ -163,14 +163,15 @@ struct ChatComposer: View {
 
     @ViewBuilder private var workingControl: some View {
         if store.isWorking {
-            Button(action: store.stop) {
-                HStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Button(action: store.stop) {
                     WorkingIndicator()
-                    Text("esc").font(.system(.caption, design: .monospaced))
                 }
+                .buttonStyle(.plain).keyboardShortcut(".", modifiers: .command)
+                .help("Stop (Esc or ⌘.)").accessibilityLabel("Stop")
+                Text("esc").font(.system(.caption, design: .monospaced))
+                    .allowsHitTesting(false)
             }
-            .buttonStyle(.plain).keyboardShortcut(".", modifiers: .command)
-            .help("Stop (Esc or ⌘.)").accessibilityLabel("Stop")
             .fixedSize()
         }
     }
