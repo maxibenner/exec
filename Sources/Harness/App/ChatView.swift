@@ -78,8 +78,8 @@ struct ChatView: View {
                     .accessibilityLabel("Message")
                     .onSubmit { store.send() }
                     .padding(.vertical, 8)
-                HStack(alignment: .center, spacing: 12) {
-                    if store.isWorking {
+                if store.isWorking {
+                    HStack(alignment: .center, spacing: 12) {
                         if store.tools.pendingApproval == nil {
                             ProgressView().controlSize(.small).frame(width: 16, height: 16).accessibilityLabel("Working")
                         }
@@ -87,16 +87,10 @@ struct ChatView: View {
                             .buttonStyle(.bordered).buttonBorderShape(.circle)
                             .keyboardShortcut(".", modifiers: .command)
                             .help("Stop (⌘.)").accessibilityLabel("Stop")
-                    } else {
-                        Button(action: store.send) { Image(systemName: "arrow.up").fontWeight(.semibold).frame(width: 18, height: 18) }
-                            .buttonStyle(.borderedProminent).buttonBorderShape(.circle)
-                            .keyboardShortcut(.return, modifiers: .command)
-                            .help("Send message (⌘Return)").accessibilityLabel("Send message")
-                            .disabled(store.busy || store.account == nil || store.selectedModel.isEmpty || store.current.isImportingImages || (store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.current.draftImages.isEmpty))
                     }
+                    .frame(height: 32)
+                    .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
                 }
-                .frame(height: 32)
-                .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
             }
         }
         .padding(12)
@@ -109,7 +103,7 @@ struct ChatView: View {
                     composerFocused = true
                 }
         }
-        .backgroundPreferenceValue(ComposerControlBounds.self) { anchors in
+        .overlayPreferenceValue(ComposerControlBounds.self) { anchors in
             GeometryReader { geometry in
                 ComposerCursor(exclusions: anchors.map { geometry[$0] })
             }

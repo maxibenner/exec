@@ -8,13 +8,16 @@ struct ComposerControlBounds: PreferenceKey {
     }
 }
 
-/// Cursor rectangles only; clicks and text selection remain with the SwiftUI controls.
+/// Cursor-only overlay; clicks and text selection pass through to the SwiftUI controls.
 struct ComposerCursor: NSViewRepresentable {
     var exclusions: [CGRect]
 
     func makeNSView(context: Context) -> CursorView { CursorView() }
     func updateNSView(_ view: CursorView, context: Context) {
-        view.exclusions = exclusions
+        if view.exclusions != exclusions {
+            view.exclusions = exclusions
+            view.updateTrackingAreas()
+        }
         view.window?.invalidateCursorRects(for: view)
     }
 
@@ -22,6 +25,22 @@ struct ComposerCursor: NSViewRepresentable {
         var exclusions: [CGRect] = []
         override var isFlipped: Bool { true }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            for area in trackingAreas { removeTrackingArea(area) }
+            for rect in ComposerCursor.regions(in: bounds, excluding: exclusions) {
+                addTrackingArea(NSTrackingArea(rect: rect,
+                    options: [.activeInKeyWindow, .cursorUpdate, .mouseEnteredAndExited, .mouseMoved],
+                    owner: self, userInfo: nil))
+            }
+        }
+
+        // SwiftUI's hosting view can reset the cursor while crossing its padding.
+        // Refresh it on movement as well as entry, without intercepting clicks.
+        override func cursorUpdate(with event: NSEvent) { NSCursor.iBeam.set() }
+        override func mouseEntered(with event: NSEvent) { NSCursor.iBeam.set() }
+        override func mouseMoved(with event: NSEvent) { NSCursor.iBeam.set() }
+
         override func resetCursorRects() {
             super.resetCursorRects()
             for rect in ComposerCursor.regions(in: bounds, excluding: exclusions) {
