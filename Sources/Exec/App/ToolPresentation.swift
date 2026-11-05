@@ -21,6 +21,7 @@ struct ToolPresentation {
             var path: String?
             var query: String?
             var command: String?
+            var url: String?
         }
         let arguments = try? CodingTools.decode(Arguments.self, result.call)
         output = result.text
@@ -55,6 +56,11 @@ struct ToolPresentation {
             title = "Edit"; icon = "pencil"
             summary = result.edit?.path ?? arguments?.path
             outputTitle = nil
+        case "fetch_content":
+            title = "Fetch page"; icon = "doc.text"
+            summary = arguments?.url
+            if let url = arguments?.url { inputs = [Field(title: "URL", text: url)] }
+            outputTitle = "Page text"
         case "web_search":
             title = "Web search"; icon = "globe"
             summary = result.webSearch?.query ?? arguments?.query
@@ -69,7 +75,7 @@ struct ToolPresentation {
         if result.edit == nil, result.webSearch == nil, detail == nil {
             if result.text.hasPrefix("Tool error: ") || result.text.hasPrefix("Error: ") { detail = "Error" }
             else if result.text.hasPrefix("User denied this ") { detail = "Denied" }
-            else if result.text.hasPrefix("Interrupted.") || result.text == WebSearchTool.interrupted { detail = "Interrupted" }
+            else if result.text.hasPrefix("Interrupted.") || result.text == WebSearchTool.interrupted || result.text == FetchContentTool.interrupted { detail = "Interrupted" }
             else if result.text.hasPrefix("Not executed:") || result.text == "Duplicate tool call ID; not executed." { detail = "Not run" }
             else if result.call.name == "shell", result.text.hasPrefix("Command timed out;") { detail = "Timed out" }
             if detail != nil, outputTitle != nil { outputTitle = "Result" }

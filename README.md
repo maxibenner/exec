@@ -91,6 +91,17 @@ Exec makes a separate request to Codex using its existing Keychain-managed login
 
 The implementation follows the Codex-backed approach in [Pi Web Access](https://github.com/nicobailon/pi-web-access), but runs natively in Swift without Pi, Node, or an MCP sidecar. Hosted search availability depends on the selected model and account. **Live Codex search remains unverified**; transport tests use synthetic responses.
 
+### Reading a page
+
+The model can use **`fetch_content`** to read a specific public HTTPS URL, with or without a workspace. This is a direct website request: it returns extracted HTML text or plain text/JSON/XML, not a model-generated summary. The result, including its final URL, is saved in the conversation and passed back to the model.
+
+- HTTPS on port 443 only, URLs up to 2,048 UTF-8 bytes, no embedded credentials. Website requests use an isolated ephemeral session without cookies, cached responses, saved credentials, or Codex authorization.
+- Each request has a 30-second resource timeout. Up to three redirects are followed, checking each URL and its resolved addresses before requesting it. Local, private, and reserved addresses are rejected in this preflight. This is **not a network sandbox or DNS-pinning guarantee**: the system HTTP client resolves names again when connecting. Normal TLS certificate validation remains enabled.
+- Downloads are limited to 1 MiB; returned page text is limited to approximately 24,000 UTF-8 bytes with an explicit truncation marker. JavaScript, authenticated pages, PDFs, and other binary documents are not supported. HTML extraction is intentionally simple and can include navigation or other non-article text.
+- Page text is untrusted evidence, not instructions. Do not put secrets in URLs. Stop cancels the fetch; failures stop the turn and are not automatically retried or resumed after restart.
+
+Automated checks use fake HTTP responses and isolated session stores, not live websites or the user's credentials. Live-site extraction and UI behavior still require manual verification.
+
 ## Working on a project
 
 Choose **Workspace…** beside the composer. The selected path and a snapshot of its root `AGENTS.md` are sent to the model, along with requested file contents and tool results. Choose trusted projects and consider what sensitive data they contain.

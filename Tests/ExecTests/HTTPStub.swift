@@ -5,6 +5,7 @@ import Foundation
 final class HTTPStub: URLProtocol, @unchecked Sendable {
     struct Reply: Sendable {
         var status = 200
+        var headers: [String: String] = [:]
         var chunks: [Data] = []
         var error: URLError?
         var holdOpen = false
@@ -56,7 +57,7 @@ final class HTTPStub: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         let reply = Self.state.receive(request)
         let response = HTTPURLResponse(url: request.url!, statusCode: reply.status,
-                                       httpVersion: "HTTP/1.1", headerFields: nil)!
+                                       httpVersion: "HTTP/1.1", headerFields: reply.headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         for chunk in reply.chunks { client?.urlProtocol(self, didLoad: chunk) }
         if let error = reply.error { client?.urlProtocol(self, didFailWithError: error) }

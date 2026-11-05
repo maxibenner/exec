@@ -265,7 +265,10 @@ import Foundation
         store.send()
         try await settle(store)
         try expect(provider.inputs.last?.map(\.text) == ["Chat only"])
-        try expect(provider.instructions.last == "")
+        let instructions = provider.instructions.last ?? ""
+        try expect(instructions.contains("fetch_content"))
+        try expect(!instructions.contains("Project A rules") && !instructions.contains("Updated rules"))
+        try expect(!instructions.contains(root.path) && !instructions.contains("inspect the project"))
     }
 
     func successfulFollowupIncludesHistoryAndNewClearsIt() async throws {
