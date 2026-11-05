@@ -12,9 +12,7 @@ struct SessionSidebar: View {
         List(selection: Binding(get: { store.sidebarSelectionID }, set: { if let id = $0 { open(id) } })) {
             Section("Sessions") {
                 ForEach(store.sessionList) { session in
-                    SessionRow(session: session,
-                               running: store.isSessionRunning(session.id), needsApproval: store.needsApproval(session.id),
-                               needsAttention: store.needsAttention(session.id),
+                    SessionRow(session: session, store: store,
                                rename: {
                                    guard store.canNavigate else { return }
                                    renameID = session.id; renameTitle = session.title; renaming = true
@@ -71,9 +69,10 @@ struct SessionSidebar: View {
 
 private struct SessionRow: View {
     let session: SessionSummary
-    let running: Bool
-    let needsApproval: Bool
-    let needsAttention: Bool
+    let store: ChatLibrary
+    private var running: Bool { store.isSessionRunning(session.id) }
+    private var needsApproval: Bool { store.needsApproval(session.id) }
+    private var needsAttention: Bool { store.needsAttention(session.id) }
     let rename: () -> Void
     let delete: () -> Void
 
@@ -111,7 +110,9 @@ private struct SessionRow: View {
         .padding(.vertical, 5)
         .contentShape(Rectangle())
         .contextMenu {
-            Button("Rename…", action: rename).disabled(session.unreadable)
+            Button("Rename…", action: rename).disabled(session.unreadable || store.navigating)
+            Button("Close Conversation") { store.closeSession(session.id) }
+                .disabled(store.navigating || !store.canCloseSession(session.id))
             Divider()
             Button("Delete Conversation", role: .destructive, action: delete).disabled(running)
         }

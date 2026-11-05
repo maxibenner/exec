@@ -55,13 +55,18 @@ struct SessionSummary: Codable, Identifiable, Sendable {
     var unreadable = false
 
     init(id: UUID, snapshot: SessionSnapshot) {
-        self.id = id
-        let prompt = snapshot.messages.first { $0.role == .user }?.text ?? ""
+        self.init(id: id, prompt: snapshot.messages.first { $0.role == .user }?.text ?? "",
+                  workspace: snapshot.workspace, identity: snapshot.identity, updatedAt: snapshot.activityDate ?? Date())
         customTitle = snapshot.title
-        title = snapshot.title ?? (prompt.isEmpty ? "New conversation" : String(prompt.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(80)))
-        workspace = snapshot.workspace?.root.path
-        identity = snapshot.identity
-        updatedAt = snapshot.activityDate ?? Date()
+        if let customTitle { title = customTitle }
+    }
+
+    init(id: UUID, prompt: String, workspace: Workspace?, identity: String?, updatedAt: Date) {
+        self.id = id
+        title = prompt.isEmpty ? "New conversation" : String(prompt.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(80))
+        self.workspace = workspace?.root.path
+        self.identity = identity
+        self.updatedAt = updatedAt
     }
 
     init(unreadable id: UUID) {

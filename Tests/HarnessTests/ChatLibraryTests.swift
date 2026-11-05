@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 @MainActor struct ChatLibraryTests {
     func concurrentTurnsKeepContextDraftsAndSelectionIsolated() async throws {
@@ -44,7 +45,7 @@ import Foundation
 
         let order = library.sessionList.map(\.id)
         library.openSession(firstID)
-        try expect(library.sidebarSelectionID == firstID && library.currentSessionID == secondID)
+        try expect(library.sidebarSelectionID == firstID && library.current === first && !library.navigating)
         try await wait { !library.navigating }
         try expect(library.current === first && library.draft == "Unsent next request")
         try expect(library.sessionList.map(\.id) == order)
@@ -65,6 +66,7 @@ import Foundation
         try await wait { !library.navigating }
         try expect(library.messages.last?.text == "Hello world — second completed")
         library.draft = "Continue second"
+        secondProvider.holdOpen = false // Completed conversations now reuse their resident provider.
         library.send()
         try await wait { !library.hasRunningOperations }
         try expect(provider.children.last?.inputs.last?.map(\.text) == ["Second request", "Hello world — second completed", "Continue second"])
@@ -178,6 +180,147 @@ import Foundation
         try await wait { !running.busy }
         try expect(running.messages.last?.status == .complete)
         try expect(runner.inputs.count == 1)
+    }
+
+    func sevenOpenSessionsSwitchSynchronouslyWithoutRewritingSnapshots() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = SessionStore(directory: root)
+        let provider = FakeProvider()
+        var ids: [UUID] = []
+        for index in 0..<7 {
+            let messages = [Message(role: .user, text: "Session \(index)"), Message(role: .assistant, text: "Completed reply")]
+            ids.append(try await sessions.save(SessionSnapshot(identity: provider.conversationIdentity, selectedModel: "test",
+                messages: messages, history: messages, activeTurn: false), id: UUID(), select: false))
+        }
+        try await sessions.select(ids[0])
+        let library = try ChatLibrary(provider: provider, sessions: sessions)
+        library.restore()
+        try await wait { !library.hasRunningOperations }
+        let inodes = try ids.map { try snapshotInode(root, $0) }
+        var opened = [library.current]
+        for id in ids.dropFirst() {
+            library.openSession(id)
+            try await wait { !library.hasRunningOperations }
+            try expect(library.currentSessionID == id && library.error == nil)
+            opened.append(library.current)
+        }
+        try expect(library.openConversations.count == 7)
+        let providerCount = provider.children.count
+        for _ in 0..<10 {
+            for (index, id) in ids.enumerated() {
+                library.openSession(id)
+                // No suspension: this must be a selection, not an asynchronous load/save.
+                try expect(library.current === opened[index] && !library.navigating)
+            }
+        }
+        try await wait { !library.hasRunningOperations }
+        try expect(provider.children.count == providerCount)
+        try expect(try ids.map { try snapshotInode(root, $0) } == inodes)
+        let selected = try await sessions.preferredID(identity: provider.conversationIdentity)
+        try expect(selected == ids.last)
+
+        // Closing releases only resident state; history can be reopened on demand.
+        library.closeSession(ids[0])
+        try expect(library.openConversations.count == 6 && library.sessionList.contains { $0.id == ids[0] })
+        library.openSession(ids[0])
+        try await wait { !library.hasRunningOperations }
+        try expect(library.current !== opened[0] && library.messages == opened[0].messages)
+        library.draft = "Keep this draft"
+        library.closeSession(ids[0])
+        try expect(library.currentSessionID == ids[0] && library.draft == "Keep this draft")
+
+        // Preferences persist where they change, without requiring navigation away.
+        library.selectedModel = "another-model"
+        try await wait { !library.hasRunningOperations }
+        let saved = try await sessions.load(id: ids[0])
+        try expect(saved?.selectedModel == "another-model")
+        library.selectedModel = "pending-save"
+        library.deleteSession(ids[0]) // A pending preference save must not resurrect deleted history.
+        try await wait { !library.hasRunningOperations }
+        try expect(!library.openConversations.contains { $0.currentSessionID == ids[0] })
+        let deleted = try await sessions.load(id: ids[0])
+        try expect(deleted == nil)
+    }
+
+    func coldSelectionsAreSupersededAndRecoveryRemainsDurable() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = SessionStore(directory: root)
+        let provider = FakeProvider()
+        let messages = [Message(role: .user, text: "Recover"), Message(role: .assistant, text: "Partial", status: .streaming)]
+        let interrupted = try await sessions.save(SessionSnapshot(identity: provider.conversationIdentity, selectedModel: "test",
+            messages: messages, history: [], activeTurn: true), id: UUID(), select: false)
+        let other = try await sessions.save(SessionSnapshot(identity: provider.conversationIdentity, selectedModel: "test",
+            messages: [Message(role: .user, text: "Other")], history: [], activeTurn: false), id: UUID(), select: false)
+        let library = try ChatLibrary(provider: provider, sessions: sessions)
+        library.restore()
+        try await wait { !library.hasRunningOperations }
+        let original = library.current
+        library.openSession(interrupted)
+        library.openSession(other)
+        try expect(library.sidebarSelectionID == other && library.current === original)
+        try await wait { !library.hasRunningOperations }
+        try expect(library.currentSessionID == other)
+
+        library.openSession(interrupted)
+        library.openSession(other) // Return to a resident tab before the cold load finishes.
+        try expect(library.currentSessionID == other && !library.navigating)
+        try await Task.sleep(for: .milliseconds(10))
+        try expect(library.currentSessionID == other && library.error == nil)
+
+        library.openSession(interrupted)
+        try await wait { !library.hasRunningOperations }
+        try expect(library.currentSessionID == interrupted && library.messages.last?.status == .interrupted)
+        let recovered = try await sessions.load(id: interrupted)
+        try expect(recovered?.activeTurn == false && recovered?.messages.last?.status == .interrupted)
+        try expect(provider.children.allSatisfy { $0.inputs.isEmpty })
+
+        library.openSession(other)
+        library.closeSession(interrupted)
+        try Data("not JSON".utf8).write(to: root.appendingPathComponent("\(interrupted).json"))
+        library.openSession(interrupted)
+        try await wait { !library.hasRunningOperations }
+        try expect(library.currentSessionID == other && library.error != nil)
+        library.openSession(other)
+        try expect(library.error == nil && !library.navigating)
+    }
+
+    func streamingDoesNotInvalidateSidebarSummaries() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = FakeProvider()
+        let library = try ChatLibrary(provider: provider, sessions: SessionStore(directory: root))
+        library.restore()
+        try await wait { !library.hasRunningOperations }
+        let running = library.current
+        let runner = provider.children.last!
+        runner.holdOpen = true
+        library.draft = "Keep the title stable"
+        library.send()
+        try await wait { runner.pending != nil && running.messages.last?.text.isEmpty == false }
+        library.newConversation()
+        try await wait { !library.navigating && !library.current.isSaving }
+        let flag = ChangeFlag()
+        withObservationTracking {
+            _ = library.sessionList
+        } onChange: {
+            Task { @MainActor in flag.changed = true }
+        }
+        try await Task.sleep(for: .milliseconds(60))
+        runner.pending?.yield(.text(" — background update"))
+        try await wait { running.messages.last?.text.hasSuffix("background update") == true }
+        await Task.yield()
+        try expect(!flag.changed)
+        library.stopAll()
+        try await wait { !library.hasRunningOperations }
+    }
+
+    @MainActor private final class ChangeFlag { var changed = false }
+
+    private func snapshotInode(_ directory: URL, _ id: UUID) throws -> UInt64 {
+        let attributes = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("\(id).json").path)
+        return (attributes[.systemFileNumber] as! NSNumber).uint64Value
     }
 
     private func wait(_ condition: () -> Bool) async throws {

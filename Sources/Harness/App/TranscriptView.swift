@@ -4,6 +4,7 @@ import SwiftUI
 struct TranscriptView: View {
     let messages: [Message]
     let sessionID: UUID?
+    var isActive = true
     @State private var followsLatest = true
     @State private var scrollTask: Task<Void, Never>?
     @State private var scrollTarget: UUID?
@@ -33,6 +34,10 @@ struct TranscriptView: View {
             .modifier(InitialTranscriptAnchor())
             .clipped()
             .onDisappear { scrollTask?.cancel(); scrollTask = nil }
+            .onChange(of: isActive) {
+                if isActive { follow(proxy) }
+                else { scrollTask?.cancel(); scrollTask = nil }
+            }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in follow(proxy) }
             .onChange(of: sessionID) {
                 followsLatest = true
@@ -58,7 +63,7 @@ struct TranscriptView: View {
 
     private func follow(_ proxy: ScrollViewProxy) {
         scrollTarget = visibleMessages.last?.id
-        guard followsLatest, scrollTask == nil else { return }
+        guard isActive, followsLatest, scrollTask == nil else { return }
         scrollTask = Task { @MainActor in
             // Coalesce layout changes into at most one follow per display frame.
             do { try await Task.sleep(for: .milliseconds(16)) }

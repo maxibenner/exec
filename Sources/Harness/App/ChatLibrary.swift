@@ -11,9 +11,12 @@ import Observation
     private var navigationError: String?
     private var savedSummaries: [SessionSummary] = []
     private var catalogRequest = 0
-    private var retained: [UUID: ChatStore] = [:]
+    private(set) var openConversations: [ChatStore] = []
     private var loading: ChatStore?
     private var navigationTask: Task<Void, Never>?
+    private var navigationRequest = 0
+    private var selectionTask: Task<Void, Never>?
+    private var selectionRequest = 0
     private var accountTask: Task<Void, Never>?
     private var usageTask: Task<Void, Never>?
     private var usageRequest = 0
@@ -26,6 +29,7 @@ import Observation
         self.sessions = sessions
         current = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions, selectOnCheckpoint: false)
         observe(current)
+        remember(current)
     }
 
     var messages: [Message] { current.messages }
@@ -35,13 +39,18 @@ import Observation
     }
     var selectedModel: String {
         get { current.selectedModel }
-        set { if !busy { current.selectedModel = newValue } }
+        set {
+            guard !busy, newValue != current.selectedModel else { return }
+            current.selectedModel = newValue
+            current.scheduleSave()
+        }
     }
     var selectedEffort: String? {
         get { current.effectiveEffort }
         set {
             guard !busy, newValue == nil || current.model?.efforts.contains(where: { $0.id == newValue }) == true else { return }
             current.selectedEffort = newValue
+            current.scheduleSave()
         }
     }
     var error: String? {
@@ -51,7 +60,7 @@ import Observation
     var account: String? { current.account }
     var connectionTitle: String { provider.connectionTitle }
     var workspace: Workspace? { current.workspace }
-    var canSelectWorkspace: Bool { canNavigate && !current.busy && current.messages.isEmpty }
+    var canSelectWorkspace: Bool { canModify && !current.busy && current.messages.isEmpty }
     var tools: ToolExecutor { current.tools }
     var autoApproveTools: Bool { current.autoApproveTools }
     var currentSessionID: UUID? { current.currentSessionID }
@@ -59,14 +68,18 @@ import Observation
     var busy: Bool { navigating || authenticating || current.busy }
     var isSending: Bool { current.isSending }
     var isWorking: Bool { authenticating || current.busy }
-    var canNavigate: Bool { !navigating && !authenticating }
-    var accountBusy: Bool { authenticating || conversations.contains { $0.isSending } }
+    // A cold open can be superseded by another selection; mutations still serialize.
+    var canNavigate: Bool { !authenticating && (!navigating || openingSessionID != nil) }
+    private var canModify: Bool { !navigating && !authenticating }
+    var accountBusy: Bool { authenticating || conversations.contains { $0.busy || $0.isSaving } }
     var hasUnsavedChanges: Bool { conversations.contains { $0.hasUnsavedChanges } }
     var hasUnsentDrafts: Bool { conversations.contains { $0.hasUnsentDraft } }
-    var hasRunningOperations: Bool { navigating || authenticating || conversations.contains { $0.busy } }
+    var hasRunningOperations: Bool {
+        navigating || authenticating || selectionTask != nil || conversations.contains { $0.busy || $0.isSaving }
+    }
 
     private var conversations: [ChatStore] {
-        var result = [current] + retained.values.filter { $0 !== current }
+        var result = openConversations
         if let loading, !result.contains(where: { $0 === loading }) { result.append(loading) }
         return result
     }
@@ -94,16 +107,16 @@ import Observation
         return conversation.error != nil || conversation.hasUnsavedChanges
     }
     private func conversation(_ id: UUID) -> ChatStore? {
-        current.currentSessionID == id ? current : retained[id]
+        openConversations.first { $0.currentSessionID == id }
     }
 
     func setAutoApproveTools(_ enabled: Bool) {
-        guard canNavigate else { return }
+        guard canModify else { return }
         current.setAutoApproveTools(enabled)
     }
 
     func send() {
-        guard canNavigate else { return }
+        guard canModify else { return }
         if current.isSending { current.send(); return }
         guard !current.busy else { return }
         navigate {
@@ -116,7 +129,7 @@ import Observation
     }
 
     func resumeQueuedMessages() {
-        guard canNavigate, !current.busy else { return }
+        guard canModify, !current.busy else { return }
         navigate {
             if let id = self.currentSessionID { try await self.sessions.select(id) }
             try Task.checkCancellation()
@@ -143,7 +156,7 @@ import Observation
     func disconnect() { accountOperation { self.current.disconnect() } }
 
     private func accountOperation(_ start: () -> Void) {
-        guard canNavigate, !conversations.contains(where: { $0.busy }) else { return }
+        guard canModify, !conversations.contains(where: { $0.busy || $0.isSaving }) else { return }
         let identity = provider.conversationIdentity
         for conversation in conversations { conversation.setAutoApproveTools(false) }
         authenticating = true
@@ -154,11 +167,11 @@ import Observation
         start()
         accountTask = Task {
             defer {
-                authenticating = false; accountTask = nil; prune()
+                authenticating = false; accountTask = nil
                 if !Task.isCancelled { refreshAccountUsage() }
             }
             await current.waitUntilIdle()
-            if identity != provider.conversationIdentity { retained.removeAll() }
+            if identity != provider.conversationIdentity { openConversations = [current] }
             models = current.models
             for conversation in conversations {
                 conversation.account = provider.account
@@ -175,44 +188,50 @@ import Observation
     }
 
     func openSession(_ id: UUID) {
-        guard canNavigate, id != currentSessionID else { return }
-        openingSessionID = id // Keep the clicked row selected while disk I/O completes.
+        guard canNavigate else { return }
+        cancelOpening()
+        navigationError = nil
+        if let existing = conversation(id) {
+            activate(existing) // No snapshot I/O or provider restoration on the resident path.
+            return
+        }
+        openingSessionID = id
         navigate {
-            await self.preserveCurrent()
+            let next = try self.makeConversation()
+            self.loading = next
+            try await next.loadSession(id)
             try Task.checkCancellation()
-            let next: ChatStore
-            if let existing = self.retained[id] {
-                next = existing // Never restore disk state over a live runner or its draft.
-            } else {
-                next = try self.makeConversation()
-                self.loading = next
-                next.openSession(id, loadModels: false)
-                await next.waitUntilIdle()
-                try Task.checkCancellation()
-                guard next.currentSessionID == id else {
-                    throw HarnessError(next.error ?? "Could not open the saved conversation.")
-                }
-            }
-            self.current = next
-            self.remember(next)
-            try await self.refreshCatalog()
-            try await self.selectCurrent()
+            self.activate(next)
         }
     }
 
     func newConversation() {
         guard canNavigate else { return }
-        let workspace = current.workspace
-        navigate {
-            await self.preserveCurrent()
-            try Task.checkCancellation()
-            let next = try self.makeConversation(workspace: workspace)
-            self.current = next
-            self.remember(next)
-            try await next.saveIfIdle()
-            try await self.refreshCatalog()
-            try await self.selectCurrent()
-        }
+        cancelOpening()
+        navigationError = nil
+        do {
+            let next = try makeConversation(workspace: current.workspace)
+            activate(next)
+            next.scheduleSave()
+        } catch { navigationError = error.localizedDescription }
+    }
+
+    func canCloseSession(_ id: UUID) -> Bool {
+        guard let conversation = conversation(id) else { return false }
+        return !conversation.busy && !conversation.isSaving && !conversation.hasUnsentDraft && !conversation.hasUnsavedChanges
+    }
+
+    /// Closing releases resident UI/provider state, but leaves saved history intact.
+    func closeSession(_ id: UUID) {
+        guard canModify, canCloseSession(id), let closing = conversation(id) else { return }
+        do {
+            if closing === current {
+                let next = try openConversations.last(where: { $0 !== closing }) ?? makeConversation()
+                activate(next)
+            }
+            closing.setAutoApproveTools(false)
+            openConversations.removeAll { $0 === closing }
+        } catch { navigationError = error.localizedDescription }
     }
 
     func selectWorkspace(_ url: URL) {
@@ -222,6 +241,7 @@ import Observation
             let workspace = try await withTaskCancellationHandler {
                 try await loading.value
             } onCancel: { loading.cancel() }
+            await self.current.waitForPendingSave()
             try Task.checkCancellation()
             try self.current.setInitialWorkspace(workspace)
             try await self.current.saveIfIdle()
@@ -231,25 +251,31 @@ import Observation
     }
 
     func renameSession(_ id: UUID, title: String) {
-        guard canNavigate, sessionList.contains(where: { $0.id == id && !$0.unreadable }) else { return }
+        guard canModify, sessionList.contains(where: { $0.id == id && !$0.unreadable }) else { return }
         navigate {
             // Persist an unsaved idle draft/workspace session before changing its metadata.
-            if let conversation = self.conversation(id) { try await conversation.saveIfIdle(force: true) }
+            if let conversation = self.conversation(id) {
+                await conversation.waitForPendingSave()
+                try Task.checkCancellation()
+                try await conversation.saveIfIdle(force: true)
+            }
             try await self.sessions.rename(id: id, title: title, identity: self.provider.conversationIdentity)
             try await self.refreshCatalog()
         }
     }
 
     func deleteSession(_ id: UUID) {
-        guard canNavigate, !isSessionRunning(id) else { return }
+        guard canModify, !isSessionRunning(id) else { return }
         navigate {
+            await self.conversation(id)?.waitForPendingSave()
+            try Task.checkCancellation()
             var failure: Error?
             do { try await self.sessions.delete(id: id) }
             catch { failure = error }
             self.savedSummaries = try await self.sessions.list(identity: self.provider.conversationIdentity)
             if !self.savedSummaries.contains(where: { $0.id == id }) {
-                self.retained[id] = nil
-                if self.currentSessionID == id { self.current = try self.makeConversation() }
+                self.openConversations.removeAll { $0.currentSessionID == id }
+                if self.currentSessionID == id { self.activate(try self.makeConversation()) }
             }
             if let failure { throw failure }
             try await self.refreshCatalog()
@@ -269,10 +295,7 @@ import Observation
 
     private func observe(_ conversation: ChatStore) {
         conversation.didCheckpoint = { [weak self] in try await self?.refreshCatalog() }
-        conversation.didFinish = { [weak self] in
-            self?.prune()
-            self?.refreshAccountUsage()
-        }
+        conversation.didFinish = { [weak self] in self?.refreshAccountUsage() }
     }
 
     private func refreshAccountUsage() {
@@ -292,22 +315,48 @@ import Observation
         }
     }
 
-    private func preserveCurrent() async {
-        let conversation = current
-        remember(conversation)
-        do { try await conversation.saveIfIdle() }
-        catch { conversation.error = error.localizedDescription }
-        // Failed saves remain retained in memory, so navigation never discards the only copy.
-    }
-
     private func remember(_ conversation: ChatStore) {
-        if let id = conversation.currentSessionID { retained[id] = conversation }
+        if !openConversations.contains(where: { $0 === conversation }) { openConversations.append(conversation) }
     }
 
-    private func prune() {
-        retained = retained.filter { _, conversation in
-            conversation === current || conversation.busy || conversation.hasUnsentDraft ||
-            conversation.hasUnsavedChanges || conversation.error != nil || conversation.autoApproveTools
+    private func activate(_ conversation: ChatStore) {
+        current = conversation
+        remember(conversation)
+        // An untouched blank isn't an open document. Everything else stays resident until closed.
+        openConversations.removeAll { conversation in
+            conversation !== current && conversation.summary == nil && !conversation.busy && !conversation.isSaving &&
+            !conversation.hasUnsavedChanges && conversation.error == nil &&
+            !savedSummaries.contains(where: { $0.id == conversation.currentSessionID })
+        }
+        persistSelection()
+    }
+
+    private func cancelOpening() {
+        guard openingSessionID != nil else { return }
+        navigationRequest += 1
+        navigationTask?.cancel()
+        navigationTask = nil
+        openingSessionID = nil
+        loading = nil
+        navigating = false
+    }
+
+    /// Coalesce rapid selections, without blocking the visible tab on an index write.
+    /// Background checkpoints never enter this foreground-selection path.
+    private func persistSelection() {
+        selectionRequest += 1
+        guard selectionTask == nil else { return }
+        selectionTask = Task {
+            defer { selectionTask = nil }
+            while true {
+                let request = selectionRequest
+                let id = currentSessionID
+                do { try await sessions.select(id) }
+                catch {
+                    if request == selectionRequest { navigationError = error.localizedDescription }
+                }
+                if request == selectionRequest { return }
+            }
         }
     }
 
@@ -327,11 +376,20 @@ import Observation
     private func navigate(_ operation: @escaping @MainActor () async throws -> Void) {
         navigating = true
         navigationError = nil
+        navigationRequest += 1
+        let request = navigationRequest
         navigationTask = Task {
-            defer { navigating = false; openingSessionID = nil; loading = nil; navigationTask = nil; prune() }
-            do { try await operation() }
+            defer {
+                if request == navigationRequest {
+                    navigating = false; openingSessionID = nil; loading = nil; navigationTask = nil
+                }
+            }
+            do {
+                try Task.checkCancellation()
+                try await operation()
+            }
             catch is CancellationError {}
-            catch { navigationError = error.localizedDescription }
+            catch { if request == navigationRequest { navigationError = error.localizedDescription } }
         }
     }
 }

@@ -13,20 +13,26 @@ struct ChatView: View {
             })
         } detail: {
             VStack(spacing: 0) {
-                TranscriptView(messages: store.messages, sessionID: store.currentSessionID)
+                ZStack {
+                    ForEach(store.openConversations) { conversation in
+                        ResidentTranscript(conversation: conversation, isActive: conversation === store.current)
+                            .id(conversation.currentSessionID)
+                    }
+                }
                 if let approval = store.tools.pendingApproval {
                     let executor = store.tools
                     Divider()
                     ToolApprovalView(approval: approval, executor: executor,
                                      canResolve: { !store.navigating && store.tools === executor })
+                        .id(approval.id)
                         .disabled(store.navigating).layoutPriority(1)
                 }
                 if let error = store.error { errorView(error) }
                 ChatComposer(store: store, focused: $composerFocused)
+                    .id(ObjectIdentifier(store.current))
+                    .disabled(store.navigating)
             }
-            // A conversation owns its transient controls and scroll state. Do not morph
-            // the previous conversation's view tree into the newly selected one.
-            .id(ObjectIdentifier(store.current))
+            // Keep transcript identities alive; only transient composer controls are replaced.
             .transaction(value: ObjectIdentifier(store.current)) { transaction in
                 transaction.animation = nil
                 transaction.disablesAnimations = true
@@ -68,8 +74,29 @@ struct ChatView: View {
     }
 
     private func requestNavigation(to id: UUID?) {
-        guard store.canNavigate, id == nil || id != store.currentSessionID else { return }
+        guard store.canNavigate, id == nil || id != store.sidebarSelectionID else { return }
         if let id { store.openSession(id) }
         else { store.newConversation(); composerFocused = true }
+    }
+}
+
+/// Keep the native scroll view and parsed message views mounted across tab switches.
+/// A hidden transcript holds its last display snapshot instead of observing background tokens.
+private struct ResidentTranscript: View {
+    let conversation: ChatStore
+    let isActive: Bool
+    @State private var displayedMessages: [Message] = []
+
+    var body: some View {
+        let liveMessages = isActive ? conversation.messages : nil
+        TranscriptView(messages: displayedMessages,
+                       sessionID: conversation.currentSessionID, isActive: isActive)
+            .opacity(isActive ? 1 : 0)
+            .allowsHitTesting(isActive)
+            .disabled(!isActive)
+            .accessibilityHidden(!isActive)
+            .onChange(of: liveMessages, initial: true) {
+                if let liveMessages { displayedMessages = liveMessages }
+            }
     }
 }

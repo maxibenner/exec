@@ -66,6 +66,8 @@ import Foundation
         try await wait { !library.navigating }
         try expect(library.selectedEffort == "high")
 
+        // Selection is persisted independently of the immediate resident switch.
+        try await wait { !library.hasRunningOperations }
         let restarted = try ChatLibrary(provider: provider, sessions: sessions)
         restarted.restore()
         try await wait { !restarted.hasRunningOperations }

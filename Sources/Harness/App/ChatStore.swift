@@ -1,8 +1,22 @@
 import Foundation
 import Observation
 
-@MainActor @Observable final class ChatStore {
-    var messages: [Message] = []
+@MainActor @Observable final class ChatStore: Identifiable {
+    var messages: [Message] = [] {
+        didSet {
+            checkpointRevision += 1
+            // Sidebar observation must not depend on streamed transcript text.
+            let prompt = messages.first { $0.role == .user }?.text ?? ""
+            if prompt != sessionPrompt { sessionPrompt = prompt }
+            if hasMessages != !messages.isEmpty { hasMessages = !messages.isEmpty }
+        }
+    }
+    private var sessionPrompt = ""
+    private var hasMessages = false
+    @ObservationIgnored private var checkpointRevision = 0
+    @ObservationIgnored private var savedRevision: Int?
+    private var saveTask: Task<Void, Never>?
+    var isSaving: Bool { saveTask != nil }
     var draft = ""
     var draftImages: [ImageAttachment] = []
     private(set) var isImportingImages = false
@@ -10,8 +24,8 @@ import Observation
     private(set) var isQueuePaused = false
     var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || isImportingImages || !queuedMessages.isEmpty }
     var models: [ChatModel] = [] { didSet { reconcileEffort(); updateContextUsage() } }
-    var selectedModel = "" { didSet { reconcileEffort(); updateContextUsage() } }
-    var selectedEffort: String?
+    var selectedModel = "" { didSet { checkpointRevision += 1; reconcileEffort(); updateContextUsage() } }
+    var selectedEffort: String? { didSet { checkpointRevision += 1 } }
     var model: ChatModel? { models.first { $0.id == selectedModel } }
     var effectiveEffort: String? {
         guard let selectedEffort, model?.efforts.contains(where: { $0.id == selectedEffort }) == true else { return nil }
@@ -27,7 +41,7 @@ import Observation
     var error: String?
     private(set) var busy = false
     private(set) var isSending = false
-    private(set) var workspace: Workspace?
+    private(set) var workspace: Workspace? { didSet { checkpointRevision += 1 } }
     private(set) var sessionList: [SessionSummary] = []
     private(set) var currentSessionID: UUID?
     private(set) var openingSessionID: UUID?
@@ -42,7 +56,7 @@ import Observation
     private(set) var hasUnsavedChanges = false
     let tools = ToolExecutor()
     private(set) var contextUsage: ContextUsage?
-    private var history: [Message] = [] { didSet { updateContextUsage() } }
+    private var history: [Message] = [] { didSet { checkpointRevision += 1; updateContextUsage() } }
 
     private func updateContextUsage() {
         guard let model else { contextUsage = nil; return }
@@ -61,9 +75,9 @@ import Observation
     private let selectOnCheckpoint: Bool
     var didCheckpoint: (@MainActor () async throws -> Void)?
     var didFinish: (@MainActor () -> Void)?
-    private var sessionActivityDate = Date()
-    private var activeTurn = false
-    private var activeCallID: String?
+    private var sessionActivityDate = Date() { didSet { checkpointRevision += 1 } }
+    private var activeTurn = false { didSet { checkpointRevision += 1 } }
+    private var activeCallID: String? { didSet { checkpointRevision += 1 } }
 
     init(provider: any ChatProvider, sessions: SessionStore? = nil, selectOnCheckpoint: Bool = true,
          newConversation: Bool = false, workspace: Workspace? = nil) {
@@ -80,15 +94,43 @@ import Observation
     }
 
     var summary: SessionSummary? {
-        guard let id = currentSessionID, !messages.isEmpty || workspace != nil || hasUnsentDraft else { return nil }
-        return SessionSummary(id: id, snapshot: SessionSnapshot(identity: conversationIdentity, workspace: workspace,
-            selectedModel: selectedModel, messages: messages, history: [], activeTurn: false, activityDate: sessionActivityDate))
+        guard let id = currentSessionID, hasMessages || workspace != nil || hasUnsentDraft else { return nil }
+        return SessionSummary(id: id, prompt: sessionPrompt, workspace: workspace,
+                              identity: conversationIdentity, updatedAt: sessionActivityDate)
     }
 
     func waitUntilIdle() async { await task?.value }
+    func waitForPendingSave() async { await saveTask?.value }
 
     func saveIfIdle(force: Bool = false) async throws {
         if !busy && loadedSession && !restorationBlocked { try await checkpoint(force: force) }
+    }
+
+    /// Preferences and new workspaces save independently of foreground selection.
+    /// A running turn owns its checkpoints; never save a competing snapshot over it.
+    func scheduleSave() {
+        guard sessions != nil, saveTask == nil else { return }
+        saveTask = Task {
+            defer { saveTask = nil }
+            do {
+                while !busy && loadedSession && !restorationBlocked && savedRevision != checkpointRevision {
+                    try await saveIfIdle()
+                }
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    /// Load a newly opened resident conversation without rewriting an intact snapshot.
+    func loadSession(_ id: UUID) async throws {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        try await applySavedSession(id)
+        if !models.isEmpty && !models.contains(where: { $0.id == selectedModel }) {
+            selectedModel = models.first?.id ?? ""
+        }
+        try Task.checkCancellation()
+        try await checkpoint() // Only recovery or reconciled preferences need a write.
     }
 
     func restore() {
@@ -328,6 +370,7 @@ import Observation
         if try await provider.compactIfNeeded(history, pending: Array(input.dropFirst(history.count)),
                                               model: model, instructions: instructions, tools: definitions) {
             updateContextUsage()
+            checkpointRevision += 1
             try await checkpoint() // Compacted context must be durable before another inference request.
         }
         try Task.checkCancellation()
@@ -395,6 +438,11 @@ import Observation
     private func checkpoint(force: Bool = false) async throws {
         guard let sessions else { return }
         guard !restorationBlocked else { throw HarnessError("Open another session or choose New. The unreadable save has not been changed.") }
+        guard force || savedRevision != checkpointRevision else {
+            if selectOnCheckpoint { try await sessions.select(currentSessionID) }
+            return
+        }
+        let revision = checkpointRevision
         do {
             if messages.isEmpty && workspace == nil && !force {
                 if selectOnCheckpoint { try await sessions.clearSelection() }
@@ -406,6 +454,7 @@ import Observation
             hasUnsavedChanges = false
             sessionList = try await sessions.list(identity: provider.conversationIdentity)
             try await didCheckpoint?()
+            savedRevision = revision
         } catch {
             hasUnsavedChanges = true
             throw HarnessError("Could not save the session. No further tools will run until saving succeeds. \(error.localizedDescription)")
@@ -416,6 +465,7 @@ import Observation
         guard let sessions, var saved = try await sessions.load(id: id) else {
             throw HarnessError("The saved conversation no longer exists.")
         }
+        try Task.checkCancellation()
         guard saved.identity == provider.conversationIdentity else {
             throw HarnessError("Saved conversation belongs to another account. Reconnect to that account to open it.")
         }
@@ -432,6 +482,8 @@ import Observation
         sessionActivityDate = saved.activityDate ?? sessionList.first(where: { $0.id == id })?.updatedAt ?? Date()
         activeTurn = false; activeCallID = nil
         loadedSession = true; restorationBlocked = false
+        savedRevision = !interrupted && selectedModel == saved.selectedModel && selectedEffort == saved.effort
+            ? checkpointRevision : nil
         if interrupted { error = "The previous turn was interrupted. No operations were resumed; inspect any possible file changes before retrying." }
     }
 
@@ -474,6 +526,8 @@ import Observation
             if !self.models.isEmpty && !self.models.contains(where: { $0.id == self.selectedModel }) {
                 self.selectedModel = self.models.first?.id ?? ""
             }
+            // Standalone stores still own selection even when the loaded snapshot is unchanged.
+            if self.selectOnCheckpoint { try await self.sessions?.select(id) }
         }
     }
 
@@ -513,6 +567,9 @@ import Observation
                 self.didFinish?()
             }
             do {
+                // Finish an already-started preference save before this runner owns checkpoints.
+                await self.waitForPendingSave()
+                try Task.checkCancellation()
                 if restoreSession { try await self.loadSavedSession() }
                 try Task.checkCancellation()
                 try await operation()
@@ -528,7 +585,7 @@ import Observation
                     self.error = error.localizedDescription
                 }
             }
-            if self.loadedSession && !self.restorationBlocked {
+            if self.loadedSession && !self.restorationBlocked && (sending || self.savedRevision != self.checkpointRevision) {
                 do {
                     var saved = try self.snapshot()
                     _ = saved.recoverInterruptedTurn()

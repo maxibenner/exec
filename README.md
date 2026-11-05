@@ -39,6 +39,10 @@ You can also open `Package.swift` in Xcode. Builds are not notarized for distrib
 
 Switching conversations does not stop background work. Each conversation keeps its own runner, model context, workspace, draft, approval queue, and auto-approval setting. Stop affects only the displayed conversation. Account changes are blocked while a turn is running.
 
+Opened conversations stay resident until closed, deleted, or the account changes/app exits. Switching between them changes selection immediately, without loading or saving full snapshots. Their transcript views retain scroll position, expanded tool results, and parsed Markdown; hidden transcripts pause display updates while their runners continue. Only opening archived history requires a disk read. Rapid selections supersede an unfinished archive load.
+
+Use **Close Conversation** in a sidebar row's context menu to release its resident state without deleting saved history. Closing is disabled while work, saving, drafts, queued messages, or unsaved changes remain. Closed conversations remain in the sidebar and can be reopened. Reading positions and open-view state are kept in memory, not restored after quitting.
+
 The sidebar is ordered by the last user-message time, not the last time you opened a conversation. Renaming preserves that order. Selection changes only the highlight, not the title's font weight. Running conversations must be stopped before deletion; there are no inline trash buttons.
 
 Reading earlier messages pauses automatic scrolling. Use the down-arrow to return to the latest reply. Quit asks before discarding drafts or unsaved changes, cancels operations across all conversations, and waits for their cleanup and checkpoints.
@@ -205,13 +209,14 @@ Sign-out attempts remote revocation and local credential deletion, including off
 
 ### Verification status
 
-The **63 automated checks** cover authentication, refresh/restart safety, cancellation, session integrity, concurrent conversations, tool approval and edits, compaction, streaming, Markdown, diffs, image normalization, request encoding, attachment persistence, pending-drop conversation isolation, effort discovery, request encoding, and session isolation, plus web-search authentication routing, bounded sources, context separation, persistence, cancellation, and failure without retries. The signed app builds successfully. Isolated native fixtures also render the image previews and effort controls at wide and narrow widths. These checks do not establish live-service behavior.
+The **80 automated checks** cover authentication, refresh/restart safety, cancellation, session integrity, concurrent conversations, tool approval and edits, compaction, streaming, Markdown, diffs, image normalization, request encoding, attachment persistence, pending-drop conversation isolation, effort discovery, request encoding, and session isolation, plus web-search authentication routing, bounded sources, context separation, persistence, cancellation, and failure without retries. The signed app builds successfully. Isolated native fixtures also render the image previews and effort controls at wide and narrow widths. These checks do not establish live-service behavior.
 
 Live sign-in and text messaging were previously verified by the user. Remaining manual checks include:
 
 - Drag images from Finder and another app into the actual input field; remove one, send an image-only message, and confirm the model can describe it. Switch conversations during an import, then relaunch after sending.
 - Check sidebar selection with wrapping titles, light/dark appearance, keyboard navigation, clipboard behavior, and VoiceOver. Change effort levels with a live model and confirm the advertised options are accepted.
 - In a disposable workspace, approve/deny edits and shell commands; verify stale-file rejection and rendered diffs.
+- Open seven long conversations, including streaming turns, and rapidly switch between them. Check responsiveness, retained reading positions and expanded tools, and memory usage; then close/reopen one. Automated tests verify synchronous resident selection without snapshot rewrites, sidebar observation isolation, superseded loads, and durable recovery—not frame timing or native scroll behavior.
 - Run concurrent live turns and confirm Stop, drafts, auto-approval, and pending approvals remain isolated. Rename a running session; delete an idle one and relaunch.
 - Ask a public current-information question and confirm a real search returns working source links. Stop a search in flight, then reopen the conversation to verify its interruption record. Test an unsupported model/account without falling back to another service.
 - Exercise live compaction, interrupted replies, network failure, token expiry, and offline sign-out. Confirm no operation resumes or retries automatically.

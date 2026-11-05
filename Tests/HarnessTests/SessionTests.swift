@@ -175,6 +175,8 @@ import Foundation
         try await settle(store)
         try expect(store.openingSessionID == nil && store.sidebarSelectionID == legacyID)
         try expect(store.currentSessionID == legacyID && store.messages.first?.id == user.id)
+        let selected = try await sessions.preferredID(identity: provider.conversationIdentity)
+        try expect(selected == legacyID)
         try expect(store.sessionList.map(\.id) == order)
         try expect(store.sessionList.map(\.updatedAt) == dates)
         store.draft = "Continue legacy"
