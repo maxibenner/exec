@@ -3,8 +3,6 @@ import SwiftUI
 
 @MainActor struct WorkspaceBar: View {
     @Bindable var store: ChatLibrary
-    @State private var pendingFolder: URL?
-    @State private var confirmingChange = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -31,12 +29,6 @@ import SwiftUI
         }
         .controlSize(.small)
         .disabled(store.isWorking).allowsHitTesting(!store.busy)
-        .confirmationDialog("Start a fresh conversation?", isPresented: $confirmingChange, titleVisibility: .visible) {
-            Button("Start New Conversation") { applyChange(pendingFolder) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Changing, closing, or reloading a workspace starts a new conversation. The previous conversation and its unsent draft are kept.")
-        }
     }
 
     private func chooseFolder() {
@@ -57,13 +49,6 @@ import SwiftUI
 
     private func requestChange(to folder: URL?) {
         guard !store.busy else { return }
-        if !store.messages.isEmpty || !store.draft.isEmpty || store.hasUnsavedChanges {
-            pendingFolder = folder
-            confirmingChange = true
-        } else { applyChange(folder) }
-    }
-
-    private func applyChange(_ folder: URL?) {
         if let folder { store.selectWorkspace(folder) }
         else { store.closeWorkspace() }
     }

@@ -4,7 +4,6 @@ struct SessionSidebar: View {
     @Bindable var store: ChatLibrary
     let open: (UUID) -> Void
     let delete: (SessionSummary) -> Void
-    @State private var confirmingSignOut = false
     @State private var renaming = false
     @State private var renameID: UUID?
     @State private var renameTitle = ""
@@ -41,8 +40,8 @@ struct SessionSidebar: View {
                             Button("Refresh Models", action: store.restore)
                             Button("Reconnect", action: store.connect)
                             Divider()
-                            Button("Sign Out…", role: .destructive) {
-                                if store.canNavigate && !store.accountBusy { confirmingSignOut = true }
+                            Button("Sign Out", role: .destructive) {
+                                if store.canNavigate && !store.accountBusy { store.disconnect() }
                             }
                         } label: {
                             Label { Text(verbatim: account).lineLimit(1).truncationMode(.middle) }
@@ -65,12 +64,6 @@ struct SessionSidebar: View {
             .keyboardShortcut(.defaultAction)
             .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) {}
-        }
-        .confirmationDialog("Sign out?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
-            Button("Sign Out", role: .destructive, action: store.disconnect)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Saved conversations stay on this Mac. Unsent text and changes that could not be saved will be discarded.")
         }
         .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
     }
@@ -120,7 +113,7 @@ private struct SessionRow: View {
         .contextMenu {
             Button("Rename…", action: rename).disabled(session.unreadable)
             Divider()
-            Button("Delete Conversation…", role: .destructive, action: delete).disabled(running)
+            Button("Delete Conversation", role: .destructive, action: delete).disabled(running)
         }
         .accessibilityAction(named: "Rename Conversation") { if !session.unreadable { rename() } }
         .accessibilityAction(named: "Delete Conversation") { if !running { delete() } }

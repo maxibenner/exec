@@ -3,8 +3,6 @@ import UniformTypeIdentifiers
 
 struct ChatView: View {
     @Bindable var store: ChatLibrary
-    @State private var pendingDeletion: SessionSummary?
-    @State private var confirmingDeletion = false
     @FocusState private var composerFocused: Bool
     @State private var errorHeight: CGFloat = 20
     @State private var imageDropTargeted = false
@@ -13,7 +11,7 @@ struct ChatView: View {
         NavigationSplitView {
             SessionSidebar(store: store, open: { requestNavigation(to: $0) }, delete: {
                 guard store.canNavigate, !store.isSessionRunning($0.id) else { return }
-                pendingDeletion = $0; confirmingDeletion = true
+                store.deleteSession($0.id)
             })
         } detail: {
             VStack(spacing: 0) {
@@ -41,14 +39,6 @@ struct ChatView: View {
             }
         }
         .frame(minWidth: 720, minHeight: 480)
-        .confirmationDialog("Delete this conversation?", isPresented: $confirmingDeletion, titleVisibility: .visible) {
-            Button("Delete Conversation", role: .destructive) {
-                if let session = pendingDeletion { store.deleteSession(session.id) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("“\(pendingDeletion?.title ?? "")” will be permanently deleted from this Mac. Files changed by its tools will not be undone.")
-        }
         .task { store.restore(); composerFocused = true }
     }
 
