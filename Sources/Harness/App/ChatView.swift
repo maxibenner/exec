@@ -140,6 +140,13 @@ struct ChatView: View {
                 .frame(maxWidth: 180, alignment: .trailing).fixedSize(horizontal: true, vertical: false)
                 .disabled(store.busy).accessibilityLabel("Model")
                 EffortPicker(store: store)
+                if let usage = store.current.contextUsage {
+                    Text("Context \(usage.isEstimated ? "~" : "")\(usage.percent)%")
+                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        .fixedSize()
+                        .help("\(usage.isEstimated ? "Estimated" : "Reported") context: \(usage.tokens.formatted()) / \(usage.limit.formatted()) tokens. Excludes unsent drafts and unfinished responses.")
+                        .accessibilityLabel("Context usage, \(usage.percent) percent")
+                }
             }
         }
     }

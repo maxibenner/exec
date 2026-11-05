@@ -48,6 +48,17 @@ struct ChatModel: Identifiable, Sendable {
     var defaultEffort: String? = nil
 }
 
+struct ContextUsage: Equatable, Sendable {
+    let tokens: Int
+    let limit: Int
+    let isEstimated: Bool
+
+    var percent: Int {
+        guard limit > 0 else { return 0 }
+        return Int(min(100, max(0, (Double(tokens) / Double(limit) * 100).rounded())))
+    }
+}
+
 enum ChatEvent: Sendable {
     case text(String)
     case textSnapshot(String)
@@ -71,6 +82,7 @@ enum ChatEvent: Sendable {
     func disconnect() async throws
     func models() async throws -> [ChatModel]
     var supportsWebSearch: Bool { get }
+    func contextUsage(_ messages: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) -> ContextUsage?
     // A separate read-only request using provider-owned authentication, never conversation context.
     func searchWeb(query: String, model: String, effort: String?) async throws -> WebSearchResult
     // Compact only completed history, never pending input or unresolved tool calls.
@@ -83,6 +95,7 @@ enum ChatEvent: Sendable {
 extension ChatProvider {
     var conversationIdentity: String? { account }
     var supportsWebSearch: Bool { false }
+    func contextUsage(_ messages: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) -> ContextUsage? { nil }
     func searchWeb(query: String, model: String, effort: String?) async throws -> WebSearchResult {
         throw HarnessError("This provider does not support web search.")
     }

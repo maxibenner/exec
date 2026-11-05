@@ -23,6 +23,26 @@ import Foundation
         ))
     }
 
+    func contextUsageReportsRestoredMeasurementsAndEstimates() throws {
+        let http = HTTPStub.makeSession([])
+        defer { http.invalidateAndCancel() }
+        let provider = try provider(http: http)
+        let history = [Message(role: .user, text: "Question"), Message(role: .assistant, text: "Answer")]
+        try expect(provider.contextUsage([], model: model, instructions: "", tools: [])?.percent == 0)
+        try expect(provider.contextUsage(history, model: ChatModel(id: "unknown", name: "Unknown"), instructions: "", tools: []) == nil)
+        try provider.restoreConversationState(state(history, tokens: 2_500), history: history)
+        let reported = provider.contextUsage(history, model: model, instructions: "", tools: [])
+        try expect(reported == ContextUsage(tokens: 2_500, limit: 10_000, isEstimated: false))
+        try expect(reported?.percent == 25)
+        let appended = history + [Message(role: .user, text: "Next question")]
+        let estimated = provider.contextUsage(appended, model: model, instructions: "", tools: [])
+        try expect(estimated?.isEstimated == true && estimated!.tokens > 2_500)
+        try expect(ContextUsage(tokens: 20_000, limit: 10_000, isEstimated: true).percent == 100)
+        provider.clearConversationState()
+        try expect(provider.contextUsage(history, model: model, instructions: "", tools: [])?.isEstimated == true)
+        try expect(HTTPStub.state.requests.isEmpty)
+    }
+
     func thresholdAndDurableOpaqueContinuation() async throws {
         let response = try JSONSerialization.data(withJSONObject: ["output": compacted])
         let final = Data("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Continued\"}]}],\"usage\":{\"input_tokens\":200,\"output_tokens\":10}}}\n\n".utf8)

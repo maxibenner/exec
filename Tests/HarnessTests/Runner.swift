@@ -58,6 +58,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Tool interruption and recovery", { try await chat.interruptedToolTurnRetainsResultsWithoutReexecution() }),
             ("Workspace instruction loading", { try WorkspaceTests().loadsOnlyRootInstructionsAndRejectsUnsafeFiles() }),
             ("Workspace context isolation", { try await chat.workspaceChangesKeepInstructionsAndHistoryIsolated() }),
+            ("Context usage reports and estimates", { try CompactionTests().contextUsageReportsRestoredMeasurementsAndEstimates() }),
             ("Compaction threshold and durable continuation", { try await CompactionTests().thresholdAndDurableOpaqueContinuation() }),
             ("Compaction failure and cancellation safety", { try await CompactionTests().failedAndCancelledCompactionKeepsOriginalContext() }),
             ("Compaction estimates and tool boundaries", { try await CompactionTests().estimatesLegacyStateAndClosedToolBoundaries() }),

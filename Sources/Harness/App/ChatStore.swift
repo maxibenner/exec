@@ -7,8 +7,8 @@ import Observation
     var draftImages: [ImageAttachment] = []
     private(set) var isImportingImages = false
     var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || isImportingImages }
-    var models: [ChatModel] = [] { didSet { reconcileEffort() } }
-    var selectedModel = "" { didSet { reconcileEffort() } }
+    var models: [ChatModel] = [] { didSet { reconcileEffort(); updateContextUsage() } }
+    var selectedModel = "" { didSet { reconcileEffort(); updateContextUsage() } }
     var selectedEffort: String?
     var model: ChatModel? { models.first { $0.id == selectedModel } }
     var effectiveEffort: String? {
@@ -39,7 +39,17 @@ import Observation
     }
     private(set) var hasUnsavedChanges = false
     let tools = ToolExecutor()
-    private var history: [Message] = []
+    private(set) var contextUsage: ContextUsage?
+    private var history: [Message] = [] { didSet { updateContextUsage() } }
+
+    private func updateContextUsage() {
+        guard let model else { contextUsage = nil; return }
+        var definitions = workspace == nil ? [] : CodingTools.definitions
+        if provider.supportsWebSearch { definitions.append(WebSearchTool.definition) }
+        contextUsage = provider.contextUsage(history, model: model,
+                                             instructions: workspace?.modelInstructions ?? "", tools: definitions)
+    }
+
     private let provider: any ChatProvider
     private var task: Task<Void, Never>?
     private let sessions: SessionStore?
@@ -290,6 +300,7 @@ import Observation
         let model = models.first { $0.id == selectedModel } ?? ChatModel(id: selectedModel, name: selectedModel)
         if try await provider.compactIfNeeded(history, pending: Array(input.dropFirst(history.count)),
                                               model: model, instructions: instructions, tools: definitions) {
+            updateContextUsage()
             try await checkpoint() // Compacted context must be durable before another inference request.
         }
         try Task.checkCancellation()
