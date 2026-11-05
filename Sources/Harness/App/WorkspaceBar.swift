@@ -8,24 +8,22 @@ import SwiftUI
     var body: some View {
         HStack(spacing: 6) {
             if let workspace = store.workspace {
-                Image(systemName: "folder").foregroundStyle(.secondary)
-                Text(workspace.root.lastPathComponent.isEmpty ? workspace.root.path : workspace.root.lastPathComponent)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
-                    .help(workspace.root.path).textSelection(.enabled)
                 Menu {
                     Button("Change Folder…", action: chooseFolder)
                         .disabled(!store.canSelectWorkspace || folderPanel != nil)
                     Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([workspace.root]) }
-                } label: { Image(systemName: "ellipsis.circle") }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                .help("Workspace settings").accessibilityLabel("Workspace settings")
+                } label: {
+                    Label((workspace.root.path as NSString).abbreviatingWithTildeInPath, systemImage: "folder")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .help(workspace.root.path).accessibilityLabel("Workspace: \(workspace.root.path)")
             } else {
                 Button(action: chooseFolder) { Label("Workspace…", systemImage: "folder.badge.plus") }
                     .buttonStyle(.borderless).help("Choose a project folder")
                     .disabled(!store.canSelectWorkspace || folderPanel != nil)
             }
-            Spacer(minLength: 0)
         }
         .controlSize(.small)
         .disabled(!store.canNavigate)

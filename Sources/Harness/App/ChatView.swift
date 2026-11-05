@@ -1,11 +1,9 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct ChatView: View {
     @Bindable var store: ChatLibrary
     @FocusState private var composerFocused: Bool
     @State private var errorHeight: CGFloat = 20
-    @State private var imageDropTargeted = false
 
     var body: some View {
         NavigationSplitView {
@@ -24,7 +22,14 @@ struct ChatView: View {
                         .disabled(store.navigating).layoutPriority(1)
                 }
                 if let error = store.error { errorView(error) }
-                composer
+                ChatComposer(store: store, focused: $composerFocused)
+            }
+            // A conversation owns its transient controls and scroll state. Do not morph
+            // the previous conversation's view tree into the newly selected one.
+            .id(ObjectIdentifier(store.current))
+            .transaction(value: ObjectIdentifier(store.current)) { transaction in
+                transaction.animation = nil
+                transaction.disablesAnimations = true
             }
             .frame(minWidth: 460)
             .toolbar {
@@ -40,109 +45,6 @@ struct ChatView: View {
         }
         .frame(minWidth: 720, minHeight: 480)
         .task { store.restore(); composerFocused = true }
-    }
-
-    private var composer: some View {
-        VStack(spacing: 10) {
-            composerInput
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    WorkspaceBar(store: store)
-                    modelControls
-                }
-                VStack(spacing: 10) {
-                    WorkspaceBar(store: store)
-                    HStack { Spacer(minLength: 0); modelControls }
-                }
-            }
-        }
-        .frame(maxWidth: 820)
-        .padding(.horizontal, 20).padding(.vertical, 12)
-        .frame(maxWidth: .infinity)
-    }
-
-    private var composerInput: some View {
-        VStack(spacing: 10) {
-            if !store.current.draftImages.isEmpty {
-                AttachmentStrip(images: store.current.draftImages) { id in
-                    store.current.draftImages.removeAll { $0.id == id }
-                }
-                .disabled(!store.canNavigate)
-                .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
-            }
-            HStack(alignment: .bottom, spacing: 12) {
-                TextField("Message", text: $store.draft, axis: .vertical)
-                    .lineLimit(1...8).textFieldStyle(.plain).font(.body)
-                    .focused($composerFocused)
-                    .disabled(store.isWorking && !store.isSending).allowsHitTesting(!store.navigating)
-                    .accessibilityLabel("Message")
-                    .onSubmit { store.send() }
-                    .padding(.vertical, 8)
-                if store.isWorking {
-                    HStack(alignment: .center, spacing: 12) {
-                        if store.tools.pendingApproval == nil {
-                            ProgressView().controlSize(.small).frame(width: 16, height: 16).accessibilityLabel("Working")
-                        }
-                        Button(action: store.stop) { Image(systemName: "stop.fill").frame(width: 18, height: 18) }
-                            .buttonStyle(.bordered).buttonBorderShape(.circle)
-                            .keyboardShortcut(".", modifiers: .command)
-                            .help("Stop (⌘.)").accessibilityLabel("Stop")
-                    }
-                    .frame(height: 32)
-                    .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
-                }
-            }
-        }
-        .padding(12)
-        .background {
-            RoundedRectangle(cornerRadius: 12)
-                .fill(.background.secondary)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    guard !store.navigating, !store.isWorking || store.isSending else { return }
-                    composerFocused = true
-                }
-        }
-        .overlayPreferenceValue(ComposerControlBounds.self) { anchors in
-            GeometryReader { geometry in
-                ComposerCursor(exclusions: anchors.map { geometry[$0] })
-            }
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(imageDropTargeted || composerFocused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: imageDropTargeted ? 2 : 1)
-                .allowsHitTesting(false)
-        }
-        .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: $imageDropTargeted) { providers in
-            guard store.canNavigate else { return false }
-            let destination = store.current
-            return destination.importImages { try await ImageDrop.load(providers) } != nil
-        }
-    }
-
-    @ViewBuilder private var modelControls: some View {
-        if !store.models.isEmpty || !store.selectedModel.isEmpty {
-            HStack(spacing: 12) {
-                AutoApprovalToggle(store: store)
-                Picker("Model", selection: $store.selectedModel) {
-                    ForEach(store.models) { Text($0.name).tag($0.id) }
-                    if !store.selectedModel.isEmpty && !store.models.contains(where: { $0.id == store.selectedModel }) {
-                        Text(store.selectedModel).tag(store.selectedModel)
-                    }
-                }
-                .labelsHidden().pickerStyle(.menu).controlSize(.small)
-                .frame(maxWidth: 180, alignment: .trailing).fixedSize(horizontal: true, vertical: false)
-                .disabled(store.busy).accessibilityLabel("Model")
-                EffortPicker(store: store)
-                if let usage = store.current.contextUsage {
-                    Text("Context \(usage.isEstimated ? "~" : "")\(usage.percent)%")
-                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                        .fixedSize()
-                        .help("\(usage.isEstimated ? "Estimated" : "Reported") context: \(usage.tokens.formatted()) / \(usage.limit.formatted()) tokens. Excludes unsent drafts and unfinished responses.")
-                        .accessibilityLabel("Context usage, \(usage.percent) percent")
-                }
-            }
-        }
     }
 
     private func errorView(_ error: String) -> some View {

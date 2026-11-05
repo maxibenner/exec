@@ -30,6 +30,7 @@ struct TranscriptView: View {
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in follow(proxy) }
                 .background(ScrollTrackingView { nearBottom in followsLatest = nearBottom })
             }
+            .modifier(InitialTranscriptAnchor())
             .clipped()
             .onDisappear { scrollTask?.cancel(); scrollTask = nil }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in follow(proxy) }
@@ -66,6 +67,19 @@ struct TranscriptView: View {
             if followsLatest, let id = scrollTarget {
                 proxy.scrollTo(id, anchor: .bottom)
             }
+        }
+    }
+}
+
+/// Establish the initial position during layout, before the first frame is shown.
+/// On newer systems only the initial offset is affected: short transcripts stay
+/// top-aligned and reading older messages still opts out of following new content.
+private struct InitialTranscriptAnchor: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.defaultScrollAnchor(.bottom, for: .initialOffset)
+        } else {
+            content.defaultScrollAnchor(.bottom)
         }
     }
 }
