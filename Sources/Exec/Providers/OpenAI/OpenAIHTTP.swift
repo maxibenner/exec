@@ -2,14 +2,16 @@ import Foundation
 
 struct OpenAIHTTPError: LocalizedError, Sendable {
     let status: Int
+    var details: String? = nil
     var errorDescription: String? {
-        switch status {
+        let summary = switch status {
         case 401: "Your session was rejected. Reconnect to Codex and try again."
         case 403: "Codex denied access. Check your account and workspace permissions."
         case 429: "Codex usage or rate limit reached. Wait before trying again."
         case 500...599: "Codex is temporarily unavailable (HTTP \(status)). Try again later."
         default: "OpenAI returned HTTP \(status). The request was not retried."
         }
+        return summary + (details.map { "\n" + $0 } ?? "")
     }
 }
 
@@ -43,11 +45,47 @@ enum OpenAIHTTP {
         return data
     }
 
-    static func check(_ response: URLResponse) throws {
+    static func check(_ response: URLResponse, body: Data = Data(), request: URLRequest? = nil) throws {
         guard let http = response as? HTTPURLResponse else { throw ExecError("Invalid HTTP response.") }
         guard (200..<300).contains(http.statusCode) else {
-            // Never surface raw response bodies: auth errors can contain secrets.
-            throw OpenAIHTTPError(status: http.statusCode)
+            // Authentication bodies may contain credentials; only expose diagnostics
+            // from the resource backend, never arbitrary response fields or headers.
+            var details: [String] = []
+            if let url = http.url, url.host == "chatgpt.com" {
+                details.append("Endpoint: " + url.path)
+                if let id = http.value(forHTTPHeaderField: "x-request-id") {
+                    details.append("Request ID: " + String(id.prefix(200)))
+                }
+                if body.count <= 16 * 1024,
+                   let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                    let error = (json["error"] as? [String: Any]) ?? json
+                    for key in ["code", "type", "message", "param"] {
+                        if let value = error[key] as? String {
+                            details.append(key + ": " + value)
+                        }
+                    }
+                    if let value = json["detail"] as? String { details.append("detail: " + value) }
+                    if let value = json["error"] as? String { details.append("error: " + value) }
+                } else if !body.isEmpty {
+                    details.append("Server body was non-JSON or exceeded the 16 KiB diagnostic limit.")
+                }
+            }
+            var diagnostic = details.joined(separator: "\n")
+            // Remove exact credentials if the backend echoes them in a message.
+            for header in ["Authorization", "ChatGPT-Account-ID"] {
+                if let value = request?.value(forHTTPHeaderField: header), !value.isEmpty {
+                    diagnostic = diagnostic.replacingOccurrences(of: value, with: "[redacted]")
+                    if header == "Authorization", value.hasPrefix("Bearer ") {
+                        let token = String(value.dropFirst(7))
+                        if !token.isEmpty { diagnostic = diagnostic.replacingOccurrences(of: token, with: "[redacted]") }
+                    }
+                }
+            }
+            for pattern in [#"(?i)Bearer\s+[^\s"<>]+"#, #"sk-[A-Za-z0-9_-]+"#, #"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"#] {
+                diagnostic = diagnostic.replacingOccurrences(of: pattern, with: "[redacted]", options: .regularExpression)
+            }
+            diagnostic = String(diagnostic.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) || $0 == "\n" }.map(String.init).joined().prefix(2400))
+            throw OpenAIHTTPError(status: http.statusCode, details: diagnostic.isEmpty ? nil : diagnostic)
         }
     }
 }

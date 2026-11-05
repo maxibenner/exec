@@ -74,7 +74,7 @@ import Foundation
         let credentials = try await authentication.credentials()
         let request = CodexConnection.modelsRequest(accessToken: credentials.access, accountID: credentials.accountID)
         let (data, response) = try await http.data(for: request)
-        try OpenAIHTTP.check(response)
+        try OpenAIHTTP.check(response, body: data, request: request)
         return try JSONDecoder().decode(Catalog.self, from: data).models
             .filter { $0.visibility == nil || $0.visibility == "list" }
             .map {

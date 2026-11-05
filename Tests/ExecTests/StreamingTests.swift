@@ -1,6 +1,47 @@
 import Foundation
 
 struct StreamingTests {
+    func httpErrorDiagnostics() async throws {
+        let body = Data(#"{"error":{"code":"missing_resource","message":"No resource for test-token or test-account","type":"invalid_request_error"},"access_token":"never-display"}"#.utf8)
+        let request = CodexConnection.request(path: "/responses/compact", accessToken: "test-token", accountID: "test-account")
+        for streaming in [true, false] {
+            let session = HTTPStub.makeSession([.init(status: 404, chunks: [body])])
+            defer { session.invalidateAndCancel() }
+            do {
+                if streaming {
+                    for try await _ in OpenAITransport.stream(request, session: session) {}
+                } else {
+                    _ = try await OpenAITransport.boundedResponse(request, session: session)
+                }
+                throw CheckFailure(description: "Expected HTTP failure")
+            } catch let error as OpenAIHTTPError {
+                let text = error.localizedDescription
+                try expect(error.status == 404 && text.contains("missing_resource"))
+                try expect(text.contains("/responses/compact") && text.contains("No resource"))
+                try expect(!text.contains("test-token") && !text.contains("test-account") && !text.contains("never-display"))
+                try expect(HTTPStub.state.requests.count == 1)
+            }
+        }
+        let auth = HTTPURLResponse(url: URL(string: OpenAIHTTP.auth + "/oauth/token")!, statusCode: 401, httpVersion: nil, headerFields: nil)!
+        do {
+            try OpenAIHTTP.check(auth, body: body)
+            throw CheckFailure(description: "Expected auth failure")
+        } catch let error as OpenAIHTTPError {
+            try expect(error.details == nil)
+        }
+        for body in [Data("<html>private</html>".utf8), Data(repeating: 65, count: 17000), Data()] {
+            let session = HTTPStub.makeSession([.init(status: 502, chunks: [body])])
+            defer { session.invalidateAndCancel() }
+            do {
+                _ = try await OpenAITransport.boundedResponse(request, session: session)
+                throw CheckFailure(description: "Expected bounded failure")
+            } catch let error as OpenAIHTTPError {
+                try expect(error.status == 502 && error.localizedDescription.count < 3000)
+                try expect(!error.localizedDescription.contains("<html>"))
+            }
+        }
+    }
+
     func framesCommentsMultilineAndUnicode() throws {
         let source = ": heartbeat\r\n\r\nevent: message\r\ndata: {\"delta\":\r\ndata: \"Hello 🌍\"}\r\n\r\ndata: second\n\n"
         var parser = SSEParser()

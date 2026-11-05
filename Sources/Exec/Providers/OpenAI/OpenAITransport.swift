@@ -14,7 +14,7 @@ enum OpenAITransport {
                 do {
                     let (bytes, response) = try await session.bytes(for: request)
                     defer { bytes.task.cancel() }
-                    try OpenAIHTTP.check(response)
+                    try await check(response, bytes: bytes, request: request)
                     var parser = SSEParser()
                     var decoder = ResponseDecoder()
                     var completed = false
@@ -36,7 +36,7 @@ enum OpenAITransport {
         let task = Task.detached {
             let (bytes, response) = try await session.bytes(for: request)
             defer { bytes.task.cancel() }
-            try OpenAIHTTP.check(response)
+            try await check(response, bytes: bytes, request: request)
             var data = Data()
             for try await byte in bytes {
                 try Task.checkCancellation()
@@ -46,6 +46,27 @@ enum OpenAITransport {
             return data
         }
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    // Consume only a bounded error body. Successful SSE streams remain untouched.
+    private static func check(_ response: URLResponse, bytes: URLSession.AsyncBytes, request: URLRequest) async throws {
+        guard let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) else {
+            try OpenAIHTTP.check(response)
+            return
+        }
+        var body = Data()
+        do {
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                body.append(byte)
+                if body.count > 16 * 1024 { break }
+            }
+        } catch {
+            try Task.checkCancellation()
+            // A broken error body must not obscure the original HTTP status.
+        }
+        try Task.checkCancellation()
+        try OpenAIHTTP.check(response, body: body, request: request)
     }
 
     static func decode(_ data: Data) throws -> Event? {
