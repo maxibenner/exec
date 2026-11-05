@@ -37,9 +37,9 @@ struct ChatComposer: View {
         let items: [Choice]
         switch page {
         case nil:
-            items = [Choice(id: "model", title: "Model", detail: modelName),
-                     Choice(id: "effort", title: "Reasoning", detail: effortName),
-                     Choice(id: "approve", title: "Auto-approve", detail: store.autoApproveTools ? "On" : "Off", enabled: canApprove),
+            items = [Choice(id: "model", title: "model", detail: modelName),
+                     Choice(id: "effort", title: "reasoning", detail: effortName),
+                     Choice(id: "approve", title: "auto-approve", detail: store.autoApproveTools ? "On" : "Off", enabled: canApprove),
                      Choice(id: "compact", title: "compact", enabled: store.canCompact)]
         case .model:
             var models = store.models.map { Choice(id: $0.id, title: $0.name, selected: $0.id == store.selectedModel, enabled: !store.busy) }
@@ -239,7 +239,7 @@ struct ChatComposer: View {
             }
         }
         .padding(6).font(.callout)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
         .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.12)) }
         .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
         .accessibilityLabel("Composer commands")

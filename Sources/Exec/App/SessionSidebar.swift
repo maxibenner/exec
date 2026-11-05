@@ -26,10 +26,12 @@ struct SessionSidebar: View {
         .listStyle(.sidebar)
         .disabled(store.authenticating)
         .allowsHitTesting(store.canNavigate)
-        .onDeleteCommand {
-            guard store.canNavigate else { return }
-            if let selected = store.sessionList.first(where: { $0.id == store.currentSessionID }),
+        .onKeyPress(.delete, phases: .down) { press in
+            guard press.modifiers == .command else { return .ignored }
+            guard store.canNavigate else { return .handled }
+            if let selected = store.sessionList.first(where: { $0.id == store.sidebarSelectionID }),
                !store.isSessionRunning(selected.id) { delete(selected) }
+            return .handled
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {

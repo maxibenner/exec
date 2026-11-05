@@ -6,6 +6,14 @@ struct SessionCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Sessions") {
+            Button("New Session") {
+                store?.newConversation()
+            }
+            .keyboardShortcut("t", modifiers: .command)
+            .disabled(store?.canNavigate != true)
+
+            Divider()
+
             if let store {
                 ForEach(store.sessionShortcuts, id: \.session.id) { shortcut in
                     Button {
