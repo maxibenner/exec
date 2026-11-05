@@ -119,6 +119,59 @@ import Foundation
         try expect(lastProvider.inputs.isEmpty && library.draft == "Cancel before starting")
     }
 
+    func workspaceSelectionDoesNotInterruptRunningConversations() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let firstFolder = root.appendingPathComponent("first")
+        let secondFolder = root.appendingPathComponent("second")
+        try FileManager.default.createDirectory(at: firstFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = FakeProvider()
+        let library = try ChatLibrary(provider: provider, sessions: SessionStore(directory: root.appendingPathComponent("sessions")))
+        defer { library.stopAll() }
+        library.restore()
+        try await wait { !library.hasRunningOperations }
+        library.selectWorkspace(firstFolder)
+        try await wait { !library.navigating }
+        let running = library.current
+        let runner = provider.children.last!
+        runner.holdOpen = true
+        library.draft = "Keep running"
+        library.send()
+        try await wait { runner.pending != nil }
+        let runningID = library.currentSessionID!
+        library.draft = "Keep this draft"
+
+        // Choosing a workspace from the active runner creates a separate conversation.
+        library.selectWorkspace(secondFolder)
+        try await wait { !library.navigating }
+        try expect(library.current !== running && running.busy)
+        try expect(library.workspace?.root.resolvingSymlinksInPath().path == secondFolder.resolvingSymlinksInPath().path)
+        try expect(running.workspace?.root.resolvingSymlinksInPath().path == firstFolder.resolvingSymlinksInPath().path)
+        try expect(running.draft == "Keep this draft")
+
+        // A new conversation can also choose or close its workspace with a background run.
+        library.newConversation()
+        try await wait { !library.navigating }
+        library.selectWorkspace(firstFolder)
+        try await wait { !library.navigating }
+        try expect(library.workspace?.root.resolvingSymlinksInPath().path == firstFolder.resolvingSymlinksInPath().path && running.busy)
+        library.closeWorkspace()
+        try await wait { !library.navigating }
+        try expect(library.workspace == nil && running.busy)
+        library.openSession(runningID)
+        try await wait { !library.navigating }
+        try expect(library.current === running && library.draft == "Keep this draft")
+        library.closeWorkspace()
+        try await wait { !library.navigating }
+        try expect(library.workspace == nil && running.busy)
+        runner.pending?.yield(.completed)
+        runner.pending?.finish()
+        try await wait { !running.busy }
+        try expect(running.messages.last?.status == .complete)
+        try expect(runner.inputs.count == 1)
+    }
+
     private func wait(_ condition: () -> Bool) async throws {
         for _ in 0..<400 {
             if condition() { return }

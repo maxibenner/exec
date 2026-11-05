@@ -194,7 +194,7 @@ import Observation
     }
 
     func selectWorkspace(_ url: URL) {
-        guard canNavigate, !current.busy else { return }
+        guard canNavigate else { return }
         navigate {
             let loading = Task.detached(priority: .userInitiated) { try Workspace.load(url) }
             let workspace = try await withTaskCancellationHandler {
@@ -206,7 +206,7 @@ import Observation
     }
 
     func closeWorkspace() {
-        guard canNavigate, !current.busy else { return }
+        guard canNavigate else { return }
         navigate { try await self.replaceWorkspace(nil) }
     }
 

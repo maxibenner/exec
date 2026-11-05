@@ -28,7 +28,7 @@ import SwiftUI
             Spacer(minLength: 0)
         }
         .controlSize(.small)
-        .disabled(store.isWorking).allowsHitTesting(!store.busy)
+        .disabled(!store.canNavigate)
     }
 
     private func chooseFolder() {
@@ -48,7 +48,7 @@ import SwiftUI
     }
 
     private func requestChange(to folder: URL?) {
-        guard !store.busy else { return }
+        guard store.canNavigate else { return }
         if let folder { store.selectWorkspace(folder) }
         else { store.closeWorkspace() }
     }

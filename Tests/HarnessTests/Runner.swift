@@ -48,6 +48,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Session index recovery", { try await SessionTests().indexRecoveryDoesNotReplayOrResurrectDeletedSessions() }),
             ("Checkpoint failure safety", { try await SessionTests().failedCheckpointPreventsModelAndToolExecution() }),
             ("Concurrent conversations and foreground selection", { try await ChatLibraryTests().concurrentTurnsKeepContextDraftsAndSelectionIsolated() }),
+            ("Workspace selection during active conversations", { try await ChatLibraryTests().workspaceSelectionDoesNotInterruptRunningConversations() }),
             ("Background approval isolation", { try await ChatLibraryTests().backgroundApprovalsStayWithTheirConversation() }),
             ("Read-only tool boundaries", { try ToolTests().readToolsStayWithinWorkspace() }),
             ("Shell output, timeout and cancellation", { try await ToolTests().shellOutputTimeoutAndCancellation() }),
