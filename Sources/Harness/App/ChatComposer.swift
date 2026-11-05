@@ -75,6 +75,11 @@ struct ChatComposer: View {
                 }
                 .frame(maxWidth: 820)
                 .padding(.horizontal, 20).padding(.top, 12)
+                .frame(maxWidth: .infinity)
+                .background(alignment: .bottom) {
+                    // Join the footer background behind the input's rounded bottom corners.
+                    Rectangle().fill(.background).frame(height: 12)
+                }
                 .zIndex(1)
             information
                 .frame(maxWidth: 820)
