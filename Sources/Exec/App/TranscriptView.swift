@@ -242,9 +242,10 @@ private struct TranscriptRow: View {
         }
         .frame(width: width, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
-        // A growing disclosure must overflow downward while the native host is
-        // remeasured, never center itself above the old, shorter row frame.
-        .frame(maxHeight: .infinity, alignment: .topLeading)
+        // Accept even the stale collapsed height while the native row is being
+        // remeasured. Without minHeight: 0, SwiftUI keeps the expanded minimum
+        // height and the hosting view centers it over the disclosure header.
+        .frame(minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }

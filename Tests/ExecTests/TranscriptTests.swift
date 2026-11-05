@@ -68,10 +68,34 @@ import AppKit
         try expect(row.clipsToBounds && row.layer?.masksToBounds == true)
         try expect(row.subviews.count == 1)
         let hosted = row.subviews[0]
+        func fields(in view: NSView) -> [NSTextField] {
+            if let field = view as? NSTextField { return [field] }
+            return view.subviews.flatMap { fields(in: $0) }
+        }
+        func bodyFrames() throws -> (arguments: NSRect, output: NSRect) {
+            let fields = fields(in: hosted)
+            guard let arguments = fields.first(where: { $0.stringValue == "{}" }),
+                  let outputField = fields.first(where: { $0.stringValue == output }) else {
+                throw CheckFailure(description: "Expected selectable shell arguments and output")
+            }
+            return (arguments.convert(arguments.bounds, to: row), outputField.convert(outputField.bounds, to: row))
+        }
+        let fullBody = try bodyFrames()
 
         // Reproduce the interval between SwiftUI expanding/measuring its content
         // and the transcript committing a larger row frame. The native boundary
         // must remain small even if the hosted view uses its full natural height.
+        // The hosting view can also receive the stale, collapsed height while
+        // SwiftUI has already inserted the expanded body. Its text must stay
+        // below the header rather than centering/overlapping within that height.
+        for height in [CGFloat(60), fullFrame.height] {
+            hosted.setFrameSize(NSSize(width: fullFrame.width, height: height))
+            hosted.layoutSubtreeIfNeeded()
+            let body = try bodyFrames()
+            try expect(abs(body.arguments.minY - fullBody.arguments.minY) < 1)
+            try expect(body.output.minY >= body.arguments.maxY)
+            try expect(abs(body.output.height - fullBody.output.height) < 1)
+        }
         row.setFrameSize(NSSize(width: fullFrame.width, height: 60))
         hosted.frame = NSRect(origin: .zero, size: fullFrame.size)
         let measured = row.fittingSize
