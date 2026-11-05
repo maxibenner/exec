@@ -196,13 +196,13 @@ struct ChatComposer: View {
 
     private var usageInformation: some View {
         HStack(spacing: 16) {
-            if let usage = store.accountUsage { AccountUsageLabel(usage: usage) }
             if let usage = store.current.contextUsage {
                 Text("Context \(usage.isEstimated ? "~" : "")\(usage.percent)%")
                     .monospacedDigit().fixedSize()
                     .help("\(usage.isEstimated ? "Estimated" : "Reported") context: \(usage.tokens.formatted()) / \(usage.limit.formatted()) tokens. Excludes unsent drafts and unfinished responses.")
                     .accessibilityLabel("Context usage, \(usage.percent) percent")
             }
+            if let usage = store.accountUsage { AccountUsageLabel(usage: usage) }
         }
     }
 
