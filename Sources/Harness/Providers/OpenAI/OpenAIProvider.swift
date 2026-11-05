@@ -165,17 +165,25 @@ import Foundation
         try Task.checkCancellation()
         let request = try CodexConnection.compactRequest(
             input: context.input(history), model: model.id, sessionID: history.first!.id.uuidString,
-            accessToken: credentials.access, accountID: credentials.accountID, instructions: instructions
+            accessToken: credentials.access, accountID: credentials.accountID, instructions: instructions, tools: tools
         )
-        let data = try await OpenAITransport.boundedResponse(request, session: http)
-        guard let response = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let output = response["output"] as? [[String: Any]] else {
-            throw HarnessError("Codex returned invalid compacted context. The original conversation was kept.")
+        for try await event in OpenAITransport.stream(request, session: http) {
+            try Task.checkCancellation()
+            guard case .completed(let output, _) = event else { continue }
+            // Only the opaque compaction item becomes the new prefix. Ignore
+            // incidental text/tool output; never execute tools from this stream.
+            let items = try CodexConversationState.items(output).filter { $0["type"] as? String == "compaction" }
+            guard items.count == 1 else {
+                throw HarnessError("Codex returned invalid compacted context. The original conversation was kept.")
+            }
+            let compacted = try JSONSerialization.data(withJSONObject: items)
+            try CodexConversationState.validateCompaction(compacted)
+            try Task.checkCancellation()
+            context = CodexConversationState(prefix: .init(throughID: boundary, output: compacted))
+            return
         }
-        let compacted = try JSONSerialization.data(withJSONObject: output)
-        try CodexConversationState.validateCompaction(compacted)
         try Task.checkCancellation()
-        context = CodexConversationState(prefix: .init(throughID: boundary, output: compacted))
+        throw HarnessError("Compaction ended before completion. The original conversation was kept. No retry was made.")
     }
 
     func send(_ messages: [Message], model: String, effort: String? = nil, instructions: String = "", tools: [ToolDefinition] = []) -> AsyncThrowingStream<ChatEvent, Error> {

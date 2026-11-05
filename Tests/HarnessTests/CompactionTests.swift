@@ -4,6 +4,20 @@ import Foundation
     private let model = ChatModel(id: "test", name: "Test", contextWindow: 10_000)
     private let compacted: [[String: String]] = [["type": "compaction", "encrypted_content": "opaque-summary"]]
 
+    private func stream(_ output: [[String: Any]], completed: Bool = true) throws -> Data {
+        var events: [[String: Any]] = output.enumerated().map { index, item in
+            ["type": "response.output_item.done", "output_index": index, "item": item]
+        }
+        if completed {
+            events.append(["type": "response.completed", "response": ["status": "completed", "output": []]])
+        }
+        return try events.reduce(into: Data()) { data, event in
+            data.append(Data("data: ".utf8))
+            data.append(try JSONSerialization.data(withJSONObject: event))
+            data.append(Data("\n\n".utf8))
+        }
+    }
+
     private func provider(http: URLSession) throws -> OpenAIProvider {
         let credentials = MemoryCredentials()
         credentials.data = try JSONEncoder().encode(OpenAIAuthentication.Session(
@@ -44,7 +58,7 @@ import Foundation
     }
 
     func thresholdAndDurableOpaqueContinuation() async throws {
-        let response = try JSONSerialization.data(withJSONObject: ["output": compacted])
+        let response = try stream(compacted + [["type": "function_call", "call_id": "ignored", "name": "shell", "arguments": "{}"]])
         let final = Data("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Continued\"}]}],\"usage\":{\"input_tokens\":200,\"output_tokens\":10}}}\n\n".utf8)
         let http = HTTPStub.makeSession([.init(chunks: [response]), .init(chunks: [final])])
         defer { http.invalidateAndCancel() }
@@ -57,10 +71,16 @@ import Foundation
         let changed = try await provider.compactIfNeeded(history, pending: [], model: model, instructions: "Keep instructions", tools: [])
         try expect(changed && HTTPStub.state.requests.count == 1)
         let request = HTTPStub.state.requests[0]
-        try expect(request.url?.path == "/backend-api/codex/responses/compact")
+        try expect(request.url?.path == "/backend-api/codex/responses")
+        try expect(request.httpMethod == "POST")
+        try expect(request.value(forHTTPHeaderField: "Accept") == "text/event-stream")
+        try expect(request.value(forHTTPHeaderField: "session-id") == history[0].id.uuidString)
         let body = try JSONSerialization.jsonObject(with: HTTPStub.body(of: request)) as! [String: Any]
         try expect(body["instructions"] as? String == CodexConnection.systemInstructions("Keep instructions"))
-        try expect((body["input"] as? [[String: Any]])?.count == 3 && body["tools"] == nil)
+        try expect(body["stream"] as? Bool == true && body["store"] as? Bool == false)
+        let input = body["input"] as! [[String: Any]]
+        try expect(input.count == 4 && body["tools"] == nil)
+        try expect(input.last?["type"] as? String == "compaction_trigger")
 
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -90,7 +110,16 @@ import Foundation
 
     func failedAndCancelledCompactionKeepsOriginalContext() async throws {
         let history = [Message(role: .user, text: "Question"), Message(role: .assistant, text: "old answer")]
-        for reply in [HTTPStub.Reply(status: 500), .init(chunks: [Data("{\"output\":[]}".utf8)])] {
+        let replies: [HTTPStub.Reply] = [
+            .init(status: 404), .init(status: 500),
+            .init(chunks: [try stream([])]),
+            .init(chunks: [try stream([["type": "compaction", "encrypted_content": ""]])]),
+            .init(chunks: [try stream(compacted + compacted)]),
+            .init(chunks: [try stream(compacted, completed: false)]),
+            .init(chunks: [try stream(compacted, completed: false),
+                           Data("data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"}}}\n\n".utf8)])
+        ]
+        for reply in replies {
             let http = HTTPStub.makeSession([reply])
             let provider = try provider(http: http)
             try provider.restoreConversationState(state(history, tokens: 9_500), history: history)
@@ -152,14 +181,17 @@ import Foundation
     }
 
     func manualCompactionBypassesThresholdAndPreservesTranscript() async throws {
-        let response = try JSONSerialization.data(withJSONObject: ["output": compacted])
+        let response = try stream(compacted)
         let http = HTTPStub.makeSession([.init(chunks: [response])])
         defer { http.invalidateAndCancel() }
         let provider = try provider(http: http)
         let history = [Message(role: .user, text: "Question"), Message(role: .assistant, text: "Answer")]
         try provider.restoreConversationState(state(history, tokens: 100), history: history)
-        try await provider.compact(history, model: model, instructions: "Keep instructions", tools: [])
+        let tools = [ToolDefinition(name: "list_files", description: "List files", parameters: [])]
+        try await provider.compact(history, model: model, instructions: "Keep instructions", tools: tools)
         try expect(HTTPStub.state.requests.count == 1)
+        let body = try JSONSerialization.jsonObject(with: HTTPStub.body(of: HTTPStub.state.requests[0])) as! [String: Any]
+        try expect((body["tools"] as? [[String: Any]])?.first?["name"] as? String == "list_files")
         try expect(try CodexConversationState.restore(provider.encodeConversationState()).prefix?.throughID == history.last?.id)
 
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -98,17 +98,14 @@ enum CodexConnection {
     }
 
     static func compactRequest(input: [[String: Any]], model: String, sessionID: String,
-                               accessToken: String, accountID: String, instructions: String) throws -> URLRequest {
-        var request = request(path: "/responses/compact", accessToken: accessToken, accountID: accountID)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(sessionID, forHTTPHeaderField: "session-id")
-        request.setValue(UUID().uuidString, forHTTPHeaderField: "x-client-request-id")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model, "input": input, "instructions": systemInstructions(instructions)
-        ])
-        return request
+                               accessToken: String, accountID: String, instructions: String,
+                               tools: [ToolDefinition] = []) throws -> URLRequest {
+        // Codex remote compaction v2 uses the normal Responses stream. The
+        // former ChatGPT /responses/compact endpoint is no longer available.
+        try responsesRequest(
+            input: input + [["type": "compaction_trigger"]], model: model, sessionID: sessionID,
+            accessToken: accessToken, accountID: accountID, instructions: instructions, tools: tools
+        )
     }
 
     // Read routing metadata only from tokens received over HTTPS from OpenAI.
