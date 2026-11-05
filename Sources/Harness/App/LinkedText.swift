@@ -3,15 +3,19 @@ import SwiftUI
 
 /// TextKit supplies link-only cursor rectangles while retaining normal text selection and wrapping.
 struct LinkedText: NSViewRepresentable {
-    let source: AttributedString
-    var fontSize: CGFloat = NSFont.systemFontSize
-    var weight: NSFont.Weight = .regular
+    let text: NSAttributedString
     @Environment(\.openURL) private var openURL
+
+    init(source: AttributedString, fontSize: CGFloat = NSFont.systemFontSize, weight: NSFont.Weight = .regular) {
+        text = Self.attributed(source, fontSize: fontSize, weight: weight)
+    }
+
+    init(text: NSAttributedString) { self.text = text }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> NSTextView {
-        let view = NSTextView()
+    func makeNSView(context: Context) -> TextView {
+        let view = TextView()
         view.isEditable = false
         view.isSelectable = true
         view.drawsBackground = false
@@ -26,8 +30,14 @@ struct LinkedText: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ view: NSTextView, context: Context) {
+    func updateNSView(_ view: TextView, context: Context) {
         context.coordinator.open = { url in openURL(url) }
+        view.update(text)
+        context.coordinator.measurement.update(text)
+    }
+
+    static func attributed(_ source: AttributedString, fontSize: CGFloat = NSFont.systemFontSize,
+                           weight: NSFont.Weight = .regular) -> NSAttributedString {
         let text = NSMutableAttributedString(string: "")
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
@@ -49,14 +59,41 @@ struct LinkedText: NSViewRepresentable {
             }
             text.append(NSAttributedString(string: String(source[run.range].characters), attributes: attributes))
         }
-        if view.attributedString() != text {
-            view.textStorage?.setAttributedString(text)
-            view.invalidateIntrinsicContentSize()
-            context.coordinator.measurement.update(text)
+        return text
+    }
+
+    final class TextView: NSTextView {
+        func update(_ text: NSAttributedString) {
+            guard attributedString() != text else { return }
+            let selection = selectedRange()
+            textStorage?.setAttributedString(text)
+            // Streaming updates must not clear an in-progress selection.
+            let start = min(selection.location, text.length)
+            setSelectedRange(NSRange(location: start, length: min(selection.length, text.length - start)))
+            invalidateIntrinsicContentSize()
+        }
+
+        override func menu(for event: NSEvent) -> NSMenu? {
+            let menu = super.menu(for: event)
+            let index = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+            if index < textStorage?.length ?? 0,
+               let code = textStorage?.attribute(MarkdownText.codeSnippet, at: index, effectiveRange: nil) as? String {
+                let item = NSMenuItem(title: "Copy Code", action: #selector(copyCode(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = code
+                menu?.insertItem(item, at: 0)
+            }
+            return menu
+        }
+
+        @objc private func copyCode(_ sender: NSMenuItem) {
+            guard let code = sender.representedObject as? String else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(code, forType: .string)
         }
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextView, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: TextView, context: Context) -> CGSize? {
         context.coordinator.measurement.size(width: proposal.width)
     }
 

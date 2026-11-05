@@ -49,6 +49,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Batched snapshots flush on failure and cancellation", { try await chat.batchedSnapshotsFlushOnFailureAndCancellation() }),
             ("Expanded tool content stays within native row bounds", { try TranscriptTests().expandedToolContentStaysInsideCommittedRowBounds() }),
             ("Linked text wrapping, resizing and updates", { try LinkedTextTests().measuresWrappingAcrossWidthsAndUpdates() }),
+            ("Markdown selection across blocks and streaming updates", { try MarkdownSelectionTests().selectsAndCopiesAcrossBlocksWithoutLosingFormatting() }),
             ("Markdown blocks and streaming code", { try MarkdownTests().preservesBlocksAndStreamingCode() }),
             ("Markdown link and image safety", { try MarkdownTests().stripsActiveContentAndUnsafeLinks() }),
             ("Approved edits and stale-file protection", { try await FileEditTests().approvedEditsRejectStaleFilesAndPreserveMode() }),
