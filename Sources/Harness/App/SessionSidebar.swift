@@ -13,7 +13,7 @@ struct SessionSidebar: View {
         List(selection: Binding(get: { store.sidebarSelectionID }, set: { if let id = $0 { open(id) } })) {
             Section("Sessions") {
                 ForEach(store.sessionList) { session in
-                    SessionRow(session: session, selected: session.id == store.sidebarSelectionID,
+                    SessionRow(session: session,
                                running: store.isSessionRunning(session.id), needsApproval: store.needsApproval(session.id),
                                needsAttention: store.needsAttention(session.id),
                                rename: {
@@ -78,7 +78,6 @@ struct SessionSidebar: View {
 
 private struct SessionRow: View {
     let session: SessionSummary
-    let selected: Bool
     let running: Bool
     let needsApproval: Bool
     let needsAttention: Bool
@@ -88,7 +87,7 @@ private struct SessionRow: View {
     var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(verbatim: session.title).font(.body.weight(selected ? .medium : .regular)).lineLimit(2)
+                Text(verbatim: session.title).font(.body.weight(.regular)).lineLimit(2)
                 HStack {
                     if let workspace = session.workspace {
                         Text(URL(fileURLWithPath: workspace).lastPathComponent).lineLimit(1).help(workspace)
