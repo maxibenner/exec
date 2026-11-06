@@ -3,6 +3,12 @@ import SwiftUI
 struct SettingsView: View {
     let store: ChatLibrary
     @Environment(\.dismiss) private var dismiss
+    @State private var selectedTab: SettingsTab = .account
+
+    private enum SettingsTab: String, CaseIterable {
+        case account = "Account"
+        case general = "General"
+    }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -13,13 +19,24 @@ struct SettingsView: View {
                     .keyboardShortcut(.cancelAction)
             }
 
-            TabView {
-                accountSection
-                    .tabItem { Text("Account") }
-
-                Color.clear
-                    .tabItem { Text("General") }
+            Picker("Settings section", selection: $selectedTab) {
+                ForEach(SettingsTab.allCases, id: \.self) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 240)
+
+            GroupBox {
+                switch selectedTab {
+                case .account:
+                    accountSection
+                case .general:
+                    Color.clear
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .padding(20)
         .frame(width: 480, height: 300)
