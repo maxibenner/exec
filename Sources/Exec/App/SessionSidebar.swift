@@ -42,6 +42,12 @@ struct SessionSidebar: View {
                                    renameID = session.id; renameTitle = session.title; renaming = true
                                }, delete: { delete(session) })
                         .tag(session.id)
+                        .simultaneousGesture(TapGesture().onEnded {
+                            // Clicking an already selected row need not change List.selection.
+                            if store.currentSessionID == session.id, store.openingSessionID == nil {
+                                open(session.id)
+                            }
+                        })
                         .moveDisabled(!store.canReorderSessions)
                 }
                 .onMove { offsets, destination in

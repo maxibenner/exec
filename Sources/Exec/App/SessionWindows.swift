@@ -12,7 +12,15 @@ import Observation
     @ObservationIgnored private var controllers: [UUID: DetachedSessionController] = [:]
     @ObservationIgnored private var presentations: [ObjectIdentifier: TranscriptState] = [:]
 
+    private(set) var composerFocusRequest = 0
+
     init(library: ChatLibrary) { self.library = library }
+
+    func openSession(_ id: UUID) {
+        library.openSession(id) { [weak self] in
+            self?.composerFocusRequest += 1
+        }
+    }
 
     func presentation(for conversation: ChatStore) -> TranscriptState {
         let residents = Set(library.openConversations.map(ObjectIdentifier.init))

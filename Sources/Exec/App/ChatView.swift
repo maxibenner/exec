@@ -8,7 +8,7 @@ struct ChatView: View {
 
     var body: some View {
         NavigationSplitView {
-            SessionSidebar(store: store, windows: windows, open: { store.openSession($0) }, delete: {
+            SessionSidebar(store: store, windows: windows, open: { windows.openSession($0) }, delete: {
                 guard store.canNavigate, !store.isSessionRunning($0.id) else { return }
                 store.deleteSession($0.id)
             })
@@ -36,6 +36,12 @@ struct ChatView: View {
         .background(WindowReference { windows.mainWindow = $0 })
         .onChange(of: store.detachedSessionIDs) { _, _ in windows.closeInvalidWindows() }
         .onAppear { windows.reopenMainWindow = { openWindow(id: "chat") } }
-        .task { composerFocused = true }
+        .task(id: windows.composerFocusRequest) {
+            // Let the replacement composer mount and the list finish handling selection.
+            composerFocused = false
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            composerFocused = true
+        }
     }
 }

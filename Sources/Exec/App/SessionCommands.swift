@@ -55,7 +55,7 @@ struct SessionCommands: Commands {
             if let store {
                 ForEach(store.sessionShortcuts, id: \.session.id) { shortcut in
                     Button {
-                        store.openSession(shortcut.session.id)
+                        windows?.openSession(shortcut.session.id)
                         windows?.showMainWindow()
                     } label: {
                         Text(verbatim: shortcut.session.title)

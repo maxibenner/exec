@@ -23,8 +23,14 @@ import Foundation
         let first = library.current
         library.draft = "Keep this draft while switching"
         let ninth = library.sessionShortcuts[8].session.id
-        library.openSession(ninth)
+        let windows = SessionWindows(library: library)
+        windows.openSession(ninth)
+        try expect(windows.composerFocusRequest == 0)
         try await settle(library)
+        try expect(windows.composerFocusRequest == 1)
+        // Re-selecting a resident session also requests focus.
+        windows.openSession(ninth)
+        try expect(windows.composerFocusRequest == 2)
         try expect(library.currentSessionID == ninth && first.draft == "Keep this draft while switching")
         try expect(library.sessionList.map(\.id) == order)
 
@@ -50,7 +56,8 @@ import Foundation
         let selected = library.currentSessionID
         library.restore()
         try expect(!library.canNavigate)
-        library.openSession(ninth)
+        windows.openSession(ninth)
+        try expect(windows.composerFocusRequest == 2)
         try expect(library.currentSessionID == selected)
         try await settle(library)
     }

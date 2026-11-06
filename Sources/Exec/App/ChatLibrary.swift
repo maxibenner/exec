@@ -260,12 +260,13 @@ import Observation
         }
     }
 
-    func openSession(_ id: UUID) {
+    func openSession(_ id: UUID, onOpened: @escaping @MainActor () -> Void = {}) {
         guard canNavigate, !detachedSessionIDs.contains(id) else { return }
         cancelOpening()
         navigationError = nil
         if let existing = conversation(id) {
             activate(existing) // No snapshot I/O or provider restoration on the resident path.
+            onOpened()
             return
         }
         openingSessionID = id
@@ -275,6 +276,7 @@ import Observation
             try await next.loadSession(id)
             try Task.checkCancellation()
             self.activate(next)
+            onOpened()
         }
     }
 
