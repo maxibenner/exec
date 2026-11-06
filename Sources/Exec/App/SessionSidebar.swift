@@ -22,8 +22,7 @@ struct SessionSidebar: View {
                                        renameID = session.id; renameTitle = session.title; renaming = true
                                    }, delete: { delete(session) })
                     }
-                    // Handle clicks without transferring keyboard focus to the list.
-                    // The list itself remains available for keyboard navigation.
+                    // Handle row clicks without transferring keyboard focus.
                     .buttonStyle(.plain)
                     .focusable(false)
                     .tag(session.id)
@@ -35,6 +34,9 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        // Empty-space clicks must not activate the list's blue focused selection.
+        // Session navigation remains available through row buttons and shortcuts.
+        .focusable(false)
         .disabled(store.authenticating)
         .allowsHitTesting(store.canNavigate)
         .safeAreaInset(edge: .bottom, spacing: 0) {
