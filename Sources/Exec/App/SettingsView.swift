@@ -15,10 +15,10 @@ struct SettingsView: View {
 
             TabView {
                 accountSection
-                    .tabItem { Label("Account", systemImage: "person.crop.circle") }
+                    .tabItem { Text("Account") }
 
                 Color.clear
-                    .tabItem { Label("General", systemImage: "gearshape") }
+                    .tabItem { Text("General") }
             }
         }
         .padding(20)

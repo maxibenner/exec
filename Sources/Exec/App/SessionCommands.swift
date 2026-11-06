@@ -21,15 +21,13 @@ extension FocusedValues {
 struct SessionCommandScope: ViewModifier {
     let windows: SessionWindows
     let conversation: ChatStore
-    @State private var pendingDeletion: SessionSummary?
-
     private var actions: SessionWindowActions {
         let library = windows.library
         var actions = SessionWindowActions()
         guard let id = conversation.currentSessionID,
               let session = library.sessionList.first(where: { $0.id == id }) else { return actions }
         if library.canDeleteSession(id) {
-            actions.delete = { pendingDeletion = session }
+            actions.delete = { library.deleteSession(id) }
         }
         if library.detachedSessionIDs.contains(id) {
             actions.attach = { windows.attach(id) }
@@ -42,19 +40,6 @@ struct SessionCommandScope: ViewModifier {
     func body(content: Content) -> some View {
         content
             .focusedSceneValue(\.sessionWindowActions, actions)
-            .alert("Delete Conversation?", isPresented: Binding(
-                get: { pendingDeletion != nil },
-                set: { if !$0 { pendingDeletion = nil } }
-            ), presenting: pendingDeletion) { session in
-                Button("Delete", role: .destructive) {
-                    // Retain the original target across focus/selection changes,
-                    // and recheck eligibility when the confirmation is accepted.
-                    windows.library.deleteSession(session.id)
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: { session in
-                Text("Delete “\(session.title)”? This cannot be undone.")
-            }
     }
 }
 

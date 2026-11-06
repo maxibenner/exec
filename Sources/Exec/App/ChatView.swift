@@ -16,6 +16,14 @@ struct ChatView: View {
             ConversationView(library: store, conversation: store.current,
                              presentation: windows.presentation(for: store.current),
                              focused: $composerFocused, showsNavigationError: true)
+                .task(id: windows.composerFocusRequest) {
+                    // Refocus after the replacement composer mounts, including new
+                    // conversations and the selection made after deletion.
+                    composerFocused = false
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    composerFocused = true
+                }
                 .id(ObjectIdentifier(store.current))
                 .transaction(value: ObjectIdentifier(store.current)) { transaction in
                     transaction.animation = nil
@@ -23,7 +31,7 @@ struct ChatView: View {
                 }
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
-                        Button { store.newConversation(); composerFocused = true } label: {
+                        Button { store.newConversation() } label: {
                             Label("New Conversation", systemImage: "square.and.pencil")
                         }
                         .keyboardShortcut("n", modifiers: .command)
@@ -37,12 +45,5 @@ struct ChatView: View {
         .background(WindowReference { windows.mainWindow = $0 })
         .onChange(of: store.detachedSessionIDs) { _, _ in windows.closeInvalidWindows() }
         .onAppear { windows.reopenMainWindow = { openWindow(id: "chat") } }
-        .task(id: windows.composerFocusRequest) {
-            // Let the replacement composer mount and the list finish handling selection.
-            composerFocused = false
-            await Task.yield()
-            guard !Task.isCancelled else { return }
-            composerFocused = true
-        }
     }
 }
