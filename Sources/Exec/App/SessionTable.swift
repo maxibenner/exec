@@ -68,6 +68,35 @@ struct SessionTable: NSViewRepresentable {
 
     final class SidebarTable: NSTableView {
         var deleteSelection: (() -> Void)?
+
+        func dragPreview(for row: Int) -> (frame: NSRect, image: NSImage)? {
+            guard let container = rowView(atRow: row, makeIfNecessary: true),
+                  let content = container.view(atColumn: 0) as? NSView else { return nil }
+            container.layoutSubtreeIfNeeded()
+            guard let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return nil }
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            let snapshot = NSImage(size: content.bounds.size)
+            snapshot.addRepresentation(bitmap)
+            let bounds = NSRect(origin: .zero, size: container.bounds.size)
+            let contentFrame = content.convert(content.bounds, to: container)
+            let appearance = container.effectiveAppearance
+            let emphasized = container.isEmphasized
+            // AppKit's default image contains the cell content, but not the
+            // source-list selection container. Carry both in one rounded image.
+            let image = NSImage(size: bounds.size, flipped: true) { _ in
+                appearance.performAsCurrentDrawingAppearance {
+                    let shape = NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6)
+                    shape.addClip()
+                    (emphasized ? NSColor.selectedContentBackgroundColor : .unemphasizedSelectedContentBackgroundColor).setFill()
+                    shape.fill()
+                    snapshot.draw(in: contentFrame, from: .zero, operation: .sourceOver,
+                                  fraction: 1, respectFlipped: true, hints: nil)
+                }
+                return true
+            }
+            return (convert(container.bounds, from: container), image)
+        }
+
         override func keyDown(with event: NSEvent) {
             if event.keyCode == 51, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command {
                 deleteSelection?()
@@ -123,6 +152,11 @@ struct SessionTable: NSViewRepresentable {
             guard let row = rowIndexes.first, rows.indices.contains(row) else { return }
             draggedID = rows[row].id
             parent.windows.draggingSessionID = draggedID
+            if let table = tableView as? SidebarTable, let preview = table.dragPreview(for: row) {
+                session.enumerateDraggingItems(options: [], for: table, classes: [NSPasteboardItem.self], searchOptions: [:]) { item, _, _ in
+                    item.setDraggingFrame(preview.frame, contents: preview.image)
+                }
+            }
         }
 
         func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo,
