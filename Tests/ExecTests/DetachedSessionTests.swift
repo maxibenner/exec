@@ -9,14 +9,19 @@ import SwiftUI
         let provider = FakeProvider()
         let library = try ChatLibrary(provider: provider, sessions: sessions, residentLimit: 1)
         defer { library.stopAll() }
+        let startupPanel = ChatPanel(library: library, conversation: library.current)
         library.restore()
+        try expect(library.authenticating && startupPanel.busy && !startupPanel.canEditDraft)
+        try expect(!startupPanel.isWorking && !library.isWorking)
         try await wait { !library.hasRunningOperations }
+        try expect(!startupPanel.isWorking && !library.isWorking)
         let conversation = library.current
         let transport = provider.children.last!
         transport.holdOpen = true
         library.draft = "Keep this turn running"
         library.send()
         try await wait { transport.pending != nil }
+        try expect(startupPanel.isWorking && library.isWorking)
         let id = conversation.currentSessionID!
         conversation.draft = "Unsent follow-up"
         let tools = conversation.tools

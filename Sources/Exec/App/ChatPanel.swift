@@ -17,7 +17,8 @@ import Observation
         !library.navigating && !library.authenticating && library.openConversations.contains { $0 === current }
     }
     var busy: Bool { !canNavigate || current.busy }
-    var isWorking: Bool { library.authenticating || current.busy }
+    // Account restoration blocks edits, but is not conversation activity.
+    var isWorking: Bool { !library.authenticating && current.isWorking }
     var isSending: Bool { current.isSending }
     var canEditDraft: Bool { canNavigate && current.canEditDraft }
     var models: [ChatModel] { library.models }

@@ -75,7 +75,7 @@ import Observation
     var sidebarSelectionID: UUID? { openingSessionID ?? currentSessionID }
     var busy: Bool { navigating || authenticating || current.busy }
     var isSending: Bool { current.isSending }
-    var isWorking: Bool { authenticating || current.busy }
+    var isWorking: Bool { !authenticating && current.isWorking }
     // A cold open can be superseded by another selection; mutations still serialize.
     var canNavigate: Bool { !authenticating && (!navigating || openingSessionID != nil) }
     private var canModify: Bool { !navigating && !authenticating }
