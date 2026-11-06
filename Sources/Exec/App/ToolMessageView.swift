@@ -11,7 +11,7 @@ struct ToolMessageView: View {
         self.result = result
         self.state = state
         self.messageID = messageID
-        _expanded = State(initialValue: state.expanded[messageID] ?? (result.edit != nil || result.webSearch != nil || result.screenshot != nil))
+        _expanded = State(initialValue: state.expanded[messageID] ?? (result.edit != nil))
     }
 
     var body: some View {
