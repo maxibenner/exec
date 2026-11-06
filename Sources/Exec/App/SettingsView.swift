@@ -53,7 +53,7 @@ struct SettingsView: View {
         return VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("Generate session titles", isOn: $settings.generatedTitlesEnabled)
-                Text("Regenerates titles using minimal context when you send new messages.")
+                Text("Regenerates titles using minimal context when new messages are sent.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
