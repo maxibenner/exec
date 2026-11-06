@@ -60,31 +60,32 @@ import SwiftUI
         clearing.handle(click(NSPoint(x: 40, y: 245)))
         try expect(first.selectedRange().length == 0)
 
-        // Exercise SwiftUI's actual selectable Text through public NSTextField APIs.
-        let host = NSHostingView(rootView: Text("Selectable tool output").textSelection(.enabled)
+        // Exercise the same native text component used by expanded tool inputs/output.
+        let host = NSHostingView(rootView: ToolTextSection(title: nil, text: "Selectable tool output")
             .frame(width: 300, height: 80))
         host.frame = NSRect(x: 20, y: 300, width: 300, height: 80)
         transcript.addSubview(host)
         host.layoutSubtreeIfNeeded()
-        func fields(in view: NSView) -> [NSTextField] {
-            if let field = view as? NSTextField { return [field] }
-            return view.subviews.flatMap { fields(in: $0) }
+        func textViews(in view: NSView) -> [NSTextView] {
+            if let text = view as? NSTextView { return [text] }
+            return view.subviews.flatMap { textViews(in: $0) }
         }
-        guard let field = fields(in: host).first else {
-            throw CheckFailure(description: "Expected a selectable SwiftUI text field")
+        guard let editor = textViews(in: host).first else {
+            throw CheckFailure(description: "Expected selectable native tool text")
         }
-        field.selectText(nil)
-        guard let editor = field.currentEditor() as? NSTextView else {
-            throw CheckFailure(description: "Expected the selectable text's field editor")
-        }
+        try expect(editor.isSelectable && !editor.isEditable)
+        try expect(editor.string == "Selectable tool output")
         editor.setSelectedRange(selected)
         first.setSelectedRange(selected)
-        let fieldPoint = field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil)
-        clearing.handle(click(fieldPoint))
+        let textPoint = editor.convert(NSPoint(x: editor.bounds.midX, y: editor.bounds.midY), to: nil)
+        clearing.handle(click(textPoint, modifiers: .shift))
         try expect(editor.selectedRange() == selected && first.selectedRange().length == 0)
         clearing.handle(click(NSPoint(x: 500, y: 400)))
         try expect(editor.selectedRange().length == 0)
         try expect(window.firstResponder !== editor)
+        editor.setSelectedRange(selected)
+        clearing.handle(click(NSPoint(x: 40, y: 245))) // Nonselectable tool disclosure header.
+        try expect(editor.selectedRange().length == 0)
 
         first.setSelectedRange(selected)
         clearing.stop()

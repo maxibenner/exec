@@ -100,7 +100,7 @@ import SwiftUI
         let json = String(decoding: try JSONEncoder().encode(arguments), as: UTF8.self)
         func textElements(in element: any NSAccessibilityProtocol) -> [any NSAccessibilityProtocol] {
             var texts: [any NSAccessibilityProtocol] = []
-            if element.accessibilityRole() == .staticText, element.accessibilityValue() is String {
+            if [.staticText, .textArea].contains(element.accessibilityRole()), element.accessibilityValue() is String {
                 texts.append(element)
             }
             for child in element.accessibilityChildren() ?? [] {

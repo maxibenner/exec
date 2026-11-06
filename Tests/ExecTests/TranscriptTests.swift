@@ -130,14 +130,14 @@ import SwiftUI
         try expect(row.clipsToBounds && row.layer?.masksToBounds == true)
         try expect(row.subviews.count == 1)
         let hosted = row.subviews[0]
-        func fields(in view: NSView) -> [NSTextField] {
-            if let field = view as? NSTextField { return [field] }
-            return view.subviews.flatMap { fields(in: $0) }
+        func textViews(in view: NSView) -> [NSTextView] {
+            if let text = view as? NSTextView { return [text] }
+            return view.subviews.flatMap { textViews(in: $0) }
         }
         func bodyFrames() throws -> (arguments: NSRect, output: NSRect) {
-            let fields = fields(in: hosted)
-            guard let arguments = fields.first(where: { $0.stringValue == "{}" }),
-                  let outputField = fields.first(where: { $0.stringValue == output }) else {
+            let texts = textViews(in: hosted)
+            guard let arguments = texts.first(where: { $0.string == "{}" }),
+                  let outputField = texts.first(where: { $0.string == output }) else {
                 throw CheckFailure(description: "Expected selectable shell arguments and output")
             }
             return (arguments.convert(arguments.bounds, to: row), outputField.convert(outputField.bounds, to: row))

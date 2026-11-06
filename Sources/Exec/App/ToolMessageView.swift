@@ -97,10 +97,13 @@ struct ToolTextSection: View {
 
     var body: some View {
         ToolSection(title: title) {
-            Text(verbatim: text.isEmpty ? emptyText : text)
-                .font(.system(.body, design: .monospaced))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            LinkedText(text: NSAttributedString(
+                string: text.isEmpty ? emptyText : text,
+                attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
+                    .foregroundColor: NSColor.labelColor
+                ]
+            ))
         }
     }
 }
