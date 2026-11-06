@@ -26,8 +26,7 @@ struct ToolMessageView: View {
                     Image(nsImage: image).resizable().scaledToFit()
                         .frame(maxHeight: 480)
                         .accessibilityLabel("Captured screenshot")
-                }
-                if let edit = result.edit {
+                } else if let edit = result.edit {
                     DiffView(source: edit.diff)
                 } else {
                     ForEach(presentation.inputs.indices, id: \.self) { index in

@@ -116,6 +116,28 @@ import Foundation
         try expect(window.summary == "Window 42")
     }
 
+    func fitsCaptureAndKeepsPresentationMinimal() throws {
+        for pixelScale: CGFloat in [1, 2] {
+            let config = try ScreenshotCapture.configuration(contentSize: CGSize(width: 1000, height: 750), pointPixelScale: pixelScale)
+            try expect(config.width == Int(1000 * pixelScale) && config.height == Int(750 * pixelScale))
+            try expect(config.scalesToFit && config.ignoreShadowsSingleWindow)
+        }
+        let large = try ScreenshotCapture.configuration(contentSize: CGSize(width: 3000, height: 1500), pointPixelScale: 2)
+        try expect(large.width == 2048 && large.height == 1024)
+        try expectFailure { _ = try ScreenshotCapture.configuration(contentSize: .zero, pointPixelScale: 2) }
+        for text in ["Captured main display", ScreenshotTool.interrupted, "Tool error: unavailable"] {
+            let result = ToolResult(call: call, text: text)
+            let presentation = ToolPresentation(result)
+            try expect(presentation.summary == "Main display" && presentation.detail == nil)
+            try expect(presentation.inputs.isEmpty && presentation.outputTitle == nil)
+            try expect(presentation.output == text) // Failures remain readable when no image exists.
+        }
+        let list = ToolCall(id: "list", name: call.name, arguments: #"{"target":"list_windows","window_id":0}"#)
+        let listing = ToolPresentation(ToolResult(call: list, text: "Window 42: Exec"))
+        try expect(listing.summary == "Visible windows" && listing.inputs.isEmpty && listing.outputTitle == nil)
+        try expect(listing.output == "Window 42: Exec")
+    }
+
     private func wait(_ condition: () -> Bool) async throws {
         for _ in 0..<400 {
             if condition() { return }

@@ -68,7 +68,7 @@ struct ToolPresentation {
         case "take_screenshot":
             title = "Screenshot"; icon = "camera"
             summary = (try? ScreenshotTool.request(result.call))?.summary
-            if let summary { inputs = [Field(title: "Target", text: summary)] }
+            outputTitle = nil
 
         case "web_search":
             title = "Web search"; icon = "globe"
@@ -89,8 +89,8 @@ struct ToolPresentation {
             else if result.call.name == "shell", result.text.hasPrefix("Command timed out;") { detail = "Timed out" }
             if detail != nil, outputTitle != nil { outputTitle = "Result" }
         }
-        // Shell outcomes stay in the expanded output, not beside the command.
-        if result.call.name == "shell" { detail = nil }
+        // Shell and screenshot outcomes stay in the expanded output, not the header.
+        if result.call.name == "shell" || result.call.name == "take_screenshot" { detail = nil }
     }
 
     var singleLineSummary: String? {
