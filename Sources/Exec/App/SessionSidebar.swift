@@ -51,6 +51,7 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .padding(.horizontal, 10)
         // Selection is drawn above, not by the native list, so responder changes
         // cannot flash an accent-colored selection. Shortcuts still navigate sessions.
         .focusable(false)
