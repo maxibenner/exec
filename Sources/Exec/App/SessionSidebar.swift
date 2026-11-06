@@ -4,6 +4,7 @@ struct SessionSidebar: View {
     @Bindable var store: ChatLibrary
     let open: (UUID) -> Void
     let delete: (SessionSummary) -> Void
+    @State private var showingSettings = false
     @State private var renaming = false
     @State private var renameID: UUID?
     @State private var renameTitle = ""
@@ -39,27 +40,17 @@ struct SessionSidebar: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Divider()
-                Group {
-                    if let account = store.account {
-                        Menu {
-                            Button("Refresh Models", action: store.restore)
-                            Button("Reconnect", action: store.connect)
-                            Divider()
-                            Button("Sign Out", role: .destructive) {
-                                if store.canNavigate && !store.accountBusy { store.disconnect() }
-                            }
-                        } label: {
-                            Label { Text(verbatim: account).lineLimit(1).truncationMode(.middle) }
-                            icon: { Image(systemName: "person.crop.circle") }
-                        }
-                        .menuStyle(.borderlessButton).help(account).accessibilityLabel("Account: \(account)")
-                    } else {
-                        Button(store.connectionTitle, action: store.connect)
-                            .buttonStyle(.borderedProminent).frame(maxWidth: .infinity)
-                    }
+                Button { showingSettings = true } label: {
+                    Label("Settings", systemImage: "gearshape")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
-                .disabled(store.accountBusy).allowsHitTesting(store.canNavigate).padding(14)
+                .buttonStyle(.plain)
+                .padding(14)
             }
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView(store: store)
         }
         .alert("Rename Conversation", isPresented: $renaming) {
             TextField("Name", text: $renameTitle)
