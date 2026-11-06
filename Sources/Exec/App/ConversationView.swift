@@ -39,15 +39,14 @@ struct ConversationView: View {
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)
                         VStack(spacing: 6) {
-                            Text("No Session")
+                            Text("No Sessions")
                                 .font(.headline.bold())
-                            Text("Press ⌘T to create a new session.")
+                            Text("Press ⌘T to create a new one.")
                                 .font(.callout)
+                                .underline()
                                 .foregroundStyle(.secondary)
-                                .accessibilityLabel("Press Command T to create a new session.")
+                                .accessibilityLabel("Press Command T to create a new one.")
                         }
-                        Button("New Session") { panel.library.newConversation() }
-                            .disabled(!panel.canNavigate || panel.isChoosingWorkspace)
                     }
                     .multilineTextAlignment(.center)
                     .padding(24)
