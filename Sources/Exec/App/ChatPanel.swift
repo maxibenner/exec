@@ -18,6 +18,7 @@ import Observation
         self.presentWorkspacePicker = presentWorkspacePicker
     }
 
+    var hasConversation: Bool { library.hasConversation(current) }
     var navigating: Bool { library.navigating }
     var canNavigate: Bool {
         !library.navigating && !library.authenticating && library.openConversations.contains { $0 === current }

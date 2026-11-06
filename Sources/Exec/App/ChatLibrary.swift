@@ -65,6 +65,13 @@ import Observation
         remember(current)
     }
 
+    /// A blank runner supports account restoration but is not a chat document.
+    /// Previously saved sessions remain openable even without messages/workspace.
+    func hasConversation(_ conversation: ChatStore) -> Bool {
+        conversation.workspace != nil || !conversation.messages.isEmpty ||
+            savedSummaries.contains { $0.id == conversation.currentSessionID }
+    }
+
     var messages: [Message] { current.messages }
     var draft: String {
         get { current.draft }
@@ -317,6 +324,7 @@ import Observation
         navigationError = nil
         do {
             let next = try makeConversation(workspace: current.workspace)
+            next.requestInitialWorkspaceSelection()
             activate(next)
             next.scheduleSave()
         } catch { navigationError = error.localizedDescription }

@@ -19,37 +19,79 @@ import SwiftUI
     func presentsPickerInOwningWindow() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let library = try ChatLibrary(provider: FakeProvider(), sessions: SessionStore(directory: root))
+        let sessions = SessionStore(directory: root.appendingPathComponent("sessions"))
+        let library = try ChatLibrary(provider: FakeProvider(), sessions: sessions)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 680),
                               styleMask: [.titled], backing: .buffered, defer: false)
         var owners: [NSWindow] = []
-        let host = NSHostingView(rootView: Host(library: library, picker: { owner, _, complete in
+        var complete: (@MainActor (URL?) -> Void)?
+        let host = NSHostingView(rootView: Host(library: library, picker: { owner, _, completion in
             owners.append(owner)
-            complete(nil)
+            complete = completion
         }))
         defer {
             window.orderOut(nil)
             window.contentView = nil
             library.stopAll()
         }
-        // Restore before attachment: the request must survive having no window.
         library.restore()
         try await wait { !library.hasRunningOperations }
-        try expect(library.current.needsInitialWorkspaceSelection)
+        try expect(!library.current.needsInitialWorkspaceSelection)
+        try expect(!library.hasConversation(library.current))
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
         host.layoutSubtreeIfNeeded()
-        try await wait { owners.count == 1 }
-        try expect(owners[0] === window)
-        try expect(!library.current.needsInitialWorkspaceSelection)
+        try await Task.sleep(for: .milliseconds(100))
+        try expect(owners.isEmpty && !containsEditableText(host))
 
-        // Replacing the conversation must present again, even after cancellation.
+        // Only New Session opens the picker, while the composer remains absent.
+        library.newConversation()
+        try await wait { owners.count == 1 && !library.hasRunningOperations }
+        try expect(owners[0] === window && !containsEditableText(host))
+        try expect(library.sessionList.isEmpty && !library.hasConversation(library.current))
+        complete?(nil)
+        try await Task.sleep(for: .milliseconds(100))
+        try expect(owners.count == 1 && !containsEditableText(host))
+        let afterCancel = try await sessions.list(identity: library.current.conversationIdentity)
+        try expect(afterCancel.isEmpty)
+
+        // A failed folder load also keeps the placeholder and creates no session.
         library.newConversation()
         try await wait { owners.count == 2 }
-        try expect(owners[1] === window)
+        complete?(root.appendingPathComponent("missing"))
+        try await wait { !library.hasRunningOperations }
+        try expect(library.current.error != nil && !library.hasConversation(library.current))
+        try expect(!containsEditableText(host) && library.sessionList.isEmpty)
+
+        library.newConversation()
+        try await wait { owners.count == 3 }
+        complete?(root)
+        try await wait { !library.hasRunningOperations && containsEditableText(host) }
+        try expect(library.hasConversation(library.current) && library.sessionList.count == 1)
+        let id = library.currentSessionID!
+        let saved = try await sessions.load(id: id)
+        try expect(saved?.workspace != nil && saved?.messages.isEmpty == true)
+        let restored = try ChatLibrary(provider: FakeProvider(), sessions: sessions)
+        restored.restore()
+        try await wait { !restored.hasRunningOperations }
+        try expect(restored.hasConversation(restored.current) && restored.currentSessionID == id)
+        try expect(!restored.current.needsInitialWorkspaceSelection)
+        restored.stopAll()
+
+        // Deleting the last session returns to the same quiet empty state.
+        library.deleteSession(id)
+        try await wait { !library.hasRunningOperations && !containsEditableText(host) }
+        try expect(!library.hasConversation(library.current) && library.sessionList.isEmpty)
         try await Task.sleep(for: .milliseconds(100))
-        try expect(owners.count == 2)
+        try expect(owners.count == 3 && !library.current.needsInitialWorkspaceSelection)
+    }
+
+    private func containsEditableText(_ view: NSView) -> Bool {
+        if let text = view as? NSTextView, text.isEditable { return true }
+        if let field = view as? NSTextField, field.isEditable { return true }
+        return view.subviews.contains { containsEditableText($0) }
     }
 
     func sendRequiresWorkspaceAndPreservesDraft() async throws {
@@ -75,10 +117,10 @@ import SwiftUI
         panel.draft = "Keep this message"
         panel.chooseInitialWorkspaceIfNeeded()
         panel.send()
-        try expect(presentations == 0 && conversation.needsInitialWorkspaceSelection)
+        try expect(presentations == 0 && !conversation.needsInitialWorkspaceSelection)
         try expect(runner.inputs.isEmpty && conversation.messages.isEmpty)
         panel.window = window
-        panel.chooseInitialWorkspaceIfNeeded()
+        panel.send()
         panel.send() // Cannot bypass or duplicate an open picker.
         try expect(presentations == 1 && panel.isChoosingWorkspace)
         complete?(nil)

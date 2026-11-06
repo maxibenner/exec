@@ -84,6 +84,12 @@ import Observation
     private var loadedSession = false
     private(set) var needsInitialWorkspaceSelection = false
 
+    // Only an explicit New Session action requests a picker. Restoration,
+    // deletion and account changes may create an internal blank runner instead.
+    func requestInitialWorkspaceSelection() {
+        needsInitialWorkspaceSelection = workspace == nil
+    }
+
     func consumeInitialWorkspaceSelection() {
         needsInitialWorkspaceSelection = false
     }
@@ -114,7 +120,6 @@ import Observation
         conversationIdentity = provider.conversationIdentity
         account = provider.account
         if newConversation {
-            needsInitialWorkspaceSelection = workspace == nil
             loadedSession = true
             currentSessionID = UUID()
         }
@@ -234,7 +239,7 @@ import Observation
             sessionActivityDate = Date()
         }
         self.workspace = workspace
-        needsInitialWorkspaceSelection = workspace == nil
+        needsInitialWorkspaceSelection = false
         prefersAutoApproval = true
         tools.setAutoApproval(for: workspace?.root)
         messages = []; history = []; draft = ""; draftImages = []; error = nil
@@ -632,7 +637,7 @@ import Observation
             if let id = try await sessions.preferredID(identity: provider.conversationIdentity, mostRecent: mostRecent) {
                 try await applySavedSession(id)
             } else {
-                needsInitialWorkspaceSelection = true
+                needsInitialWorkspaceSelection = false
                 conversationIdentity = provider.conversationIdentity
                 currentSessionID = UUID()
             }

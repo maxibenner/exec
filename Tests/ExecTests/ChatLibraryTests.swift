@@ -69,8 +69,11 @@ import Observation
         library.restore()
         try expect(!initial.shouldChooseInitialWorkspace)
         try await wait { !library.hasRunningOperations }
+        try expect(!library.current.needsInitialWorkspaceSelection && !initial.hasConversation)
+        library.newConversation()
+        try await wait { !library.hasRunningOperations }
         try expect(library.current.needsInitialWorkspaceSelection)
-        try expect(!initial.shouldChooseInitialWorkspace) // No owning window yet.
+        try expect(!ChatPanel(library: library, conversation: library.current).shouldChooseInitialWorkspace) // No window yet.
         // Simulate presentation followed by Cancel: the request is one-shot.
         library.current.consumeInitialWorkspaceSelection()
         try expect(!ChatPanel(library: library, conversation: library.current).shouldChooseInitialWorkspace)
@@ -91,6 +94,16 @@ import Observation
         let reopened = ChatStore(provider: FakeProvider(), sessions: sessions, newConversation: true)
         try await reopened.loadSession(saved.currentSessionID!)
         try expect(!reopened.needsInitialWorkspaceSelection)
+        let restored = try ChatLibrary(provider: FakeProvider(), sessions: sessions)
+        defer { restored.stopAll() }
+        restored.restore()
+        try await wait { !restored.hasRunningOperations }
+        try expect(restored.currentSessionID == saved.currentSessionID)
+        try expect(restored.hasConversation(restored.current)) // A saved empty legacy session still exists.
+        restored.disconnect()
+        try await wait { !restored.hasRunningOperations }
+        try expect(!restored.hasConversation(restored.current))
+        try expect(!restored.current.needsInitialWorkspaceSelection)
     }
 
     func concurrentTurnsKeepContextDraftsAndSelectionIsolated() async throws {

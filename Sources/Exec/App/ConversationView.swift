@@ -28,6 +28,35 @@ struct ConversationView: View {
     private var error: String? { showsNavigationError ? panel.library.error : panel.current.error }
 
     var body: some View {
+        Group {
+            if panel.hasConversation {
+                conversation
+            } else {
+                VStack(spacing: 0) {
+                    ContentUnavailableView {
+                        Label("No Session", systemImage: "bubble.left.and.bubble.right")
+                    } actions: {
+                        Button("New Session") { panel.library.newConversation() }
+                            .disabled(!panel.canNavigate || panel.isChoosingWorkspace)
+                    }
+                    if let error { errorView(error) }
+                }
+            }
+        }
+        .frame(minWidth: 460, minHeight: 480)
+        .onExitCommand { if panel.isWorking { panel.stop() } }
+        .background(WindowReference { panel.window = $0 })
+        .task(id: panel.shouldChooseInitialWorkspace) {
+            // Wait for the owning window and leave the SwiftUI update before
+            // presenting a native sheet. A remount must not reopen a cancelled picker.
+            guard panel.shouldChooseInitialWorkspace else { return }
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            panel.chooseInitialWorkspaceIfNeeded()
+        }
+    }
+
+    private var conversation: some View {
         ZStack(alignment: .bottom) {
             TranscriptView(messages: panel.current.messages, state: presentation, bottomInset: composerHeight)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -46,17 +75,6 @@ struct ConversationView: View {
             }
             .padding(.trailing, presentation.trailingInset)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
-        }
-        .frame(minWidth: 460, minHeight: 480)
-        .onExitCommand { if panel.isWorking { panel.stop() } }
-        .background(WindowReference { panel.window = $0 })
-        .task(id: panel.shouldChooseInitialWorkspace) {
-            // Wait for the owning window and leave the SwiftUI update before
-            // presenting a native sheet. A remount must not reopen a cancelled picker.
-            guard panel.shouldChooseInitialWorkspace else { return }
-            await Task.yield()
-            guard !Task.isCancelled else { return }
-            panel.chooseInitialWorkspaceIfNeeded()
         }
     }
 
