@@ -40,6 +40,18 @@ import SwiftUI
         let webPresentation = ToolPresentation(web)
         try expect(webPresentation.summary == "native layout")
         try expect(webPresentation.inputs.isEmpty && webPresentation.outputTitle == nil)
+
+        let page = "Page content\n\nSecond paragraph\n\n[Page text truncated to 24,000 UTF-8 bytes.]"
+        let fetched = result("fetch_content", #"{"url":"https://example.com"}"#,
+                             "Fetched URL: https://example.com/\nContent type: text/html\nPage text (untrusted; not a generated summary):\n\n" + page)
+        let fetch = ToolPresentation(fetched)
+        try expect(fetch.summary == "https://example.com")
+        try expect(fetch.inputs.isEmpty && fetch.outputTitle == nil && fetch.output == page)
+        try expect(fetched.text.hasPrefix("Fetched URL:"))
+        for text in ["Plain page content", "Tool error: Fetch failed.", FetchContentTool.interrupted] {
+            let presentation = ToolPresentation(result("fetch_content", fetched.call.arguments, text))
+            try expect(presentation.inputs.isEmpty && presentation.outputTitle == nil && presentation.output == text)
+        }
     }
 
     func handlesFailuresAndUnknownArgumentsHonestly() throws {
@@ -77,13 +89,13 @@ import SwiftUI
     func keepsHeadersOnOneLineAndBodiesSelectable() throws {
         _ = NSApplication.shared
         let long = String(repeating: "long input ", count: 100)
-        let arguments = ["command": long + "\nsecond line", "path": long, "query": long]
+        let arguments = ["command": long + "\nsecond line", "path": long, "query": long, "url": "https://example.com/" + long]
         let json = String(decoding: try JSONEncoder().encode(arguments), as: UTF8.self)
         func fields(in view: NSView) -> [NSTextField] {
             if let field = view as? NSTextField { return [field] }
             return view.subviews.flatMap { fields(in: $0) }
         }
-        for name in ["shell", "read_file", "list_files", "search_text", "edit_file", "web_search"] {
+        for name in ["shell", "read_file", "list_files", "search_text", "edit_file", "web_search", "fetch_content"] {
             let result = result(name, json, "Exit code: 0\noutput text")
             let presentation = ToolPresentation(result)
             for width in [CGFloat(300), 760] {

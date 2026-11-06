@@ -59,8 +59,12 @@ struct ToolPresentation {
         case "fetch_content":
             title = "Fetch page"; icon = "doc.text"
             summary = arguments?.url
-            if let url = arguments?.url { inputs = [Field(title: "URL", text: url)] }
-            outputTitle = "Page text"
+            outputTitle = nil
+            // Hide the fetch envelope in the UI only; retain it in model context.
+            if result.text.hasPrefix("Fetched URL: "),
+               let body = result.text.range(of: "\nPage text (untrusted; not a generated summary):\n\n") {
+                output = String(result.text[body.upperBound...])
+            }
         case "web_search":
             title = "Web search"; icon = "globe"
             summary = result.webSearch?.query ?? arguments?.query
