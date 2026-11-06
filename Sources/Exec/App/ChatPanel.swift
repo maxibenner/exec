@@ -56,6 +56,13 @@ import Observation
         NSWorkspace.shared.open(workspace.root)
     }
 
+    func openWorkspaceInTerminal() {
+        guard canNavigate, let workspace,
+              let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else { return }
+        NSWorkspace.shared.open([workspace.root], withApplicationAt: terminal,
+                                configuration: NSWorkspace.OpenConfiguration())
+    }
+
     func chooseWorkspace() {
         guard canChooseWorkspace else { return }
         let window = NSApp.keyWindow ?? NSApp.mainWindow

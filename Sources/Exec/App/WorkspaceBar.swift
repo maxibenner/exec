@@ -11,6 +11,7 @@ import SwiftUI
                     Button("Change Folder…", action: store.chooseWorkspace)
                         .disabled(!store.canChooseWorkspace)
                     Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([workspace.root]) }
+                    Button("Open in Terminal", action: store.openWorkspaceInTerminal)
                 } label: {
                     Label((workspace.root.path as NSString).abbreviatingWithTildeInPath, systemImage: "folder")
                         .font(.caption).foregroundStyle(.secondary)

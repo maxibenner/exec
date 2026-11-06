@@ -43,7 +43,8 @@ struct ChatComposer: View {
                      Choice(id: "approve", title: "auto-approve", detail: store.autoApproveTools ? "On" : "Off", enabled: canApprove),
                      Choice(id: "compact", title: "compact", enabled: store.canCompact),
                      Choice(id: "workspace", title: "workspace", detail: "Change workspace…", enabled: store.canChooseWorkspace),
-                     Choice(id: "finder", title: "finder", detail: "Open workspace in Finder", enabled: store.workspace != nil)]
+                     Choice(id: "finder", title: "finder", detail: "Open workspace in Finder", enabled: store.workspace != nil),
+                     Choice(id: "terminal", title: "terminal", detail: "Open workspace in Terminal", enabled: store.workspace != nil)]
         case .model:
             var models = store.models.map { Choice(id: $0.id, title: $0.name, selected: $0.id == store.selectedModel, enabled: !store.busy) }
             if !store.selectedModel.isEmpty && !models.contains(where: { $0.id == store.selectedModel }) {
@@ -55,7 +56,7 @@ struct ChatComposer: View {
             items = [Choice(id: "", title: "Default", selected: store.current.selectedEffort == nil, enabled: available)] + (store.current.model?.efforts ?? []).map {
                 Choice(id: $0.id, title: $0.name, selected: store.current.selectedEffort == $0.id, enabled: available)
             }
-        case .approve, .compact, .workspace, .finder:
+        case .approve, .compact, .workspace, .finder, .terminal:
             items = [] // Actions stay in the root command list.
 
         }
@@ -294,6 +295,11 @@ struct ChatComposer: View {
                 store.draft = ""
                 close()
                 store.openWorkspaceInFinder()
+            case .terminal:
+                guard store.workspace != nil else { return }
+                store.draft = ""
+                close()
+                store.openWorkspaceInTerminal()
             case .model, .effort:
                 store.draft = "/\(destination.commandName) "
                 highlighted = 0
@@ -304,7 +310,7 @@ struct ChatComposer: View {
         switch page {
         case .model: guard !store.busy else { return }; store.selectedModel = choice.id
         case .effort: guard !store.busy else { return }; store.selectedEffort = choice.id.isEmpty ? nil : choice.id
-        case .approve, .compact, .workspace, .finder: return
+        case .approve, .compact, .workspace, .finder, .terminal: return
         }
         store.draft = ""
         close(); focused = true
