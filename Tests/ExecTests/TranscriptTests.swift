@@ -23,6 +23,36 @@ import AppKit
         try expect(layout.visibleRange(y: 0, height: 600, overscan: 300).isEmpty && layout.anchor(at: 0) == nil)
     }
 
+    func composerInsetMatchesTranscriptViewport() async throws {
+        _ = NSApplication.shared
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        defer { view.detach() }
+        view.autohidesScrollers = false
+        let message = Message(role: .user, text: "Alignment")
+        for width in [CGFloat(600), 1_000] {
+            for style in [NSScroller.Style.legacy, .overlay] {
+                view.scrollerStyle = style
+                view.frame = NSRect(x: 0, y: 0, width: width, height: 600)
+                view.tile()
+                view.update(messages: [message], jumpRequest: 0)
+                view.layoutSubtreeIfNeeded(); view.refresh()
+                // The viewport inset is delivered after the native layout pass.
+                try await Task.sleep(for: .milliseconds(20))
+                try expect(abs(state.trailingInset - (width - view.contentSize.width)) < 0.5)
+                try expect(style == .overlay ? state.trailingInset == 0 : state.trailingInset > 0)
+                let availableWidth = width - state.trailingInset
+                let composerWidth = min(820, availableWidth - 40)
+                let composerLeft = (availableWidth - composerWidth) / 2
+                guard let row = view.documentView?.subviews.first else {
+                    throw CheckFailure(description: "Expected a mounted transcript row")
+                }
+                try expect(abs(row.frame.minX - composerLeft) < 0.5)
+                try expect(abs(row.frame.maxX - (composerLeft + composerWidth)) < 0.5)
+            }
+        }
+    }
+
     func preservesNearBottomScrolling() throws {
         _ = NSApplication.shared
         let messages = (0..<100).map { Message(role: .user, text: "Message \($0)") }

@@ -6,6 +6,7 @@ import Observation
 @MainActor @Observable final class TranscriptState {
     var followsLatest = true
     var jumpRequest = 0
+    var trailingInset: CGFloat = 0
     @ObservationIgnored var anchor: TranscriptLayout.Anchor?
     @ObservationIgnored var layout = TranscriptLayout()
     @ObservationIgnored var expanded: [UUID: Bool] = [:]
@@ -158,6 +159,15 @@ private struct VirtualTranscript: NSViewRepresentable {
     func refresh() {
         guard !updating, !detached, contentSize.width > 0, contentSize.height > 0 else { return }
         let size = contentSize
+        // Match overlays to the actual viewport, not an assumed scrollbar style.
+        // Publish outside the representable update/layout pass to avoid mutating
+        // SwiftUI state while it is rendering. Read current geometry when delivered.
+        if state.trailingInset != max(0, self.bounds.width - size.width) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.detached else { return }
+                self.state.trailingInset = max(0, self.bounds.width - self.contentSize.width)
+            }
+        }
         // AppKit owns rubber-banding and its spring back. Defer content geometry
         // changes until the clip view returns in bounds, unless explicitly jumping.
         let bounds = contentView.bounds

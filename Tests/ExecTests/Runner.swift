@@ -35,6 +35,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Transcript click-away selection clearing", { try TranscriptSelectionTests().clearsOtherSelectionsWithoutStealingClicks() }),
             ("Bounded HTTP diagnostics and credential redaction", { try await streaming.httpErrorDiagnostics() }),
             ("Resident eviction protects work and drafts", { try await ChatLibraryTests().residentLimitProtectsRunningWorkAndDrafts() }),
+            ("Composer aligns with overlay and legacy transcript scrollbars", { try await TranscriptTests().composerInsetMatchesTranscriptViewport() }),
             ("Near-bottom scrolling does not snap to the edge", { try TranscriptTests().preservesNearBottomScrolling() }),
             ("Virtual transcript geometry and scroll anchors", { try TranscriptTests().geometryPreservesAnchors() }),
             ("Virtual transcript mounts only viewport rows", { try await TranscriptTests().mountsBoundedRowsAndRestoresPosition() }),

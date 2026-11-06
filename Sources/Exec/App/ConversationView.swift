@@ -38,7 +38,7 @@ struct ConversationView: View {
                 ChatComposer(store: panel, focused: $composerFocused)
                     .disabled(panel.navigating)
             }
-            .padding(.trailing, NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy))
+            .padding(.trailing, presentation.trailingInset)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
         }
         .frame(minWidth: 460, minHeight: 480)
