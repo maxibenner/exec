@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+<title id="title">Exec — Execution Mark</title><desc id="desc">A stark black geometric E with a forward arrow cut into an acid-yellow rounded square.</desc>
+<rect x="64" y="64" width="896" height="896" rx="200" fill="#dfff00"/>
+<path fill="#11130b" d="M272 256H752V368H400V456H620V568H400V656H752V768H272Z"/>
+<path fill="#dfff00" d="M650 407L798 512L650 617V555H517V469H650Z"/>
+</svg>

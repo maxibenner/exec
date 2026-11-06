@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+<title id="title">Exec — Command Core</title><desc id="desc">An isometric machined-metal processor with an orange command chevron and precise recessed edges.</desc>
+<defs>
+<linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f0f2f5"/><stop offset="1" stop-color="#b3bbc6"/></linearGradient>
+<linearGradient id="top" x2="1" y2="1"><stop stop-color="#727e8e"/><stop offset=".5" stop-color="#333e50"/><stop offset="1" stop-color="#192230"/></linearGradient>
+<linearGradient id="left" x2="0" y2="1"><stop stop-color="#919cab"/><stop offset="1" stop-color="#3f4b5b"/></linearGradient>
+<linearGradient id="right" x2="1" y2="1"><stop stop-color="#434f60"/><stop offset="1" stop-color="#131c29"/></linearGradient>
+<filter id="shadow" x="-50%" y="-100%" width="200%" height="300%"><feGaussianBlur stdDeviation="25"/></filter>
+</defs>
+<rect x="64" y="64" width="896" height="896" rx="200" fill="url(#bg)"/>
+<ellipse cx="520" cy="752" rx="280" ry="64" fill="#263347" opacity=".3" filter="url(#shadow)"/>
+<path d="M220 418L512 250L804 418V642L512 810L220 642Z" fill="url(#left)"/>
+<path d="M512 586L804 418V642L512 810Z" fill="url(#right)"/>
+<path d="M220 418L512 250L804 418L512 586Z" fill="url(#top)" stroke="#c3cbd5" stroke-width="5" stroke-linejoin="round"/>
+<path d="M268 418L512 278L756 418L512 558Z" fill="none" stroke="#a8b5c6" stroke-opacity=".4" stroke-width="3"/>
+<path d="M375 385L487 391L477 455" fill="none" stroke="#ff8b36" stroke-width="35" stroke-linecap="square" stroke-linejoin="miter"/>
+<path d="M526 462L621 407" fill="none" stroke="#ff8b36" stroke-width="29"/>
+<path d="M255 482L475 609M255 519L475 646M255 556L475 683" stroke="#d2dae4" stroke-opacity=".4" stroke-width="9"/>
+<path d="M554 704L660 643" stroke="#ff8b36" stroke-width="12" stroke-linecap="round"/>
+<path d="M512 590V774" stroke="#e0e6ef" stroke-opacity=".3" stroke-width="4"/>
+</svg>
