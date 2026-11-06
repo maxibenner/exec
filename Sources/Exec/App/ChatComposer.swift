@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ChatComposer: View {
-    @Bindable var store: ChatLibrary
+    @Bindable var store: ChatPanel
     @FocusState.Binding var focused: Bool
     @State private var imageDropTargeted = false
     @State private var dismissedDraft: String?

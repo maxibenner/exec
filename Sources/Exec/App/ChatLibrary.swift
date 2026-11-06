@@ -13,6 +13,11 @@ import Observation
     private var sidebarOrder: [UUID] = []
     private var catalogRequest = 0
     private(set) var openConversations: [ChatStore] = []
+    private(set) var detachedSessionIDs: Set<UUID> = []
+
+    var sidebarSessions: [SessionSummary] {
+        sessionList.filter { !detachedSessionIDs.contains($0.id) }
+    }
     private var loading: ChatStore?
     private var navigationTask: Task<Void, Never>?
     private var navigationRequest = 0
@@ -108,7 +113,7 @@ import Observation
     // Shortcuts follow the same current ordering as the sidebar, never creation
     // order or the resident cache. There is deliberately no shortcut for row 10+.
     var sessionShortcuts: [(number: Int, session: SessionSummary)] {
-        sessionList.prefix(9).enumerated().map { (number: $0.offset + 1, session: $0.element) }
+        sidebarSessions.prefix(9).enumerated().map { (number: $0.offset + 1, session: $0.element) }
     }
 
     func isSessionRunning(_ id: UUID) -> Bool { conversation(id)?.busy == true }
@@ -126,26 +131,32 @@ import Observation
         current.setAutoApproveTools(enabled)
     }
 
-    func send() {
+    func send(in destination: ChatStore? = nil) {
+        let destination = destination ?? current
         guard canModify else { return }
-        if current.isSending { current.send(); return }
-        guard !current.busy else { return }
-        navigate {
-            // Select before starting; subsequent checkpoints (including background ones) only save data.
-            if let id = self.currentSessionID { try await self.sessions.select(id) }
+        if destination.isSending { destination.send(); return }
+        guard !destination.busy else { return }
+        navigate(reportingTo: destination) {
+            // Detached conversations save normally, but never steal the main selection.
+            if destination === self.current, let id = destination.currentSessionID {
+                try await self.sessions.select(id)
+            }
             try Task.checkCancellation()
-            self.remember(self.current)
-            self.current.send()
+            self.remember(destination)
+            destination.send()
         }
     }
 
-    func resumeQueuedMessages() {
-        guard canModify, !current.busy else { return }
-        navigate {
-            if let id = self.currentSessionID { try await self.sessions.select(id) }
+    func resumeQueuedMessages(in destination: ChatStore? = nil) {
+        let destination = destination ?? current
+        guard canModify, !destination.busy else { return }
+        navigate(reportingTo: destination) {
+            if destination === self.current, let id = destination.currentSessionID {
+                try await self.sessions.select(id)
+            }
             try Task.checkCancellation()
-            self.remember(self.current)
-            self.current.resumeQueuedMessages()
+            self.remember(destination)
+            destination.resumeQueuedMessages()
         }
     }
 
@@ -188,7 +199,10 @@ import Observation
                 if !Task.isCancelled { refreshAccountUsage() }
             }
             await current.waitUntilIdle()
-            if identity != provider.conversationIdentity { openConversations = [current] }
+            if identity != provider.conversationIdentity {
+                detachedSessionIDs.removeAll()
+                openConversations = [current]
+            }
             models = current.models
             for conversation in conversations {
                 conversation.account = provider.account
@@ -204,8 +218,50 @@ import Observation
         }
     }
 
+    /// Window ownership never creates a second runner or restores a resident provider.
+    func detachSession(_ id: UUID, present: @escaping (ChatStore) -> Void) {
+        guard canModify, !detachedSessionIDs.contains(id),
+              sessionList.contains(where: { $0.id == id && !$0.unreadable }) else { return }
+        func finish(_ conversation: ChatStore) throws {
+            // Prepare the replacement before changing ownership, so failure is atomic.
+            var replacement = current
+            if conversation === current {
+                replacement = try openConversations.first(where: {
+                    $0 !== conversation && $0.currentSessionID.map(detachedSessionIDs.contains) != true
+                }) ?? makeConversation(workspace: conversation.workspace)
+            }
+            remember(conversation)
+            detachedSessionIDs.insert(id)
+            if conversation === current { activate(replacement) }
+            present(conversation)
+        }
+        if let resident = conversation(id) {
+            do { try finish(resident) }
+            catch { navigationError = error.localizedDescription }
+        } else {
+            navigate {
+                let conversation = try self.makeConversation()
+                self.loading = conversation
+                try await conversation.loadSession(id)
+                try Task.checkCancellation()
+                try finish(conversation)
+            }
+        }
+    }
+
+    /// Closing a detached window returns it without deleting or stopping its work.
+    func attachSession(_ id: UUID) {
+        guard detachedSessionIDs.remove(id) != nil else { return }
+        // A close during a catalog operation still returns ownership safely; it
+        // need not change the main selection until navigation becomes available.
+        if canNavigate, let resident = conversation(id) {
+            cancelOpening()
+            activate(resident)
+        }
+    }
+
     func openSession(_ id: UUID) {
-        guard canNavigate else { return }
+        guard canNavigate, !detachedSessionIDs.contains(id) else { return }
         cancelOpening()
         navigationError = nil
         if let existing = conversation(id) {
@@ -238,26 +294,36 @@ import Observation
     private func trimConversations() {
         for conversation in openConversations {
             guard openConversations.count > residentLimit else { break }
-            guard conversation !== current, !conversation.busy, !conversation.isSaving,
+            guard conversation !== current,
+                  conversation.currentSessionID.map(detachedSessionIDs.contains) != true,
+                  !conversation.busy, !conversation.isSaving,
                   !conversation.hasUnsentDraft, !conversation.hasUnsavedChanges else { continue }
             openConversations.removeAll { $0 === conversation }
         }
     }
 
-    func selectWorkspace(_ url: URL) {
-        guard canSelectWorkspace else { return }
-        navigate {
+    func selectWorkspace(_ url: URL, in destination: ChatStore? = nil) {
+        let destination = destination ?? current
+        guard canModify, !destination.busy, destination.messages.isEmpty else { return }
+        navigate(reportingTo: destination) {
             let loading = Task.detached(priority: .userInitiated) { try Workspace.load(url) }
             let workspace = try await withTaskCancellationHandler {
                 try await loading.value
             } onCancel: { loading.cancel() }
-            await self.current.waitForPendingSave()
+            await destination.waitForPendingSave()
             try Task.checkCancellation()
-            try self.current.setInitialWorkspace(workspace)
-            try await self.current.saveIfIdle()
+            try destination.setInitialWorkspace(workspace)
+            try await destination.saveIfIdle()
             try await self.refreshCatalog()
             try await self.selectCurrent()
         }
+    }
+
+    func moveSession(_ id: UUID, before nextID: UUID?) {
+        let ids = sessionList.map(\.id)
+        guard let source = ids.firstIndex(of: id), nextID != id else { return }
+        let destination = nextID.flatMap { ids.firstIndex(of: $0) } ?? ids.count
+        moveSessions(from: IndexSet(integer: source), to: destination)
     }
 
     func moveSessions(from offsets: IndexSet, to destination: Int) {
@@ -300,7 +366,7 @@ import Observation
     }
 
     func deleteSession(_ id: UUID) {
-        guard canModify, !isSessionRunning(id) else { return }
+        guard canModify, !isSessionRunning(id), !detachedSessionIDs.contains(id) else { return }
         navigate {
             await self.conversation(id)?.waitForPendingSave()
             try Task.checkCancellation()
@@ -425,7 +491,8 @@ import Observation
         try await sessions.select(selected)
     }
 
-    private func navigate(_ operation: @escaping @MainActor () async throws -> Void) {
+    private func navigate(reportingTo destination: ChatStore? = nil,
+                          _ operation: @escaping @MainActor () async throws -> Void) {
         navigating = true
         navigationError = nil
         navigationRequest += 1
@@ -441,7 +508,12 @@ import Observation
                 try await operation()
             }
             catch is CancellationError {}
-            catch { if request == navigationRequest { navigationError = error.localizedDescription } }
+            catch {
+                if request == navigationRequest {
+                    if let destination { destination.error = error.localizedDescription }
+                    else { navigationError = error.localizedDescription }
+                }
+            }
         }
     }
 }

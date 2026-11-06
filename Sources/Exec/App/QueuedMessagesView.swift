@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct QueuedMessagesView: View {
-    @Bindable var store: ChatLibrary
+    @Bindable var store: ChatPanel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @MainActor struct WorkspaceBar: View {
-    @Bindable var store: ChatLibrary
+    @Bindable var store: ChatPanel
     @State private var folderPanel: NSOpenPanel?
 
     var body: some View {
@@ -32,7 +32,7 @@ import SwiftUI
     private func chooseFolder() {
         guard store.canSelectWorkspace, folderPanel == nil else { return }
         let destination = store.current
-        let window = NSApp.mainWindow ?? NSApp.keyWindow
+        let window = NSApp.keyWindow ?? NSApp.mainWindow
         let panel = NSOpenPanel()
         folderPanel = panel
         panel.canChooseDirectories = true

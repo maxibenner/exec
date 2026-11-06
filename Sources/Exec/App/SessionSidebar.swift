@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SessionSidebar: View {
     @Bindable var store: ChatLibrary
+    let windows: SessionWindows
     let open: (UUID) -> Void
     let delete: (SessionSummary) -> Void
     @State private var renaming = false
@@ -20,31 +21,20 @@ struct SessionSidebar: View {
     }
 
     var body: some View {
-        let shortcuts = store.sessionShortcuts
-        List(selection: Binding(get: { store.sidebarSelectionID }, set: { if let id = $0 { open(id) } })) {
-            Section("Sessions") {
-                ForEach(store.sessionList) { session in
-                    SessionRow(session: session, store: store,
-                               shortcut: shortcuts.first { $0.session.id == session.id }?.number,
-                               rename: {
-                                   guard store.canNavigate else { return }
-                                   renameID = session.id; renameTitle = session.title; renaming = true
-                               }, delete: { delete(session) })
-                        .tag(session.id)
-                        .moveDisabled(!store.canReorderSessions)
-                }
-                .onMove { offsets, destination in
-                    store.moveSessions(from: offsets, to: destination)
-                }
-            }
-        }
-        .listStyle(.sidebar)
+        SessionTable(store: store, windows: windows, open: open, delete: delete, rename: { session in
+            guard store.canNavigate else { return }
+            renameID = session.id; renameTitle = session.title; renaming = true
+        })
         .disabled(store.authenticating)
         .allowsHitTesting(store.canNavigate)
-        // Command-modified Delete is routed through the menu key-equivalent
-        // system, not List's ordinary key-press handler. Keep the action scoped
-        // to list focus so text fields retain their native Command-Delete.
+        // Keep deletion scoped to sidebar focus; text fields retain their native
+        // Command-Delete. The native table also handles this in its responder chain.
         .focusedValue(\.deleteSidebarSession, deleteSelection)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            Text("Sessions").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 6)
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Divider()
@@ -83,7 +73,7 @@ struct SessionSidebar: View {
     }
 }
 
-private struct SessionRow: View {
+struct SessionRow: View {
     let session: SessionSummary
     let store: ChatLibrary
     let shortcut: Int?
@@ -91,6 +81,7 @@ private struct SessionRow: View {
     private var needsApproval: Bool { store.needsApproval(session.id) }
     private var needsAttention: Bool { store.needsAttention(session.id) }
     let rename: () -> Void
+    let detach: () -> Void
     let delete: () -> Void
 
     var body: some View {
@@ -132,6 +123,7 @@ private struct SessionRow: View {
         .padding(.vertical, 5)
         .contentShape(Rectangle())
         .contextMenu {
+            Button("Open in New Window", action: detach).disabled(session.unreadable || !store.canReorderSessions)
             Button("Rename…", action: rename).disabled(session.unreadable || store.navigating)
             Divider()
             Button("Delete Conversation", role: .destructive, action: delete).disabled(running)

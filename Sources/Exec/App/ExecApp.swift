@@ -3,14 +3,15 @@ import SwiftUI
 @main struct ExecApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var store: ChatLibrary?
+    @State private var windows: SessionWindows?
     @State private var startupError: String?
     @State private var starting = false
 
     var body: some Scene {
         Window("Exec", id: "chat") {
             Group {
-                if let store {
-                    ChatView(store: store)
+                if let store, let windows {
+                    ChatView(store: store, windows: windows)
                 } else if let startupError {
                     VStack(spacing: 16) {
                         Text(startupError).textSelection(.enabled)
@@ -26,7 +27,7 @@ import SwiftUI
             .task { if store == nil && startupError == nil { start() } }
         }
         .defaultSize(width: 980, height: 700)
-        .commands { SessionCommands(store: store) }
+        .commands { SessionCommands(store: store, windows: windows) }
     }
 
     private func start() {
@@ -37,8 +38,11 @@ import SwiftUI
             defer { starting = false }
             do {
                 let provider = try await OpenAIProvider.restored()
-                store = try ChatLibrary(provider: provider, sessions: try SessionStore.applicationStore())
-                delegate.store = store
+                let library = try ChatLibrary(provider: provider, sessions: try SessionStore.applicationStore())
+                store = library
+                windows = SessionWindows(library: library)
+                delegate.store = library
+                library.restore()
             } catch {
                 startupError = error.localizedDescription
             }
