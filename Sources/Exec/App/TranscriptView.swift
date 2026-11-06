@@ -340,7 +340,7 @@ private struct MessageView: View {
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 if message.status == .interrupted {
-                    Label("Stopped · excluded from context", systemImage: "stop.circle")
+                    Label("Stopped", systemImage: "stop.circle")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if message.status == .failed {

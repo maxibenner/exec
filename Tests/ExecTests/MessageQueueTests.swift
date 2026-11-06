@@ -47,7 +47,8 @@ import Foundation
             store.resumeQueuedMessages()
             try await wait { !store.busy }
             try expect(provider.inputs.count == 2)
-            try expect(provider.inputs.last?.filter { $0.role == .user }.map(\.text) == ["Queued"])
+            let expectedPrompts = cancel ? ["Interrupted", "Queued"] : ["Queued"]
+            try expect(provider.inputs.last?.filter { $0.role == .user }.map(\.text) == expectedPrompts)
             try expect(store.draft == "Keep this draft" && store.queuedMessages.isEmpty)
         }
     }

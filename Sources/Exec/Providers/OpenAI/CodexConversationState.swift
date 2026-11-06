@@ -49,7 +49,10 @@ struct CodexConversationState: Codable {
             defer { previousID = message.id }
             if let result = message.toolResult {
                 input.append(["type": "function_call_output", "call_id": result.call.id, "output": result.text])
-            } else if message.role == .assistant, let previousID, let output = outputs[previousID] {
+            } else if message.role == .assistant, message.status != .interrupted,
+                      let previousID, let output = outputs[previousID] {
+                // A terminal response can race with cancellation. Interrupted
+                // messages must use their visible text, never cached tool calls.
                 input.append(contentsOf: try Self.items(output))
             } else {
                 if !message.images.isEmpty {

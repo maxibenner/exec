@@ -316,10 +316,13 @@ import Foundation
         try expect(provider.inputs.last?.map(\.text) == ["First", "Hello world", "Retry"])
     }
 
-    func stopCancelsAndDoesNotCommitPartialTurn() async throws {
+    func stopPreservesPartialContext() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = SessionStore(directory: root)
         let provider = FakeProvider()
         provider.holdOpen = true
-        let store = ChatStore(provider: provider)
+        let store = ChatStore(provider: provider, sessions: sessions)
         store.selectedModel = "test"
         store.draft = "Interrupt"
         store.send()
@@ -340,6 +343,27 @@ import Foundation
         store.draft = "Next"
         store.send()
         try await settle(store)
-        try expect(provider.inputs.last?.map(\.text) == ["Next"])
+        try expect(provider.inputs.last?.map(\.text) == ["Interrupt", "Hello world", "Next"])
+        try expect(provider.inputs.last?[1].status == .interrupted)
+
+        let restoredProvider = FakeProvider()
+        let restored = ChatStore(provider: restoredProvider, sessions: sessions)
+        restored.restore()
+        try await settle(restored)
+        restored.draft = "Continue after restart"
+        restored.send()
+        try await settle(restored)
+        try expect(restoredProvider.inputs.last?.map(\.text) ==
+                   ["Interrupt", "Hello world", "Next", "Hello world", "Continue after restart"])
+        try expect(restoredProvider.inputs.last?[1].status == .interrupted)
+
+        // Even if a terminal server response raced with Stop, opaque output
+        // must not replace the partial text or introduce unexecuted tool calls.
+        let user = Message(role: .user, text: "Prompt")
+        let partial = Message(role: .assistant, text: "Partial", status: .interrupted)
+        let output = Data(#"[{"type":"function_call","call_id":"unexecuted","name":"shell","arguments":"{}"}]"#.utf8)
+        let context = CodexConversationState(outputs: [user.id: output])
+        let wire = try context.input([user, partial])
+        try expect(wire.count == 2 && wire[1]["content"] as? String == "Partial")
     }
 }

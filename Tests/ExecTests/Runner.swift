@@ -131,7 +131,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("OIDC signature and claims", { try IdentityTests().verifiesSignatureAndRejectsInvalidClaims() }),
             ("Follow-up and new conversation", { try await chat.successfulFollowupIncludesHistoryAndNewClearsIt() }),
             ("Failed turn isolation", { try await chat.failedTurnsStayVisibleButAreExcludedFromContext() }),
-            ("Cancellation", { try await chat.stopCancelsAndDoesNotCommitPartialTurn() })
+            ("Cancellation preserves partial context and restart history", { try await chat.stopPreservesPartialContext() })
         ]
         for (name, check) in checks {
             do { try await check() }

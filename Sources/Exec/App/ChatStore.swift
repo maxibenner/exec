@@ -407,6 +407,14 @@ import Observation
             if messages[index].status == .streaming {
                 messages[index].status = Task.isCancelled ? .interrupted : .failed
             }
+            if messages[index].status == .interrupted {
+                // Preserve the submitted prompt and visible partial answer, not
+                // unfinished tool calls or an assumed successful model step.
+                history = input
+                if !fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    history.append(messages[index])
+                }
+            }
         }
         try await checkpoint()
         let instructions = requestInstructions
