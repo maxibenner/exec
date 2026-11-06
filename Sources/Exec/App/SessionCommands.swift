@@ -81,6 +81,7 @@ struct SessionCommands: Commands {
 
             if let attach = actions?.attach {
                 Button("Move Back to Main Window", action: attach)
+                    .keyboardShortcut("w", modifiers: .command)
             } else {
                 Button("Detach Window") { actions?.detach?() }
                     .keyboardShortcut("d", modifiers: .command)
