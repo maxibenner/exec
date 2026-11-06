@@ -88,12 +88,50 @@ import SwiftUI
 
     func keepsHeadersOnOneLineAndBodiesSelectable() throws {
         _ = NSApplication.shared
+        NSApp.finishLaunching()
+        // Enable SwiftUI's accessibility tree for this in-process test. The
+        // legacy attribute API is needed here; no system-wide setting changes.
+        let enhancedUI = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+        let previous = NSApp.accessibilityAttributeValue(enhancedUI)
+        NSApp.accessibilitySetValue(true, forAttribute: enhancedUI)
+        defer { NSApp.accessibilitySetValue(previous, forAttribute: enhancedUI) }
         let long = String(repeating: "long input ", count: 100)
         let arguments = ["command": long + "\nsecond line", "path": long, "query": long, "url": "https://example.com/" + long]
         let json = String(decoding: try JSONEncoder().encode(arguments), as: UTF8.self)
-        func fields(in view: NSView) -> [NSTextField] {
-            if let field = view as? NSTextField { return [field] }
-            return view.subviews.flatMap { fields(in: $0) }
+        func textElements(in element: any NSAccessibilityProtocol) -> [any NSAccessibilityProtocol] {
+            var texts: [any NSAccessibilityProtocol] = []
+            if element.accessibilityRole() == .staticText, element.accessibilityValue() is String {
+                texts.append(element)
+            }
+            for child in element.accessibilityChildren() ?? [] {
+                if let child = child as? any NSAccessibilityProtocol {
+                    texts += textElements(in: child)
+                }
+            }
+            return texts
+        }
+        func withHost<T>(_ result: ToolResult, width: CGFloat, check: (NSView, [any NSAccessibilityProtocol]) throws -> T) rethrows -> T {
+            let state = TranscriptState()
+            let id = UUID()
+            state.expanded[id] = true
+            let host = NSHostingView(rootView: ToolMessageView(result: result, state: state, messageID: id).frame(width: width))
+            host.frame.size = host.fittingSize
+            let window = NSWindow(contentRect: host.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.contentView = host
+            defer { window.orderOut(nil); window.contentView = nil }
+            window.orderFront(nil)
+            host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            return try check(host, textElements(in: host))
+        }
+        func expectSelection(in elements: [any NSAccessibilityProtocol], text: String) throws {
+            guard let element = elements.first(where: { ($0.accessibilityValue() as? String) == text }) else {
+                throw CheckFailure(description: "Missing expanded tool text: \(text.prefix(60))")
+            }
+            let range = NSRange(location: 0, length: (text as NSString).length)
+            element.setAccessibilitySelectedTextRange(range)
+            try expect(element.accessibilitySelectedTextRange() == range)
+            try expect(element.accessibilitySelectedText() == text)
         }
         for name in ["shell", "read_file", "list_files", "search_text", "edit_file", "web_search", "fetch_content"] {
             let result = result(name, json, "Exit code: 0\noutput text")
@@ -102,43 +140,34 @@ import SwiftUI
                 let header = NSHostingView(rootView: ToolCallHeader(presentation: presentation).frame(width: width))
                 try expect(header.fittingSize.height < 24)
             }
-            let state = TranscriptState()
-            let id = UUID()
-            state.expanded[id] = true
-            let body = NSHostingView(rootView: ToolMessageView(result: result, state: state, messageID: id).frame(width: 700))
-            body.frame.size = body.fittingSize
-            body.layoutSubtreeIfNeeded()
-            let fields = fields(in: body)
-            for input in presentation.inputs where !input.text.isEmpty {
-                try expect(fields.contains { $0.isSelectable && $0.stringValue == input.text })
+            try withHost(result, width: 700) { _, elements in
+                for input in presentation.inputs where !input.text.isEmpty {
+                    try expectSelection(in: elements, text: input.text)
+                }
+                try expectSelection(in: elements, text: presentation.output)
             }
-            try expect(fields.contains { $0.isSelectable && $0.stringValue == presentation.output })
         }
         // Successful edits expand to the diff alone, not the file/result text.
         var edit = result("edit_file", #"{"path":"file.swift"}"#, "Edited file.swift. Revision: revision")
         edit.edit = .init(path: "file.swift", diff: "--- file.swift\n+++ file.swift\n@@ -1 +1 @@\n-old content\n+new content\n")
-        let host = NSHostingView(rootView: ToolMessageView(result: edit, state: TranscriptState(), messageID: UUID()).frame(width: 700))
-        host.frame.size = host.fittingSize
-        host.layoutSubtreeIfNeeded()
-        let texts = fields(in: host).map(\.stringValue)
-        try expect(!texts.contains(edit.text) && !texts.contains("file.swift"))
-        try expect(texts.contains { $0.contains("old content") } && texts.contains { $0.contains("new content") })
+        try withHost(edit, width: 700) { _, elements in
+            let texts = elements.compactMap { $0.accessibilityValue() as? String }
+            try expect(!texts.contains(edit.text) && !texts.contains("file.swift"))
+            try expect(texts.contains { $0.contains("old content") } && texts.contains { $0.contains("new content") })
+        }
 
         // Read output starts at the same inset as both unified and side-by-side edits.
         let read = result("read_file", #"{"path":"file.swift"}"#, "1: old content")
         for width in [CGFloat(600), 820] {
             func contentOrigin(_ result: ToolResult, containing text: String) throws -> CGPoint {
-                let state = TranscriptState()
-                let id = UUID()
-                state.expanded[id] = true
-                let host = NSHostingView(rootView: ToolMessageView(result: result, state: state, messageID: id).frame(width: width))
-                host.frame.size = host.fittingSize
-                host.layoutSubtreeIfNeeded()
-                guard let field = fields(in: host).first(where: { $0.isSelectable && $0.stringValue.contains(text) }) else {
-                    throw CheckFailure(description: "Expected expanded tool content")
+                try withHost(result, width: width) { host, elements in
+                    guard let element = elements.first(where: { ($0.accessibilityValue() as? String)?.contains(text) == true }),
+                          let window = host.window else {
+                        throw CheckFailure(description: "Expected expanded tool content")
+                    }
+                    let frame = host.convert(window.convertFromScreen(element.accessibilityFrame()), from: nil)
+                    return CGPoint(x: frame.minX, y: host.isFlipped ? frame.minY : host.bounds.height - frame.maxY)
                 }
-                let frame = field.convert(field.bounds, to: host)
-                return CGPoint(x: frame.minX, y: host.isFlipped ? frame.minY : host.bounds.height - frame.maxY)
             }
             let readOrigin = try contentOrigin(read, containing: read.text)
             let editOrigin = try contentOrigin(edit, containing: "old content")
