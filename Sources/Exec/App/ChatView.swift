@@ -43,12 +43,14 @@ struct ChatView: View {
                         ToolbarItem(placement: .primaryAction) {
                             WorkspaceBar(root: store.workspace?.root)
                                 .frame(maxWidth: 300)
+                                .padding(.trailing, 14)
                         }
                         .sharedBackgroundVisibility(.hidden)
                     } else {
                         ToolbarItem(placement: .primaryAction) {
                             WorkspaceBar(root: store.workspace?.root)
                                 .frame(maxWidth: 300)
+                                .padding(.trailing, 14)
                         }
                     }
                 }
