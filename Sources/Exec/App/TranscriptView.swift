@@ -67,7 +67,6 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var pendingContentFollow = false
     private var bottomInset: CGFloat = 0
     private var renderedBottomInset: CGFloat = 0
-    private var scrollRouting: TranscriptScrollRouting?
     private var selectionClearing: TranscriptSelectionClearing?
     var mountedRowCount: Int { rows.count }
 
@@ -109,20 +108,15 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        scrollRouting?.stop()
-        scrollRouting = nil
         selectionClearing?.stop()
         selectionClearing = nil
         if window != nil, !detached {
-            scrollRouting = TranscriptScrollRouting(self)
             selectionClearing = TranscriptSelectionClearing(self)
             scheduleRefresh()
         }
     }
     func detach() {
         detached = true
-        scrollRouting?.stop()
-        scrollRouting = nil
         selectionClearing?.stop()
         selectionClearing = nil
         rememberAnchor()
@@ -327,7 +321,7 @@ private struct MessageView: View {
                 VStack(alignment: .trailing, spacing: 8) {
                     if !message.images.isEmpty { AttachmentStrip(images: message.images) }
                     if !message.text.isEmpty {
-                        Text(verbatim: message.text).lineSpacing(3).textSelection(.enabled)
+                        LinkedText(source: AttributedString(message.text))
                     }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)

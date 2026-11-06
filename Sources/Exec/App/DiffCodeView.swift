@@ -12,32 +12,28 @@ struct DiffCodeView: NSViewRepresentable {
     }
 }
 
-private struct DiffCodeContent: View {
-    let text: AttributedString
-
-    var body: some View {
-        Text(text).font(.system(.body, design: .monospaced))
-            .textSelection(.enabled).fixedSize(horizontal: true, vertical: true).padding(10)
+@MainActor final class DiffCodeScrollView: HorizontalContentScrollView {
+    private final class DocumentView: NSView {
+        override var isFlipped: Bool { true }
     }
-}
-
-@MainActor final class DiffCodeScrollView: NSScrollView {
-    private let code: NSHostingView<DiffCodeContent>
+    private let content = DocumentView()
+    private let code = LinkedText.TextView()
     private var text: AttributedString
     private(set) var codeSize = CGSize.zero
 
     init(text: AttributedString) {
         self.text = text
-        code = NSHostingView(rootView: DiffCodeContent(text: text))
         super.init(frame: .zero)
-        drawsBackground = false
-        borderType = .noBorder
-        hasHorizontalScroller = true
-        hasVerticalScroller = false
-        scrollerStyle = .overlay
-        autohidesScrollers = true
-        verticalScrollElasticity = .none
-        documentView = code
+        code.isEditable = false
+        code.isSelectable = true
+        code.drawsBackground = false
+        code.textContainerInset = .zero
+        code.textContainer?.lineFragmentPadding = 0
+        code.textContainer?.widthTracksTextView = false
+        code.textContainer?.containerSize = CGSize(width: CGFloat.greatestFiniteMagnitude,
+                                                   height: CGFloat.greatestFiniteMagnitude)
+        content.addSubview(code)
+        documentView = content
         measureCode()
     }
 
@@ -46,33 +42,31 @@ private struct DiffCodeContent: View {
     func update(_ text: AttributedString) {
         guard self.text != text else { return }
         self.text = text
-        code.rootView = DiffCodeContent(text: text)
         measureCode()
     }
 
     private func measureCode() {
-        codeSize = code.fittingSize
-        code.setFrameSize(codeSize)
+        let styled = NSMutableAttributedString(string: "")
+        for run in text.runs {
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
+                .foregroundColor: NSColor.labelColor
+            ]
+            if let color = run.foregroundColor { attributes[.foregroundColor] = NSColor(color) }
+            if let color = run.backgroundColor { attributes[.backgroundColor] = NSColor(color) }
+            styled.append(NSAttributedString(string: String(text[run.range].characters), attributes: attributes))
+        }
+        code.update(styled)
+        if let layout = code.layoutManager, let container = code.textContainer {
+            layout.ensureLayout(for: container)
+            let used = layout.usedRect(for: container)
+            codeSize = CGSize(width: ceil(used.width) + 20, height: ceil(used.height) + 20)
+        }
+        content.setFrameSize(codeSize)
+        code.frame = NSRect(x: 10, y: 10, width: max(0, codeSize.width - 20),
+                            height: max(0, codeSize.height - 20))
         invalidateIntrinsicContentSize()
     }
 
     override var intrinsicContentSize: NSSize { codeSize }
-
-    override func scrollWheel(with event: NSEvent) {
-        // SwiftUI's horizontal ScrollView can swallow vertical wheel/trackpad
-        // events. Route vertical gestures directly to the enclosing transcript.
-        if abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) {
-            var ancestor = superview
-            while let view = ancestor {
-                if let scroll = view as? NSScrollView {
-                    scroll.scrollWheel(with: event)
-                    return
-                }
-                ancestor = view.superview
-            }
-            nextResponder?.scrollWheel(with: event)
-        } else {
-            super.scrollWheel(with: event)
-        }
-    }
 }

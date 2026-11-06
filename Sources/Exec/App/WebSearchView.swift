@@ -17,8 +17,7 @@ struct WebSearchView: View {
                         if let url = source.link {
                             LinkedText(source: citation(index: index, source: source, url: url), fontSize: 12)
                         } else {
-                            Text(verbatim: "[\(index + 1)] \(source.title)\n\(source.url)")
-                                .font(.caption).textSelection(.enabled)
+                            LinkedText(source: AttributedString("[\(index + 1)] \(source.title)\n\(source.url)"), fontSize: 12)
                         }
                     }
                 }

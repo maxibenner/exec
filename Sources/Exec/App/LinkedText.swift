@@ -63,6 +63,12 @@ struct LinkedText: NSViewRepresentable {
     }
 
     final class TextView: NSTextView {
+        // Full-height selectable text is not a scroll surface. Preserve the
+        // original event (including phases/momentum) through normal delivery.
+        override func scrollWheel(with event: NSEvent) {
+            nextResponder?.scrollWheel(with: event)
+        }
+
         func update(_ text: NSAttributedString) {
             guard attributedString() != text else { return }
             let selection = selectedRange()

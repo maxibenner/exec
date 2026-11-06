@@ -15,58 +15,87 @@ import AppKit
         table.isEditable = false
         table.update(MarkdownText.render(MarkdownDocument.parse("| A | B |\n| --- | --- |\n| one | two |")))
         document.addSubview(table)
-        let horizontal = NSScrollView(frame: NSRect(x: 30, y: 200, width: 300, height: 100))
+        let horizontal = HorizontalContentScrollView(frame: NSRect(x: 30, y: 200, width: 300, height: 100))
         horizontal.hasHorizontalScroller = true
         horizontal.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 1_000, height: 100))
         document.addSubview(horizontal)
         root.layoutSubtreeIfNeeded()
-        let routing = TranscriptScrollRouting(transcript)
-        defer { routing.stop(); window.contentView = nil }
-        let tablePoint = table.convert(NSPoint(x: 15, y: 15), to: nil)
-        let horizontalPoint = horizontal.convert(NSPoint(x: 15, y: 50), to: nil)
-        func event(_ x: CGFloat, _ y: CGFloat, point: NSPoint? = nil,
-                   phase: NSEvent.Phase = [], momentum: NSEvent.Phase = []) -> WheelEvent {
-            WheelEvent(window: window, point: point ?? tablePoint, x: x, y: y, phase: phase, momentum: momentum)
+        defer { window.contentView = nil }
+        let point = table.convert(NSPoint(x: 15, y: 15), to: nil)
+        let selection = NSRange(location: 0, length: 1)
+        table.setSelectedRange(selection)
+        // Full-height text passes every original event onward, without choosing
+        // or retaining an axis, including zero-delta end and momentum events.
+        for (x, y, phase, momentum) in [
+            (1.0, -20.0, NSEvent.Phase.began, NSEvent.Phase()),
+            (20.0, -1.0, .changed, []),
+            (0.0, 0.0, .ended, []),
+            (0.0, -5.0, [], .began),
+            (0.0, 0.0, [], .ended)
+        ] {
+            let event = WheelEvent(window: window, point: point, x: x, y: y,
+                                   phase: phase, momentum: momentum)
+            table.scrollWheel(with: event)
+            try expect(transcript.lastEvent === event)
         }
-        try expect(routing.handle(event(0, -20)) == nil)
-        try expect(routing.handle(event(2, 20, point: horizontalPoint)) == nil)
-        try expect(transcript.events == 2)
-        let sideways = event(20, 0, point: horizontalPoint)
-        try expect(routing.handle(sideways) === sideways && transcript.events == 2)
+        try expect(transcript.events == 5)
+        try expect(table.selectedRange() == selection && table.isSelectable)
 
-        // A trackpad gesture keeps its axis through diagonal movement and momentum.
-        try expect(routing.handle(event(1, -20, phase: .began)) == nil)
-        try expect(routing.handle(event(20, -1, phase: .changed)) == nil)
-        try expect(routing.handle(event(0, 0, phase: .ended)) == nil)
-        try expect(routing.handle(event(0, -5, momentum: .began)) == nil)
-        try expect(routing.handle(event(0, 0, momentum: .ended)) == nil)
-        try expect(transcript.events == 7)
-        for wheel in [event(20, 1, phase: .began), event(1, 20, phase: .changed),
-                      event(0, 0, phase: .ended), event(5, 0, momentum: .began), event(0, 0, momentum: .ended)] {
-            try expect(routing.handle(wheel) === wheel)
+        // The same behavior applies inside a horizontal-only content surface.
+        let text = LinkedText.TextView(frame: NSRect(x: 0, y: 0, width: 1_000, height: 100))
+        text.isEditable = false
+        text.isSelectable = true
+        horizontal.documentView = text
+        let vertical = WheelEvent(window: window, point: point, x: 0, y: -20)
+        text.scrollWheel(with: vertical)
+        try expect(transcript.events == 6 && transcript.lastEvent === vertical)
+        let sideways = NSEvent(cgEvent: CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                               wheelCount: 2, wheel1: 0, wheel2: -20, wheel3: 0)!)!
+        text.scrollWheel(with: sideways)
+        try expect(transcript.events == 6)
+
+        // A vertical gesture stays with the transcript even when later deltas
+        // become predominantly horizontal, including its momentum tail.
+        for (x, y, phase, momentum) in [
+            (1.0, -20.0, NSEvent.Phase.began, NSEvent.Phase()),
+            (20.0, -1.0, .changed, []),
+            (0.0, 0.0, .ended, []),
+            (10.0, -1.0, [], .began),
+            (0.0, 0.0, [], .ended)
+        ] {
+            let event = WheelEvent(window: window, point: point, x: x, y: y,
+                                   phase: phase, momentum: momentum)
+            text.scrollWheel(with: event)
+            try expect(transcript.lastEvent === event)
         }
-        try expect(transcript.events == 7)
+        try expect(transcript.events == 11)
+        try gestureAxisStaysLocked()
+    }
 
-        // A footer or approval panel layered over the transcript must keep its
-        // own scrolling; checking just the transcript rectangle is insufficient.
-        let overlay = NSScrollView(frame: table.convert(table.bounds, to: root))
-        root.addSubview(overlay)
-        let covered = event(0, -20)
-        try expect(routing.handle(covered) === covered)
-        overlay.removeFromSuperview()
-        let sidebar = event(0, -20, point: NSPoint(x: 700, y: 100))
-        try expect(routing.handle(sidebar) === sidebar)
-        let otherWindow = NSWindow(contentRect: .zero, styleMask: [], backing: .buffered, defer: false)
-        let foreign = WheelEvent(window: otherWindow, point: tablePoint, x: 0, y: -20)
-        try expect(routing.handle(foreign) === foreign && transcript.events == 7)
-        routing.stop()
-        let stopped = event(0, -20)
-        try expect(routing.handle(stopped) === stopped && transcript.events == 7)
+    private func gestureAxisStaysLocked() throws {
+        var routing = ScrollGestureAxis()
+        try expect(routing.route(x: 0, y: 0, phase: .began, momentum: []) == nil)
+        try expect(routing.route(x: 20, y: 1, phase: .changed, momentum: []) == .horizontal)
+        try expect(routing.route(x: 1, y: 20, phase: .changed, momentum: []) == .horizontal)
+        try expect(routing.route(x: 0, y: 0, phase: .ended, momentum: []) == .horizontal)
+        try expect(routing.route(x: 1, y: 20, phase: [], momentum: .began) == .horizontal)
+        try expect(routing.route(x: 0, y: 0, phase: [], momentum: .ended) == .horizontal)
+        try expect(routing.route(x: 1, y: 20, phase: .began, momentum: []) == .vertical)
+        try expect(routing.route(x: 20, y: 1, phase: .changed, momentum: []) == .vertical)
+        try expect(routing.route(x: 0, y: 0, phase: .cancelled, momentum: []) == .vertical)
+        try expect(routing.route(x: 20, y: 1, phase: .began, momentum: []) == .horizontal)
+        // A fresh touch also interrupts a previous gesture without momentum.
+        try expect(routing.route(x: 0, y: 0, phase: .ended, momentum: []) == .horizontal)
+        try expect(routing.route(x: 1, y: 20, phase: .began, momentum: []) == .vertical)
+        // Ordinary mouse wheels have no gesture phases and must not get stuck.
+        try expect(routing.route(x: 20, y: 0, phase: [], momentum: []) == .horizontal)
+        try expect(routing.route(x: 0, y: 20, phase: [], momentum: []) == .vertical)
     }
 
     private final class ScrollRecorder: NSScrollView {
         var events = 0
-        override func scrollWheel(with event: NSEvent) { events += 1 }
+        var lastEvent: NSEvent?
+        override func scrollWheel(with event: NSEvent) { events += 1; lastEvent = event }
     }
 
     private final class WheelEvent: NSEvent {
