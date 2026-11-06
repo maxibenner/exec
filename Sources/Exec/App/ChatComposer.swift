@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct ChatComposer: View {
     @Bindable var store: ChatPanel
+    var overlayScrollerInset: CGFloat = 0
     @FocusState private var focused: Bool
     @State private var needsInitialFocus = true
     @State private var imageDropTargeted = false
@@ -79,14 +80,14 @@ struct ChatComposer: View {
                 .frame(maxWidth: .infinity)
                 .background(alignment: .bottom) {
                     // Join the footer background behind the input's rounded bottom corners.
-                    Rectangle().fill(.background).frame(height: 12)
+                    footerBackground.frame(height: 12)
                 }
                 .zIndex(1)
             information
                 .frame(maxWidth: 820)
                 .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12)
                 .frame(maxWidth: .infinity)
-                .background(.background)
+                .background { footerBackground }
         }
         .frame(maxWidth: .infinity)
         .task(id: store.canEditDraft) {
@@ -105,6 +106,12 @@ struct ChatComposer: View {
             if paletteVisible { close(); focused = true }
             else if store.isWorking { store.stop() }
         }
+    }
+
+    private var footerBackground: some View {
+        Rectangle().fill(.background)
+            .padding(.trailing, overlayScrollerInset)
+            .allowsHitTesting(false)
     }
 
     private var input: some View {

@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 @MainActor struct TranscriptTests {
     func geometryPreservesAnchors() throws {
@@ -25,6 +26,10 @@ import AppKit
 
     func composerInsetMatchesTranscriptViewport() async throws {
         _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = try ChatLibrary(provider: FakeProvider(), sessions: SessionStore(directory: root))
+        let panel = ChatPanel(library: library, conversation: library.current)
         let state = TranscriptState()
         let view = TranscriptScrollView(state: state)
         defer { view.detach() }
@@ -49,6 +54,23 @@ import AppKit
                 }
                 try expect(abs(row.frame.minX - composerLeft) < 0.5)
                 try expect(abs(row.frame.maxX - (composerLeft + composerWidth)) < 0.5)
+                try expect(style == .overlay ? state.overlayScrollerInset > 0 : state.overlayScrollerInset == 0)
+                if style == .overlay {
+                    try expect(state.overlayScrollerInset >= (view.verticalScroller?.frame.width ?? 0))
+                }
+
+                // Check the actual painted footer, not just the input's alignment:
+                // an overlay scroller needs a transparent strip inside the viewport.
+                let renderer = ImageRenderer(content: ChatComposer(store: panel, overlayScrollerInset: state.overlayScrollerInset)
+                    .frame(width: availableWidth).environment(\.colorScheme, .light))
+                guard let image = renderer.cgImage else { throw CheckFailure(description: "Missing composer rendering") }
+                let bitmap = NSBitmapImageRep(cgImage: image)
+                func maximumAlpha(at x: Int) -> CGFloat {
+                    (0..<bitmap.pixelsHigh).map { bitmap.colorAt(x: x, y: $0)?.alphaComponent ?? 0 }.max() ?? 0
+                }
+                try expect(maximumAlpha(at: 1) > 0.99)
+                let rightAlpha = maximumAlpha(at: bitmap.pixelsWide - 2)
+                try expect(style == .overlay ? rightAlpha < 0.01 : rightAlpha > 0.99)
             }
         }
     }

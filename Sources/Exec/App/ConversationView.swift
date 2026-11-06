@@ -33,7 +33,7 @@ struct ConversationView: View {
                         .background(.background)
                 }
                 if let error { errorView(error).background(.background) }
-                ChatComposer(store: panel)
+                ChatComposer(store: panel, overlayScrollerInset: presentation.overlayScrollerInset)
                     .disabled(panel.navigating)
             }
             .padding(.trailing, presentation.trailingInset)
