@@ -99,6 +99,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Scoped and revocable auto-approval", { try await ToolTests().autoApprovalIsScopedAndRevocable() }),
             ("Long tool turns and duplicate protection", { try await chat.longToolTurnsFinishWithoutArtificialCaps() }),
             ("Tool interruption and recovery", { try await chat.interruptedToolTurnRetainsResultsWithoutReexecution() }),
+            ("Workspace instructions refresh on first send", { try await WorkspaceTests().refreshesInstructionsOnFirstSend() }),
             ("Workspace instruction loading", { try WorkspaceTests().loadsOnlyRootInstructionsAndRejectsUnsafeFiles() }),
             ("Workspace context isolation", { try await chat.workspaceChangesKeepInstructionsAndHistoryIsolated() }),
             ("Context usage reports and estimates", { try CompactionTests().contextUsageReportsRestoredMeasurementsAndEstimates() }),

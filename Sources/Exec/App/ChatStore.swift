@@ -270,7 +270,18 @@ import Observation
             guard self.conversationIdentity == self.provider.conversationIdentity else {
                 throw ExecError("The connected account changed. Choose New before sending this conversation.")
             }
-            // Removal can happen while restoring a session. Never send a removed item.
+            // Freeze instructions at the first send, not when the workspace or
+            // empty session was created. Existing conversations retain their snapshot.
+            if self.messages.isEmpty, let root = self.workspace?.root {
+                let loading = Task.detached(priority: .userInitiated) { try Workspace.load(root) }
+                let workspace = try await withTaskCancellationHandler {
+                    try await loading.value
+                } onCancel: { loading.cancel() }
+                try Task.checkCancellation()
+                self.workspace = workspace
+            }
+            // Removal can happen while restoring a session or loading instructions.
+            // Never send a removed item.
             guard self.queuedMessages.first?.id == user.id else { return }
             self.queuedMessages.removeFirst()
             var input = self.history + [user]
