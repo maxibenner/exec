@@ -1,17 +1,15 @@
 import SwiftUI
 
 @MainActor struct WorkspaceBar: View {
-    @Bindable var store: ChatPanel
+    let root: URL?
 
     var body: some View {
         Group {
-            if let workspace = store.workspace {
-                Label((workspace.root.path as NSString).abbreviatingWithTildeInPath, systemImage: "folder")
+            if let root {
+                Label(root.lastPathComponent.isEmpty ? root.path : root.lastPathComponent, systemImage: "folder")
                     .lineLimit(1).truncationMode(.middle)
-                    .help(workspace.root.path)
-                    .accessibilityLabel("Workspace: \(workspace.root.path)")
-            } else {
-                Label("Workspace", systemImage: "folder")
+                    .help(root.path)
+                    .accessibilityLabel("Workspace: \(root.path)")
             }
         }
         .font(.caption)

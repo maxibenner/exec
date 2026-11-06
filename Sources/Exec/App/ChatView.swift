@@ -39,6 +39,10 @@ struct ChatView: View {
                     transaction.disablesAnimations = true
                 }
                 .toolbar {
+                    ToolbarItem(placement: .principal) {
+                        WorkspaceBar(root: store.workspace?.root)
+                            .frame(maxWidth: 300)
+                    }
                     ToolbarItem(placement: .primaryAction) {
                         Button { store.newConversation() } label: {
                             Label("New Conversation", systemImage: "square.and.pencil")

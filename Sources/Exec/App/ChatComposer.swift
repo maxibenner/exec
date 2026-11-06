@@ -170,18 +170,25 @@ struct ChatComposer: View {
     }
 
     private var information: some View {
-        HStack(alignment: .center, spacing: 12) {
-            workingControl
-            Text("Type / for commands")
-                .allowsHitTesting(false)
-            Spacer(minLength: 0)
-            usageInformation
-            workspaceInformation
+        GeometryReader { geometry in
+            ZStack {
+                Text("Type / for commands")
+                    .allowsHitTesting(false)
+                HStack(spacing: 0) {
+                    workingControl
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                usageInformation
+                    .frame(width: max(0, geometry.size.width / 2 - 70), alignment: .trailing)
+                    .clipped()
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .font(.caption).foregroundStyle(.secondary)
         .lineLimit(1)
-        // Reserve the same row for the indicator, usage text and folder control,
-        // including while idle or before usage/workspace information is available.
+        // Independent alignment keeps the hint and usage stationary when the spinner appears.
         .frame(height: 20)
     }
 
@@ -198,12 +205,6 @@ struct ChatComposer: View {
             }
             .fixedSize()
         }
-    }
-
-    private var workspaceInformation: some View {
-        WorkspaceBar(store: store)
-            .frame(maxWidth: 300, alignment: .trailing)
-            .layoutPriority(-1)
     }
 
     private var usageInformation: some View {

@@ -48,6 +48,7 @@ import Observation
             window.contentView = NSHostingView(rootView: DetachedConversationView(
                 windows: self, conversation: conversation, presentation: self.presentation(for: conversation)))
             let controller = DetachedSessionController(window: window)
+            controller.updateWorkspace(conversation.workspace?.root)
             controller.didClose = { [weak self] in
                 guard let self else { return }
                 self.library.attachSession(id)
@@ -98,9 +99,35 @@ import Observation
     }
 
     func updateTitle(for id: UUID) { controllers[id]?.window?.title = title(for: id) }
+
+    func updateWorkspace(for id: UUID, root: URL?) { controllers[id]?.updateWorkspace(root) }
 }
 
-@MainActor private final class DetachedSessionController: NSWindowController, NSWindowDelegate {
+@MainActor private final class DetachedSessionController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
+    private let workspaceItemID = NSToolbarItem.Identifier("workspace")
+    private let workspaceView = NSHostingView(rootView: WorkspaceBar(root: nil))
+
+    func updateWorkspace(_ root: URL?) {
+        workspaceView.rootView = WorkspaceBar(root: root)
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, workspaceItemID, .flexibleSpace]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [workspaceItemID, .flexibleSpace]
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard identifier == workspaceItemID else { return nil }
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        item.label = "Workspace"
+        item.view = workspaceView
+        return item
+    }
+
     var didClose: (() -> Void)?
     var becameKey: (() -> Void)?
     var resignedKey: (() -> Void)?
@@ -108,6 +135,16 @@ import Observation
     override init(window: NSWindow?) {
         super.init(window: window)
         window?.delegate = self
+        NSLayoutConstraint.activate([
+            workspaceView.widthAnchor.constraint(equalToConstant: 220),
+            workspaceView.heightAnchor.constraint(equalToConstant: 22)
+        ])
+        let toolbar = NSToolbar(identifier: "DetachedConversation")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.centeredItemIdentifier = workspaceItemID
+        window?.toolbar = toolbar
+        window?.toolbarStyle = .unified
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func windowWillClose(_ notification: Notification) { didClose?() }
@@ -127,6 +164,9 @@ private struct DetachedConversationView: View {
             .modifier(SessionCommandScope(windows: windows, conversation: conversation))
             .onAppear { composerFocused = true }
             .onChange(of: windows.library.detachedSessionIDs) { _, _ in windows.closeInvalidWindows() }
+            .onChange(of: conversation.workspace?.root) { _, root in
+                if let id = conversation.currentSessionID { windows.updateWorkspace(for: id, root: root) }
+            }
             .onChange(of: conversation.summary?.title) { _, _ in
                 if let id = conversation.currentSessionID { windows.updateTitle(for: id) }
             }
