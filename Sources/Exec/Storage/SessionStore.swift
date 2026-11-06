@@ -225,6 +225,18 @@ actor SessionStore {
     func delete(id: UUID) throws {
         var catalog = try readCatalog()
         guard catalog.sessions.contains(where: { $0.id == id }) else { return }
+        // Read references without loading image bytes, so missing or damaged images
+        // do not prevent deletion. Unknown references conservatively skip cleanup.
+        if var paths = try imagePaths(id: id) {
+            for other in catalog.sessions where other.id != id {
+                guard let retained = try imagePaths(id: other.id) else {
+                    paths.removeAll()
+                    break
+                }
+                paths.subtract(retained)
+            }
+            try removeImages(paths)
+        }
         // Remove data first. A stale index can be rebuilt, but must not resurrect deleted data.
         if id == legacyID { try remove("session.json") }
         try remove("\(id).json")
@@ -232,6 +244,47 @@ actor SessionStore {
         if catalog.activeID == id { catalog.activeID = nil }
         self.catalog = catalog
         try write(JSONEncoder().encode(catalog), name: "index.json")
+    }
+
+    private func imagePaths(id: UUID) throws -> Set<String>? {
+        guard let data = try read("\(id).json") else { return [] }
+        guard let json = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        var paths = Set<String>()
+        func collect(_ value: Any) {
+            if let object = value as? [String: Any] {
+                if object["id"] is String, object["name"] is String,
+                   let type = object["mediaType"] as? String,
+                   ["image/png", "image/jpeg"].contains(type),
+                   let path = object["path"] as? String,
+                   path.count == 68, path.hasSuffix(".png") || path.hasSuffix(".jpg"),
+                   path.dropLast(4).allSatisfy({ "0123456789abcdef".contains($0) }) {
+                    paths.insert(path)
+                }
+                for child in object.values { collect(child) }
+            } else if let array = value as? [Any] {
+                for child in array { collect(child) }
+            }
+        }
+        collect(json)
+        return paths
+    }
+
+    private func removeImages(_ paths: Set<String>) throws {
+        guard !paths.isEmpty else { return }
+        let root = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard root >= 0 else { throw ExecError("Cannot open the session directory for image deletion.") }
+        defer { close(root) }
+        let images = openat(root, "images", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        if images < 0, errno == ENOENT { return }
+        guard images >= 0 else { throw ExecError("Cannot open the managed image directory for deletion.") }
+        defer { close(images) }
+        for path in paths {
+            // Unlink only validated basenames inside the managed directory. Never
+            // follow image symlinks or use exported/workspace paths from tool text.
+            guard unlinkat(images, path, 0) == 0 || errno == ENOENT else {
+                throw ExecError("Cannot delete a managed session image.")
+            }
+        }
     }
 
     private func readCatalog() throws -> Catalog {

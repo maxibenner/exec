@@ -40,5 +40,37 @@ import Foundation
             _ = try await restarted.load(id: id)
             throw CheckFailure(description: "Missing image should fail restoration")
         } catch is ExecError {}
+        try await deletion()
+    }
+
+    private func deletion() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let sessions = SessionStore(directory: root.appendingPathComponent("store"))
+        let image = ImageAttachment(name: "generated.png", mediaType: "image/png", data: Data([1, 2, 3]))
+        let other = ImageAttachment(name: "attached.jpg", mediaType: "image/jpeg", data: Data([4, 5, 6]))
+        let call = ToolCall(id: "generated", name: "generate_image", arguments: "{}")
+        let generated = Message(role: .tool, text: "generated", toolResult: ToolResult(call: call, text: "generated", generatedImage: image))
+        let snapshot = SessionSnapshot(selectedModel: "test", messages: [generated],
+                                       history: [Message(role: .user, text: "attached", images: [other])], activeTurn: false)
+        let first = try await sessions.save(snapshot, id: UUID())
+        let second = try await sessions.save(snapshot, id: UUID())
+        let generatedURL = try await sessions.saveImage(image)
+        let attachedURL = try await sessions.saveImage(other)
+        let exported = root.appendingPathComponent("exported.png")
+        try image.data.write(to: exported)
+        try await sessions.delete(id: first)
+        try expect(FileManager.default.fileExists(atPath: generatedURL.path))
+        let retained = try await sessions.load(id: second)
+        try expect(retained != nil)
+        // Even a symlink at an asset name must never delete its outside target.
+        try FileManager.default.removeItem(at: generatedURL)
+        try FileManager.default.createSymbolicLink(at: generatedURL, withDestinationURL: exported)
+        try await sessions.delete(id: second)
+        try expect(!FileManager.default.fileExists(atPath: generatedURL.path))
+        try expect(!FileManager.default.fileExists(atPath: attachedURL.path))
+        try expect(try Data(contentsOf: exported) == image.data)
+        try expect(try FileManager.default.contentsOfDirectory(atPath: attachedURL.deletingLastPathComponent().path).isEmpty)
     }
 }
