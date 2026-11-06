@@ -6,6 +6,12 @@ struct ChatView: View {
     @FocusState private var composerFocused: Bool
     @Environment(\.openWindow) private var openWindow
 
+    private struct ComposerFocusTarget: Hashable {
+        let conversation: ObjectIdentifier
+        let request: Int
+        let navigating: Bool
+    }
+
     var body: some View {
         NavigationSplitView {
             SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {
@@ -16,12 +22,15 @@ struct ChatView: View {
             ConversationView(library: store, conversation: store.current,
                              presentation: windows.presentation(for: store.current),
                              focused: $composerFocused, showsNavigationError: true)
-                .task(id: windows.composerFocusRequest) {
-                    // Refocus after the replacement composer mounts, including new
-                    // conversations and the selection made after deletion.
+                .task(id: ComposerFocusTarget(conversation: ObjectIdentifier(store.current),
+                                              request: windows.composerFocusRequest,
+                                              navigating: store.navigating)) {
+                    // Deletion mounts the replacement before navigation finishes.
+                    // Wait until its composer is enabled before requesting focus.
+                    guard !store.navigating else { return }
                     composerFocused = false
                     await Task.yield()
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, !store.navigating else { return }
                     composerFocused = true
                 }
                 .id(ObjectIdentifier(store.current))
