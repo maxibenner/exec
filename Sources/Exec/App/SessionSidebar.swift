@@ -11,22 +11,25 @@ struct SessionSidebar: View {
 
     var body: some View {
         let shortcuts = store.sessionShortcuts
-        List(selection: Binding(get: { store.sidebarSelectionID }, set: { if let id = $0 { open(id) } })) {
+        List {
             Section {
                 ForEach(store.sidebarSessions) { session in
-                    Button { open(session.id) } label: {
-                        SessionRow(session: session, store: store,
-                                   shortcut: shortcuts.first { $0.session.id == session.id }?.number,
-                                   rename: {
-                                       guard store.canNavigate else { return }
-                                       renameID = session.id; renameTitle = session.title; renaming = true
-                                   }, delete: { delete(session) })
-                    }
-                    // Handle row clicks without transferring keyboard focus.
-                    .buttonStyle(.plain)
-                    .focusable(false)
-                    .tag(session.id)
-                    .moveDisabled(!store.canReorderSessions)
+                    SessionRow(session: session, store: store,
+                               shortcut: shortcuts.first { $0.session.id == session.id }?.number,
+                               rename: {
+                                   guard store.canNavigate else { return }
+                                   renameID = session.id; renameTitle = session.title; renaming = true
+                               }, delete: { delete(session) })
+                        // A row-wide Button consumes the mouse tracking needed by onMove.
+                        .onTapGesture { open(session.id) }
+                        .accessibilityAction { open(session.id) }
+                        .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
+                        .listRowBackground(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(store.sidebarSelectionID == session.id
+                                      ? Color.primary.opacity(0.08) : Color.clear)
+                        )
+                        .moveDisabled(!store.canReorderSessions)
                 }
                 .onMove { offsets, destination in
                     store.moveSidebarSessions(from: offsets, to: destination)
@@ -48,8 +51,8 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
-        // Empty-space clicks must not activate the list's blue focused selection.
-        // Session navigation remains available through row buttons and shortcuts.
+        // Selection is drawn above, not by the native list, so responder changes
+        // cannot flash an accent-colored selection. Shortcuts still navigate sessions.
         .focusable(false)
         .disabled(store.authenticating)
         .allowsHitTesting(store.canNavigate)
