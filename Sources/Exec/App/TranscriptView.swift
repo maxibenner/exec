@@ -87,7 +87,13 @@ private struct VirtualTranscript: NSViewRepresentable {
 
     func update(messages: [Message], jumpRequest: Int, bottomInset: CGFloat = 0) {
         self.bottomInset = max(0, bottomInset)
-        let filtered = messages.filter { $0.role != .assistant || !$0.text.isEmpty || $0.toolCalls.isEmpty }
+        // Empty inference placeholders have no visible content, but mounting them
+        // adds row spacing and moves the bottom anchor between every tool result.
+        // Keep terminal error/stop labels visible even when no text arrived.
+        let filtered = messages.filter {
+            $0.role != .assistant || !$0.text.isEmpty ||
+                $0.status == .interrupted || $0.status == .failed
+        }
         if initialized, let last = filtered.last, last.id != lastMessageID, last.role == .user {
             state.followsLatest = true
             requestedScroll = true

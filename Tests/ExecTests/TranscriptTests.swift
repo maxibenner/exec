@@ -107,6 +107,55 @@ import SwiftUI
         try expect(abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 1)
     }
 
+    func emptyToolStepsDoNotMoveTranscript() throws {
+        _ = NSApplication.shared
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        defer { view.detach() }
+        view.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        var messages = (0..<30).map { Message(role: .user, text: "Message \($0)") }
+        func update() {
+            view.update(messages: messages, jumpRequest: 0, bottomInset: 140)
+            view.layoutSubtreeIfNeeded(); view.refresh()
+        }
+        update()
+        for index in 0..<3 {
+            let height = state.layout.totalHeight
+            let origin = view.contentView.bounds.origin
+            let ids = state.layout.ids
+            messages.append(Message(role: .assistant, text: "", status: .streaming))
+            update()
+            try expect(state.layout.ids == ids && state.layout.totalHeight == height)
+            try expect(view.contentView.bounds.origin == origin)
+
+            let call = ToolCall(id: "call-\(index)", name: "shell", arguments: "{}")
+            messages[messages.count - 1].status = .complete
+            messages[messages.count - 1].toolCalls = [call]
+            update()
+            try expect(state.layout.ids == ids && view.contentView.bounds.origin == origin)
+
+            let result = ToolResult(call: call, text: "Done")
+            messages.append(Message(role: .tool, text: result.text, toolResult: result))
+            update()
+            try expect(state.layout.ids == ids + [messages.last!.id])
+            try expect(abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 1)
+        }
+        // The same placeholder becomes visible as soon as text or a terminal
+        // failure/stop label arrives; filtering must not discard those rows.
+        messages.append(Message(role: .assistant, text: "", status: .streaming))
+        update()
+        let count = state.layout.ids.count
+        messages[messages.count - 1].text = "Reply"
+        update()
+        try expect(state.layout.ids.count == count + 1)
+        for status in [Message.Status.interrupted, .failed] {
+            messages[messages.count - 1].text = ""
+            messages[messages.count - 1].status = status
+            update()
+            try expect(state.layout.ids.last == messages.last!.id)
+        }
+    }
+
     func expandedToolContentStaysInsideCommittedRowBounds() throws {
         _ = NSApplication.shared
         let output = (0..<12).map { "Output line \($0)" }.joined(separator: "\n")
