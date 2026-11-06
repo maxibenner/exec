@@ -32,13 +32,13 @@ struct SessionSidebar: View {
                     store.moveSidebarSessions(from: offsets, to: destination)
                 }
             } header: {
-                HStack {
+                HStack(alignment: .firstTextBaseline) {
                     Text("Sessions")
                     Spacer()
                     Button { store.newConversation() } label: {
                         Label("New Chat", systemImage: "square.and.pencil")
                             .labelStyle(.iconOnly)
-                            .frame(width: 24, height: 24)
+                            .frame(width: 24, height: 24, alignment: .trailing)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
