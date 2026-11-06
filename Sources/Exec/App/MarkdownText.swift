@@ -97,7 +97,16 @@ import AppKit
                         if row.kind == .tableHeaderRow {
                             cell.backgroundColor = .quaternarySystemFill
                         }
-                        cell.setWidth(0.5, type: .absoluteValueType, for: .border)
+                        // Give each shared edge one owner so separate-border layout
+                        // keeps the same stroke thickness inside and around the table.
+                        cell.setWidth(0.5, type: .absoluteValueType, for: .border, edge: .minX)
+                        cell.setWidth(0.5, type: .absoluteValueType, for: .border, edge: .minY)
+                        if column == columns.count - 1 {
+                            cell.setWidth(0.5, type: .absoluteValueType, for: .border, edge: .maxX)
+                        }
+                        if rowIndex == block.children.count - 1 {
+                            cell.setWidth(0.5, type: .absoluteValueType, for: .border, edge: .maxY)
+                        }
                         cell.setBorderColor(.separatorColor)
                         let alignment: NSTextAlignment
                         switch columns[column].alignment {

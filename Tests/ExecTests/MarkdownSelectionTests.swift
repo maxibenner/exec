@@ -111,6 +111,22 @@ import SwiftUI
         Text after code.
         """
         let text = MarkdownText.render(MarkdownDocument.parse(source))
+        var cells: [NSTextTableBlock] = []
+        text.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: text.length)) { value, _, _ in
+            if let style = value as? NSParagraphStyle, let cell = style.textBlocks.last as? NSTextTableBlock,
+               cell.table.numberOfColumns > 1 {
+                cells.append(cell)
+            }
+        }
+        for cell in cells {
+            let right = cells.first { $0.table === cell.table && $0.startingRow == cell.startingRow && $0.startingColumn == cell.startingColumn + 1 }
+            let below = cells.first { $0.table === cell.table && $0.startingColumn == cell.startingColumn && $0.startingRow == cell.startingRow + 1 }
+            // Each divider, including outer edges, has exactly one half-point stroke.
+            try expect(cell.width(for: .border, edge: .maxX) + (right?.width(for: .border, edge: .minX) ?? 0) == 0.5)
+            try expect(cell.width(for: .border, edge: .maxY) + (below?.width(for: .border, edge: .minY) ?? 0) == 0.5)
+            if cell.startingRow == 0 { try expect(cell.width(for: .border, edge: .minY) == 0.5) }
+            if cell.startingColumn == 0 { try expect(cell.width(for: .border, edge: .minX) == 0.5) }
+        }
         for width: CGFloat in [320, 500, 820] {
             let host = NSHostingView(rootView: LinkedText(text: text).frame(width: width))
             host.frame.size = host.fittingSize
