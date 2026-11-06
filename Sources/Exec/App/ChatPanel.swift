@@ -93,6 +93,9 @@ import Observation
         NSApp.activate(ignoringOtherApps: true)
         if let window { panel.beginSheetModal(for: window, completionHandler: completion) }
         else { panel.begin(completionHandler: completion) }
+        // Apply after presentation so the native picker's restored geometry does
+        // not retain an oversized width from an earlier invocation.
+        panel.setContentSize(NSSize(width: 760, height: 500))
     }
 
     func send() { if canNavigate { library.send(in: current) } }
