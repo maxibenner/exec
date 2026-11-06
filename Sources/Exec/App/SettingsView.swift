@@ -12,7 +12,7 @@ struct SettingsView: View {
             systemPromptSection
                 .tabItem { Label("System Prompt", systemImage: "text.alignleft") }
         }
-        .frame(minWidth: 520, idealWidth: 560, minHeight: 360, idealHeight: 420)
+        .frame(minWidth: 480, idealWidth: 500, minHeight: 360, idealHeight: 420)
     }
 
     private var generalSection: some View {
@@ -61,14 +61,21 @@ struct SettingsView: View {
 
     private var systemPromptSection: some View {
         @Bindable var settings = store
-        return Form {
-            Section("System Prompt") {
-                TextEditor(text: $settings.systemPrompt)
-                    .font(.body)
-                    .accessibilityLabel("System Prompt")
-                    .frame(minHeight: 220)
-            }
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("System Prompt")
+                .font(.headline)
+            TextEditor(text: $settings.systemPrompt)
+                .font(.body)
+                .accessibilityLabel("System Prompt")
+                .padding(6)
+                .background(Color(nsColor: .textBackgroundColor))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
+                .frame(maxWidth: .infinity, minHeight: 220, maxHeight: .infinity)
         }
-        .formStyle(.grouped)
+        .padding(20)
     }
 }
