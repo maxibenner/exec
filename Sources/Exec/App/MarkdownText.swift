@@ -7,7 +7,22 @@ import AppKit
     static func render(_ blocks: [MarkdownBlock]) -> NSAttributedString {
         let renderer = Renderer()
         for block in blocks { renderer.append(block) }
-        return renderer.text
+        // Paragraph separators belong between blocks, not after the reply. A
+        // trailing newline creates an empty TextKit line on top of row spacing.
+        // Boxed content (especially table cells) still needs its terminator.
+        let text = renderer.text
+        if text.length > 0, text.string.hasSuffix("\n"),
+           let style = text.attribute(.paragraphStyle, at: text.length - 1, effectiveRange: nil) as? NSParagraphStyle,
+           style.textBlocks.isEmpty {
+            text.deleteCharacters(in: NSRange(location: text.length - 1, length: 1))
+            if text.length > 0 {
+                let finalStyle = style.mutableCopy() as! NSMutableParagraphStyle
+                finalStyle.paragraphSpacing = 0
+                let range = (text.string as NSString).paragraphRange(for: NSRange(location: text.length - 1, length: 0))
+                text.addAttribute(.paragraphStyle, value: finalStyle, range: range)
+            }
+        }
+        return text
     }
 
     @MainActor private final class Renderer {

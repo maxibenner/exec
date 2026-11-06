@@ -3,6 +3,26 @@ import AppKit
 @MainActor
 struct LinkedTextTests {
     func measuresWrappingAcrossWidthsAndUpdates() throws {
+        // Markdown must not reserve an extra empty line after ordinary replies.
+        let source = "That confirms the fix is the latest commit. One more call below to check whether the placement stays consistent."
+        let rendered = MarkdownText.render(MarkdownDocument.parse(source))
+        let plain = LinkedText.attributed(AttributedString(source))
+        try expect(rendered.string == source)
+        for width: CGFloat in [390, 750] {
+            try expect(LinkedText.measuredSize(of: rendered, width: width).height ==
+                       LinkedText.measuredSize(of: plain, width: width).height)
+        }
+        let paragraphs = MarkdownText.render(MarkdownDocument.parse("First paragraph.\n\nSecond paragraph."))
+        try expect(paragraphs.string == "First paragraph.\nSecond paragraph.")
+        let firstStyle = paragraphs.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as! NSParagraphStyle
+        let lastStyle = paragraphs.attribute(.paragraphStyle, at: paragraphs.length - 1, effectiveRange: nil) as! NSParagraphStyle
+        try expect(firstStyle.paragraphSpacing == 10 && lastStyle.paragraphSpacing == 0)
+        for source in ["```\ncode\n```", "| A | B |\n| --- | --- |\n| one | two |"] {
+            let boxed = MarkdownText.render(MarkdownDocument.parse(source))
+            try expect(boxed.string.hasSuffix("\n"))
+            try expect(LinkedText.measuredSize(of: boxed, width: 750).height > 0)
+        }
+
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
         let text = NSMutableAttributedString(
