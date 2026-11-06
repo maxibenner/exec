@@ -33,6 +33,8 @@ struct ToolMessageView: View {
                         WebSearchView(result: search)
                     } else {
                         ToolTextSection(title: presentation.outputTitle, text: presentation.output, emptyText: "No output")
+                            // Match the inner code inset used by edit diffs.
+                            .padding(result.call.name == "read_file" ? 10 : 0)
                     }
                 }
             }

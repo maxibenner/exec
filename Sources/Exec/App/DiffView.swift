@@ -45,23 +45,15 @@ struct DiffView: View {
         Group {
             if sideBySide {
                 HStack(alignment: .top, spacing: 0) {
-                    column("Before", text: rendered.before)
+                    code(rendered.before)
                     Divider()
-                    column("After", text: rendered.after)
+                    code(rendered.after)
                 }
             } else {
                 code(rendered.unified)
             }
         }
         .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func column(_ title: String, text: AttributedString) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.caption.weight(.medium)).foregroundStyle(.secondary).padding(.horizontal, 10)
-            code(text)
-        }
-        .padding(.top, 8).frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func code(_ text: AttributedString) -> some View {

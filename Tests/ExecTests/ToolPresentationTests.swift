@@ -111,5 +111,27 @@ import SwiftUI
         let texts = fields(in: host).map(\.stringValue)
         try expect(!texts.contains(edit.text) && !texts.contains("file.swift"))
         try expect(texts.contains { $0.contains("old content") } && texts.contains { $0.contains("new content") })
+
+        // Read output starts at the same inset as both unified and side-by-side edits.
+        let read = result("read_file", #"{"path":"file.swift"}"#, "1: old content")
+        for width in [CGFloat(600), 820] {
+            func contentOrigin(_ result: ToolResult, containing text: String) throws -> CGPoint {
+                let state = TranscriptState()
+                let id = UUID()
+                state.expanded[id] = true
+                let host = NSHostingView(rootView: ToolMessageView(result: result, state: state, messageID: id).frame(width: width))
+                host.frame.size = host.fittingSize
+                host.layoutSubtreeIfNeeded()
+                guard let field = fields(in: host).first(where: { $0.isSelectable && $0.stringValue.contains(text) }) else {
+                    throw CheckFailure(description: "Expected expanded tool content")
+                }
+                let frame = field.convert(field.bounds, to: host)
+                return CGPoint(x: frame.minX, y: host.isFlipped ? frame.minY : host.bounds.height - frame.maxY)
+            }
+            let readOrigin = try contentOrigin(read, containing: read.text)
+            let editOrigin = try contentOrigin(edit, containing: "old content")
+            try expect(abs(readOrigin.x - editOrigin.x) < 1)
+            try expect(abs(readOrigin.y - editOrigin.y) < 1)
+        }
     }
 }
