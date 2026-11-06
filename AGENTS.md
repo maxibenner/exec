@@ -22,7 +22,7 @@
 - No automatic retries of inference or rotating-token exchanges; failures can occur after the server performed the operation.
 - Preserve explicit cancellation and distinguish interrupted/failed turns from completed context.
 - Use stable code signing when a certificate is available; never silently change signing identity or relax Keychain access controls.
-- Do not write progress statuses or hints into the UI. E.g. "Chat only - no file or shell tools yet". The only exception is keyboard shortcut hints on sidebar items (e.g. ⌘1, ⌘2) showing their available navigation shortcuts.
+- Do not write progress statuses or hints into the UI. E.g. "Chat only - no file or shell tools yet". The only exception is keyboard shortcut hints on sidebar items (e.g. ⌘1, ⌘2) showing their available navigation shortcuts. It is okay to use UI hints/descriptions if it is important context for evaluating the functionality of the feature.
 
 ## Verification
 
