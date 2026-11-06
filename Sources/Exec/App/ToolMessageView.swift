@@ -38,7 +38,8 @@ struct ToolMessageView: View {
                     }
                 }
             }
-            .padding(.top, 12)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
         } label: {
             ToolCallHeader(presentation: presentation)
         }
@@ -47,7 +48,6 @@ struct ToolMessageView: View {
             transaction.animation = nil
             transaction.disablesAnimations = true
         }
-        .padding(12)
         .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
     }
 }
@@ -124,6 +124,7 @@ private struct InstantToolDisclosureStyle: DisclosureGroupStyle {
                     configuration.label
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
