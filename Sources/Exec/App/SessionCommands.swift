@@ -4,7 +4,16 @@ private struct DeleteSidebarSessionKey: FocusedValueKey {
     typealias Value = @MainActor () -> Void
 }
 
+private struct DetachSidebarSessionKey: FocusedValueKey {
+    typealias Value = @MainActor () -> Void
+}
+
 extension FocusedValues {
+    var detachSidebarSession: (@MainActor () -> Void)? {
+        get { self[DetachSidebarSessionKey.self] }
+        set { self[DetachSidebarSessionKey.self] = newValue }
+    }
+
     var deleteSidebarSession: (@MainActor () -> Void)? {
         get { self[DeleteSidebarSessionKey.self] }
         set { self[DeleteSidebarSessionKey.self] = newValue }
@@ -16,6 +25,7 @@ struct SessionCommands: Commands {
     let store: ChatLibrary?
     let windows: SessionWindows?
     @FocusedValue(\.deleteSidebarSession) private var deleteSidebarSession
+    @FocusedValue(\.detachSidebarSession) private var detachSidebarSession
 
     var body: some Commands {
         CommandMenu("Sessions") {
@@ -35,11 +45,9 @@ struct SessionCommands: Commands {
             if let id = windows?.activeDetachedID {
                 Button("Move Back to Main Window") { windows?.attach(id) }
             } else {
-                Button("Open in New Window") {
-                    if let id = store?.sidebarSelectionID { windows?.detach(id) }
-                }
-                .disabled(store?.canReorderSessions != true ||
-                          store?.sidebarSessions.contains(where: { $0.id == store?.sidebarSelectionID && !$0.unreadable }) != true)
+                Button("Open in New Window") { detachSidebarSession?() }
+                    .keyboardShortcut("d", modifiers: .command)
+                    .disabled(detachSidebarSession == nil)
             }
 
             Divider()

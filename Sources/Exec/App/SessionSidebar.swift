@@ -20,21 +20,42 @@ struct SessionSidebar: View {
         }
     }
 
+    private var detachSelection: (@MainActor () -> Void)? {
+        guard store.canReorderSessions,
+              let selected = store.sidebarSessions.first(where: { $0.id == store.sidebarSelectionID }),
+              !selected.unreadable else { return nil }
+        return {
+            guard store.canReorderSessions, store.sidebarSelectionID == selected.id else { return }
+            windows.detach(selected.id)
+        }
+    }
+
     var body: some View {
-        SessionTable(store: store, windows: windows, open: open, delete: delete, rename: { session in
-            guard store.canNavigate else { return }
-            renameID = session.id; renameTitle = session.title; renaming = true
-        })
+        let shortcuts = store.sessionShortcuts
+        List(selection: Binding(get: { store.sidebarSelectionID }, set: { if let id = $0 { open(id) } })) {
+            Section("Sessions") {
+                ForEach(store.sidebarSessions) { session in
+                    SessionRow(session: session, store: store,
+                               shortcut: shortcuts.first { $0.session.id == session.id }?.number,
+                               rename: {
+                                   guard store.canNavigate else { return }
+                                   renameID = session.id; renameTitle = session.title; renaming = true
+                               }, detach: { windows.detach(session.id) }, delete: { delete(session) })
+                        .tag(session.id)
+                        .moveDisabled(!store.canReorderSessions)
+                }
+                .onMove { offsets, destination in
+                    store.moveSidebarSessions(from: offsets, to: destination)
+                }
+            }
+        }
+        .listStyle(.sidebar)
         .disabled(store.authenticating)
         .allowsHitTesting(store.canNavigate)
-        // Keep deletion scoped to sidebar focus; text fields retain their native
-        // Command-Delete. The native table also handles this in its responder chain.
+        // Keep Command-Delete scoped to list focus; text fields retain their
+        // native editing command through the menu key-equivalent system.
         .focusedValue(\.deleteSidebarSession, deleteSelection)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            Text("Sessions").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 6)
-        }
+        .focusedValue(\.detachSidebarSession, detachSelection)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Divider()

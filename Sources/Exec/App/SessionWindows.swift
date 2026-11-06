@@ -9,7 +9,6 @@ import Observation
     weak var mainWindow: NSWindow?
     @ObservationIgnored var reopenMainWindow: (() -> Void)?
     private(set) var activeDetachedID: UUID?
-    var draggingSessionID: UUID?
     @ObservationIgnored private var controllers: [UUID: DetachedSessionController] = [:]
     @ObservationIgnored private var presentations: [ObjectIdentifier: TranscriptState] = [:]
 

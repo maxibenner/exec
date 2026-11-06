@@ -111,34 +111,12 @@ import SwiftUI
         try expect(!library.openConversations.contains { $0 === detached })
     }
 
-    func dragCancellationAndForeignPayloadsAreRejected() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let library = try ChatLibrary(provider: FakeProvider(), sessions: SessionStore(directory: root))
-        let windows = SessionWindows(library: library)
-        let pasteboard = NSPasteboard.withUniqueName()
-        defer { pasteboard.releaseGlobally() }
-        let unknown = UUID()
-        pasteboard.writeObjects([SessionDrag.item(for: unknown)])
-        try expect(SessionDrag.session(in: pasteboard, windows: windows) == nil)
-        windows.draggingSessionID = unknown
-        try expect(SessionDrag.session(in: pasteboard, windows: windows) == nil)
-        let frame = NSRect(x: 0, y: 0, width: 700, height: 500)
-        let outside = NSPoint(x: 800, y: 600)
-        try expect(SessionDrag.shouldDetach(operation: [], point: outside, sourceFrame: frame, mouseReleased: true, cancelled: false))
-        try expect(!SessionDrag.shouldDetach(operation: .move, point: outside, sourceFrame: frame, mouseReleased: true, cancelled: false))
-        try expect(!SessionDrag.shouldDetach(operation: [], point: .zero, sourceFrame: frame, mouseReleased: true, cancelled: false))
-        try expect(!SessionDrag.shouldDetach(operation: [], point: outside, sourceFrame: frame, mouseReleased: false, cancelled: false))
-        try expect(!SessionDrag.shouldDetach(operation: [], point: outside, sourceFrame: frame, mouseReleased: true, cancelled: true))
-    }
-
-    func nativeSidebarSelectionDeletionAndReattachment() async throws {
-        _ = NSApplication.shared
+    func sidebarReorderingPreservesDetachedConversations() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let provider = FakeProvider()
         let sessions = SessionStore(directory: root)
-        for index in 1...3 {
+        for index in 1...4 {
             let messages = [Message(role: .user, text: "Sidebar session \(index)")]
             try await sessions.save(SessionSnapshot(identity: provider.conversationIdentity, selectedModel: "test",
                 messages: messages, history: messages, activeTurn: false), id: UUID())
@@ -147,54 +125,33 @@ import SwiftUI
         defer { library.stopAll() }
         library.restore()
         try await wait { !library.hasRunningOperations }
-        let windows = SessionWindows(library: library)
-        var deleted: UUID?
-        let host = NSHostingView(rootView: SessionSidebar(store: library, windows: windows,
-            open: { library.openSession($0) }, delete: { deleted = $0.id }))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 260, height: 600),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = host
-        defer { window.close() }
-        host.layoutSubtreeIfNeeded()
-        func findTable(_ view: NSView) -> NSTableView? {
-            if let table = view as? NSTableView { return table }
-            return view.subviews.lazy.compactMap { findTable($0) }.first
-        }
-        guard let table = findTable(host) else { throw CheckFailure(description: "Missing native session table") }
-        try expect(table.draggingDestinationFeedbackStyle == .regular)
         let order = library.sidebarSessions.map(\.id)
-        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-        try await wait { !library.navigating }
-        window.makeFirstResponder(table)
-        let down = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
-            windowNumber: window.windowNumber, context: nil, characters: "\u{f701}",
-            charactersIgnoringModifiers: "\u{f701}", isARepeat: false, keyCode: 125)!
-        table.keyDown(with: down)
-        try await wait { !library.navigating }
-        try expect(table.selectedRow == 1 && library.sidebarSelectionID == order[1])
-        let delete = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
-            windowNumber: window.windowNumber, context: nil, characters: "\u{7f}",
-            charactersIgnoringModifiers: "\u{7f}", isARepeat: false, keyCode: 51)!
-        table.keyDown(with: delete)
-        try expect(deleted == order[1])
-        let presentation = windows.presentation(for: library.current)
-        presentation.expanded[UUID()] = true
-        windows.detach(order[1])
-        defer { windows.attach(order[1]) }
-        try expect(!library.sessionShortcuts.contains { $0.session.id == order[1] })
-        let pasteboard = NSPasteboard.withUniqueName()
-        defer { pasteboard.releaseGlobally() }
-        pasteboard.writeObjects([SessionDrag.item(for: order[1])])
-        try expect(SessionDrag.session(in: pasteboard, windows: windows) == nil)
-        windows.draggingSessionID = order[1]
-        try expect(SessionDrag.session(in: pasteboard, windows: windows) == order[1])
-        windows.attach(order[1], before: order[0], reorder: true)
+        var detached: ChatStore?
+        library.detachSession(order[1]) { detached = $0 }
         try await wait { !library.hasRunningOperations }
-        try expect(library.sidebarSessions.map(\.id) == [order[1], order[0], order[2]])
-        try expect(windows.presentation(for: library.current) === presentation)
+        detached?.draft = "Detached draft"
+        let selected = library.sidebarSelectionID
+        try expect(library.sidebarSessions.map(\.id) == [order[0], order[2], order[3]])
+
+        // Visible row 1 is the third stored session, not the detached session.
+        library.moveSidebarSessions(from: [1], to: 0)
+        try await wait { !library.hasRunningOperations }
+        try expect(library.sidebarSessions.map(\.id) == [order[2], order[0], order[3]])
+        try expect(library.detachedSessionIDs == [order[1]] && detached?.draft == "Detached draft")
+        try expect(library.sidebarSelectionID == selected)
+        library.moveSidebarSessions(from: [0, 1], to: 3)
+        try await wait { !library.hasRunningOperations }
+        try expect(library.sidebarSessions.map(\.id) == [order[3], order[2], order[0]])
+        try expect(library.sessionShortcuts.map { $0.session.id } == library.sidebarSessions.map(\.id))
+        let beforeInvalid = library.sessionList.map(\.id)
+        library.moveSidebarSessions(from: [3], to: 0)
+        library.moveSidebarSessions(from: [0], to: 4)
+        try expect(!library.navigating && library.sessionList.map(\.id) == beforeInvalid)
         let persisted = try await sessions.list(identity: provider.conversationIdentity)
-        try expect(persisted.map(\.id) == library.sidebarSessions.map(\.id))
+        try expect(persisted.map(\.id) == beforeInvalid)
+        library.attachSession(order[1])
+        try expect(library.current === detached && library.current.draft == "Detached draft")
+        try expect(library.sidebarSessions.map(\.id) == beforeInvalid)
     }
 
     func pendingApprovalsMoveWithoutExecutionOrReplay() async throws {

@@ -326,6 +326,18 @@ import Observation
         moveSessions(from: IndexSet(integer: source), to: destination)
     }
 
+    /// List offsets refer only to visible rows, not conversations in other windows.
+    func moveSidebarSessions(from offsets: IndexSet, to destination: Int) {
+        let visible = sidebarSessions.map(\.id)
+        guard !offsets.isEmpty, offsets.allSatisfy({ visible.indices.contains($0) }),
+              (0...visible.count).contains(destination) else { return }
+        let ids = sessionList.map(\.id)
+        let moving = Set(offsets.map { visible[$0] })
+        let sources = IndexSet(ids.indices.filter { moving.contains(ids[$0]) })
+        let target = destination < visible.count ? ids.firstIndex(of: visible[destination])! : ids.count
+        moveSessions(from: sources, to: target)
+    }
+
     func moveSessions(from offsets: IndexSet, to destination: Int) {
         let ids = sessionList.map(\.id)
         guard canReorderSessions, !offsets.isEmpty,

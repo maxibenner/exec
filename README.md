@@ -35,6 +35,8 @@ You can also open `Package.swift` in Xcode. Builds are not notarized for distrib
 | Stop the current operation | **Escape**, **⌘.**, or the animated indicator |
 | Deny a pending tool approval | **Deny** button |
 | Rename or delete a conversation | Sidebar row context menu |
+| Reorder conversations | Drag rows within the sidebar |
+| Open the highlighted conversation in a new window | **⌘D** while the sidebar is focused, or the row context menu |
 | Refresh models, reconnect, or sign out | Account menu at the bottom of the sidebar |
 
 Switching conversations does not stop background work. Each conversation keeps its own runner, model context, workspace, draft, approval queue, and auto-approval setting. Stop affects only the displayed conversation. Account changes are blocked while a turn is running.
