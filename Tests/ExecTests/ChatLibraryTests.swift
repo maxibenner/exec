@@ -47,7 +47,9 @@ import Observation
         }
         defer { pending?.resume(); library.stopAll() }
         library.restore()
+        try expect(library.current.isRestoringSession)
         try await wait { pending != nil }
+        try expect(!library.current.isRestoringSession) // Show local data even while model discovery is stalled.
         try expect(library.authenticating)
         try expect(library.currentSessionID == ids[0])
         try expect(library.sidebarSessions.map(\.id) == expected)
@@ -55,6 +57,34 @@ import Observation
         pending = nil
         try await wait { !library.hasRunningOperations }
         try expect(library.sidebarSessions.map(\.id) == expected)
+    }
+
+    private func startupRestorationSettles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = SessionStore(directory: root)
+        let library = try ChatLibrary(provider: FakeProvider(), sessions: sessions)
+        defer { library.stopAll() }
+        library.restore()
+        try expect(library.current.isRestoringSession)
+        try await wait { !library.hasRunningOperations }
+        try expect(!library.current.isRestoringSession && library.error == nil)
+        try expect(!library.hasConversation(library.current)) // A genuinely empty library is ready to present.
+
+        let cancelled = ChatStore(provider: FakeProvider(), sessions: sessions)
+        cancelled.restore()
+        cancelled.stop() // Cancel before local restoration gets a chance to run.
+        await cancelled.waitUntilIdle()
+        try expect(!cancelled.isRestoringSession && !cancelled.busy)
+
+        // A file in place of the directory makes local restoration fail.
+        try FileManager.default.removeItem(at: root)
+        try Data("not a directory".utf8).write(to: root)
+        let failed = ChatStore(provider: FakeProvider(), sessions: SessionStore(directory: root))
+        failed.restore()
+        await failed.waitUntilIdle()
+        try expect(!failed.isRestoringSession && failed.error != nil)
     }
 
     private func initialWorkspaceSelection() async throws {
@@ -109,6 +139,7 @@ import Observation
     func concurrentTurnsKeepContextDraftsAndSelectionIsolated() async throws {
         try await initialWorkspaceSelection()
         try await startupCatalogPrecedesModelDiscovery()
+        try await startupRestorationSettles()
         try await autoApprovalSurvivesRelaunch()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

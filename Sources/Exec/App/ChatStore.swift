@@ -40,6 +40,8 @@ import Observation
     var connectionTitle: String { provider.connectionTitle }
     var error: String?
     private(set) var busy = false
+    // Startup presentation waits for local data, not remote model discovery.
+    private(set) var isRestoringSession = false
     private(set) var isSending = false
     private(set) var isCompacting = false
     var canEditDraft: Bool { !busy || isSending || isCompacting }
@@ -166,6 +168,8 @@ import Observation
     }
 
     func restore() {
+        guard !busy else { return }
+        isRestoringSession = true
         run { if self.account != nil { try await self.loadModels() } }
     }
 
@@ -698,6 +702,7 @@ import Observation
             defer {
                 self.account = self.provider.account
                 self.busy = false
+                self.isRestoringSession = false
                 self.isSending = false
                 self.isCompacting = false
                 self.openingSessionID = nil
@@ -713,6 +718,7 @@ import Observation
                 await self.waitForPendingSave()
                 try Task.checkCancellation()
                 if restoreSession { try await self.loadSavedSession() }
+                self.isRestoringSession = false
                 try Task.checkCancellation()
                 try await operation()
                 completed = true

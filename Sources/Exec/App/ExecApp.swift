@@ -10,7 +10,7 @@ import SwiftUI
     var body: some Scene {
         Window("Exec", id: "chat") {
             Group {
-                if let store, let windows {
+                if let store, let windows, !store.current.isRestoringSession {
                     ChatView(store: store, windows: windows)
                 } else if let startupError {
                     VStack(spacing: 16) {
@@ -19,7 +19,7 @@ import SwiftUI
                     }
                     .padding().frame(maxWidth: 480)
                 } else {
-                    ProgressView().accessibilityLabel("Opening Exec")
+                    StartupLoadingView()
                 }
             }
             .frame(minWidth: 720, minHeight: 480)
@@ -47,10 +47,10 @@ import SwiftUI
             do {
                 let provider = try await OpenAIProvider.restored()
                 let library = try ChatLibrary(provider: provider, sessions: try SessionStore.applicationStore())
+                library.restore()
                 store = library
                 windows = SessionWindows(library: library)
                 delegate.store = library
-                library.restore()
             } catch {
                 startupError = error.localizedDescription
             }
