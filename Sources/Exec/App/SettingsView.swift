@@ -12,7 +12,8 @@ struct SettingsView: View {
             systemPromptSection
                 .tabItem { Label("System Prompt", systemImage: "text.alignleft") }
         }
-        .frame(minWidth: 480, idealWidth: 500, minHeight: 360, idealHeight: 420)
+        .frame(width: 500)
+        .frame(minHeight: 360, idealHeight: 420)
     }
 
     private var generalSection: some View {
@@ -61,21 +62,17 @@ struct SettingsView: View {
 
     private var systemPromptSection: some View {
         @Bindable var settings = store
-        return VStack(alignment: .leading, spacing: 8) {
-            Text("System Prompt")
-                .font(.headline)
-            TextEditor(text: $settings.systemPrompt)
-                .font(.body)
-                .accessibilityLabel("System Prompt")
-                .padding(6)
-                .background(Color(nsColor: .textBackgroundColor))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
-                        .allowsHitTesting(false)
+        return GeometryReader { geometry in
+            Form {
+                Section("System Prompt") {
+                    TextEditor(text: $settings.systemPrompt)
+                        .font(.body)
+                        .accessibilityLabel("System Prompt")
+                        .scrollContentBackground(.hidden)
+                        .frame(height: max(220, geometry.size.height - 100))
                 }
-                .frame(maxWidth: .infinity, minHeight: 220, maxHeight: .infinity)
+            }
+            .formStyle(.grouped)
         }
-        .padding(20)
     }
 }

@@ -34,7 +34,8 @@ import SwiftUI
                 SettingsView(store: store)
             }
         }
-        .windowResizability(.contentMinSize)
+        .defaultSize(width: 500, height: 420)
+        .windowResizability(.contentSize)
     }
 
     private func start() {
