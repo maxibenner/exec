@@ -37,7 +37,7 @@ private struct AttachmentThumbnail: View {
     var body: some View {
         Group {
             if let image {
-                Image(nsImage: image).resizable().scaledToFit()
+                Image(nsImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: "photo")
             }
