@@ -50,9 +50,18 @@ import AppKit
                     append(child, indent: indent, containers: containers + [quote], marker: index == 0 ? marker : nil)
                 }
             case .codeBlock(let language):
-                let panel = NSTextBlock()
+                // AppKit lays out table cells but ignores standalone text-block
+                // padding/backgrounds. A single cell keeps code native/selectable.
+                let table = NSTextTable()
+                table.numberOfColumns = 1
+                table.layoutAlgorithm = .fixedLayoutAlgorithm
+                table.setContentWidth(100, type: .percentageValueType)
+                table.collapsesBorders = false
+                let panel = NSTextTableBlock(table: table, startingRow: 0, rowSpan: 1,
+                                             startingColumn: 0, columnSpan: 1)
                 panel.backgroundColor = .quaternarySystemFill
                 panel.setWidth(10, type: .absoluteValueType, for: .padding)
+                panel.setWidth(12, type: .absoluteValueType, for: .margin, edge: .maxY)
                 if let language, !language.isEmpty {
                     paragraph(AttributedString(language), indent: indent, containers: containers + [panel], size: 11)
                 }
@@ -68,8 +77,10 @@ import AppKit
                 table.numberOfColumns = columns.count
                 table.layoutAlgorithm = .fixedLayoutAlgorithm
                 table.setContentWidth(100, type: .percentageValueType)
-                table.collapsesBorders = true
-                table.setWidth(12, type: .absoluteValueType, for: .margin, edge: .maxY)
+                // Collapsed borders ignore cell margins and can paint the last
+                // border outside the text container. Separate borders keep both
+                // the outer stroke and the space below the last row in layout.
+                table.collapsesBorders = false
                 for (rowIndex, row) in block.children.enumerated() {
                     for column in columns.indices {
                         let cell = NSTextTableBlock(table: table, startingRow: rowIndex, rowSpan: 1,
@@ -78,6 +89,10 @@ import AppKit
                         // padding and borders. Percentage content widths add those
                         // insets on top and push the last column outside the view.
                         cell.setWidth(8, type: .absoluteValueType, for: .padding)
+                        // TextKit applies outer spacing to cells, not the table.
+                        if rowIndex == block.children.count - 1 {
+                            cell.setWidth(12, type: .absoluteValueType, for: .margin, edge: .maxY)
+                        }
                         cell.verticalAlignment = .top
                         if row.kind == .tableHeaderRow {
                             cell.backgroundColor = .quaternarySystemFill

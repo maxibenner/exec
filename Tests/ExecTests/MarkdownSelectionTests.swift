@@ -89,28 +89,70 @@ import SwiftUI
 
     private func verifyTableLayout() throws {
         let source = """
+        A paragraph before the table.
+
+        | Field | Value |
+        | --- | --- |
+        | Building ID | `2211–1` |
+        | City | **Stamford** |
+
+        Text after the two-column table.
+
         | Hostname | Router | Interface | Site |
         | --- | --- | --- | --- |
         | `port-channel3501.ccr92.lhr01.atlas.cogentco.com` | ccr92 | `port-channel3501` | lhr01 |
 
         Following paragraph.
+
+        ```text
+        Origin → Stamford → New York → Slough/LHR
+        ```
+
+        Text after code.
         """
         let text = MarkdownText.render(MarkdownDocument.parse(source))
         for width: CGFloat in [320, 500, 820] {
-            let storage = NSTextStorage(attributedString: text)
-            let layout = NSLayoutManager()
-            let container = NSTextContainer(size: CGSize(width: width, height: 10_000))
-            container.lineFragmentPadding = 0
-            storage.addLayoutManager(layout)
-            layout.addTextContainer(container)
+            let host = NSHostingView(rootView: LinkedText(text: text).frame(width: width))
+            host.frame.size = host.fittingSize
+            host.layoutSubtreeIfNeeded()
+            func findText(in view: NSView) -> LinkedText.TextView? {
+                if let text = view as? LinkedText.TextView { return text }
+                return view.subviews.lazy.compactMap { findText(in: $0) }.first
+            }
+            let view = findText(in: host)!
+            let layout = view.layoutManager!
+            let container = view.textContainer!
             layout.ensureLayout(for: container)
             let used = layout.usedRect(for: container)
-            try expect(used.maxX <= width + 1)
-            let tableRange = (text.string as NSString).range(of: "lhr01\n")
-            let paragraphRange = (text.string as NSString).range(of: "Following paragraph.")
-            let lastCell = layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: tableRange, actualCharacterRange: nil), in: container)
-            let following = layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: paragraphRange, actualCharacterRange: nil), in: container)
-            try expect(following.minY - lastCell.maxY >= 12)
+            try expect(used.maxX <= width)
+            // Check the entire last row, not the short text in its final cell.
+            // The old assertion passed while the tallest cell touched the next paragraph.
+            let plain = text.string as NSString
+            for (start, end, after) in [
+                ("City\n", "Stamford\n", "Text after the two-column table."),
+                ("port-channel3501.ccr92", "lhr01\n", "Following paragraph."),
+                ("Origin →", "Origin → Stamford → New York → Slough/LHR\n", "Text after code.")
+            ] {
+                let startRange = plain.range(of: start)
+                let endRange = plain.range(of: end)
+                let rowRange = NSRange(location: startRange.location, length: NSMaxRange(endRange) - startRange.location)
+                var row = NSRect.null
+                layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(forCharacterRange: rowRange, actualCharacterRange: nil)) { _, used, _, _, _ in
+                    row = row.union(used)
+                }
+                let following = layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: plain.range(of: after), actualCharacterRange: nil), in: container)
+                let style = text.attribute(.paragraphStyle, at: endRange.location, effectiveRange: nil) as! NSParagraphStyle
+                let cell = style.textBlocks.last as! NSTextTableBlock
+                let glyphIndex = layout.glyphIndexForCharacter(at: endRange.location)
+                let bounds = layout.boundsRect(for: cell, at: glyphIndex, effectiveRange: nil)
+                try expect(!bounds.isEmpty && bounds.maxX <= view.bounds.width)
+                let bottomBorder = row.maxY + cell.width(for: .padding, edge: .maxY)
+                    + ceil(cell.width(for: .border, edge: .maxY))
+                guard following.minY - bottomBorder >= 12 else {
+                    throw CheckFailure(description: "Table gap at \(width) for \(start): row=\(row), bounds=\(bounds), following=\(following)")
+                }
+            }
+            try expect(ceil(used.height) <= view.bounds.height)
         }
     }
 }
