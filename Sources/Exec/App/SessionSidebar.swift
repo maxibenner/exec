@@ -45,6 +45,7 @@ struct SessionSidebar: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .padding(.trailing, 12)
                     .help("New Chat (⌘T)")
                     .disabled(!store.canNavigate)
                 }
@@ -120,7 +121,7 @@ struct SessionRow: View {
                 if needsApproval {
                     Image(systemName: "hand.raised").foregroundStyle(.orange)
                         .help("Approval required").accessibilityLabel("Approval required")
-                } else if running {
+                } else if store.isSessionResponding(session.id) {
                     ProgressView().controlSize(.mini).accessibilityLabel("Running")
                 } else if needsAttention {
                     Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
