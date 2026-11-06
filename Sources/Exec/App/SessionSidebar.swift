@@ -12,7 +12,7 @@ struct SessionSidebar: View {
     var body: some View {
         let shortcuts = store.sessionShortcuts
         List(selection: Binding(get: { store.sidebarSelectionID }, set: { if let id = $0 { open(id) } })) {
-            Section("Sessions") {
+            Section {
                 ForEach(store.sidebarSessions) { session in
                     Button { open(session.id) } label: {
                         SessionRow(session: session, store: store,
@@ -31,6 +31,20 @@ struct SessionSidebar: View {
                 .onMove { offsets, destination in
                     store.moveSidebarSessions(from: offsets, to: destination)
                 }
+            } header: {
+                HStack {
+                    Text("Sessions")
+                    Spacer()
+                    Button { store.newConversation() } label: {
+                        Label("New Chat", systemImage: "square.and.pencil")
+                            .labelStyle(.iconOnly)
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("New Chat (⌘T)")
+                    .disabled(!store.canNavigate)
+                }
             }
         }
         .listStyle(.sidebar)
@@ -41,19 +55,6 @@ struct SessionSidebar: View {
         .allowsHitTesting(store.canNavigate)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    Button { store.newConversation() } label: {
-                        Label("New Chat", systemImage: "square.and.pencil")
-                            .labelStyle(.iconOnly)
-                            .frame(width: 32, height: 32)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("New Chat (⌘T)")
-                    .disabled(!store.canNavigate)
-                }
-                .padding(10)
                 Divider()
                 Button { showingSettings = true } label: {
                     Label("Settings", systemImage: "gearshape")
