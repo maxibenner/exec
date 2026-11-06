@@ -33,7 +33,10 @@ import Foundation
         provider.availableModels = [ChatModel(id: "test", name: "Test", efforts: [
             ChatEffort(id: "low", name: "Low"), ChatEffort(id: "high", name: "High")
         ], defaultEffort: "low"), ChatModel(id: "plain", name: "Plain")]
-        let library = try ChatLibrary(provider: provider, sessions: sessions)
+        let suite = "ExecEffortTests.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let library = try ChatLibrary(provider: provider, sessions: sessions, preferences: preferences)
         library.restore()
         try await wait { !library.hasRunningOperations }
         try expect(library.selectedEffort == nil)
@@ -54,10 +57,12 @@ import Foundation
         let saved = try await sessions.load(id: firstID)
         try expect(saved?.effort == "high")
 
+        library.defaultModel = "test"
+        library.defaultEffort = "low"
+        try expect(library.selectedEffort == "high") // Defaults never change the active session.
         library.newConversation()
         try await wait { !library.navigating }
-        try expect(library.selectedEffort == "high")
-        library.selectedEffort = "low"
+        try expect(library.selectedModel == "test" && library.selectedEffort == "low")
         library.draft = "Second"
         library.send()
         try await wait { !library.hasRunningOperations }
@@ -68,7 +73,8 @@ import Foundation
 
         // Selection is persisted independently of the immediate resident switch.
         try await wait { !library.hasRunningOperations }
-        let restarted = try ChatLibrary(provider: provider, sessions: sessions)
+        let restarted = try ChatLibrary(provider: provider, sessions: sessions, preferences: preferences)
+        try expect(restarted.defaultModel == "test" && restarted.defaultEffort == "low")
         restarted.restore()
         try await wait { !restarted.hasRunningOperations }
         try expect(restarted.selectedEffort == "high")
@@ -78,6 +84,31 @@ import Foundation
         restarted.selectedEffort = "high"
         restarted.current.models = [ChatModel(id: "test", name: "Test")]
         try expect(restarted.selectedEffort == nil) // A refreshed catalog can remove an effort.
+
+        library.defaultModel = "plain"
+        try expect(library.defaultEffort == nil)
+        library.newConversation()
+        try await wait { !library.hasRunningOperations }
+        try expect(library.selectedModel == "plain" && library.selectedEffort == nil)
+        library.defaultModel = "removed-model"
+        library.defaultEffort = "unsupported"
+        library.newConversation()
+        try await wait { !library.hasRunningOperations }
+        try expect(library.selectedModel == "test" && library.selectedEffort == nil)
+        try expect(library.defaultModel == "removed-model") // Retain the preference across catalog changes.
+
+        // First launch without a saved session also honors defaults after discovery.
+        for model in ["test", ""] {
+            preferences.set(model, forKey: "defaultSessionModel")
+            preferences.set("high", forKey: "defaultSessionEffort")
+            let fresh = try ChatLibrary(provider: provider,
+                                        sessions: SessionStore(directory: root.appendingPathComponent(UUID().uuidString)),
+                                        preferences: preferences)
+            fresh.restore()
+            try await wait { !fresh.hasRunningOperations }
+            try expect(fresh.selectedModel == "test" && fresh.selectedEffort == "high")
+            fresh.stopAll()
+        }
 
         var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved!)) as! [String: Any]
         legacy.removeValue(forKey: "effort")

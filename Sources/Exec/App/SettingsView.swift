@@ -19,6 +19,28 @@ struct SettingsView: View {
     private var generalSection: some View {
         @Bindable var settings = store
         return Form {
+            Section("New Sessions") {
+                Picker("Default model", selection: $settings.defaultModel) {
+                    Text("Automatic").tag("")
+                    if !store.defaultModel.isEmpty, !store.models.contains(where: { $0.id == store.defaultModel }) {
+                        Text(store.defaultModel).tag(store.defaultModel)
+                    }
+                    ForEach(store.models) { model in
+                        Text(model.name).tag(model.id)
+                    }
+                }
+                Picker("Reasoning level", selection: $settings.defaultEffort) {
+                    Text("Model default").tag(String?.none)
+                    let efforts = store.defaultSessionModel?.efforts ?? []
+                    if let effort = store.defaultEffort, !efforts.contains(where: { $0.id == effort }) {
+                        Text(effort).tag(Optional(effort))
+                    }
+                    ForEach(efforts) { effort in
+                        Text(effort.name).tag(Optional(effort.id))
+                    }
+                }
+                .disabled(store.defaultSessionModel?.efforts.isEmpty != false)
+            }
             Section("Session Titles") {
                 Toggle("Generate session titles", isOn: $settings.generatedTitlesEnabled)
                 Picker("Title model", selection: $settings.titleModel) {

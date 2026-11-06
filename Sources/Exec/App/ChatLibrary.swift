@@ -43,6 +43,19 @@ import Observation
     var systemPrompt: String {
         didSet { preferences.set(systemPrompt, forKey: "systemPrompt") }
     }
+    var defaultModel: String {
+        didSet {
+            preferences.set(defaultModel, forKey: "defaultSessionModel")
+            if defaultModel != oldValue { defaultEffort = nil }
+        }
+    }
+    var defaultEffort: String? {
+        didSet { preferences.set(defaultEffort, forKey: "defaultSessionEffort") }
+    }
+    var defaultSessionModel: ChatModel? {
+        models.first { $0.id == defaultModel } ?? models.first
+    }
+
     var titleModel: String {
         didSet {
             preferences.set(titleModel, forKey: "sessionTitleModel")
@@ -53,6 +66,8 @@ import Observation
     init(provider: any ChatProvider, sessions: SessionStore, residentLimit: Int = 8,
          preferences: UserDefaults = .standard) throws {
         self.preferences = preferences
+        defaultModel = preferences.string(forKey: "defaultSessionModel") ?? ""
+        defaultEffort = preferences.string(forKey: "defaultSessionEffort")
         systemPrompt = preferences.string(forKey: "systemPrompt") ?? ""
         generatedTitlesEnabled = preferences.bool(forKey: "generatedTitlesEnabled")
         titleModel = preferences.string(forKey: "sessionTitleModel") ?? ""
@@ -61,6 +76,8 @@ import Observation
         self.sessions = sessions
         current = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions, selectOnCheckpoint: false,
                             systemPrompt: preferences.string(forKey: "systemPrompt") ?? "")
+        current.selectedModel = defaultModel
+        current.selectedEffort = defaultEffort
         observe(current)
         remember(current)
     }
@@ -479,8 +496,9 @@ import Observation
                                      selectOnCheckpoint: false, newConversation: true, workspace: workspace,
                                      systemPrompt: systemPrompt)
         conversation.models = models
-        conversation.selectedModel = current.selectedModel.isEmpty ? models.first?.id ?? "" : current.selectedModel
-        conversation.selectedEffort = current.effectiveEffort
+        conversation.selectedModel = defaultSessionModel?.id ?? defaultModel
+        conversation.selectedEffort = models.isEmpty || defaultSessionModel?.efforts.contains(where: { $0.id == defaultEffort }) == true
+            ? defaultEffort : nil
         observe(conversation)
         return conversation
     }

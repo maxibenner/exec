@@ -558,8 +558,14 @@ import Observation
     private func loadModels() async throws {
         let available = try await provider.models()
         try Task.checkCancellation()
+        // An automatic model choice can still carry a new-session reasoning
+        // preference. Validate it only after selecting the first available model.
+        let automaticEffort = selectedModel.isEmpty ? selectedEffort : nil
         models = available
         if !models.contains(where: { $0.id == selectedModel }) { selectedModel = models.first?.id ?? "" }
+        if let automaticEffort, model?.efforts.contains(where: { $0.id == automaticEffort }) == true {
+            selectedEffort = automaticEffort
+        }
         if models.isEmpty { throw ExecError("The provider returned no selectable models. Try reconnecting or updating Exec.") }
     }
 
