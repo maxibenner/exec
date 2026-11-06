@@ -41,10 +41,10 @@ struct ConversationView: View {
                         VStack(spacing: 6) {
                             Text("No Sessions")
                                 .font(.headline.bold())
-                            Text("Press ⌘T to create a new one.")
+                            Text("Press ⌘T to create one.")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
-                                .accessibilityLabel("Press Command T to create a new one.")
+                                .accessibilityLabel("Press Command T to create one.")
                         }
                     }
                     .multilineTextAlignment(.center)
