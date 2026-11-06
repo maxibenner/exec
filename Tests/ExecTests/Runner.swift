@@ -20,6 +20,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Generated titles persist with isolated context and preferences", { try await SessionTitleTests().updatesPersistWithoutChangingChatContext() }),
+            ("Title generation rejects incomplete and cancelled responses", { try await SessionTitleTests().rejectsFailedAndCancelledGeneration() }),
             ("Image file migration, deduplication and integrity", { try await ImageStorageTests().migrationAndIntegrity() }),
             ("Image generation subscription request, persistence and presentation", { try await ImageGenerationTests().roundTrip() }),
             ("Image generation validation, bounds and no retries", { try await ImageGenerationTests().failuresAndValidation() }),

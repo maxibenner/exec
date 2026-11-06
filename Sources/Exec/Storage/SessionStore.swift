@@ -209,6 +209,7 @@ actor SessionStore {
     }
 
     func rename(id: UUID, title: String, identity: String?) throws {
+        try Task.checkCancellation()
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, title.count <= 120, title.utf8.count <= 1_024,
               !title.contains(where: \.isNewline) else {

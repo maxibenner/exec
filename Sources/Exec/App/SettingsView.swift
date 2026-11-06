@@ -33,13 +33,33 @@ struct SettingsView: View {
                 case .account:
                     accountSection
                 case .general:
-                    Color.clear
+                    generalSection
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .padding(20)
         .frame(width: 480, height: 300)
+    }
+
+    private var generalSection: some View {
+        @Bindable var settings = store
+        return VStack(alignment: .leading, spacing: 20) {
+            Toggle("Generate session titles", isOn: $settings.generatedTitlesEnabled)
+            Picker("Title model", selection: $settings.titleModel) {
+                Text("Choose a model").tag("")
+                if !store.titleModel.isEmpty, !store.models.contains(where: { $0.id == store.titleModel }) {
+                    Text(store.titleModel).tag(store.titleModel)
+                }
+                ForEach(store.models) { model in
+                    Text(model.name).tag(model.id)
+                }
+            }
+            .disabled(!store.generatedTitlesEnabled)
+            Spacer()
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var accountSection: some View {

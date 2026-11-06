@@ -31,7 +31,27 @@ import Observation
     private let residentLimit: Int
     private let sessions: SessionStore
 
-    init(provider: any ChatProvider, sessions: SessionStore, residentLimit: Int = 8) throws {
+    private let preferences: UserDefaults
+    private var titleTasks: [UUID: Task<Void, Never>] = [:]
+    private var titleRequests: [UUID: UUID] = [:]
+    var generatedTitlesEnabled: Bool {
+        didSet {
+            preferences.set(generatedTitlesEnabled, forKey: "generatedTitlesEnabled")
+            if !generatedTitlesEnabled { cancelTitleGeneration() }
+        }
+    }
+    var titleModel: String {
+        didSet {
+            preferences.set(titleModel, forKey: "sessionTitleModel")
+            cancelTitleGeneration()
+        }
+    }
+
+    init(provider: any ChatProvider, sessions: SessionStore, residentLimit: Int = 8,
+         preferences: UserDefaults = .standard) throws {
+        self.preferences = preferences
+        generatedTitlesEnabled = preferences.bool(forKey: "generatedTitlesEnabled")
+        titleModel = preferences.string(forKey: "sessionTitleModel") ?? ""
         self.residentLimit = max(1, residentLimit)
         self.provider = provider
         self.sessions = sessions
@@ -84,7 +104,7 @@ import Observation
     var hasUnsavedChanges: Bool { conversations.contains { $0.hasUnsavedChanges } }
     var hasUnsentDrafts: Bool { conversations.contains { $0.hasUnsentDraft } }
     var hasRunningOperations: Bool {
-        navigating || authenticating || selectionTask != nil || conversations.contains { $0.busy || $0.isSaving }
+        navigating || authenticating || selectionTask != nil || !titleTasks.isEmpty || conversations.contains { $0.busy || $0.isSaving }
     }
 
     private var conversations: [ChatStore] {
@@ -173,6 +193,7 @@ import Observation
     }
 
     func stopAll() {
+        cancelTitleGeneration()
         navigationTask?.cancel()
         accountTask?.cancel()
         usageTask?.cancel()
@@ -185,6 +206,7 @@ import Observation
 
     private func accountOperation(_ start: () -> Void) {
         guard canModify, !conversations.contains(where: { $0.busy || $0.isSaving }) else { return }
+        cancelTitleGeneration()
         let identity = provider.conversationIdentity
         for conversation in conversations { conversation.suspendAutoApproval() }
         authenticating = true
@@ -367,6 +389,7 @@ import Observation
 
     func renameSession(_ id: UUID, title: String) {
         guard canModify, sessionList.contains(where: { $0.id == id && !$0.unreadable }) else { return }
+        cancelTitleGeneration(for: id)
         navigate {
             // Persist an unsaved idle draft/workspace session before changing its metadata.
             if let conversation = self.conversation(id) {
@@ -385,6 +408,7 @@ import Observation
 
     func deleteSession(_ id: UUID) {
         guard canDeleteSession(id) else { return }
+        cancelTitleGeneration(for: id)
         let wasDetached = detachedSessionIDs.contains(id)
         let rows = sidebarSessions.map(\.id)
         // Deleting a detached conversation must not change the main selection.
@@ -441,7 +465,52 @@ import Observation
         return conversation
     }
 
+    private func cancelTitleGeneration(for id: UUID? = nil) {
+        let ids = id.map { [$0] } ?? Array(titleTasks.keys)
+        for id in ids {
+            titleTasks.removeValue(forKey: id)?.cancel()
+            titleRequests.removeValue(forKey: id)
+        }
+    }
+
+    private func generateTitle(for conversation: ChatStore, message: Message) {
+        guard let id = conversation.currentSessionID else { return }
+        cancelTitleGeneration(for: id)
+        guard generatedTitlesEnabled, models.contains(where: { $0.id == titleModel }),
+              let summary = sessionList.first(where: { $0.id == id }) else { return }
+        let request = UUID()
+        let identity = provider.conversationIdentity
+        let model = titleModel
+        titleRequests[id] = request
+        titleTasks[id] = Task { [weak self, provider, sessions] in
+            defer {
+                if self?.titleRequests[id] == request {
+                    self?.titleTasks[id] = nil
+                    self?.titleRequests[id] = nil
+                }
+            }
+            do {
+                let title = try await SessionTitleGenerator.generate(provider: provider, model: model,
+                                                                    title: summary.title, message: message.text)
+                guard let self, !Task.isCancelled, self.titleRequests[id] == request,
+                      identity == provider.conversationIdentity else { return }
+                try await sessions.rename(id: id, title: title, identity: identity)
+                try await self.refreshCatalog()
+            } catch {
+                // Optional metadata must not fail the chat turn or retry inference.
+            }
+        }
+    }
+
     private func observe(_ conversation: ChatStore) {
+        conversation.didSendMessage = { [weak self, weak conversation] message in
+            guard let conversation else { return }
+            self?.generateTitle(for: conversation, message: message)
+        }
+        conversation.didStop = { [weak self, weak conversation] in
+            guard let id = conversation?.currentSessionID else { return }
+            self?.cancelTitleGeneration(for: id)
+        }
         conversation.didCheckpoint = { [weak self] in try await self?.refreshCatalog() }
         conversation.didFinish = { [weak self] in
             self?.trimConversations()

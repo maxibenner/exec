@@ -85,6 +85,8 @@ import Observation
     private(set) var conversationIdentity: String?
     private let selectOnCheckpoint: Bool
     var didCheckpoint: (@MainActor () async throws -> Void)?
+    var didSendMessage: (@MainActor (Message) -> Void)?
+    var didStop: (@MainActor () -> Void)?
     var didFinish: (@MainActor () -> Void)?
     private var sessionActivityDate = Date() { didSet { checkpointRevision += 1 } }
     private var activeTurn = false { didSet { checkpointRevision += 1 } }
@@ -305,6 +307,7 @@ import Observation
             self.sessionActivityDate = Date()
             self.activeTurn = true
             try await self.checkpoint()
+            self.didSendMessage?(user)
             var usedCallIDs = Set<String>()
             while true {
                 try Task.checkCancellation()
@@ -518,6 +521,7 @@ import Observation
     }
 
     func stop() {
+        didStop?()
         isQueuePaused = !queuedMessages.isEmpty
         task?.cancel()
     }
