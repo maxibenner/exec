@@ -51,7 +51,7 @@ import AppKit
                 }
             case .codeBlock(let language):
                 let panel = NSTextBlock()
-                panel.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.12)
+                panel.backgroundColor = .quaternarySystemFill
                 panel.setWidth(10, type: .absoluteValueType, for: .padding)
                 if let language, !language.isEmpty {
                     paragraph(AttributedString(language), indent: indent, containers: containers + [panel], size: 11)
@@ -69,12 +69,19 @@ import AppKit
                 table.layoutAlgorithm = .fixedLayoutAlgorithm
                 table.setContentWidth(100, type: .percentageValueType)
                 table.collapsesBorders = true
+                table.setWidth(12, type: .absoluteValueType, for: .margin, edge: .maxY)
                 for (rowIndex, row) in block.children.enumerated() {
                     for column in columns.indices {
                         let cell = NSTextTableBlock(table: table, startingRow: rowIndex, rowSpan: 1,
                                                     startingColumn: column, columnSpan: 1)
-                        cell.setContentWidth(100 / CGFloat(columns.count), type: .percentageValueType)
-                        cell.setWidth(6, type: .absoluteValueType, for: .padding)
+                        // Let fixed layout divide the available width, including cell
+                        // padding and borders. Percentage content widths add those
+                        // insets on top and push the last column outside the view.
+                        cell.setWidth(8, type: .absoluteValueType, for: .padding)
+                        cell.verticalAlignment = .top
+                        if row.kind == .tableHeaderRow {
+                            cell.backgroundColor = .quaternarySystemFill
+                        }
                         cell.setWidth(0.5, type: .absoluteValueType, for: .border)
                         cell.setBorderColor(.separatorColor)
                         let alignment: NSTextAlignment

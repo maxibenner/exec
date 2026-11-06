@@ -51,7 +51,10 @@ struct LinkedText: NSViewRepresentable {
             var attributes: [NSAttributedString.Key: Any] = [
                 .font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph
             ]
-            if intent.contains(.code) { attributes[.backgroundColor] = NSColor.secondaryLabelColor.withAlphaComponent(0.12) }
+            if intent.contains(.code) {
+                attributes[.backgroundColor] = NSColor.quaternarySystemFill
+                attributes[MarkdownText.codeSnippet] = String(source[run.range].characters)
+            }
             if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
             if let url = run.link, MarkdownDocument.allowsLink(url) {
                 attributes[.link] = url

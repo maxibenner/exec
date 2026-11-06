@@ -54,6 +54,11 @@ import SwiftUI
         let cell = text.attribute(.paragraphStyle, at: plain.range(of: "two").location, effectiveRange: nil) as! NSParagraphStyle
         try expect(cell.textBlocks.last is NSTextTableBlock && cell.alignment == .right)
 
+        let inlineIndex = plain.range(of: "inline code").location
+        try expect(text.attribute(MarkdownText.codeSnippet, at: inlineIndex, effectiveRange: nil) as? String == "inline code")
+        try expect(text.attribute(.backgroundColor, at: inlineIndex, effectiveRange: nil) as? NSColor == .quaternarySystemFill)
+        try verifyTableLayout()
+
         // Exercise native selection and export without touching the user's clipboard.
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
@@ -80,5 +85,32 @@ import SwiftUI
         try expect(view.selectedRange() == range)
         view.update(NSAttributedString(string: "Short"))
         try expect(NSMaxRange(view.selectedRange()) <= 5)
+    }
+
+    private func verifyTableLayout() throws {
+        let source = """
+        | Hostname | Router | Interface | Site |
+        | --- | --- | --- | --- |
+        | `port-channel3501.ccr92.lhr01.atlas.cogentco.com` | ccr92 | `port-channel3501` | lhr01 |
+
+        Following paragraph.
+        """
+        let text = MarkdownText.render(MarkdownDocument.parse(source))
+        for width: CGFloat in [320, 500, 820] {
+            let storage = NSTextStorage(attributedString: text)
+            let layout = NSLayoutManager()
+            let container = NSTextContainer(size: CGSize(width: width, height: 10_000))
+            container.lineFragmentPadding = 0
+            storage.addLayoutManager(layout)
+            layout.addTextContainer(container)
+            layout.ensureLayout(for: container)
+            let used = layout.usedRect(for: container)
+            try expect(used.maxX <= width + 1)
+            let tableRange = (text.string as NSString).range(of: "lhr01\n")
+            let paragraphRange = (text.string as NSString).range(of: "Following paragraph.")
+            let lastCell = layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: tableRange, actualCharacterRange: nil), in: container)
+            let following = layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: paragraphRange, actualCharacterRange: nil), in: container)
+            try expect(following.minY - lastCell.maxY >= 12)
+        }
     }
 }
