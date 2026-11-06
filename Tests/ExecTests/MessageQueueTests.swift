@@ -107,10 +107,13 @@ import Foundation
     func queuesDuringCompactionAndPausesOnFailure() async throws {
         for outcome in ["success", "failure", "cancel", "save failure"] {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: root) }
             let provider = FakeProvider()
             let library = try ChatLibrary(provider: provider, sessions: SessionStore(directory: root))
             library.restore()
+            try await wait { !library.hasRunningOperations }
+            library.selectWorkspace(root)
             try await wait { !library.hasRunningOperations }
             let conversation = library.current
             let panel = ChatPanel(library: library, conversation: conversation)

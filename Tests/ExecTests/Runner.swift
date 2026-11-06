@@ -20,6 +20,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Workspace picker waits for the owning conversation window", { try await WorkspacePickerTests().presentsPickerInOwningWindow() }),
+            ("First send requires a workspace and preserves cancelled drafts", { try await WorkspacePickerTests().sendRequiresWorkspaceAndPreservesDraft() }),
             ("System prompts autosave and remain isolated per conversation", { try await SystemPromptTests().persistsAndSnapshots() }),
             ("Generated titles persist with isolated context and preferences", { try await SessionTitleTests().updatesPersistWithoutChangingChatContext() }),
             ("Title generation rejects incomplete and cancelled responses", { try await SessionTitleTests().rejectsFailedAndCancelledGeneration() }),

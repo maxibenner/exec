@@ -82,6 +82,11 @@ import Observation
     private var task: Task<Void, Never>?
     private let sessions: SessionStore?
     private var loadedSession = false
+    private(set) var needsInitialWorkspaceSelection = false
+
+    func consumeInitialWorkspaceSelection() {
+        needsInitialWorkspaceSelection = false
+    }
     private var restorationBlocked = false
     private(set) var conversationIdentity: String?
     private let selectOnCheckpoint: Bool
@@ -109,6 +114,7 @@ import Observation
         conversationIdentity = provider.conversationIdentity
         account = provider.account
         if newConversation {
+            needsInitialWorkspaceSelection = workspace == nil
             loadedSession = true
             currentSessionID = UUID()
         }
@@ -199,6 +205,7 @@ import Observation
             throw ExecError("Choose a workspace in a new conversation.")
         }
         self.workspace = workspace
+        needsInitialWorkspaceSelection = false
         tools.setAutoApproval(for: workspace.root)
     }
 
@@ -227,6 +234,7 @@ import Observation
             sessionActivityDate = Date()
         }
         self.workspace = workspace
+        needsInitialWorkspaceSelection = workspace == nil
         prefersAutoApproval = true
         tools.setAutoApproval(for: workspace?.root)
         messages = []; history = []; draft = ""; draftImages = []; error = nil
@@ -590,6 +598,7 @@ import Observation
         // Provider restoration must succeed before replacing any visible conversation state.
         try provider.restoreConversationState(saved.providerState, history: saved.history)
         let interrupted = saved.recoverInterruptedTurn()
+        needsInitialWorkspaceSelection = false
         workspace = saved.workspace
         systemPrompt = saved.systemPrompt ?? ""
         prefersAutoApproval = saved.autoApproveTools ?? true
@@ -623,6 +632,7 @@ import Observation
             if let id = try await sessions.preferredID(identity: provider.conversationIdentity, mostRecent: mostRecent) {
                 try await applySavedSession(id)
             } else {
+                needsInitialWorkspaceSelection = true
                 conversationIdentity = provider.conversationIdentity
                 currentSessionID = UUID()
             }

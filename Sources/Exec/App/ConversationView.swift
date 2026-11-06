@@ -13,7 +13,13 @@ struct ConversationView: View {
 
     init(library: ChatLibrary, conversation: ChatStore, presentation: TranscriptState,
          focused: FocusState<Bool>.Binding, showsNavigationError: Bool = false) {
-        _panel = State(initialValue: ChatPanel(library: library, conversation: conversation))
+        self.init(panel: ChatPanel(library: library, conversation: conversation), presentation: presentation,
+                  focused: focused, showsNavigationError: showsNavigationError)
+    }
+
+    init(panel: ChatPanel, presentation: TranscriptState, focused: FocusState<Bool>.Binding,
+         showsNavigationError: Bool = false) {
+        _panel = State(initialValue: panel)
         _composerFocused = focused
         self.presentation = presentation
         self.showsNavigationError = showsNavigationError
@@ -43,6 +49,15 @@ struct ConversationView: View {
         }
         .frame(minWidth: 460, minHeight: 480)
         .onExitCommand { if panel.isWorking { panel.stop() } }
+        .background(WindowReference { panel.window = $0 })
+        .task(id: panel.shouldChooseInitialWorkspace) {
+            // Wait for the owning window and leave the SwiftUI update before
+            // presenting a native sheet. A remount must not reopen a cancelled picker.
+            guard panel.shouldChooseInitialWorkspace else { return }
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            panel.chooseInitialWorkspaceIfNeeded()
+        }
     }
 
     private func errorView(_ error: String) -> some View {

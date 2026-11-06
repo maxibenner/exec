@@ -57,7 +57,44 @@ import Observation
         try expect(library.sidebarSessions.map(\.id) == expected)
     }
 
+    private func initialWorkspaceSelection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = SessionStore(directory: root.appendingPathComponent("sessions"))
+        let library = try ChatLibrary(provider: FakeProvider(), sessions: sessions)
+        defer { library.stopAll() }
+        let initial = ChatPanel(library: library, conversation: library.current)
+        try expect(!initial.shouldChooseInitialWorkspace)
+        library.restore()
+        try expect(!initial.shouldChooseInitialWorkspace)
+        try await wait { !library.hasRunningOperations }
+        try expect(library.current.needsInitialWorkspaceSelection)
+        try expect(!initial.shouldChooseInitialWorkspace) // No owning window yet.
+        // Simulate presentation followed by Cancel: the request is one-shot.
+        library.current.consumeInitialWorkspaceSelection()
+        try expect(!ChatPanel(library: library, conversation: library.current).shouldChooseInitialWorkspace)
+        library.newConversation()
+        try await wait { !library.hasRunningOperations }
+        try expect(library.current.needsInitialWorkspaceSelection)
+        library.selectWorkspace(root)
+        try await wait { !library.hasRunningOperations }
+        try expect(!ChatPanel(library: library, conversation: library.current).shouldChooseInitialWorkspace)
+        library.newConversation()
+        try await wait { !library.hasRunningOperations }
+        let expectedWorkspace = try Workspace.load(root)
+        try expect(library.workspace?.root == expectedWorkspace.root)
+        try expect(!library.current.needsInitialWorkspaceSelection)
+
+        let saved = ChatStore(provider: FakeProvider(), sessions: sessions, newConversation: true)
+        try await saved.saveIfIdle(force: true)
+        let reopened = ChatStore(provider: FakeProvider(), sessions: sessions, newConversation: true)
+        try await reopened.loadSession(saved.currentSessionID!)
+        try expect(!reopened.needsInitialWorkspaceSelection)
+    }
+
     func concurrentTurnsKeepContextDraftsAndSelectionIsolated() async throws {
+        try await initialWorkspaceSelection()
         try await startupCatalogPrecedesModelDiscovery()
         try await autoApprovalSurvivesRelaunch()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

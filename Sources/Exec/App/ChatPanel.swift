@@ -7,9 +7,15 @@ import Observation
     let library: ChatLibrary
     let current: ChatStore
 
-    init(library: ChatLibrary, conversation: ChatStore) {
+    typealias WorkspacePicker = @MainActor (NSWindow, URL?, @escaping @MainActor (URL?) -> Void) -> Void
+    private let presentWorkspacePicker: WorkspacePicker
+    weak var window: NSWindow?
+
+    init(library: ChatLibrary, conversation: ChatStore,
+         presentWorkspacePicker: @escaping WorkspacePicker = ChatPanel.presentWorkspacePicker) {
         self.library = library
         current = conversation
+        self.presentWorkspacePicker = presentWorkspacePicker
     }
 
     var navigating: Bool { library.navigating }
@@ -49,8 +55,8 @@ import Observation
         }
     }
 
-    private var folderPanel: NSOpenPanel?
-    var canChooseWorkspace: Bool { canSelectWorkspace && folderPanel == nil }
+    private(set) var isChoosingWorkspace = false
+    var canChooseWorkspace: Bool { canSelectWorkspace && !isChoosingWorkspace }
 
     func openWorkspaceInFinder() {
         guard canNavigate, let workspace else { return }
@@ -64,16 +70,36 @@ import Observation
                                 configuration: NSWorkspace.OpenConfiguration())
     }
 
+    var shouldChooseInitialWorkspace: Bool {
+        current.needsInitialWorkspaceSelection && workspace == nil && canChooseWorkspace && window != nil
+    }
+
+    func chooseInitialWorkspaceIfNeeded() {
+        guard shouldChooseInitialWorkspace else { return }
+        chooseWorkspace()
+    }
+
     func chooseWorkspace() {
-        guard canChooseWorkspace else { return }
-        let window = NSApp.keyWindow ?? NSApp.mainWindow
+        guard canChooseWorkspace, let window else { return }
+        // Do not consume the request until the conversation has its own window.
+        // Presenting against NSApp.keyWindow can attach to Settings or an old sheet.
+        current.consumeInitialWorkspaceSelection()
+        isChoosingWorkspace = true
+        presentWorkspacePicker(window, workspace?.root) { [self] url in
+            isChoosingWorkspace = false
+            guard let url, canSelectWorkspace else { return }
+            selectWorkspace(url)
+        }
+    }
+
+    private static func presentWorkspacePicker(in window: NSWindow, directory: URL?,
+                                               completion: @escaping @MainActor (URL?) -> Void) {
         let panel = NSOpenPanel()
-        folderPanel = panel
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = false
-        panel.directoryURL = workspace?.root
+        panel.directoryURL = directory
         panel.prompt = "Choose Workspace"
         // Keep the disclosure out of the panel message, whose intrinsic width
         // can stretch the native folder picker.
@@ -86,17 +112,22 @@ import Observation
         notice.setContentCompressionResistancePriority(.required, for: .vertical)
         panel.accessoryView = notice
         panel.isAccessoryViewDisclosed = true
-        let completion: (NSApplication.ModalResponse) -> Void = { [self] response in
-            folderPanel = nil
-            guard response == .OK, let url = panel.url, canSelectWorkspace else { return }
-            selectWorkspace(url)
-        }
         NSApp.activate(ignoringOtherApps: true)
-        if let window { panel.beginSheetModal(for: window, completionHandler: completion) }
-        else { panel.begin(completionHandler: completion) }
+        window.makeKeyAndOrderFront(nil)
+        panel.beginSheetModal(for: window) { response in
+            completion(response == .OK ? panel.url : nil)
+        }
     }
 
-    func send() { if canNavigate { library.send(in: current) } }
+    func send() {
+        guard canNavigate, !isChoosingWorkspace else { return }
+        if workspace == nil && current.messages.isEmpty {
+            guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !current.draftImages.isEmpty else { return }
+            chooseWorkspace()
+            return
+        }
+        library.send(in: current)
+    }
     func resumeQueuedMessages() { if canNavigate { library.resumeQueuedMessages(in: current) } }
     func selectWorkspace(_ url: URL) { library.selectWorkspace(url, in: current) }
     func compact() { if canCompact { current.compact() } }

@@ -17,9 +17,16 @@ import SwiftUI
     func switchingSessionsDoesNotStealFocus() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let provider = FakeProvider()
         let library = try ChatLibrary(provider: provider, sessions: SessionStore(directory: root), residentLimit: 1)
+        // Focus checks use a selected workspace; initial picker presentation is
+        // covered separately and intentionally takes focus from the composer.
+        library.restore()
+        try await wait { !library.hasRunningOperations }
+        library.selectWorkspace(root)
+        try await wait { !library.hasRunningOperations }
         let windows = SessionWindows(library: library)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 680),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -34,7 +41,6 @@ import SwiftUI
         container.addSubview(selection)
         window.contentView = container
         defer { library.stopAll(); window.orderOut(nil); window.contentView = nil }
-        library.restore()
         window.makeKeyAndOrderFront(nil)
         host.layoutSubtreeIfNeeded()
         func expectSelectionPreserved() async throws {
