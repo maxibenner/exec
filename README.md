@@ -72,6 +72,20 @@ Drag image files or image data into the message composer. Thumbnails appear abov
 
 Sent images are copied into the local conversation snapshot and included in model context; deleting or moving the original file does not break them. Unsent text and images are kept only in memory. Image understanding depends on the selected model and backend support; live Codex image requests still need manual validation.
 
+### Screenshots
+
+The model can use **`take_screenshot`** to inspect the main desktop or a specific window without a window picker. `target: "list_windows"` lists visible window IDs, apps, and titles; `target: "window"` captures the supplied `window_id`. For `desktop` and `list_windows`, use `window_id: 0`.
+
+- **Auto mode on:** captures and window discovery run without an Exec approval prompt.
+- **Auto mode off:** the existing approval panel offers **Deny**, **Approve Once**, and **Always for This Session**. The session grant covers both captures and window discovery, not file edits or shell commands.
+- Screenshot permission stays with the resident conversation, including when detached. It is not saved to disk or transferred to another conversation, and resets on reload or account reconnect/sign-out. Without a workspace, use one-time or session screenshot approval (workspace auto mode is unavailable).
+- macOS **Screen Recording** permission for Exec is still required. OS permission prompts cannot be bypassed by auto mode.
+- Capture uses native ScreenCaptureKit, without a shell, picker, or temporary image files. The desktop target captures the main display, including visible apps. Window capture uses the specified ID; a missing window fails rather than silently capturing a different target.
+- Images and window titles are sent to the connected model and saved locally. They may contain sensitive information. Screenshot previews appear inside the same expandable tool results as other tools; images are resized to at most 2,048 pixels on the longest edge.
+- Stop discards late capture results. The one-shot OS API has no cancellation handle, so an in-flight capture may finish locally after Stop. Failed, denied, or interrupted operations stop the turn and are never automatically retried or resumed after restart.
+
+Tests use fake captures and isolated stores. Live macOS permission behavior, desktop/window capture, and Codex screenshot understanding still require manual verification.
+
 ### Replies and diffs
 
 Assistant replies render headings, emphasis, code, lists, quotes, tables, and links. Code blocks have horizontal scrolling and a Copy button. Links use native selectable TextKit text with pointing-hand cursors. User text and ordinary tool output remain literal.

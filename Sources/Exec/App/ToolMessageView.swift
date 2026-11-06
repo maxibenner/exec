@@ -11,7 +11,7 @@ struct ToolMessageView: View {
         self.result = result
         self.state = state
         self.messageID = messageID
-        _expanded = State(initialValue: state.expanded[messageID] ?? (result.edit != nil || result.webSearch != nil))
+        _expanded = State(initialValue: state.expanded[messageID] ?? (result.edit != nil || result.webSearch != nil || result.screenshot != nil))
     }
 
     var body: some View {
@@ -22,6 +22,11 @@ struct ToolMessageView: View {
             expanded = value
         })) {
             VStack(alignment: .leading, spacing: 12) {
+                if let screenshot = result.screenshot, let image = NSImage(data: screenshot.data) {
+                    Image(nsImage: image).resizable().scaledToFit()
+                        .frame(maxHeight: 480)
+                        .accessibilityLabel("Captured screenshot")
+                }
                 if let edit = result.edit {
                     DiffView(source: edit.diff)
                 } else {

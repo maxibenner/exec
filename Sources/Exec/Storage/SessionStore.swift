@@ -31,6 +31,8 @@ struct SessionSnapshot: Codable, Sendable {
                     text = "Not executed: the previous turn was interrupted."
                 } else if call.name == WebSearchTool.definition.name {
                     text = WebSearchTool.interrupted
+                } else if call.name == ScreenshotTool.definition.name {
+                    text = ScreenshotTool.interrupted
                 } else if call.name == FetchContentTool.definition.name {
                     text = FetchContentTool.interrupted
                 } else {

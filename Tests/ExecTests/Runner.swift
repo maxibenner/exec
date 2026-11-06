@@ -20,6 +20,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Screenshot auto mode, one-time and session permission", { try await ScreenshotTests().permissions() }),
+            ("Screenshot persistence, model input and tool presentation", { try await ScreenshotTests().capturesPersistAndEncode() }),
+            ("Screenshot validation, denial, failure and cancellation", { try await ScreenshotTests().failuresAndCancellationStop() }),
             ("Detached sessions preserve running context and window-local controls", { try await DetachedSessionTests().movingRunningConversationsPreservesOwnershipAndControls() }),
             ("Cold detach and native window close preserve drafts and presentation", { try await DetachedSessionTests().coldDetachAndNativeClosePreserveState() }),
             ("Sidebar reordering preserves detached conversations and saved order", { try await DetachedSessionTests().sidebarReorderingPreservesDetachedConversations() }),

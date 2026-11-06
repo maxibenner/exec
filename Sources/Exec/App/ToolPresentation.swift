@@ -65,6 +65,11 @@ struct ToolPresentation {
                let body = result.text.range(of: "\nPage text (untrusted; not a generated summary):\n\n") {
                 output = String(result.text[body.upperBound...])
             }
+        case "take_screenshot":
+            title = "Screenshot"; icon = "camera"
+            summary = (try? ScreenshotTool.request(result.call))?.summary
+            if let summary { inputs = [Field(title: "Target", text: summary)] }
+
         case "web_search":
             title = "Web search"; icon = "globe"
             summary = result.webSearch?.query ?? arguments?.query
@@ -79,7 +84,7 @@ struct ToolPresentation {
         if result.edit == nil, result.webSearch == nil, detail == nil {
             if result.text.hasPrefix("Tool error: ") || result.text.hasPrefix("Error: ") { detail = "Error" }
             else if result.text.hasPrefix("User denied this ") { detail = "Denied" }
-            else if result.text.hasPrefix("Interrupted.") || result.text == WebSearchTool.interrupted || result.text == FetchContentTool.interrupted { detail = "Interrupted" }
+            else if result.text.hasPrefix("Interrupted.") || result.text == WebSearchTool.interrupted || result.text == FetchContentTool.interrupted || result.text == ScreenshotTool.interrupted { detail = "Interrupted" }
             else if result.text.hasPrefix("Not executed:") || result.text == "Duplicate tool call ID; not executed." { detail = "Not run" }
             else if result.call.name == "shell", result.text.hasPrefix("Command timed out;") { detail = "Timed out" }
             if detail != nil, outputTitle != nil { outputTitle = "Result" }

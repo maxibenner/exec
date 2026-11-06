@@ -8,9 +8,11 @@ struct ToolApprovalView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(approval.kind == .shell ? "Run shell command?" : "Apply file edit?").font(.headline)
-            Text(verbatim: approval.directory.path).font(.caption).foregroundStyle(.secondary)
-                .lineLimit(1).truncationMode(.middle).help(approval.directory.path).textSelection(.enabled)
+            Text(approval.kind == .screenshot ? "Share a screenshot?" : approval.kind == .shell ? "Run shell command?" : "Apply file edit?").font(.headline)
+            if approval.kind != .screenshot {
+                Text(verbatim: approval.directory.path).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle).help(approval.directory.path).textSelection(.enabled)
+            }
             ScrollView([.horizontal, .vertical]) {
                 Text(preview).font(.system(.body, design: .monospaced))
                     .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
@@ -27,6 +29,13 @@ struct ToolApprovalView: View {
                 Spacer()
                 Button("Deny") {
                     if canResolve() { executor.resolveApproval(id: approval.id, approved: false) }
+                }
+                if approval.kind == .screenshot {
+                    Button("Always for This Session") {
+                        if canResolve() {
+                            executor.resolveApproval(id: approval.id, approved: true, allowScreenshotsForSession: true)
+                        }
+                    }
                 }
                 Button("Approve Once") {
                     if canResolve() { executor.resolveApproval(id: approval.id, approved: true) }

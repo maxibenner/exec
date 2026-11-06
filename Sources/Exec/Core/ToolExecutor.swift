@@ -4,24 +4,33 @@ import Observation
 @MainActor @Observable final class ToolExecutor {
     struct Approval: Identifiable {
         let id = UUID()
-        enum Kind { case shell, edit }
+        enum Kind { case shell, edit, screenshot }
         let kind: Kind
         let content: String
         let directory: URL
     }
     private(set) var pendingApproval: Approval?
     private(set) var autoApprovedDirectory: URL?
+    private(set) var screenshotsAllowedForSession = false
+
+    func resetScreenshotPermission() {
+        screenshotsAllowedForSession = false
+    }
     private var answer: CheckedContinuation<Bool, Never>?
 
     func setAutoApproval(for directory: URL?) {
         autoApprovedDirectory = directory
-        if let directory, let pending = pendingApproval, pending.directory == directory {
+        if let directory, let pending = pendingApproval,
+           pending.kind == .screenshot || pending.directory == directory {
             resolveApproval(id: pending.id, approved: true)
         }
     }
 
-    func resolveApproval(id: UUID, approved: Bool) {
-        guard pendingApproval?.id == id else { return }
+    func resolveApproval(id: UUID, approved: Bool, allowScreenshotsForSession: Bool = false) {
+        guard let pending = pendingApproval, pending.id == id else { return }
+        if approved, allowScreenshotsForSession, pending.kind == .screenshot {
+            screenshotsAllowedForSession = true
+        }
         pendingApproval = nil
         let continuation = answer
         answer = nil
@@ -55,10 +64,18 @@ import Observation
         catch { return ToolResult(call: call, text: "Tool error: \(error.localizedDescription)") }
     }
 
+    func approveScreenshot(_ request: ScreenshotTool.Request) async throws -> Bool {
+        try await requestApproval(Approval(kind: .screenshot,
+            content: "\(request.summary). Images and window titles are sent to the connected model and saved in this conversation. They may include sensitive information.",
+            directory: URL(fileURLWithPath: "/")))
+    }
+
     private func requestApproval(_ approval: Approval) async throws -> Bool {
         try Task.checkCancellation()
         guard pendingApproval == nil else { throw ExecError("Another operation is awaiting approval.") }
-        if autoApprovedDirectory == approval.directory { return true }
+        if approval.kind == .screenshot {
+            if autoApprovedDirectory != nil || screenshotsAllowedForSession { return true }
+        } else if autoApprovedDirectory == approval.directory { return true }
         let approved = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 pendingApproval = approval
