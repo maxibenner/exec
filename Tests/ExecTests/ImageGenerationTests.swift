@@ -55,6 +55,12 @@ import AppKit
         let saved = try await sessions.load(id: store.currentSessionID)!
         let result = saved.history.compactMap(\.toolResult).first!
         try expect(result.generatedImage?.data == bytes && result.screenshot == nil)
+        let imageFile = try await sessions.saveImage(result.generatedImage!)
+        try expect(imageFile.pathExtension == "png" && result.text.contains(imageFile.path))
+        try expect(try Data(contentsOf: imageFile) == bytes)
+        let json = try String(contentsOf: root.appendingPathComponent("\(store.currentSessionID!).json"), encoding: .utf8)
+        try expect(!json.contains(bytes.base64EncodedString()) && json.contains(imageFile.lastPathComponent))
+        try expect(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("images").path).count == 1)
         let followup = String(decoding: HTTPStub.body(of: HTTPStub.state.requests[2]), as: UTF8.self)
         try expect(followup.contains("input_image") && followup.contains("Generated image from tool call"))
         let display = ToolPresentation(result)

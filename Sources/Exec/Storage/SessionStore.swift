@@ -100,7 +100,17 @@ actor SessionStore {
     }
     private var catalog: Catalog?
 
-    init(directory: URL) { self.directory = directory }
+    init(directory: URL) {
+        // Canonicalize system ancestors (e.g. /var -> /private/var), but never
+        // resolve the store itself: a symlink there must still be rejected.
+        if let parent = realpath(directory.deletingLastPathComponent().path, nil) {
+            defer { free(parent) }
+            self.directory = URL(fileURLWithPath: String(cString: parent), isDirectory: true)
+                .appendingPathComponent(directory.lastPathComponent, isDirectory: true)
+        } else {
+            self.directory = directory
+        }
+    }
 
     static func applicationStore() throws -> SessionStore {
         guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
@@ -108,6 +118,12 @@ actor SessionStore {
         }
         // Keep the original location so existing conversations remain available after renaming.
         return SessionStore(directory: base.appendingPathComponent("Harness", isDirectory: true))
+    }
+
+    func saveImage(_ image: ImageAttachment) throws -> URL {
+        let images = directory.appendingPathComponent("images", isDirectory: true)
+        let path = try ImageFiles(directory: images).save(image.data, mediaType: image.mediaType)
+        return images.appendingPathComponent(path)
     }
 
     func list(identity: String?) throws -> [SessionSummary] {
@@ -135,6 +151,7 @@ actor SessionStore {
     @discardableResult
     func save(_ snapshot: SessionSnapshot, id: UUID? = nil, select: Bool = true) throws -> UUID {
         var snapshot = snapshot
+        snapshot.version = 2 // File-backed images; version 1 inline saves remain readable.
         var catalog = try readCatalog()
         let current = catalog.sessions.first { $0.id == catalog.activeID && $0.identity == snapshot.identity }
         let id = id ?? current?.id ?? UUID()
@@ -144,7 +161,9 @@ actor SessionStore {
         let existing = catalog.sessions.first { $0.id == id }
         snapshot.activityDate = snapshot.activityDate ?? existing?.updatedAt ?? Date()
         snapshot.title = snapshot.title ?? existing?.customTitle
-        try write(JSONEncoder().encode(snapshot), name: "\(id).json")
+        let encoder = JSONEncoder()
+        encoder.userInfo[ImageFiles.codingKey] = directory.appendingPathComponent("images", isDirectory: true)
+        try write(encoder.encode(snapshot), name: "\(id).json")
         let summary = SessionSummary(id: id, snapshot: snapshot)
         if let index = catalog.sessions.firstIndex(where: { $0.id == id }) {
             catalog.sessions[index] = summary
@@ -254,8 +273,10 @@ actor SessionStore {
         else if id == legacyID { data = try read("session.json") }
         else { data = nil }
         guard let data else { return nil }
-        let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: data)
-        guard snapshot.version == 1,
+        let decoder = JSONDecoder()
+        decoder.userInfo[ImageFiles.codingKey] = directory.appendingPathComponent("images", isDirectory: true)
+        let snapshot = try decoder.decode(SessionSnapshot.self, from: data)
+        guard [1, 2].contains(snapshot.version),
               snapshot.workspace == nil || snapshot.workspace?.root.isFileURL == true else {
             throw ExecError("Saved session format is unsupported.")
         }
