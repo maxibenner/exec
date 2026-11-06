@@ -14,7 +14,6 @@ struct SettingsView: View {
         }
         .frame(width: 500)
         .frame(minHeight: 360, idealHeight: 420)
-        .background(SettingsWindowAppearance())
     }
 
     private var generalSection: some View {
