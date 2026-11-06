@@ -22,6 +22,7 @@ struct ToolPresentation {
             var query: String?
             var command: String?
             var url: String?
+            var prompt: String?
         }
         let arguments = try? CodingTools.decode(Arguments.self, result.call)
         output = result.text
@@ -65,6 +66,10 @@ struct ToolPresentation {
                let body = result.text.range(of: "\nPage text (untrusted; not a generated summary):\n\n") {
                 output = String(result.text[body.upperBound...])
             }
+        case "generate_image":
+            title = "Generate image"; icon = "photo"
+            summary = arguments?.prompt
+            outputTitle = nil
         case "take_screenshot":
             title = "Screenshot"; icon = "camera"
             summary = (try? ScreenshotTool.request(result.call))?.summary
@@ -84,7 +89,7 @@ struct ToolPresentation {
         if result.edit == nil, result.webSearch == nil, detail == nil {
             if result.text.hasPrefix("Tool error: ") || result.text.hasPrefix("Error: ") { detail = "Error" }
             else if result.text.hasPrefix("User denied this ") { detail = "Denied" }
-            else if result.text.hasPrefix("Interrupted.") || result.text == WebSearchTool.interrupted || result.text == FetchContentTool.interrupted || result.text == ScreenshotTool.interrupted { detail = "Interrupted" }
+            else if result.text.hasPrefix("Interrupted.") || result.text == WebSearchTool.interrupted || result.text == FetchContentTool.interrupted || result.text == ScreenshotTool.interrupted || result.text == ImageGenerationTool.interrupted { detail = "Interrupted" }
             else if result.text.hasPrefix("Not executed:") || result.text == "Duplicate tool call ID; not executed." { detail = "Not run" }
             else if result.call.name == "shell", result.text.hasPrefix("Command timed out;") { detail = "Timed out" }
             if detail != nil, outputTitle != nil { outputTitle = "Result" }

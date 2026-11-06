@@ -32,7 +32,7 @@ enum OpenAITransport {
         }
     }
 
-    static func boundedResponse(_ request: URLRequest, session: URLSession) async throws -> Data {
+    static func boundedResponse(_ request: URLRequest, session: URLSession, maximumBytes: Int = 4 * 1024 * 1024) async throws -> Data {
         let task = Task.detached {
             let (bytes, response) = try await session.bytes(for: request)
             defer { bytes.task.cancel() }
@@ -40,7 +40,7 @@ enum OpenAITransport {
             var data = Data()
             for try await byte in bytes {
                 try Task.checkCancellation()
-                guard data.count < 4 * 1024 * 1024 else { throw ExecError("Compacted context exceeded the size limit.") }
+                guard data.count < maximumBytes else { throw ExecError("Provider response exceeded the size limit.") }
                 data.append(byte)
             }
             return data

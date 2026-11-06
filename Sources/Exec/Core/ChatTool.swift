@@ -27,6 +27,7 @@ struct ToolResult: Codable, Sendable, Equatable {
     var edit: AppliedEdit?
     var webSearch: WebSearchResult?
     var screenshot: ImageAttachment?
+    var generatedImage: ImageAttachment?
 }
 
 enum CodingTools {

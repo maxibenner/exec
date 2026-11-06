@@ -82,6 +82,8 @@ enum ChatEvent: Sendable {
     func disconnect() async throws
     func models() async throws -> [ChatModel]
     func accountUsage() async throws -> AccountUsage?
+    var supportsImageGeneration: Bool { get }
+    func generateImage(_ request: ImageGenerationTool.Request) async throws -> ImageAttachment
     var supportsWebSearch: Bool { get }
     func contextUsage(_ messages: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) -> ContextUsage?
     // A separate read-only request using provider-owned authentication, never conversation context.
@@ -103,6 +105,10 @@ extension ChatProvider {
 
     func accountUsage() async throws -> AccountUsage? { nil }
     var conversationIdentity: String? { account }
+    var supportsImageGeneration: Bool { false }
+    func generateImage(_ request: ImageGenerationTool.Request) async throws -> ImageAttachment {
+        throw ExecError("This provider does not support image generation.")
+    }
     var supportsWebSearch: Bool { false }
     func contextUsage(_ messages: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) -> ContextUsage? { nil }
     func searchWeb(query: String, model: String, effort: String?) async throws -> WebSearchResult {

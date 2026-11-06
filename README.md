@@ -72,6 +72,18 @@ Drag image files or image data into the message composer. Thumbnails appear abov
 
 Sent images are copied into the local conversation snapshot and included in model context; deleting or moving the original file does not break them. Unsent text and images are kept only in memory. Image understanding depends on the selected model and backend support; live Codex image requests still need manual validation.
 
+### Image generation
+
+Ask Exec to generate an image. The agent can call **`generate_image`** with `prompt` and `transparent_background`, with or without a workspace. It reuses the existing Keychain-managed Codex sign-in; no API key, external CLI, or separate login is needed.
+
+- Uses the standalone subscription route `/backend-api/codex/images/generations`, following OpenAI's [Codex image tool](https://github.com/openai/codex/blob/main/codex-rs/ext/image-generation/src/tool.rs) and [ImagesClient](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/images.rs). It requests `gpt-image-2` with automatic size/quality, rather than assuming the public Responses API image tool works on Codex.
+- Only the image prompt and options enter the separate request, not conversation history or workspace instructions. Prompts are limited to 16 KiB; do not include secrets. Image quota and account eligibility are enforced by OpenAI. Like web search, this does not require file/shell approval and never falls back to API-key billing.
+- One PNG/JPEG is validated and saved in the conversation, then included in follow-up model context. The existing expandable tool card displays the prompt and an image preview, with **Save Image…** opening a native save panel. No workspace file is written automatically.
+- Responses are bounded to 12 MiB and decoded images to 8 MiB, 32 megapixels, and 8,192 pixels per edge. Oversized or invalid results fail instead of being silently truncated. Editing existing images and animated output are not implemented.
+- Stop cancels the request. Failures and interrupted requests stop the turn and are never automatically retried or replayed after restart. The server may already have consumed image quota even when no result was saved locally.
+
+Automated checks cover the subscription request contract, persistence, model context, bounds, errors, cancellation, and recovery using fake transports and isolated stores. **Live account eligibility/generation and manual preview/save-panel checks remain unverified.**
+
 ### Screenshots
 
 The model can use **`take_screenshot`** to inspect the main desktop or a specific window without a window picker. `target: "list_windows"` lists visible window IDs, apps, and titles; `target: "window"` captures the supplied `window_id`. For `desktop` and `list_windows`, use `window_id: 0`.

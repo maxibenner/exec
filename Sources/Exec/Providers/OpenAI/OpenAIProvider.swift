@@ -95,6 +95,22 @@ import Foundation
             }
     }
 
+    let supportsImageGeneration = true
+
+    func generateImage(_ input: ImageGenerationTool.Request) async throws -> ImageAttachment {
+        let input = try input.validated()
+        try Task.checkCancellation()
+        let credentials = try await authentication.credentials()
+        try Task.checkCancellation()
+        let request = try CodexImages.request(input, accessToken: credentials.access, accountID: credentials.accountID)
+        let data = try await OpenAITransport.boundedResponse(request, session: http, maximumBytes: CodexImages.maximumResponseBytes)
+        try Task.checkCancellation()
+        let task = Task.detached { try CodexImages.image(data) }
+        let image = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+        try Task.checkCancellation()
+        return image
+    }
+
     let supportsWebSearch = true
 
     func searchWeb(query: String, model: String, effort: String?) async throws -> WebSearchResult {

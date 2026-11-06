@@ -20,6 +20,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Image generation subscription request, persistence and presentation", { try await ImageGenerationTests().roundTrip() }),
+            ("Image generation validation, bounds and no retries", { try await ImageGenerationTests().failuresAndValidation() }),
+            ("Image generation cancellation and recovery", { try await ImageGenerationTests().cancellationAndRecovery() }),
             ("Screenshot sizing and minimal presentation", { try ScreenshotTests().fitsCaptureAndKeepsPresentationMinimal() }),
             ("Screenshot auto mode, one-time and session permission", { try await ScreenshotTests().permissions() }),
             ("Screenshot persistence, model input and tool presentation", { try await ScreenshotTests().capturesPersistAndEncode() }),
