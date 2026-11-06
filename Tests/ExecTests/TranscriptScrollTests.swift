@@ -70,6 +70,65 @@ import AppKit
         }
         try expect(transcript.events == 11)
         try gestureAxisStaysLocked()
+        try selectionScrollingStaysOnItsSurface(window: window)
+    }
+
+    private func selectionScrollingStaysOnItsSurface(window: NSWindow) throws {
+        let outer = NSScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 500))
+        let clip = AutoscrollRecorder(frame: outer.bounds)
+        outer.contentView = clip
+        let document = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 1_000))
+        outer.documentView = document
+        window.contentView = outer
+        let horizontal = HorizontalContentScrollView(frame: NSRect(x: 50, y: 100, width: 300, height: 100))
+        document.addSubview(horizontal)
+        let text = LinkedText.TextView(frame: NSRect(x: 0, y: 0, width: 1_000, height: 150))
+        text.isEditable = false
+        horizontal.documentView = text
+        outer.layoutSubtreeIfNeeded()
+
+        // Even a temporarily oversized document cannot scroll vertically. Its
+        // horizontal offset remains available to selection and wheel scrolling.
+        horizontal.contentView.scroll(to: NSPoint(x: 80, y: 20))
+        try expect(horizontal.contentView.bounds.minY == 0)
+        try expect(horizontal.contentView.bounds.minX == 80)
+        let rightEdge = horizontal.contentView.convert(NSPoint(
+            x: horizontal.contentView.bounds.maxX + 10,
+            y: horizontal.contentView.bounds.midY), to: nil)
+        _ = text.autoscroll(with: WheelEvent(window: window, point: rightEdge, x: 0, y: 0))
+        try expect(horizontal.contentView.bounds.minX > 80)
+        try expect(clip.events == 0)
+
+        // Leaving the diff vertically while still inside the transcript must not
+        // start the transcript's repeated selection autoscroll.
+        let inside = clip.convert(NSPoint(x: clip.bounds.midX, y: clip.bounds.midY), to: nil)
+        let event = WheelEvent(window: window, point: inside, x: 0, y: 0)
+        _ = text.autoscroll(with: event)
+        try expect(clip.events == 0)
+        try expect(horizontal.contentView.bounds.minY == 0)
+
+        for y in [clip.bounds.minY - 10, clip.bounds.maxY + 10] {
+            let outside = clip.convert(NSPoint(x: clip.bounds.midX, y: y), to: nil)
+            _ = text.autoscroll(with: WheelEvent(window: window, point: outside, x: 0, y: 0))
+        }
+        try expect(clip.events == 2)
+
+        clip.scroll(to: NSPoint(x: 0, y: 200))
+        clip.useNativeAutoscroll = true
+        let previousY = clip.bounds.minY
+        let outside = clip.convert(NSPoint(x: clip.bounds.midX, y: clip.bounds.minY - 20), to: nil)
+        _ = text.autoscroll(with: WheelEvent(window: window, point: outside, x: 0, y: 0))
+        try expect(clip.bounds.minY != previousY)
+        try expect(horizontal.contentView.bounds.minY == 0)
+    }
+
+    private final class AutoscrollRecorder: NSClipView {
+        var events = 0
+        var useNativeAutoscroll = false
+        override func autoscroll(with event: NSEvent) -> Bool {
+            events += 1
+            return useNativeAutoscroll ? super.autoscroll(with: event) : true
+        }
     }
 
     private func gestureAxisStaysLocked() throws {

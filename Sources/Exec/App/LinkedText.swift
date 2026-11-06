@@ -69,6 +69,13 @@ struct LinkedText: NSViewRepresentable {
             nextResponder?.scrollWheel(with: event)
         }
 
+        override func autoscroll(with event: NSEvent) -> Bool {
+            if let horizontal = enclosingScrollView as? HorizontalContentScrollView {
+                return horizontal.autoscrollSelection(with: event)
+            }
+            return super.autoscroll(with: event)
+        }
+
         func update(_ text: NSAttributedString) {
             guard attributedString() != text else { return }
             let selection = selectedRange()
