@@ -6,7 +6,10 @@ import SwiftUI
     var body: some View {
         Group {
             if let root {
-                Label(root.lastPathComponent.isEmpty ? root.path : root.lastPathComponent, systemImage: "folder")
+                HStack(spacing: 5) {
+                    Image(systemName: "folder")
+                    Text(root.lastPathComponent.isEmpty ? root.path : root.lastPathComponent)
+                }
                     .lineLimit(1).truncationMode(.middle)
                     .help(root.path)
                     .accessibilityLabel("Workspace: \(root.path)")

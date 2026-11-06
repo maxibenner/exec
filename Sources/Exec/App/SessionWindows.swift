@@ -125,6 +125,7 @@ import Observation
         let item = NSToolbarItem(itemIdentifier: identifier)
         item.label = "Workspace"
         item.view = workspaceView
+        item.isBordered = false
         return item
     }
 

@@ -39,9 +39,17 @@ struct ChatView: View {
                     transaction.disablesAnimations = true
                 }
                 .toolbar {
-                    ToolbarItem(placement: .principal) {
-                        WorkspaceBar(root: store.workspace?.root)
-                            .frame(maxWidth: 300)
+                    if #available(macOS 26.0, *) {
+                        ToolbarItem(placement: .principal) {
+                            WorkspaceBar(root: store.workspace?.root)
+                                .frame(maxWidth: 300)
+                        }
+                        .sharedBackgroundVisibility(.hidden)
+                    } else {
+                        ToolbarItem(placement: .principal) {
+                            WorkspaceBar(root: store.workspace?.root)
+                                .frame(maxWidth: 300)
+                        }
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Button { store.newConversation() } label: {
