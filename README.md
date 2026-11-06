@@ -4,59 +4,61 @@
 
 # Exec
 
-A native macOS app for chatting and coding with Codex. Built with Swift and SwiftUI—no extra runtimes, command-line agents, or third-party dependencies.
+A minimal, native macOS app for AI chat and coding. Built with Swift and SwiftUI, with keyboard shortcuts for moving between conversations and slash commands for changing settings without leaving the composer.
 
-Use your **ChatGPT/Codex sign-in**, not an API key. Access and usage limits depend on your OpenAI account.
+Exec currently supports OpenAI subscriptions through ChatGPT/Codex sign-in. No API key is needed. Support for other providers is planned.
 
-## What you can do
-
-- **Chat your way.** Stream formatted replies, share images, and choose your model and reasoning level.
-- **Work on projects.** Let Exec read files, make edits with inline diffs, and run shell commands.
-- **Research and create.** Search the web with source links, read public web pages, generate images, and share desktop or window screenshots.
-- **Keep work separate.** Run multiple conversations at once, each with its own workspace and settings, or detach a conversation into its own window.
-- **Pick up where you left off.** Conversations save locally, and long chats automatically compact their model context.
+Work with local files, review edits, and run shell commands. You can also search the web, read pages, generate images, and share screenshots. Conversations save locally and can run side by side or in separate windows.
 
 ## Get started
 
-Requires **macOS 14+**, a **Swift 6 toolchain** (Xcode or Apple Command Line Tools), and a ChatGPT account with Codex access. Currently, Exec is built from source; builds are not notarized for distribution.
-
-From the project directory:
+Requires macOS 14+, a Swift 6 toolchain (Xcode or Apple Command Line Tools), and a ChatGPT account with Codex access. Build from source; builds are not notarized for distribution.
 
 ```sh
 ./scripts/build-app.sh
 open dist/Exec.app
 ```
 
-1. Choose **Connect to Codex** and sign in through your browser.
-2. Select your authorized ChatGPT workspace and a model.
-3. Start chatting, or choose **Workspace…** beside the composer to work on a local project.
+Choose **Connect to Codex**, sign in through your browser, then select your ChatGPT workspace and model. Use `/workspace` to choose a local project.
 
-Quit any running copy before opening a rebuilt app. If sign-in cannot start, check that another sign-in is not using local port **1455**.
+Quit any running copy before opening a rebuilt app. Sign-in uses local port 1455.
 
-### Everyday controls
+## Keyboard controls
 
-| Action | Control |
+| Action | Shortcut |
 | --- | --- |
-| New conversation | **⌘N** |
-| Send a message (or queue it during a reply) | **Return** |
-| Stop the current operation | **Escape** or **⌘.** |
-| Detach a conversation | **⌘D** |
-| Change model, reasoning, or approvals | Type **/** in the composer |
-| Attach images | Drag them into the composer |
-| Rename or delete a conversation | Right-click its sidebar row |
+| New conversation | ⌘T |
+| Switch conversations | ⌘1 through ⌘9, in sidebar order |
+| Detach conversation | ⌘D |
+| Move detached conversation back | ⌘W |
+| Delete conversation | ⌘⇧Delete |
+| Send or queue a message | Return |
+| Stop current operation | Escape or ⌘. |
+| Open command menu | `/` in the composer |
 
-Switching conversations does not stop background work. Use the account menu at the bottom of the sidebar to refresh models, reconnect, or sign out.
+Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace`, `/finder`, `/terminal`.
 
-## Before you give Exec access
+Switching conversations keeps background work running. Drag images into the composer to attach them.
 
-- **Auto-approval starts on for workspace conversations.** Use `/auto-approve` to turn it off if you want to review edits and shell commands first. Shell commands run with your user permissions, **not in a sandbox**, and can affect files outside the workspace. Stopping an operation does not undo changes.
-- **Only share what you intend to send.** Requested project files, workspace instructions, attached images, and tool results may be sent to the connected provider. Screenshots can include sensitive information and require macOS Screen Recording permission. Web searches send queries to the provider; page fetching contacts the website directly.
-- **Credentials stay in Keychain.** Conversations and managed images are saved in `~/Library/Application Support/Harness/` (the app’s former name), without app-level encryption. Unsent drafts and attachments are not saved across restarts.
-- **Service support can change.** Exec uses a Codex-compatible backend integration, not the public API. Search, image generation, and other features depend on account and model support. Automated tests do not verify live-service availability; some features still need live validation.
+## Access and storage
 
-## Building and development
+- Auto-approval starts on for workspace conversations. Turn it off with `/auto-approve` to review edits and shell commands. Commands run with your user permissions, outside a sandbox, and can affect files beyond the workspace. Stopping does not undo changes.
+- Requested files, workspace instructions, attachments, tool results, and screenshots may be sent to the provider. Screenshots require macOS Screen Recording permission. Web searches send queries to the provider; page fetching contacts websites directly.
+- Credentials stay in Keychain. Conversations and managed images are stored in `~/Library/Application Support/Harness/` (the app's former name), without app-level encryption. Unsent drafts and attachments do not survive restarts.
+- Exec uses a Codex-compatible backend, not OpenAI's public API. Usage limits and feature availability depend on your account and model; service support can change.
 
-For consistent Keychain access across rebuilds, configure a stable signing certificate before building:
+## Development
+
+No third-party dependencies. Open `Package.swift` in Xcode, or run:
+
+```sh
+./scripts/test.sh
+./scripts/build-app.sh
+```
+
+Tests use isolated stores and fake transports, not your Keychain or live model calls. Live-service behavior still needs manual validation.
+
+For consistent Keychain access across rebuilds, configure a stable signing certificate:
 
 ```sh
 security find-identity -v -p codesigning
@@ -64,13 +66,4 @@ git config --local exec.signingIdentity "<certificate SHA-1>"
 REQUIRE_STABLE_SIGNING=1 ./scripts/build-app.sh
 ```
 
-Without a configured identity, builds use ad-hoc signing and may prompt for Keychain access again after rebuilding. Never commit signing keys or credentials.
-
-To run the checks and build:
-
-```sh
-./scripts/test.sh
-./scripts/build-app.sh
-```
-
-Tests use isolated stores and fake transports—not your Keychain or live model calls. You can also open `Package.swift` in Xcode.
+Without a configured identity, builds use ad-hoc signing and may prompt for Keychain access again. Never commit signing keys or credentials.
