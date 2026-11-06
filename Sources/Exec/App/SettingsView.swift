@@ -45,7 +45,13 @@ struct SettingsView: View {
     private var generalSection: some View {
         @Bindable var settings = store
         return VStack(alignment: .leading, spacing: 20) {
-            Toggle("Generate session titles", isOn: $settings.generatedTitlesEnabled)
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Generate session titles", isOn: $settings.generatedTitlesEnabled)
+                Text("Regenerates titles using minimal context when you send new messages.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Picker("Title model", selection: $settings.titleModel) {
                 Text("Choose a model").tag("")
                 if !store.titleModel.isEmpty, !store.models.contains(where: { $0.id == store.titleModel }) {
