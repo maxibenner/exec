@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Observation
 
 /// Window-local controls targeting one existing conversation. The library still
@@ -46,6 +46,36 @@ import Observation
             current.selectedEffort = newValue
             current.scheduleSave()
         }
+    }
+
+    private var folderPanel: NSOpenPanel?
+    var canChooseWorkspace: Bool { canSelectWorkspace && folderPanel == nil }
+
+    func openWorkspaceInFinder() {
+        guard canNavigate, let workspace else { return }
+        NSWorkspace.shared.open(workspace.root)
+    }
+
+    func chooseWorkspace() {
+        guard canChooseWorkspace else { return }
+        let window = NSApp.keyWindow ?? NSApp.mainWindow
+        let panel = NSOpenPanel()
+        folderPanel = panel
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.directoryURL = workspace?.root
+        panel.prompt = "Choose Workspace"
+        panel.message = "The model can read and search files in this folder. File contents, the folder path, and root AGENTS.md may be sent to your model. Edits and shell commands require approval unless you explicitly enable auto-approve."
+        let completion: (NSApplication.ModalResponse) -> Void = { [self] response in
+            folderPanel = nil
+            guard response == .OK, let url = panel.url, canSelectWorkspace else { return }
+            selectWorkspace(url)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        if let window { panel.beginSheetModal(for: window, completionHandler: completion) }
+        else { panel.begin(completionHandler: completion) }
     }
 
     func send() { if canNavigate { library.send(in: current) } }
