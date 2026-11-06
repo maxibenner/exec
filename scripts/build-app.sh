@@ -19,8 +19,16 @@ else
     printf 'Signing with configured identity: %s\n' "$identity"
 fi
 
-swift build -c release --product Exec
-bin="$(swift build -c release --show-bin-path)"
+sdk_path="$(xcrun --sdk macosx --show-sdk-path)"
+sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+minimum_macos="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' Resources/Info.plist)"
+# Keep the build SDK distinct from the deployment target. Some Swift toolchains
+# otherwise stamp the minimum OS as the SDK, opting into legacy system styling.
+build_options=(-c release --sdk "$sdk_path"
+    -Xlinker -platform_version -Xlinker macos
+    -Xlinker "$minimum_macos" -Xlinker "$sdk_version")
+swift build "${build_options[@]}" --product Exec
+bin="$(swift build "${build_options[@]}" --show-bin-path)"
 app="$PWD/dist/Exec.app"
 mkdir -p "$PWD/dist"
 staging="$(mktemp -d "$PWD/dist/.exec-build.XXXXXX")"
