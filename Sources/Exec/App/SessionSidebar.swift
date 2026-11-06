@@ -121,7 +121,7 @@ struct SessionRow: View {
                 if needsApproval {
                     Image(systemName: "hand.raised").foregroundStyle(.orange)
                         .help("Approval required").accessibilityLabel("Approval required")
-                } else if store.isSessionResponding(session.id) {
+                } else if running {
                     ProgressView().controlSize(.mini).accessibilityLabel("Running")
                 } else if needsAttention {
                     Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
