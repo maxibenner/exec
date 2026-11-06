@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
-<title id="title">Exec — Relay</title><desc id="desc">Two bold, interlocking coral and blue conversation shapes form a dynamic white lightning-shaped passage.</desc>
-<rect x="64" y="64" width="896" height="896" rx="200" fill="#f4f5ff"/>
-<path d="M230 290C230 250 262 218 302 218H630C670 218 702 250 702 290V426C702 466 670 498 630 498H437L304 602V498H302C262 498 230 466 230 426Z" fill="#ff594f"/>
-<path d="M794 734C794 774 762 806 722 806H394C354 806 322 774 322 734V598C322 558 354 526 394 526H587L720 422V526H722C762 526 794 558 794 598Z" fill="#354cff"/>
-<path d="M383 338H551M473 686H641" stroke="#fff" stroke-width="28" stroke-linecap="round"/>
-</svg>
