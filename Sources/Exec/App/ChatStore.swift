@@ -51,9 +51,18 @@ import Observation
     var isWorking: Bool { busy && openingSessionID == nil }
     var autoApproveTools: Bool { workspace != nil && tools.autoApprovedDirectory == workspace?.root }
 
+    private var prefersAutoApproval = true { didSet { checkpointRevision += 1 } }
+
     func setAutoApproveTools(_ enabled: Bool) {
         guard !enabled || ((!busy || isSending) && account != nil && workspace != nil) else { return }
+        prefersAutoApproval = enabled
         tools.setAutoApproval(for: enabled ? workspace?.root : nil)
+        scheduleSave()
+    }
+
+    // Authentication can suspend approval without changing the session's choice.
+    func suspendAutoApproval() {
+        tools.setAutoApproval(for: nil)
     }
     private(set) var hasUnsavedChanges = false
     let tools = ToolExecutor()
@@ -213,6 +222,7 @@ import Observation
             sessionActivityDate = Date()
         }
         self.workspace = workspace
+        prefersAutoApproval = true
         tools.setAutoApproval(for: workspace?.root)
         messages = []; history = []; draft = ""; draftImages = []; error = nil
         queuedMessages = []; isQueuePaused = false
@@ -515,7 +525,8 @@ import Observation
     private func snapshot() throws -> SessionSnapshot {
         SessionSnapshot(identity: conversationIdentity, workspace: workspace, selectedModel: selectedModel,
                         messages: messages, history: history, providerState: try provider.encodeConversationState(),
-                        activeTurn: activeTurn, activeCallID: activeCallID, activityDate: sessionActivityDate, effort: selectedEffort)
+                        activeTurn: activeTurn, activeCallID: activeCallID, activityDate: sessionActivityDate, effort: selectedEffort,
+                        autoApproveTools: prefersAutoApproval)
     }
 
     private func checkpoint(force: Bool = false) async throws {
@@ -556,8 +567,9 @@ import Observation
         try provider.restoreConversationState(saved.providerState, history: saved.history)
         let interrupted = saved.recoverInterruptedTurn()
         workspace = saved.workspace
+        prefersAutoApproval = saved.autoApproveTools ?? true
         tools.resetScreenshotPermission()
-        tools.setAutoApproval(for: workspace?.root)
+        tools.setAutoApproval(for: prefersAutoApproval ? workspace?.root : nil)
         selectedModel = saved.selectedModel
         selectedEffort = saved.effort
         reconcileEffort()

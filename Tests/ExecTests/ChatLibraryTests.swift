@@ -2,7 +2,32 @@ import Foundation
 import Observation
 
 @MainActor struct ChatLibraryTests {
+    private func autoApprovalSurvivesRelaunch() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = SessionStore(directory: root.appendingPathComponent("sessions"))
+        let workspace = try Workspace.load(root)
+        for enabled in [false, true] {
+            let original = ChatStore(provider: FakeProvider(), sessions: sessions,
+                                     newConversation: true, workspace: workspace)
+            try expect(original.autoApproveTools)
+            original.setAutoApproveTools(enabled)
+            await original.waitForPendingSave()
+            let id = original.currentSessionID!
+            let reopened = ChatStore(provider: FakeProvider(), sessions: sessions)
+            try await reopened.loadSession(id)
+            try expect(reopened.autoApproveTools == enabled)
+            reopened.suspendAutoApproval()
+            try await reopened.saveIfIdle(force: true)
+            let restored = ChatStore(provider: FakeProvider(), sessions: sessions)
+            try await restored.loadSession(id)
+            try expect(restored.autoApproveTools == enabled)
+        }
+    }
+
     func concurrentTurnsKeepContextDraftsAndSelectionIsolated() async throws {
+        try await autoApprovalSurvivesRelaunch()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let sessions = SessionStore(directory: root)

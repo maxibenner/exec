@@ -186,7 +186,7 @@ import Observation
     private func accountOperation(_ start: () -> Void) {
         guard canModify, !conversations.contains(where: { $0.busy || $0.isSaving }) else { return }
         let identity = provider.conversationIdentity
-        for conversation in conversations { conversation.setAutoApproveTools(false) }
+        for conversation in conversations { conversation.suspendAutoApproval() }
         authenticating = true
         usageTask?.cancel()
         usageRequest += 1
