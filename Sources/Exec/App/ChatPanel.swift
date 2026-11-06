@@ -76,7 +76,7 @@ import Observation
         panel.prompt = "Choose Workspace"
         // Keep the disclosure out of the panel message, whose intrinsic width
         // can stretch the native folder picker.
-        let notice = NSTextField(wrappingLabelWithString: "The model can read and search files in this folder. File contents, the folder path, and root AGENTS.md may be sent to your model. Edits and shell commands require approval unless you explicitly enable auto-approve.")
+        let notice = NSTextField(wrappingLabelWithString: "The model can read, write, and edit files in this directory.")
         notice.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         notice.textColor = .secondaryLabelColor
         notice.preferredMaxLayoutWidth = 420
@@ -93,9 +93,6 @@ import Observation
         NSApp.activate(ignoringOtherApps: true)
         if let window { panel.beginSheetModal(for: window, completionHandler: completion) }
         else { panel.begin(completionHandler: completion) }
-        // Apply after presentation so the native picker's restored geometry does
-        // not retain an oversized width from an earlier invocation.
-        panel.setContentSize(NSSize(width: 760, height: 500))
     }
 
     func send() { if canNavigate { library.send(in: current) } }
