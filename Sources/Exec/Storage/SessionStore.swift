@@ -72,7 +72,7 @@ struct SessionSummary: Codable, Identifiable, Sendable {
 
     init(id: UUID, prompt: String, workspace: Workspace?, identity: String?, updatedAt: Date) {
         self.id = id
-        title = prompt.isEmpty ? "New conversation" : String(prompt.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(80))
+        title = prompt.isEmpty ? "Untitled" : String(prompt.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(80))
         self.workspace = workspace?.root.path
         self.identity = identity
         self.updatedAt = updatedAt
