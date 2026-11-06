@@ -74,7 +74,17 @@ import Observation
         panel.canCreateDirectories = false
         panel.directoryURL = workspace?.root
         panel.prompt = "Choose Workspace"
-        panel.message = "The model can read and search files in this folder. File contents, the folder path, and root AGENTS.md may be sent to your model. Edits and shell commands require approval unless you explicitly enable auto-approve."
+        // Keep the disclosure out of the panel message, whose intrinsic width
+        // can stretch the native folder picker.
+        let notice = NSTextField(wrappingLabelWithString: "The model can read and search files in this folder. File contents, the folder path, and root AGENTS.md may be sent to your model. Edits and shell commands require approval unless you explicitly enable auto-approve.")
+        notice.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        notice.textColor = .secondaryLabelColor
+        notice.preferredMaxLayoutWidth = 420
+        notice.translatesAutoresizingMaskIntoConstraints = false
+        notice.widthAnchor.constraint(equalToConstant: 420).isActive = true
+        notice.setContentCompressionResistancePriority(.required, for: .vertical)
+        panel.accessoryView = notice
+        panel.isAccessoryViewDisclosed = true
         let completion: (NSApplication.ModalResponse) -> Void = { [self] response in
             folderPanel = nil
             guard response == .OK, let url = panel.url, canSelectWorkspace else { return }
