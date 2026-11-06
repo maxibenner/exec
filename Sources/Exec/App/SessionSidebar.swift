@@ -40,7 +40,7 @@ struct SessionSidebar: View {
                                rename: {
                                    guard store.canNavigate else { return }
                                    renameID = session.id; renameTitle = session.title; renaming = true
-                               }, detach: { windows.detach(session.id) }, delete: { delete(session) })
+                               }, delete: { delete(session) })
                         .tag(session.id)
                         .moveDisabled(!store.canReorderSessions)
                 }
@@ -102,7 +102,6 @@ struct SessionRow: View {
     private var needsApproval: Bool { store.needsApproval(session.id) }
     private var needsAttention: Bool { store.needsAttention(session.id) }
     let rename: () -> Void
-    let detach: () -> Void
     let delete: () -> Void
 
     var body: some View {
@@ -144,7 +143,6 @@ struct SessionRow: View {
         .padding(.vertical, 5)
         .contentShape(Rectangle())
         .contextMenu {
-            Button("Open in New Window", action: detach).disabled(session.unreadable || !store.canReorderSessions)
             Button("Rename…", action: rename).disabled(session.unreadable || store.navigating)
             Divider()
             Button("Delete Conversation", role: .destructive, action: delete).disabled(running)
