@@ -58,7 +58,7 @@ struct SessionCommands: Commands {
             .keyboardShortcut("t", modifiers: .command)
             .disabled(store?.canNavigate != true)
 
-            Button("Delete Conversation", role: .destructive) {
+            Button("Delete Session", role: .destructive) {
                 actions?.delete?()
             }
             .keyboardShortcut(.delete, modifiers: [.command, .shift])
@@ -68,7 +68,7 @@ struct SessionCommands: Commands {
                 Button("Move Back to Main Window", action: attach)
                     .keyboardShortcut("w", modifiers: .command)
             } else {
-                Button("Detach Window") { actions?.detach?() }
+                Button("Detach Session Window") { actions?.detach?() }
                     .keyboardShortcut("d", modifiers: .command)
                     .disabled(actions?.detach == nil)
             }
