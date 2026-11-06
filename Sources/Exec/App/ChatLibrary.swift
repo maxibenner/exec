@@ -40,6 +40,9 @@ import Observation
             if !generatedTitlesEnabled { cancelTitleGeneration() }
         }
     }
+    var systemPrompt: String {
+        didSet { preferences.set(systemPrompt, forKey: "systemPrompt") }
+    }
     var titleModel: String {
         didSet {
             preferences.set(titleModel, forKey: "sessionTitleModel")
@@ -50,12 +53,14 @@ import Observation
     init(provider: any ChatProvider, sessions: SessionStore, residentLimit: Int = 8,
          preferences: UserDefaults = .standard) throws {
         self.preferences = preferences
+        systemPrompt = preferences.string(forKey: "systemPrompt") ?? ""
         generatedTitlesEnabled = preferences.bool(forKey: "generatedTitlesEnabled")
         titleModel = preferences.string(forKey: "sessionTitleModel") ?? ""
         self.residentLimit = max(1, residentLimit)
         self.provider = provider
         self.sessions = sessions
-        current = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions, selectOnCheckpoint: false)
+        current = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions, selectOnCheckpoint: false,
+                            systemPrompt: preferences.string(forKey: "systemPrompt") ?? "")
         observe(current)
         remember(current)
     }
@@ -461,7 +466,8 @@ import Observation
 
     private func makeConversation(workspace: Workspace? = nil) throws -> ChatStore {
         let conversation = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions,
-                                     selectOnCheckpoint: false, newConversation: true, workspace: workspace)
+                                     selectOnCheckpoint: false, newConversation: true, workspace: workspace,
+                                     systemPrompt: systemPrompt)
         conversation.models = models
         conversation.selectedModel = current.selectedModel.isEmpty ? models.first?.id ?? "" : current.selectedModel
         conversation.selectedEffort = current.effectiveEffort

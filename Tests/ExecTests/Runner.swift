@@ -20,6 +20,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("System prompts autosave and remain isolated per conversation", { try await SystemPromptTests().persistsAndSnapshots() }),
             ("Generated titles persist with isolated context and preferences", { try await SessionTitleTests().updatesPersistWithoutChangingChatContext() }),
             ("Title generation rejects incomplete and cancelled responses", { try await SessionTitleTests().rejectsFailedAndCancelledGeneration() }),
             ("Image file migration, deduplication and integrity", { try await ImageStorageTests().migrationAndIntegrity() }),

@@ -8,6 +8,7 @@ struct SettingsView: View {
     private enum SettingsTab: String, CaseIterable {
         case account = "Account"
         case general = "General"
+        case systemPrompt = "System Prompt"
     }
 
     var body: some View {
@@ -26,7 +27,7 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 240)
+            .frame(width: 360)
 
             GroupBox {
                 switch selectedTab {
@@ -34,6 +35,11 @@ struct SettingsView: View {
                     accountSection
                 case .general:
                     generalSection
+                case .systemPrompt:
+                    TextEditor(text: Binding(get: { store.systemPrompt }, set: { store.systemPrompt = $0 }))
+                        .font(.body)
+                        .accessibilityLabel("System Prompt")
+                        .padding(8)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
