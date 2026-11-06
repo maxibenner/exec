@@ -4,8 +4,7 @@ import UniformTypeIdentifiers
 struct ChatComposer: View {
     @Bindable var store: ChatPanel
     var overlayScrollerInset: CGFloat = 0
-    @FocusState private var focused: Bool
-    @State private var needsInitialFocus = true
+    @FocusState.Binding var focused: Bool
     @State private var imageDropTargeted = false
     @State private var dismissedDraft: String?
     @State private var highlighted = 0
@@ -90,13 +89,6 @@ struct ChatComposer: View {
                 .background { footerBackground }
         }
         .frame(maxWidth: .infinity)
-        .task(id: store.canEditDraft) {
-            // Each mounted conversation focuses once, after navigation/restoration
-            // enables its input. Later updates must not steal transcript selection.
-            guard needsInitialFocus, store.canEditDraft else { return }
-            focused = true
-            needsInitialFocus = false
-        }
         .onChange(of: store.draft) { _, _ in highlighted = 0; dismissedDraft = nil }
         .onChange(of: ObjectIdentifier(store.current)) { _, _ in close() }
         .onChange(of: store.canNavigate) { _, allowed in if !allowed { close() } }

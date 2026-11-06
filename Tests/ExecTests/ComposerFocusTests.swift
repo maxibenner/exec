@@ -5,15 +5,16 @@ import SwiftUI
     private struct Host: View {
         @Bindable var library: ChatLibrary
         let windows: SessionWindows
+        @FocusState private var composerFocused: Bool
 
         var body: some View {
             ConversationView(library: library, conversation: library.current,
-                             presentation: windows.presentation(for: library.current))
+                             presentation: windows.presentation(for: library.current), focused: $composerFocused)
                 .id(ObjectIdentifier(library.current))
         }
     }
 
-    func focusesNewAndSwitchedSessionsWithoutStealingSelection() async throws {
+    func switchingSessionsDoesNotStealFocus() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -33,47 +34,39 @@ import SwiftUI
         container.addSubview(selection)
         window.contentView = container
         defer { library.stopAll(); window.orderOut(nil); window.contentView = nil }
-        // Mount while navigation has disabled the composer; focus must wait.
         library.restore()
         window.makeKeyAndOrderFront(nil)
         host.layoutSubtreeIfNeeded()
-        func composerHasFocus() -> Bool {
-            guard let editor = window.firstResponder as? NSTextView else { return false }
-            return editor !== selection && editor.isEditable
+        func expectSelectionPreserved() async throws {
+            // Allow remounting and any focus tasks to run before checking.
+            try await Task.sleep(for: .milliseconds(50))
+            try expect(window.firstResponder === selection && selection.selectedRange().length == 10)
         }
-        func selectTranscript() throws {
-            try expect(window.makeFirstResponder(selection))
-            selection.setSelectedRange(NSRange(location: 0, length: 10))
-        }
-        try await wait { !library.hasRunningOperations && composerHasFocus() }
+        try await wait { !library.hasRunningOperations }
         library.draft = "First"; library.send()
         try await wait { !library.hasRunningOperations }
         let first = library.current
         let firstID = first.currentSessionID!
-        try selectTranscript()
+        try expect(window.makeFirstResponder(selection))
+        selection.setSelectedRange(NSRange(location: 0, length: 10))
         library.newConversation()
-        try await wait { !library.hasRunningOperations && composerHasFocus() }
+        try await wait { !library.hasRunningOperations }
+        try await expectSelectionPreserved()
         let second = library.current
         let secondProvider = provider.children.last!
         try expect(second !== first && !library.openConversations.contains { $0 === first })
         library.draft = "Keep this draft" // Keep the second runner resident for the warm switch.
         let secondID = second.currentSessionID!
-        try selectTranscript()
         library.openSession(firstID)
-        try await wait { library.current.currentSessionID == firstID && !library.hasRunningOperations && composerHasFocus() }
-        try selectTranscript()
+        try await wait { library.current.currentSessionID == firstID && !library.hasRunningOperations }
+        try await expectSelectionPreserved()
         library.openSession(secondID)
-        try await wait { library.current === second && !library.hasRunningOperations && composerHasFocus() }
+        try await wait { library.current === second && !library.hasRunningOperations }
+        try await expectSelectionPreserved()
 
-        // Ordinary rendering and navigation-state updates must not pull focus
-        // away from a native selection (and therefore its Copy command).
-        try selectTranscript()
-        library.draft = "Changed draft"
         library.send()
         try await wait { !library.hasRunningOperations }
-        try await Task.sleep(for: .milliseconds(50))
-        try expect(window.firstResponder === selection && selection.selectedRange().length == 10)
-
+        try await expectSelectionPreserved()
         var compacting = false
         secondProvider.manualCompactionAction = { _ in
             compacting = true
@@ -81,13 +74,13 @@ import SwiftUI
         }
         library.compact()
         try await wait { compacting }
-        try expect(window.firstResponder === selection)
-        // Switching to a compacting session must still focus an editable input.
         library.openSession(firstID)
-        try await wait { library.current.currentSessionID == firstID && !library.navigating && composerHasFocus() }
-        try selectTranscript()
+        try await wait { library.current.currentSessionID == firstID && !library.navigating }
+        try await expectSelectionPreserved()
         library.openSession(secondID)
-        try await wait { library.current === second && composerHasFocus() }
+        try await wait { library.current === second && !library.navigating }
+        try await expectSelectionPreserved()
+        try expect(ChatPanel(library: library, conversation: second).canEditDraft)
         library.stop()
         try await wait { !library.hasRunningOperations }
     }

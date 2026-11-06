@@ -2,6 +2,16 @@ import AppKit
 import SwiftUI
 
 @MainActor struct TranscriptTests {
+    private struct ComposerPreview: View {
+        let panel: ChatPanel
+        let overlayScrollerInset: CGFloat
+        @FocusState private var focused: Bool
+
+        var body: some View {
+            ChatComposer(store: panel, overlayScrollerInset: overlayScrollerInset, focused: $focused)
+        }
+    }
+
     func geometryPreservesAnchors() throws {
         let messages = (0..<1_000).map { Message(role: .user, text: "Message \($0)") }
         var layout = TranscriptLayout()
@@ -61,7 +71,7 @@ import SwiftUI
 
                 // Check the actual painted footer, not just the input's alignment:
                 // an overlay scroller needs a transparent strip inside the viewport.
-                let renderer = ImageRenderer(content: ChatComposer(store: panel, overlayScrollerInset: state.overlayScrollerInset)
+                let renderer = ImageRenderer(content: ComposerPreview(panel: panel, overlayScrollerInset: state.overlayScrollerInset)
                     .frame(width: availableWidth).environment(\.colorScheme, .light))
                 guard let image = renderer.cgImage else { throw CheckFailure(description: "Missing composer rendering") }
                 let bitmap = NSBitmapImageRep(cgImage: image)

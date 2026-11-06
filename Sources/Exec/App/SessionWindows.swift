@@ -111,9 +111,12 @@ private struct DetachedConversationView: View {
     let windows: SessionWindows
     let conversation: ChatStore
     let presentation: TranscriptState
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
-        ConversationView(library: windows.library, conversation: conversation, presentation: presentation)
+        ConversationView(library: windows.library, conversation: conversation, presentation: presentation,
+                         focused: $composerFocused)
+            .onAppear { composerFocused = true }
             .onChange(of: windows.library.detachedSessionIDs) { _, _ in windows.closeInvalidWindows() }
             .onChange(of: conversation.summary?.title) { _, _ in
                 if let id = conversation.currentSessionID { windows.updateTitle(for: id) }

@@ -3,6 +3,7 @@ import SwiftUI
 struct ChatView: View {
     @Bindable var store: ChatLibrary
     let windows: SessionWindows
+    @FocusState private var composerFocused: Bool
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -14,7 +15,7 @@ struct ChatView: View {
         } detail: {
             ConversationView(library: store, conversation: store.current,
                              presentation: windows.presentation(for: store.current),
-                             showsNavigationError: true)
+                             focused: $composerFocused, showsNavigationError: true)
                 .id(ObjectIdentifier(store.current))
                 .transaction(value: ObjectIdentifier(store.current)) { transaction in
                     transaction.animation = nil
@@ -22,7 +23,7 @@ struct ChatView: View {
                 }
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
-                        Button { store.newConversation() } label: {
+                        Button { store.newConversation(); composerFocused = true } label: {
                             Label("New Conversation", systemImage: "square.and.pencil")
                         }
                         .keyboardShortcut("n", modifiers: .command)
@@ -35,5 +36,6 @@ struct ChatView: View {
         .background(WindowReference { windows.mainWindow = $0 })
         .onChange(of: store.detachedSessionIDs) { _, _ in windows.closeInvalidWindows() }
         .onAppear { windows.reopenMainWindow = { openWindow(id: "chat") } }
+        .task { composerFocused = true }
     }
 }

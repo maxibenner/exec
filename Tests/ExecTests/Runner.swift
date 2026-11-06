@@ -62,7 +62,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Background queue and approval defaults", { try await MessageQueueTests().backgroundQueueStaysWithConversation() }),
             ("Queue stops on checkpoint failure", { try await MessageQueueTests().saveFailureDoesNotDrainQueue() }),
             ("Compaction queue success, interruption and save safety", { try await MessageQueueTests().queuesDuringCompactionAndPausesOnFailure() }),
-            ("Composer session focus and native selection", { try await ComposerFocusTests().focusesNewAndSwitchedSessionsWithoutStealingSelection() }),
+            ("Session switches preserve native focus", { try await ComposerFocusTests().switchingSessionsDoesNotStealFocus() }),
             ("Pi progress animation frames", { try MessageQueueTests().progressFramesMatchPi() }),
             ("Account usage request, parsing and no retry", { try await AccountUsageTests().requestParsingAndFailure() }),
             ("Account usage sign-out isolation", { try await AccountUsageTests().accountIsolation() }),
