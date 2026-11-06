@@ -49,7 +49,7 @@ enum CodingTools {
             .init(name: "old_text", type: "string", description: "Exact unique text to replace"),
             .init(name: "new_text", type: "string", description: "Replacement text")
         ]),
-        .init(name: "shell", description: "Run a bash command in the workspace subject to the user's approval setting. Not sandboxed. Commands have a 60-second timeout and bounded combined output. Never automatically retry commands or assume a cancelled command had no effects.", parameters: [
+        .init(name: "shell", description: "Run a bash command in the workspace subject to the user's approval setting. Not sandboxed. Commands have a 120-second timeout and bounded combined output. Never automatically retry commands or assume a cancelled command had no effects.", parameters: [
             .init(name: "command", type: "string", description: "Exact shell command to show for approval")
         ])
     ]
