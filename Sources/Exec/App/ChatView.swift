@@ -51,14 +51,6 @@ struct ChatView: View {
                                 .frame(maxWidth: 300)
                         }
                     }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button { store.newConversation() } label: {
-                            Label("New Conversation", systemImage: "square.and.pencil")
-                        }
-                        .keyboardShortcut("n", modifiers: .command)
-                        .help("New conversation (⌘N)")
-                        .disabled(!store.canNavigate)
-                    }
                 }
         }
         .frame(minWidth: 720, minHeight: 480)

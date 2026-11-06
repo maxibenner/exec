@@ -39,6 +39,19 @@ struct SessionSidebar: View {
         .allowsHitTesting(store.canNavigate)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button { store.newConversation() } label: {
+                        Label("New Chat", systemImage: "square.and.pencil")
+                            .labelStyle(.iconOnly)
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("New Chat (⌘T)")
+                    .disabled(!store.canNavigate)
+                }
+                .padding(10)
                 Divider()
                 Button { showingSettings = true } label: {
                     Label("Settings", systemImage: "gearshape")
