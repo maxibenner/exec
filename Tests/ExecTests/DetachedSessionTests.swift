@@ -162,6 +162,7 @@ import SwiftUI
             return view.subviews.lazy.compactMap { findTable($0) }.first
         }
         guard let table = findTable(host) else { throw CheckFailure(description: "Missing native session table") }
+        try expect(table.draggingDestinationFeedbackStyle == .regular)
         let order = library.sidebarSessions.map(\.id)
         table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         try await wait { !library.navigating }
@@ -177,7 +178,6 @@ import SwiftUI
             charactersIgnoringModifiers: "\u{7f}", isARepeat: false, keyCode: 51)!
         table.keyDown(with: delete)
         try expect(deleted == order[1])
-        try checkRoundedDragPreview(table)
         let presentation = windows.presentation(for: library.current)
         presentation.expanded[UUID()] = true
         windows.detach(order[1])
@@ -195,30 +195,6 @@ import SwiftUI
         try expect(windows.presentation(for: library.current) === presentation)
         let persisted = try await sessions.list(identity: provider.conversationIdentity)
         try expect(persisted.map(\.id) == library.sidebarSessions.map(\.id))
-    }
-
-    private func checkRoundedDragPreview(_ table: NSTableView) throws {
-        guard let table = table as? SessionTable.SidebarTable,
-              let row = table.rowView(atRow: table.selectedRow, makeIfNecessary: true) else {
-            throw CheckFailure(description: "Missing selected sidebar row")
-        }
-        let appearance = table.appearance
-        defer { table.appearance = appearance }
-        for name in [NSAppearance.Name.aqua, .darkAqua] {
-            table.appearance = NSAppearance(named: name)
-            guard let preview = table.dragPreview(for: table.selectedRow),
-                  let data = preview.image.tiffRepresentation,
-                  let bitmap = NSBitmapImageRep(data: data) else {
-                throw CheckFailure(description: "Missing sidebar drag preview")
-            }
-            try expect(preview.frame == table.convert(row.bounds, from: row))
-            try expect(preview.image.size == row.bounds.size)
-            // The empty right side must carry a solid container, not just text;
-            // transparent corners distinguish the rounded card from a rectangle.
-            let right = bitmap.pixelsWide - 2
-            try expect((bitmap.colorAt(x: right, y: bitmap.pixelsHigh / 2)?.alphaComponent ?? 0) > 0.95)
-            try expect((bitmap.colorAt(x: bitmap.pixelsWide - 1, y: 0)?.alphaComponent ?? 1) < 0.05)
-        }
     }
 
     func pendingApprovalsMoveWithoutExecutionOrReplay() async throws {

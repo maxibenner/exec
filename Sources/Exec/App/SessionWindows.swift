@@ -35,7 +35,7 @@ import Observation
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 650),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                   backing: .buffered, defer: false)
-            window.contentMinSize = NSSize(width: 500, height: 520)
+            window.contentMinSize = NSSize(width: 500, height: 480)
             window.tabbingMode = .disallowed
             window.title = self.title(for: id)
             window.contentView = NSHostingView(rootView: DetachedConversationView(
@@ -115,25 +115,8 @@ private struct DetachedConversationView: View {
     @FocusState private var composerFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                if let id = conversation.currentSessionID {
-                    SessionDragSource(windows: windows, sessionID: id)
-                        .frame(maxWidth: .infinity).frame(height: 36)
-                }
-                Button {
-                    if let id = conversation.currentSessionID { windows.attach(id) }
-                } label: {
-                    Label("Move Back to Main Window", systemImage: "rectangle.leadinghalf.inset.filled")
-                        .labelStyle(.iconOnly)
-                }
-                .buttonStyle(.borderless).help("Move back to main window")
-            }
-            .padding(.horizontal, 16)
-            Divider()
-            ConversationView(library: windows.library, conversation: conversation, presentation: presentation,
-                             focused: $composerFocused)
-        }
+        ConversationView(library: windows.library, conversation: conversation, presentation: presentation,
+                         focused: $composerFocused)
             .onAppear { composerFocused = true }
             .onChange(of: windows.library.detachedSessionIDs) { _, _ in windows.closeInvalidWindows() }
             .onChange(of: conversation.summary?.title) { _, _ in
