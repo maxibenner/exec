@@ -26,6 +26,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Pending approvals survive detach and reattach without execution", { try await DetachedSessionTests().pendingApprovalsMoveWithoutExecutionOrReplay() }),
             ("Session deletion selects adjacent rows and preserves drafts", { try await SessionDeletionTests().selectsAdjacentRowsInSidebarOrder() }),
             ("Session deletion and neighbor-load failures remain recoverable", { try await SessionDeletionTests().deletionAndNeighborLoadFailuresStayRecoverable() }),
+            ("Detached deletion preserves the main conversation and recovers from failure", { try await SessionDeletionTests().detachedDeletionPreservesMainConversationAndRecoversFromFailure() }),
             ("Persistent session ordering, migration and write failures", { try await SessionOrderingTests().migratesAndPersistsOrderWithoutChangingSelectionOrOtherAccounts() }),
             ("Session moves preserve running work, drafts and shortcuts", { try await SessionOrderingTests().movesStayStableDuringActivityAndKeepDraftsAndShortcuts() }),
             ("Tool summaries describe inputs and preserve results", { try ToolPresentationTests().describesInputsAndPreservesResults() }),

@@ -379,13 +379,20 @@ import Observation
         }
     }
 
+    func canDeleteSession(_ id: UUID) -> Bool {
+        canModify && !isSessionRunning(id) && sessionList.contains { $0.id == id }
+    }
+
     func deleteSession(_ id: UUID) {
+        guard canDeleteSession(id) else { return }
+        let wasDetached = detachedSessionIDs.contains(id)
         let rows = sidebarSessions.map(\.id)
-        guard canModify, !isSessionRunning(id), !detachedSessionIDs.contains(id),
-              let index = rows.firstIndex(of: id) else { return }
-        // Use visible sidebar order, not activity dates or resident-cache order.
-        let nextID = index + 1 < rows.count ? rows[index + 1] : (index > 0 ? rows[index - 1] : nil)
-        navigate {
+        // Deleting a detached conversation must not change the main selection.
+        // Otherwise use visible sidebar order, not activity or resident-cache order.
+        let nextID: UUID? = rows.firstIndex(of: id).flatMap { index in
+            index + 1 < rows.count ? rows[index + 1] : (index > 0 ? rows[index - 1] : nil)
+        }
+        navigate(reportingTo: wasDetached ? conversation(id) : nil) {
             await self.conversation(id)?.waitForPendingSave()
             try Task.checkCancellation()
             var failure: Error?
@@ -393,6 +400,9 @@ import Observation
             catch { failure = error }
             self.savedSummaries = try await self.sessions.list(identity: self.provider.conversationIdentity)
             if !self.savedSummaries.contains(where: { $0.id == id }) {
+                // Close the detached window only after deletion is confirmed by
+                // the store. Failed deletion leaves its conversation available.
+                self.detachedSessionIDs.remove(id)
                 self.openConversations.removeAll { $0.currentSessionID == id }
                 do {
                     if let nextID {

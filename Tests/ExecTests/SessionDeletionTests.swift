@@ -76,6 +76,45 @@ import Foundation
         try expect(deleted == nil)
     }
 
+    func detachedDeletionPreservesMainConversationAndRecoversFromFailure() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (library, sessions, ids) = try await fixture(root, count: 2)
+        defer { library.stopAll() }
+        let main = library.current
+        main.draft = "Keep the main window draft"
+        var detached: ChatStore?
+        library.detachSession(ids[1]) { detached = $0 }
+        try await settle(library)
+        try expect(detached != nil && library.current === main)
+        try expect(library.canDeleteSession(ids[1]) && !library.canDeleteSession(UUID()))
+
+        let file = root.appendingPathComponent("\(ids[1]).json")
+        let bytes = try Data(contentsOf: file)
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+        library.deleteSession(ids[1])
+        try await settle(library)
+        try expect(detached?.error != nil && library.error == nil)
+        try expect(library.detachedSessionIDs.contains(ids[1]))
+        try expect(library.current === main && library.sessionList.contains { $0.id == ids[1] })
+
+        try FileManager.default.removeItem(at: file)
+        try bytes.write(to: file)
+        library.deleteSession(ids[1])
+        try await settle(library)
+        try expect(library.current === main && main.draft == "Keep the main window draft")
+        try expect(!library.detachedSessionIDs.contains(ids[1]))
+        try expect(!library.openConversations.contains { $0.currentSessionID == ids[1] })
+        try expect(!library.sessionList.contains { $0.id == ids[1] })
+        let deleted = try await sessions.load(id: ids[1])
+        let selected = try await sessions.preferredID(identity: main.conversationIdentity)
+        try expect(deleted == nil && selected == ids[0])
+        // A window-close callback after deletion must not reattach deleted state.
+        library.attachSession(ids[1])
+        try expect(library.current === main && !library.canDeleteSession(ids[1]))
+    }
+
     private func fixture(_ root: URL, count: Int) async throws -> (ChatLibrary, SessionStore, [UUID]) {
         let sessions = SessionStore(directory: root)
         let provider = FakeProvider()

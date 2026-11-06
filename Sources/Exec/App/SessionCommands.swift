@@ -1,22 +1,60 @@
 import SwiftUI
 
-private struct DeleteSidebarSessionKey: FocusedValueKey {
-    typealias Value = @MainActor () -> Void
+struct SessionWindowActions {
+    var delete: (@MainActor () -> Void)?
+    var detach: (@MainActor () -> Void)?
+    var attach: (@MainActor () -> Void)?
 }
 
-private struct DetachSidebarSessionKey: FocusedValueKey {
-    typealias Value = @MainActor () -> Void
+private struct SessionWindowActionsKey: FocusedValueKey {
+    typealias Value = SessionWindowActions
 }
 
 extension FocusedValues {
-    var detachSidebarSession: (@MainActor () -> Void)? {
-        get { self[DetachSidebarSessionKey.self] }
-        set { self[DetachSidebarSessionKey.self] = newValue }
+    var sessionWindowActions: SessionWindowActions? {
+        get { self[SessionWindowActionsKey.self] }
+        set { self[SessionWindowActionsKey.self] = newValue }
+    }
+}
+
+/// Scope commands to a conversation window, not whichever control has focus.
+struct SessionCommandScope: ViewModifier {
+    let windows: SessionWindows
+    let conversation: ChatStore
+    @State private var pendingDeletion: SessionSummary?
+
+    private var actions: SessionWindowActions {
+        let library = windows.library
+        var actions = SessionWindowActions()
+        guard let id = conversation.currentSessionID,
+              let session = library.sessionList.first(where: { $0.id == id }) else { return actions }
+        if library.canDeleteSession(id) {
+            actions.delete = { pendingDeletion = session }
+        }
+        if library.detachedSessionIDs.contains(id) {
+            actions.attach = { windows.attach(id) }
+        } else if library.canReorderSessions, !session.unreadable {
+            actions.detach = { windows.detach(id) }
+        }
+        return actions
     }
 
-    var deleteSidebarSession: (@MainActor () -> Void)? {
-        get { self[DeleteSidebarSessionKey.self] }
-        set { self[DeleteSidebarSessionKey.self] = newValue }
+    func body(content: Content) -> some View {
+        content
+            .focusedSceneValue(\.sessionWindowActions, actions)
+            .alert("Delete Conversation?", isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ), presenting: pendingDeletion) { session in
+                Button("Delete", role: .destructive) {
+                    // Retain the original target across focus/selection changes,
+                    // and recheck eligibility when the confirmation is accepted.
+                    windows.library.deleteSession(session.id)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { session in
+                Text("Delete “\(session.title)”? This cannot be undone.")
+            }
     }
 }
 
@@ -24,8 +62,7 @@ extension FocusedValues {
 struct SessionCommands: Commands {
     let store: ChatLibrary?
     let windows: SessionWindows?
-    @FocusedValue(\.deleteSidebarSession) private var deleteSidebarSession
-    @FocusedValue(\.detachSidebarSession) private var detachSidebarSession
+    @FocusedValue(\.sessionWindowActions) private var actions
 
     var body: some Commands {
         CommandMenu("Sessions") {
@@ -37,17 +74,17 @@ struct SessionCommands: Commands {
             .disabled(store?.canNavigate != true)
 
             Button("Delete Conversation", role: .destructive) {
-                deleteSidebarSession?()
+                actions?.delete?()
             }
-            .keyboardShortcut(.delete, modifiers: .command)
-            .disabled(deleteSidebarSession == nil || windows?.activeDetachedID != nil)
+            .keyboardShortcut(.delete, modifiers: [.command, .shift])
+            .disabled(actions?.delete == nil)
 
-            if let id = windows?.activeDetachedID {
-                Button("Move Back to Main Window") { windows?.attach(id) }
+            if let attach = actions?.attach {
+                Button("Move Back to Main Window", action: attach)
             } else {
-                Button("Open in New Window") { detachSidebarSession?() }
+                Button("Detach Window") { actions?.detach?() }
                     .keyboardShortcut("d", modifiers: .command)
-                    .disabled(detachSidebarSession == nil)
+                    .disabled(actions?.detach == nil)
             }
 
             Divider()

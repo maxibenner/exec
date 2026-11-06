@@ -8,7 +8,7 @@ struct ChatView: View {
 
     var body: some View {
         NavigationSplitView {
-            SessionSidebar(store: store, windows: windows, open: { windows.openSession($0) }, delete: {
+            SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {
                 guard store.canNavigate, !store.isSessionRunning($0.id) else { return }
                 store.deleteSession($0.id)
             })
@@ -33,6 +33,7 @@ struct ChatView: View {
                 }
         }
         .frame(minWidth: 720, minHeight: 480)
+        .modifier(SessionCommandScope(windows: windows, conversation: store.current))
         .background(WindowReference { windows.mainWindow = $0 })
         .onChange(of: store.detachedSessionIDs) { _, _ in windows.closeInvalidWindows() }
         .onAppear { windows.reopenMainWindow = { openWindow(id: "chat") } }

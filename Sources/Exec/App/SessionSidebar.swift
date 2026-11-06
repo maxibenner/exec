@@ -2,33 +2,11 @@ import SwiftUI
 
 struct SessionSidebar: View {
     @Bindable var store: ChatLibrary
-    let windows: SessionWindows
     let open: (UUID) -> Void
     let delete: (SessionSummary) -> Void
     @State private var renaming = false
     @State private var renameID: UUID?
     @State private var renameTitle = ""
-
-    private var deleteSelection: (@MainActor () -> Void)? {
-        guard store.canNavigate,
-              let selected = store.sessionList.first(where: { $0.id == store.sidebarSelectionID }),
-              !store.isSessionRunning(selected.id) else { return nil }
-        return {
-            guard store.canNavigate, store.sidebarSelectionID == selected.id,
-                  !store.isSessionRunning(selected.id) else { return }
-            delete(selected)
-        }
-    }
-
-    private var detachSelection: (@MainActor () -> Void)? {
-        guard store.canReorderSessions,
-              let selected = store.sidebarSessions.first(where: { $0.id == store.sidebarSelectionID }),
-              !selected.unreadable else { return nil }
-        return {
-            guard store.canReorderSessions, store.sidebarSelectionID == selected.id else { return }
-            windows.detach(selected.id)
-        }
-    }
 
     var body: some View {
         let shortcuts = store.sessionShortcuts
@@ -58,10 +36,6 @@ struct SessionSidebar: View {
         .listStyle(.sidebar)
         .disabled(store.authenticating)
         .allowsHitTesting(store.canNavigate)
-        // Keep Command-Delete scoped to list focus; text fields retain their
-        // native editing command through the menu key-equivalent system.
-        .focusedValue(\.deleteSidebarSession, deleteSelection)
-        .focusedValue(\.detachSidebarSession, detachSelection)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Divider()
