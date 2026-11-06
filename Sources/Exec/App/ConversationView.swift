@@ -43,7 +43,6 @@ struct ConversationView: View {
                                 .font(.headline.bold())
                             Text("Press ⌘T to create a new one.")
                                 .font(.callout)
-                                .underline()
                                 .foregroundStyle(.secondary)
                                 .accessibilityLabel("Press Command T to create a new one.")
                         }
