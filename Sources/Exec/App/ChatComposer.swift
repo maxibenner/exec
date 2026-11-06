@@ -172,6 +172,8 @@ struct ChatComposer: View {
     private var information: some View {
         HStack(alignment: .center, spacing: 12) {
             workingControl
+            Text("Type / for commands")
+                .allowsHitTesting(false)
             Spacer(minLength: 0)
             usageInformation
             workspaceInformation
