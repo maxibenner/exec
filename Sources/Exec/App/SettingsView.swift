@@ -2,101 +2,73 @@ import SwiftUI
 
 struct SettingsView: View {
     let store: ChatLibrary
-    @Environment(\.dismiss) private var dismiss
-    @State private var selectedTab: SettingsTab = .account
-
-    private enum SettingsTab: String, CaseIterable {
-        case account = "Account"
-        case general = "General"
-        case systemPrompt = "System Prompt"
-    }
 
     var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Text("Settings").font(.title2.weight(.semibold))
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-
-            Picker("Settings section", selection: $selectedTab) {
-                ForEach(SettingsTab.allCases, id: \.self) { tab in
-                    Text(tab.rawValue).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 360)
-
-            GroupBox {
-                switch selectedTab {
-                case .account:
-                    accountSection
-                case .general:
-                    generalSection
-                case .systemPrompt:
-                    TextEditor(text: Binding(get: { store.systemPrompt }, set: { store.systemPrompt = $0 }))
-                        .font(.body)
-                        .accessibilityLabel("System Prompt")
-                        .padding(8)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        TabView {
+            generalSection
+                .tabItem { Label("General", systemImage: "gearshape") }
+            accountSection
+                .tabItem { Label("Account", systemImage: "person.crop.circle") }
+            systemPromptSection
+                .tabItem { Label("System Prompt", systemImage: "text.alignleft") }
         }
-        .padding(20)
-        .frame(width: 480, height: 300)
+        .frame(minWidth: 520, idealWidth: 560, minHeight: 360, idealHeight: 420)
     }
 
     private var generalSection: some View {
         @Bindable var settings = store
-        return VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
+        return Form {
+            Section("Session Titles") {
                 Toggle("Generate session titles", isOn: $settings.generatedTitlesEnabled)
-                Text("Regenerates titles using minimal context when new messages are sent.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Picker("Title model", selection: $settings.titleModel) {
-                Text("Choose a model").tag("")
-                if !store.titleModel.isEmpty, !store.models.contains(where: { $0.id == store.titleModel }) {
-                    Text(store.titleModel).tag(store.titleModel)
+                Picker("Title model", selection: $settings.titleModel) {
+                    Text("Choose a model").tag("")
+                    if !store.titleModel.isEmpty, !store.models.contains(where: { $0.id == store.titleModel }) {
+                        Text(store.titleModel).tag(store.titleModel)
+                    }
+                    ForEach(store.models) { model in
+                        Text(model.name).tag(model.id)
+                    }
                 }
-                ForEach(store.models) { model in
-                    Text(model.name).tag(model.id)
-                }
+                .disabled(!store.generatedTitlesEnabled)
             }
-            .disabled(!store.generatedTitlesEnabled)
-            Spacer()
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .formStyle(.grouped)
     }
 
     private var accountSection: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            if let account = store.account {
-                Label {
-                    Text(verbatim: account).textSelection(.enabled)
-                } icon: {
-                    Image(systemName: "person.crop.circle")
+        Form {
+            Section("Account") {
+                if let account = store.account {
+                    LabeledContent("Signed in as") {
+                        Text(verbatim: account)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    HStack {
+                        Button("Refresh Models", action: store.restore)
+                        Button("Reconnect", action: store.connect)
+                        Spacer()
+                        Button("Sign Out", role: .destructive, action: store.disconnect)
+                    }
+                } else {
+                    Button("Sign In", action: store.connect)
                 }
-
-                HStack {
-                    Button("Refresh Models", action: store.restore)
-                    Button("Reconnect", action: store.connect)
-                    Spacer()
-                    Button("Sign Out", role: .destructive, action: store.disconnect)
-                }
-            } else {
-                Button(store.connectionTitle, action: store.connect)
-                    .buttonStyle(.borderedProminent)
             }
-            Spacer()
+            .disabled(store.accountBusy || !store.canNavigate)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .disabled(store.accountBusy || !store.canNavigate)
+        .formStyle(.grouped)
+    }
+
+    private var systemPromptSection: some View {
+        @Bindable var settings = store
+        return Form {
+            Section("System Prompt") {
+                TextEditor(text: $settings.systemPrompt)
+                    .font(.body)
+                    .accessibilityLabel("System Prompt")
+                    .frame(minHeight: 220)
+            }
+        }
+        .formStyle(.grouped)
     }
 }

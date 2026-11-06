@@ -28,6 +28,13 @@ import SwiftUI
         }
         .defaultSize(width: 980, height: 700)
         .commands { SessionCommands(store: store, windows: windows) }
+
+        Settings {
+            if let store {
+                SettingsView(store: store)
+            }
+        }
+        .windowResizability(.contentMinSize)
     }
 
     private func start() {

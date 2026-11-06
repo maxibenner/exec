@@ -4,7 +4,7 @@ struct SessionSidebar: View {
     @Bindable var store: ChatLibrary
     let open: (UUID) -> Void
     let delete: (SessionSummary) -> Void
-    @State private var showingSettings = false
+    @Environment(\.openSettings) private var openSettings
     @State private var renaming = false
     @State private var renameID: UUID?
     @State private var renameTitle = ""
@@ -46,7 +46,7 @@ struct SessionSidebar: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Divider()
-                Button { showingSettings = true } label: {
+                Button { openSettings() } label: {
                     Label("Settings", systemImage: "gearshape")
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
@@ -54,9 +54,6 @@ struct SessionSidebar: View {
                 .buttonStyle(.plain)
                 .padding(14)
             }
-        }
-        .sheet(isPresented: $showingSettings) {
-            SettingsView(store: store)
         }
         .alert("Rename Conversation", isPresented: $renaming) {
             TextField("Name", text: $renameTitle)
