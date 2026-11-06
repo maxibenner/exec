@@ -103,6 +103,72 @@ import Foundation
         try expect(provider.inputs.count == 1 && store.queuedMessages.count == 1)
     }
 
+    func queuesDuringCompactionAndPausesOnFailure() async throws {
+        for outcome in ["success", "failure", "cancel", "save failure"] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let provider = FakeProvider()
+            let library = try ChatLibrary(provider: provider, sessions: SessionStore(directory: root))
+            library.restore()
+            try await wait { !library.hasRunningOperations }
+            let conversation = library.current
+            let panel = ChatPanel(library: library, conversation: conversation)
+            let fake = provider.children[0]
+            panel.draft = "First"; panel.send()
+            try await wait { !library.hasRunningOperations }
+            let transcript = conversation.messages
+            var started = false
+            var release = false
+            var requests = 0
+            fake.manualCompactionAction = { _ in
+                requests += 1
+                started = true
+                while !release { try await Task.sleep(for: .milliseconds(5)) }
+                if outcome == "failure" { throw ExecError("Compaction failed") }
+                if outcome == "save failure" {
+                    try FileManager.default.removeItem(at: root)
+                    try Data("Not a directory".utf8).write(to: root)
+                }
+            }
+            panel.compact()
+            try await wait { started }
+            try expect(panel.canEditDraft && conversation.isCompacting && !conversation.isSending)
+            let image = ImageAttachment(name: "queued.png", mediaType: "image/png", data: Data([1]))
+            guard let importing = conversation.importImages({ [image] }) else {
+                throw CheckFailure(description: "Compaction blocked attachments")
+            }
+            await importing.value
+            panel.draft = "Second"; panel.send()
+            panel.draft = "Third"; panel.send()
+            panel.draft = "Still editing"
+            try expect(conversation.queuedMessages.map(\.text) == ["Second", "Third"])
+            try expect(conversation.messages == transcript && fake.inputs.count == 1)
+            // A window-local composer must keep targeting this runner after navigation.
+            library.newConversation()
+            try await wait { !library.navigating }
+            library.draft = "Other session"
+            if outcome == "cancel" { panel.stop() }
+            else { release = true }
+            try await wait { !library.hasRunningOperations }
+            try expect(requests == 1 && !conversation.isCompacting && panel.canEditDraft)
+            try expect(panel.draft == "Still editing" && library.draft == "Other session")
+            if outcome == "success" {
+                try expect(fake.inputs.map { $0.last!.text } == ["First", "Second", "Third"])
+                try expect(fake.inputs[1].last?.images == [image])
+                try expect(conversation.queuedMessages.isEmpty)
+            } else {
+                try expect(fake.inputs.count == 1 && conversation.messages == transcript)
+                try expect(conversation.isQueuePaused && conversation.queuedMessages.map(\.text) == ["Second", "Third"])
+                if outcome != "save failure" {
+                    panel.resumeQueuedMessages()
+                    try await wait { !library.hasRunningOperations }
+                    try expect(fake.inputs.map { $0.last!.text } == ["First", "Second", "Third"])
+                } else { try expect(conversation.hasUnsavedChanges) }
+            }
+            library.stopAll()
+        }
+    }
+
     func progressFramesMatchPi() throws {
         try expect(String(WorkingFrames.frame(0)) == "█·······")
         try expect(String(WorkingFrames.frame(3)) == "░▒▓█····")

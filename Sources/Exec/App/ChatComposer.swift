@@ -3,7 +3,8 @@ import UniformTypeIdentifiers
 
 struct ChatComposer: View {
     @Bindable var store: ChatPanel
-    @FocusState.Binding var focused: Bool
+    @FocusState private var focused: Bool
+    @State private var needsInitialFocus = true
     @State private var imageDropTargeted = false
     @State private var dismissedDraft: String?
     @State private var highlighted = 0
@@ -88,6 +89,13 @@ struct ChatComposer: View {
                 .background(.background)
         }
         .frame(maxWidth: .infinity)
+        .task(id: store.canEditDraft) {
+            // Each mounted conversation focuses once, after navigation/restoration
+            // enables its input. Later updates must not steal transcript selection.
+            guard needsInitialFocus, store.canEditDraft else { return }
+            focused = true
+            needsInitialFocus = false
+        }
         .onChange(of: store.draft) { _, _ in highlighted = 0; dismissedDraft = nil }
         .onChange(of: ObjectIdentifier(store.current)) { _, _ in close() }
         .onChange(of: store.canNavigate) { _, allowed in if !allowed { close() } }
@@ -115,7 +123,7 @@ struct ChatComposer: View {
             TextField("Message", text: $store.draft, axis: .vertical)
                 .lineLimit(1...8).textFieldStyle(.plain).font(.body)
                 .focused($focused)
-                .disabled(store.isWorking && !store.isSending).allowsHitTesting(!store.navigating)
+                .disabled(!store.canEditDraft).allowsHitTesting(!store.navigating)
                 .accessibilityLabel("Message")
                 .onSubmit {
                     if paletteVisible { chooseHighlighted() }
@@ -140,7 +148,7 @@ struct ChatComposer: View {
         .background {
             RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor))
                 .contentShape(Rectangle()).onTapGesture {
-                    guard store.canNavigate, !store.isWorking || store.isSending else { return }
+                    guard store.canEditDraft else { return }
                     focused = true
                 }
         }

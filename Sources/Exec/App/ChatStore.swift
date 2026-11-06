@@ -41,6 +41,8 @@ import Observation
     var error: String?
     private(set) var busy = false
     private(set) var isSending = false
+    private(set) var isCompacting = false
+    var canEditDraft: Bool { !busy || isSending || isCompacting }
     private(set) var workspace: Workspace? { didSet { checkpointRevision += 1 } }
     private(set) var sessionList: [SessionSummary] = []
     private(set) var currentSessionID: UUID?
@@ -217,7 +219,7 @@ import Observation
     // Capture the destination before asynchronous drop loading; navigation must not redirect attachments.
     @discardableResult
     func importImages(_ load: @escaping @MainActor () async throws -> [ImageAttachment]) -> Task<Void, Never>? {
-        guard !isImportingImages, !busy || isSending else { return nil }
+        guard !isImportingImages, canEditDraft else { return nil }
         let sessionID = currentSessionID
         let identity = conversationIdentity
         isImportingImages = true
@@ -238,7 +240,7 @@ import Observation
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !draftImages.isEmpty, !busy || isSending, !isImportingImages,
+        guard !text.isEmpty || !draftImages.isEmpty, canEditDraft, !isImportingImages,
               account != nil, !selectedModel.isEmpty else { return }
         let user = Message(role: .user, text: text, images: draftImages)
         queuedMessages.append(user)
@@ -381,7 +383,7 @@ import Observation
 
     func compact() {
         guard canCompact else { return }
-        run {
+        run(compacting: true) {
             // Persist pending preferences before making a non-retried request.
             try await self.checkpoint()
             let model = self.model ?? ChatModel(id: self.selectedModel, name: self.selectedModel)
@@ -591,10 +593,12 @@ import Observation
         }
     }
 
-    private func run(restoreSession: Bool = true, sending: Bool = false, _ operation: @escaping @MainActor () async throws -> Void) {
+    private func run(restoreSession: Bool = true, sending: Bool = false, compacting: Bool = false,
+                     _ operation: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }
         busy = true
         isSending = sending
+        isCompacting = compacting
         error = nil
         task = Task {
             var completed = false
@@ -602,9 +606,10 @@ import Observation
                 self.account = self.provider.account
                 self.busy = false
                 self.isSending = false
+                self.isCompacting = false
                 self.openingSessionID = nil
                 self.task = nil
-                if sending {
+                if sending || compacting {
                     if !completed || Task.isCancelled { self.isQueuePaused = !self.queuedMessages.isEmpty }
                     else { self.sendNextQueuedMessage() }
                 }

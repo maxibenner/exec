@@ -19,6 +19,7 @@ import Observation
     var busy: Bool { !canNavigate || current.busy }
     var isWorking: Bool { library.authenticating || current.busy }
     var isSending: Bool { current.isSending }
+    var canEditDraft: Bool { canNavigate && current.canEditDraft }
     var models: [ChatModel] { library.models }
     var account: String? { current.account }
     var accountUsage: AccountUsage? { library.accountUsage }

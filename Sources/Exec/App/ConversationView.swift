@@ -7,14 +7,12 @@ struct ConversationView: View {
     @State private var panel: ChatPanel
     let presentation: TranscriptState
     let showsNavigationError: Bool
-    @FocusState.Binding var composerFocused: Bool
     @State private var errorHeight: CGFloat = 20
     @State private var composerHeight: CGFloat = 140
 
     init(library: ChatLibrary, conversation: ChatStore, presentation: TranscriptState,
-         focused: FocusState<Bool>.Binding, showsNavigationError: Bool = false) {
+         showsNavigationError: Bool = false) {
         _panel = State(initialValue: ChatPanel(library: library, conversation: conversation))
-        _composerFocused = focused
         self.presentation = presentation
         self.showsNavigationError = showsNavigationError
     }
@@ -35,7 +33,7 @@ struct ConversationView: View {
                         .background(.background)
                 }
                 if let error { errorView(error).background(.background) }
-                ChatComposer(store: panel, focused: $composerFocused)
+                ChatComposer(store: panel)
                     .disabled(panel.navigating)
             }
             .padding(.trailing, presentation.trailingInset)

@@ -134,7 +134,7 @@ import Observation
     func send(in destination: ChatStore? = nil) {
         let destination = destination ?? current
         guard canModify else { return }
-        if destination.isSending { destination.send(); return }
+        if destination.isSending || destination.isCompacting { destination.send(); return }
         guard !destination.busy else { return }
         navigate(reportingTo: destination) {
             // Detached conversations save normally, but never steal the main selection.
