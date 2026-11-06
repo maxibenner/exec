@@ -18,8 +18,8 @@ import SwiftUI
 
         let listing = ToolPresentation(result("list_files", #"{"path":"Sources"}"#, "App/\nCore/\n"))
         try expect(listing.summary == "Sources" && listing.detail == nil)
-        try expect(listing.inputs == [.init(title: "Directory", text: "Sources")])
-        try expect(listing.output == "App/\nCore/\n" && listing.outputTitle == "Entries")
+        try expect(listing.inputs.isEmpty)
+        try expect(listing.output == "App/\nCore/\n" && listing.outputTitle == nil)
         let read = ToolPresentation(result("read_file", #"{"path":"file.swift","start_line":10,"end_line":400}"#,
                                            "Revision: revision\n10: first\n11: last\n[Output truncated at 32 KiB.]"))
         try expect(read.summary == "file.swift" && read.detail == "Lines 10–11")
@@ -73,7 +73,7 @@ import SwiftUI
         try expect(denied.output == "User denied this edit. Nothing was written.")
         for name in ["shell", "read_file", "list_files", "search_text", "edit_file", "web_search", "unknown_tool"] {
             let malformed = ToolPresentation(result(name, "{broken", "Tool error: invalid arguments"))
-            if ["read_file", "edit_file", "web_search"].contains(name) {
+            if ["read_file", "list_files", "edit_file", "web_search"].contains(name) {
                 try expect(malformed.inputs.isEmpty && malformed.outputTitle == nil)
             } else {
                 try expect(malformed.inputs == [.init(title: "Arguments", text: "{broken")])

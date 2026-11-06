@@ -36,11 +36,8 @@ struct ToolPresentation {
             outputTitle = "Output"
         case "list_files":
             title = "List"; icon = "folder"
-            if let path = arguments?.path {
-                summary = path
-                inputs = [Field(title: "Directory", text: path)]
-            }
-            outputTitle = "Entries"
+            summary = arguments?.path
+            outputTitle = nil
         case "read_file":
             title = "Read"; icon = "doc.text"
             summary = arguments?.path
