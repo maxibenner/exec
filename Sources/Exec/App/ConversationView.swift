@@ -33,12 +33,25 @@ struct ConversationView: View {
                 conversation
             } else {
                 VStack(spacing: 0) {
-                    ContentUnavailableView {
-                        Label("No Session", systemImage: "bubble.left.and.bubble.right")
-                    } actions: {
+                    VStack(spacing: 12) {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .font(.system(size: 28, weight: .regular))
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                        VStack(spacing: 6) {
+                            Text("No Session")
+                                .font(.headline.bold())
+                            Text("Press ⌘T to create a new session.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("Press Command T to create a new session.")
+                        }
                         Button("New Session") { panel.library.newConversation() }
                             .disabled(!panel.canNavigate || panel.isChoosingWorkspace)
                     }
+                    .multilineTextAlignment(.center)
+                    .padding(24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if let error { errorView(error) }
                 }
             }
