@@ -8,6 +8,17 @@ struct SessionSidebar: View {
     @State private var renameID: UUID?
     @State private var renameTitle = ""
 
+    private var deleteSelection: (@MainActor () -> Void)? {
+        guard store.canNavigate,
+              let selected = store.sessionList.first(where: { $0.id == store.sidebarSelectionID }),
+              !store.isSessionRunning(selected.id) else { return nil }
+        return {
+            guard store.canNavigate, store.sidebarSelectionID == selected.id,
+                  !store.isSessionRunning(selected.id) else { return }
+            delete(selected)
+        }
+    }
+
     var body: some View {
         let shortcuts = store.sessionShortcuts
         List(selection: Binding(get: { store.sidebarSelectionID }, set: { if let id = $0 { open(id) } })) {
@@ -30,13 +41,10 @@ struct SessionSidebar: View {
         .listStyle(.sidebar)
         .disabled(store.authenticating)
         .allowsHitTesting(store.canNavigate)
-        .onKeyPress(.delete, phases: .down) { press in
-            guard press.modifiers == .command else { return .ignored }
-            guard store.canNavigate else { return .handled }
-            if let selected = store.sessionList.first(where: { $0.id == store.sidebarSelectionID }),
-               !store.isSessionRunning(selected.id) { delete(selected) }
-            return .handled
-        }
+        // Command-modified Delete is routed through the menu key-equivalent
+        // system, not List's ordinary key-press handler. Keep the action scoped
+        // to list focus so text fields retain their native Command-Delete.
+        .focusedValue(\.deleteSidebarSession, deleteSelection)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 Divider()
