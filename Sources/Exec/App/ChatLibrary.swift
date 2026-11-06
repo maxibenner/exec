@@ -511,7 +511,7 @@ import Observation
             }
             do {
                 let title = try await SessionTitleGenerator.generate(provider: provider, model: model,
-                                                                    title: summary.title, message: message.text)
+                                                                    title: summary.customTitle ?? "", message: message.text)
                 guard let self, !Task.isCancelled, self.titleRequests[id] == request,
                       identity == provider.conversationIdentity else { return }
                 try await sessions.rename(id: id, title: title, identity: identity)

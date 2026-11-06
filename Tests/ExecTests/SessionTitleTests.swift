@@ -18,7 +18,9 @@ import Foundation
         try expect(!library.generatedTitlesEnabled)
         library.generatedTitlesEnabled = true
         library.titleModel = "test"
-        library.draft = "Plan a garden"
+        let firstMessage = String(repeating: "Include vegetables, flowers, and paths with enough space to grow. ", count: 40)
+            + "Plan a garden."
+        library.draft = firstMessage
         library.send()
         try await wait { !library.hasRunningOperations }
         let id = library.currentSessionID!
@@ -27,11 +29,11 @@ import Foundation
         try expect(saved?.title == "Hello world")
         let chat = provider.children[0]
         let title = provider.children[1]
-        try expect(chat.inputs[0].map(\.text) == ["Plan a garden"])
+        try expect(chat.inputs[0].map(\.text) == [firstMessage])
         try expect(title.inputs.count == 1 && title.inputs[0].count == 1)
         let fields = try JSONDecoder().decode([String: String].self, from: Data(title.inputs[0][0].text.utf8))
-        try expect(fields["latest_user_message"] == "Plan a garden")
-        try expect(fields.count == 2)
+        // The first request must not treat the truncated display fallback as an established title.
+        try expect(fields == ["current_title": "", "latest_user_message": firstMessage])
         library.draft = "Add tomatoes"
         library.send()
         try await wait { !library.hasRunningOperations }
