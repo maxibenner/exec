@@ -35,20 +35,20 @@ struct SessionSidebar: View {
         List(selection: Binding(get: { store.sidebarSelectionID }, set: { if let id = $0 { open(id) } })) {
             Section("Sessions") {
                 ForEach(store.sidebarSessions) { session in
-                    SessionRow(session: session, store: store,
-                               shortcut: shortcuts.first { $0.session.id == session.id }?.number,
-                               rename: {
-                                   guard store.canNavigate else { return }
-                                   renameID = session.id; renameTitle = session.title; renaming = true
-                               }, delete: { delete(session) })
-                        .tag(session.id)
-                        .simultaneousGesture(TapGesture().onEnded {
-                            // Clicking an already selected row need not change List.selection.
-                            if store.currentSessionID == session.id, store.openingSessionID == nil {
-                                open(session.id)
-                            }
-                        })
-                        .moveDisabled(!store.canReorderSessions)
+                    Button { open(session.id) } label: {
+                        SessionRow(session: session, store: store,
+                                   shortcut: shortcuts.first { $0.session.id == session.id }?.number,
+                                   rename: {
+                                       guard store.canNavigate else { return }
+                                       renameID = session.id; renameTitle = session.title; renaming = true
+                                   }, delete: { delete(session) })
+                    }
+                    // Handle clicks without transferring keyboard focus to the list.
+                    // The list itself remains available for keyboard navigation.
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .tag(session.id)
+                    .moveDisabled(!store.canReorderSessions)
                 }
                 .onMove { offsets, destination in
                     store.moveSidebarSessions(from: offsets, to: destination)
