@@ -137,6 +137,10 @@ import Observation
     }
 
     func isSessionRunning(_ id: UUID) -> Bool { conversation(id)?.busy == true }
+    func isSessionResponding(_ id: UUID) -> Bool {
+        guard let conversation = conversation(id) else { return false }
+        return conversation.isSending || conversation.isCompacting
+    }
     func needsApproval(_ id: UUID) -> Bool { conversation(id)?.tools.pendingApproval != nil }
     func needsAttention(_ id: UUID) -> Bool {
         guard let conversation = conversation(id) else { return false }

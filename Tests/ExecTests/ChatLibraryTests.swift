@@ -43,6 +43,7 @@ import Observation
         library.send()
         try await wait { firstProvider.pending != nil }
         let firstID = library.currentSessionID!
+        try expect(library.isSessionResponding(firstID))
         library.draft = "Unsent next request"
 
         library.newConversation()
@@ -86,6 +87,10 @@ import Observation
         let renamed = try await sessions.load(id: firstID)
         try expect(renamed?.title == "Renamed while running")
         try expect(firstProvider.inputs.count == 1 && secondProvider.inputs.count == 1)
+        try expect(!library.isSessionResponding(firstID) && !library.isSessionResponding(secondID))
+        first.restore()
+        try expect(first.busy && !library.isSessionResponding(firstID))
+        await first.waitUntilIdle()
 
         library.openSession(secondID)
         try await wait { !library.navigating }
