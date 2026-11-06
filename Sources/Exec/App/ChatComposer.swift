@@ -122,7 +122,7 @@ struct ChatComposer: View {
                 .disabled(!store.canNavigate)
                 .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
             }
-            TextField("Message", text: $store.draft, axis: .vertical)
+            TextField("Message or / for commands", text: $store.draft, axis: .vertical)
                 .lineLimit(1...8).textFieldStyle(.plain).font(.body)
                 .focused($focused)
                 .disabled(!store.canEditDraft).allowsHitTesting(!store.navigating)
@@ -172,8 +172,6 @@ struct ChatComposer: View {
     private var information: some View {
         GeometryReader { geometry in
             ZStack {
-                Text("Type / for commands")
-                    .allowsHitTesting(false)
                 HStack(spacing: 0) {
                     workingControl
                     Spacer(minLength: 0)
@@ -188,7 +186,7 @@ struct ChatComposer: View {
         }
         .font(.caption).foregroundStyle(.secondary)
         .lineLimit(1)
-        // Independent alignment keeps the hint and usage stationary when the spinner appears.
+        // Independent alignment keeps usage stationary when the spinner appears.
         .frame(height: 20)
     }
 
