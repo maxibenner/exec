@@ -26,7 +26,39 @@ import Observation
         }
     }
 
+    func startupCatalogPrecedesModelDiscovery() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = SessionStore(directory: root)
+        let provider = FakeProvider()
+        var ids: [UUID] = []
+        for text in ["First", "Second", "Third"] {
+            let messages = [Message(role: .user, text: text)]
+            ids.append(try await sessions.save(SessionSnapshot(identity: provider.conversationIdentity,
+                selectedModel: "test", messages: messages, history: messages, activeTurn: false),
+                id: UUID(), select: false))
+        }
+        try await sessions.select(ids[0])
+        let expected = try await sessions.list(identity: provider.conversationIdentity).map(\.id)
+        let library = try ChatLibrary(provider: provider, sessions: sessions)
+        var pending: CheckedContinuation<Void, Never>?
+        provider.children.last!.modelsAction = {
+            await withCheckedContinuation { pending = $0 }
+        }
+        defer { pending?.resume(); library.stopAll() }
+        library.restore()
+        try await wait { pending != nil }
+        try expect(library.authenticating)
+        try expect(library.currentSessionID == ids[0])
+        try expect(library.sidebarSessions.map(\.id) == expected)
+        pending?.resume()
+        pending = nil
+        try await wait { !library.hasRunningOperations }
+        try expect(library.sidebarSessions.map(\.id) == expected)
+    }
+
     func concurrentTurnsKeepContextDraftsAndSelectionIsolated() async throws {
+        try await startupCatalogPrecedesModelDiscovery()
         try await autoApprovalSurvivesRelaunch()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

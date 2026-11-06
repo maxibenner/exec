@@ -507,6 +507,11 @@ import Observation
     }
 
     private func observe(_ conversation: ChatStore) {
+        conversation.didLoadSessionList = { [weak self, weak conversation] summaries in
+            guard let self, let conversation, conversation === self.current else { return }
+            self.catalogRequest += 1
+            self.applyCatalog(summaries)
+        }
         conversation.didSendMessage = { [weak self, weak conversation] message in
             guard let conversation else { return }
             self?.generateTitle(for: conversation, message: message)
@@ -595,14 +600,16 @@ import Observation
         catalogRequest += 1
         let request = catalogRequest
         let summaries = try await sessions.list(identity: provider.conversationIdentity)
-        if request == catalogRequest {
-            let persisted = Set(summaries.map(\.id))
-            let resident = Set(conversations.filter { $0.conversationIdentity == provider.conversationIdentity }.compactMap(\.currentSessionID))
-            // New unsaved sessions retain their creation position until their
-            // first checkpoint. Resident LRU ordering is unrelated to the sidebar.
-            sidebarOrder = sidebarOrder.filter { !persisted.contains($0) && resident.contains($0) } + summaries.map(\.id)
-            savedSummaries = summaries
-        }
+        if request == catalogRequest { applyCatalog(summaries) }
+    }
+
+    private func applyCatalog(_ summaries: [SessionSummary]) {
+        let persisted = Set(summaries.map(\.id))
+        let resident = Set(conversations.filter { $0.conversationIdentity == provider.conversationIdentity }.compactMap(\.currentSessionID))
+        // New unsaved sessions retain their creation position until their
+        // first checkpoint. Resident LRU ordering is unrelated to the sidebar.
+        sidebarOrder = sidebarOrder.filter { !persisted.contains($0) && resident.contains($0) } + summaries.map(\.id)
+        savedSummaries = summaries
     }
 
     private func selectCurrent() async throws {

@@ -84,6 +84,7 @@ import Observation
     private var restorationBlocked = false
     private(set) var conversationIdentity: String?
     private let selectOnCheckpoint: Bool
+    var didLoadSessionList: (@MainActor ([SessionSummary]) -> Void)?
     var didCheckpoint: (@MainActor () async throws -> Void)?
     var didSendMessage: (@MainActor (Message) -> Void)?
     var didStop: (@MainActor () -> Void)?
@@ -613,6 +614,8 @@ import Observation
         }
         do {
             sessionList = try await sessions.list(identity: provider.conversationIdentity)
+            // Publish the local catalog before restoring the transcript or fetching models.
+            didLoadSessionList?(sessionList)
             if let id = try await sessions.preferredID(identity: provider.conversationIdentity, mostRecent: mostRecent) {
                 try await applySavedSession(id)
             } else {

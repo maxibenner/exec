@@ -43,7 +43,11 @@ import Foundation
 
     func connect() async throws { account = "test@example.com" }
     func disconnect() async throws { account = nil }
-    func models() async throws -> [ChatModel] { availableModels }
+    var modelsAction: (() async throws -> Void)?
+    func models() async throws -> [ChatModel] {
+        try await modelsAction?()
+        return availableModels
+    }
     func send(_ messages: [Message], model: String, effort: String?, instructions: String, tools: [ToolDefinition]) -> AsyncThrowingStream<ChatEvent, Error> {
         inputs.append(messages)
         efforts.append(effort)
