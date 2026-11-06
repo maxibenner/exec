@@ -40,13 +40,13 @@ struct ChatView: View {
                 }
                 .toolbar {
                     if #available(macOS 26.0, *) {
-                        ToolbarItem(placement: .principal) {
+                        ToolbarItem(placement: .primaryAction) {
                             WorkspaceBar(root: store.workspace?.root)
                                 .frame(maxWidth: 300)
                         }
                         .sharedBackgroundVisibility(.hidden)
                     } else {
-                        ToolbarItem(placement: .principal) {
+                        ToolbarItem(placement: .primaryAction) {
                             WorkspaceBar(root: store.workspace?.root)
                                 .frame(maxWidth: 300)
                         }
