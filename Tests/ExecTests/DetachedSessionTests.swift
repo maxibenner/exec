@@ -64,6 +64,51 @@ import SwiftUI
         try expect(library.current === conversation)
     }
 
+    func detachingAllWorkspaceSessionsShowsPlaceholder() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = FakeProvider()
+        let sessions = SessionStore(directory: root.appendingPathComponent("sessions"))
+        let library = try ChatLibrary(provider: provider, sessions: sessions)
+        defer { library.stopAll() }
+        library.restore()
+        try await wait { !library.hasRunningOperations }
+        library.selectWorkspace(root)
+        try await wait { !library.hasRunningOperations }
+        let first = library.current
+        let workspaceRoot = first.workspace?.root
+        try expect(workspaceRoot != nil)
+        library.newConversation()
+        try await wait { !library.hasRunningOperations }
+        let second = library.current
+        let ids = Set(library.sidebarSessions.map(\.id))
+        try expect(ids.count == 2)
+
+        var presented: ChatStore?
+        library.detachSession(second.currentSessionID!) { presented = $0 }
+        try await wait { !library.hasRunningOperations }
+        try expect(presented === second && library.current === first && library.sidebarSessions.count == 1)
+        library.detachSession(first.currentSessionID!) { _ in }
+        try await wait { !library.hasRunningOperations }
+        let panel = ChatPanel(library: library, conversation: library.current)
+        try expect(library.sidebarSessions.isEmpty && library.detachedSessionIDs == ids)
+        try expect(!panel.hasConversation && library.workspace == nil)
+        try expect(!library.current.needsInitialWorkspaceSelection)
+        try expect(Set(library.sessionList.map(\.id)) == ids)
+        let saved = try await sessions.list(identity: provider.conversationIdentity)
+        try expect(Set(saved.map(\.id)) == ids)
+        try expect(first.workspace?.root == workspaceRoot && second.workspace?.root == workspaceRoot)
+
+        // Explicit creation from the placeholder still uses the normal workspace picker.
+        library.newConversation()
+        try await wait { !library.hasRunningOperations }
+        try expect(library.current.needsInitialWorkspaceSelection && library.sidebarSessions.isEmpty)
+        library.attachSession(first.currentSessionID!)
+        try expect(library.current === first && library.hasConversation(first))
+        try expect(library.sidebarSessions.map(\.id) == [first.currentSessionID!])
+    }
+
     func coldDetachAndNativeClosePreserveState() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

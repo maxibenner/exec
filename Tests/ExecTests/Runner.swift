@@ -34,6 +34,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Screenshot persistence, model input and tool presentation", { try await ScreenshotTests().capturesPersistAndEncode() }),
             ("Screenshot validation, denial, failure and cancellation", { try await ScreenshotTests().failuresAndCancellationStop() }),
             ("Detached sessions preserve running context and window-local controls", { try await DetachedSessionTests().movingRunningConversationsPreservesOwnershipAndControls() }),
+            ("Detaching all workspace sessions shows the empty placeholder", { try await DetachedSessionTests().detachingAllWorkspaceSessionsShowsPlaceholder() }),
             ("Cold detach and native window close preserve drafts and presentation", { try await DetachedSessionTests().coldDetachAndNativeClosePreserveState() }),
             ("Sidebar reordering preserves detached conversations and saved order", { try await DetachedSessionTests().sidebarReorderingPreservesDetachedConversations() }),
             ("Pending approvals survive detach and reattach without execution", { try await DetachedSessionTests().pendingApprovalsMoveWithoutExecutionOrReplay() }),

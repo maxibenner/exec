@@ -264,9 +264,11 @@ import Observation
             // Prepare the replacement before changing ownership, so failure is atomic.
             var replacement = current
             if conversation === current {
+                // With no remaining resident, use the same blank placeholder as
+                // deletion. Inheriting a workspace would create a phantom session.
                 replacement = try openConversations.first(where: {
                     $0 !== conversation && $0.currentSessionID.map(detachedSessionIDs.contains) != true
-                }) ?? makeConversation(workspace: conversation.workspace)
+                }) ?? makeConversation()
             }
             remember(conversation)
             detachedSessionIDs.insert(id)
