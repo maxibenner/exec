@@ -34,21 +34,6 @@ struct SessionSidebar: View {
                 .onMove { offsets, destination in
                     store.moveSidebarSessions(from: offsets, to: destination)
                 }
-            } header: {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Sessions")
-                    Spacer()
-                    Button { store.newConversation() } label: {
-                        Label("New Chat", systemImage: "square.and.pencil")
-                            .labelStyle(.iconOnly)
-                            .frame(width: 24, height: 24, alignment: .trailing)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.trailing, 12)
-                    .help("New Chat (⌘T)")
-                    .disabled(!store.canNavigate)
-                }
             }
         }
         .listStyle(.sidebar)
