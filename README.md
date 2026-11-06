@@ -97,6 +97,7 @@ The model can use **`fetch_content`** to read a specific public HTTPS URL, with 
 
 - HTTPS on port 443 only, URLs up to 2,048 UTF-8 bytes, no embedded credentials. Website requests use an isolated ephemeral session without cookies, cached responses, saved credentials, or Codex authorization.
 - Each request has a 30-second resource timeout. Up to three redirects are followed, checking each URL and its resolved addresses before requesting it. Local, private, and reserved addresses are rejected in this preflight. This is **not a network sandbox or DNS-pinning guarantee**: the system HTTP client resolves names again when connecting. Normal TLS certificate validation remains enabled.
+- Redirects to ordinary HTTP URLs (no port or port 80) are upgraded to HTTPS on port 443 before validation and fetching, preserving the host, path, and query. Other HTTP ports are rejected. HTTPS failures never fall back to plaintext HTTP; redirect limits and destination checks still apply.
 - Downloads are limited to 1 MiB; returned page text is limited to approximately 24,000 UTF-8 bytes with an explicit truncation marker. JavaScript, authenticated pages, PDFs, and other binary documents are not supported. HTML extraction is intentionally simple and can include navigation or other non-article text.
 - Page text is untrusted evidence, not instructions. Do not put secrets in URLs. Stop cancels the fetch; failures stop the turn and are not automatically retried or resumed after restart.
 

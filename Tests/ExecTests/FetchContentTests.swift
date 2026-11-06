@@ -55,8 +55,46 @@ import Foundation
         try expect(try PageText.extract(Data(plain.utf8), mime: "text/plain", charset: "utf-8") == plain)
     }
 
+    func upgradesHTTPRedirectsWithoutDowngrading() async throws {
+        for port in ["", ":80"] {
+            let http = HTTPStub.makeSession([
+                .init(status: 307, headers: ["Location": "http://www.example.com\(port)/article?q=a%20b#section"]),
+                .init(headers: ["Content-Type": "text/plain"], chunks: [Data("Page evidence".utf8)])
+            ])
+            let visits = Visits()
+            let text = try await ContentFetcher(makeSession: { http }, checkHost: { try await visits.check($0) }).fetch(url)
+            let destination = URL(string: "https://www.example.com/article?q=a%20b")!
+            try expect(HTTPStub.state.requests.map(\.url) == [url, destination])
+            let checked = await visits.urls
+            try expect(checked == [url, destination])
+            try expect(text.contains("Fetched URL: \(destination)") && text.contains("Page evidence"))
+        }
+        let failed = HTTPStub.makeSession([
+            .init(status: 307, headers: ["Location": "http://www.example.com/"]),
+            .init(headers: ["Content-Type": "text/plain"], error: URLError(.serverCertificateUntrusted))
+        ])
+        do {
+            _ = try await ContentFetcher(makeSession: { failed }, checkHost: { _ in }).fetch(url)
+            throw CheckFailure(description: "Failed HTTPS upgrade was accepted")
+        } catch let error as URLError { try expect(error.code == .serverCertificateUntrusted) }
+        try expect(HTTPStub.state.requests.count == 2)
+        try expect(HTTPStub.state.requests.allSatisfy { $0.url?.scheme == "https" })
+
+        // A server may insist on HTTP even after upgrading. Keep the redirect cap;
+        // do not resolve the loop by sending a plaintext request.
+        let loop = HTTPStub.makeSession(Array(repeating: .init(status: 307, headers: ["Location": "http://example.com/page"]), count: 4))
+        do {
+            _ = try await ContentFetcher(makeSession: { loop }, checkHost: { _ in }).fetch(url)
+            throw CheckFailure(description: "Redirect loop was accepted")
+        } catch is ExecError {}
+        try expect(HTTPStub.state.requests.count == 4)
+        try expect(HTTPStub.state.requests.allSatisfy { $0.url?.scheme == "https" })
+    }
+
     func rejectsUnsafeRedirectsAndBoundsResponses() async throws {
-        for destination in ["https://127.0.0.1/private", "http://example.com/insecure", "file:///etc/passwd"] {
+        for destination in ["https://127.0.0.1/private", "http://127.0.0.1/private", "http://[::1]/",
+                            "http://user:secret@example.com/", "http://example.com:8080/", "http://example.com:443/",
+                            "http://box.local/", "file:///etc/passwd"] {
             let http = HTTPStub.makeSession([.init(status: 302, headers: ["Location": destination])])
             do {
                 _ = try await ContentFetcher(makeSession: { http }, checkHost: { _ in }).fetch(url)
@@ -65,7 +103,7 @@ import Foundation
             try expect(HTTPStub.state.requests.count == 1)
         }
         // The DNS check must run before contacting a redirect target, not just the initial host.
-        let redirected = HTTPStub.makeSession([.init(status: 302, headers: ["Location": "https://private.example.com/"])])
+        let redirected = HTTPStub.makeSession([.init(status: 302, headers: ["Location": "http://private.example.com/"])])
         do {
             _ = try await ContentFetcher(makeSession: { redirected }, checkHost: { url in
                 if url.host == "private.example.com" { throw ExecError("Private DNS address") }

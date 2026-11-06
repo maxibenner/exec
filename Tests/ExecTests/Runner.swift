@@ -34,6 +34,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Manual compaction and cancellation", { try await CompactionTests().manualCompactionBypassesThresholdAndPreservesTranscript() }),
             ("Fetch URL and public-address validation", { try FetchContentTests().validatesURLsAndPublicAddresses() }),
             ("Fetch page text and redirect checks", { try await FetchContentTests().fetchesTextAndRechecksRedirects() }),
+            ("Fetch HTTPS redirect upgrades without HTTP fallback", { try await FetchContentTests().upgradesHTTPRedirectsWithoutDowngrading() }),
             ("Fetch unsafe redirects and response bounds", { try await FetchContentTests().rejectsUnsafeRedirectsAndBoundsResponses() }),
             ("Fetch context and persistence without a workspace", { try await FetchContentTests().persistsResultsWithoutWorkspaceOrSearchProvider() }),
             ("Fetch failure, cancellation and recovery", { try await FetchContentTests().failuresAndCancellationNeverReplay() }),

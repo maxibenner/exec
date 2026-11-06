@@ -23,6 +23,23 @@ enum PublicWebURL {
         return url
     }
 
+    /// Upgrade ordinary HTTP redirects before any request. Never try plaintext
+    /// HTTP, and never fall back to it if the HTTPS destination fails.
+    static func redirectTarget(_ target: URL) throws -> URL {
+        guard var parts = URLComponents(url: target, resolvingAgainstBaseURL: true) else {
+            throw ExecError("The website returned an invalid redirect.")
+        }
+        if parts.scheme?.lowercased() == "http" {
+            guard parts.port == nil || parts.port == 80 else {
+                throw ExecError("Cannot upgrade an HTTP redirect on a nonstandard port to HTTPS.")
+            }
+            parts.scheme = "https"
+            parts.port = nil
+        }
+        guard let text = parts.string else { throw ExecError("The website returned an invalid redirect.") }
+        return try parse(text)
+    }
+
     static func checkHost(_ url: URL) async throws {
         let host = (url.host ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         // getaddrinfo is blocking; keep it off the main actor. No HTTP request is

@@ -56,7 +56,8 @@ struct ContentFetcher: Sendable {
                       let target = URL(string: location, relativeTo: current)?.absoluteURL else {
                     throw ExecError("The website returned too many redirects or an invalid redirect.")
                 }
-                current = target // Recheck the URL and DNS before each redirect, including cross-host redirects.
+                current = try PublicWebURL.redirectTarget(target)
+                // Recheck DNS before requesting the upgraded destination, including cross-host redirects.
                 continue
             }
             guard (200..<300).contains(response.statusCode) else {
