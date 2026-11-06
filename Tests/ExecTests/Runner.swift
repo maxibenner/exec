@@ -25,6 +25,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Session drags reject cancellation and foreign payloads", { try DetachedSessionTests().dragCancellationAndForeignPayloadsAreRejected() }),
             ("Native sidebar selection, deletion and ordered reattachment", { try await DetachedSessionTests().nativeSidebarSelectionDeletionAndReattachment() }),
             ("Pending approvals survive detach and reattach without execution", { try await DetachedSessionTests().pendingApprovalsMoveWithoutExecutionOrReplay() }),
+            ("Session deletion selects adjacent rows and preserves drafts", { try await SessionDeletionTests().selectsAdjacentRowsInSidebarOrder() }),
+            ("Session deletion and neighbor-load failures remain recoverable", { try await SessionDeletionTests().deletionAndNeighborLoadFailuresStayRecoverable() }),
             ("Persistent session ordering, migration and write failures", { try await SessionOrderingTests().migratesAndPersistsOrderWithoutChangingSelectionOrOtherAccounts() }),
             ("Session moves preserve running work, drafts and shortcuts", { try await SessionOrderingTests().movesStayStableDuringActivityAndKeepDraftsAndShortcuts() }),
             ("Tool summaries describe inputs and preserve results", { try ToolPresentationTests().describesInputsAndPreservesResults() }),

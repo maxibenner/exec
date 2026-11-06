@@ -366,7 +366,11 @@ import Observation
     }
 
     func deleteSession(_ id: UUID) {
-        guard canModify, !isSessionRunning(id), !detachedSessionIDs.contains(id) else { return }
+        let rows = sidebarSessions.map(\.id)
+        guard canModify, !isSessionRunning(id), !detachedSessionIDs.contains(id),
+              let index = rows.firstIndex(of: id) else { return }
+        // Use visible sidebar order, not activity dates or resident-cache order.
+        let nextID = index + 1 < rows.count ? rows[index + 1] : (index > 0 ? rows[index - 1] : nil)
         navigate {
             await self.conversation(id)?.waitForPendingSave()
             try Task.checkCancellation()
@@ -376,7 +380,26 @@ import Observation
             self.savedSummaries = try await self.sessions.list(identity: self.provider.conversationIdentity)
             if !self.savedSummaries.contains(where: { $0.id == id }) {
                 self.openConversations.removeAll { $0.currentSessionID == id }
-                if self.currentSessionID == id { self.activate(try self.makeConversation()) }
+                do {
+                    if let nextID {
+                        if let resident = self.conversation(nextID) {
+                            self.activate(resident)
+                        } else {
+                            let next = try self.makeConversation()
+                            self.loading = next
+                            try await next.loadSession(nextID)
+                            try Task.checkCancellation()
+                            self.activate(next)
+                        }
+                    } else if self.currentSessionID == id {
+                        self.activate(try self.makeConversation())
+                    }
+                } catch {
+                    // Never leave a deleted conversation active if its neighbor
+                    // cannot be restored, or a cold load is cancelled.
+                    if self.currentSessionID == id { self.activate(try self.makeConversation()) }
+                    throw error
+                }
             }
             if let failure { throw failure }
             try await self.refreshCatalog()
