@@ -31,7 +31,9 @@ import SwiftUI
                     let hosting = NSHostingView(rootView: view)
                     let size = hosting.fittingSize
                     try expect(abs(size.width - CGFloat(width)) < 1)
-                    try expect(size.height > 40 && size.height <= 110)
+                    // No provider heading: only the allowance rows and vertical padding.
+                    let heightRange: ClosedRange<CGFloat> = value == nil ? 30...45 : 45...75
+                    try expect(heightRange.contains(size.height))
                 }
             }
         }
