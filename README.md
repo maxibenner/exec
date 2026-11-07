@@ -12,7 +12,7 @@ Work with local files, review edits, and run shell commands. You can also search
 
 ## Get started
 
-Requires macOS 14+, a Swift 6 toolchain (Xcode or Apple Command Line Tools), and a ChatGPT account with Codex access. Build from source; builds are not notarized for distribution.
+Requires macOS 14+, Xcode 26 or later (including the Swift toolchain and Icon Composer asset compiler), and a ChatGPT account with Codex access. Build from source; builds are not notarized for distribution.
 
 ```sh
 ./scripts/build-app.sh

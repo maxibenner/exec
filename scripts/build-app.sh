@@ -37,7 +37,13 @@ built="$staging/Exec.app"
 mkdir -p "$built/Contents/MacOS" "$built/Contents/Resources"
 cp "$bin/Exec" "$built/Contents/MacOS/Exec"
 cp Resources/Info.plist "$built/Contents/Info.plist"
-cp Resources/AppIcon.icns "$built/Contents/Resources/AppIcon.icns"
+# Compile the layered glass icon and the compatibility ICNS for older macOS.
+xcrun actool Design/Icons/Glass_Icon.icon \
+    --compile "$built/Contents/Resources" \
+    --output-partial-info-plist "$staging/IconInfo.plist" \
+    --app-icon Glass_Icon --platform macosx \
+    --minimum-deployment-target "$minimum_macos" --target-device mac \
+    --output-format human-readable-text
 bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Resources/Info.plist)"
 codesign "${options[@]}" --sign "$identity" --identifier "$bundle_id" "$built"
 codesign --verify --strict "$built"

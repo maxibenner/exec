@@ -5,7 +5,8 @@
     <key>CFBundleExecutable</key><string>Exec</string>
     <key>CFBundleIdentifier</key><string>local.swift-harness</string>
     <key>CFBundleName</key><string>Exec</string>
-    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>CFBundleIconFile</key><string>Glass_Icon</string>
+    <key>CFBundleIconName</key><string>Glass_Icon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>
