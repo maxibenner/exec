@@ -114,6 +114,13 @@ struct ToolTextSection: View {
     }
 }
 
+/// Preserve the header's appearance while pressed without changing button behavior.
+private struct ToolHeaderButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+    }
+}
+
 /// Keep the full header clickable, with no implicit disclosure animation.
 private struct InstantToolDisclosureStyle: DisclosureGroupStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -133,7 +140,7 @@ private struct InstantToolDisclosureStyle: DisclosureGroupStyle {
                 .padding(12)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ToolHeaderButtonStyle())
             .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
             if configuration.isExpanded { configuration.content }
         }
