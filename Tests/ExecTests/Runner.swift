@@ -137,6 +137,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Codex OAuth fields", { try CodexConnectionTests().authorizationUsesCodexFlow() }),
             ("OAuth callback validation", { try CodexConnectionTests().callbackRequiresExactStateAndPath() }),
             ("Codex catalog compatibility version", { try CodexConnectionTests().catalogUsesCompatibilityVersionNotAppVersion() }),
+            ("Stable request encoding preserves tool schemas across rounds", { try CodexConnectionTests().preservesRequestEncodingAcrossToolRounds() }),
             ("Codex request routing", { try CodexConnectionTests().requestsUseCodexEndpointAndAccountRouting() }),
             ("Codex account metadata", { try CodexConnectionTests().readsAccountRoutingMetadata() }),
             ("Codex terminal events", { try CodexConnectionTests().handlesDoneWithoutAcceptingFailure() }),

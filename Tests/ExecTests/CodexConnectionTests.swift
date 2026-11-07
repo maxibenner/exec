@@ -73,6 +73,47 @@ struct CodexConnectionTests {
         try expect(body["tools"] == nil)
     }
 
+    func preservesRequestEncodingAcrossToolRounds() throws {
+        var first: Data?
+        var firstCompaction: Data?
+        var firstSearch: String?
+        for iteration in 0..<50 {
+            // Reconstruct nested dictionaries as response restoration does; JSON
+            // object insertion order must not alter the reusable request content.
+            let json = iteration.isMultiple(of: 2)
+                ? #"[{"role":"user","content":[{"type":"input_text","text":"Stable context"}]}]"#
+                : #"[{"content":[{"text":"Stable context","type":"input_text"}],"role":"user"}]"#
+            let input = try JSONSerialization.jsonObject(with: Data(json.utf8)) as! [[String: Any]]
+            let request = try CodexConnection.responsesRequest(
+                input: input, model: "test-model", sessionID: "stable-session",
+                accessToken: "test-token", accountID: "test-workspace", instructions: "Stable instructions",
+                tools: CodingTools.definitions, effort: "high"
+            )
+            if let first { try expect(request.httpBody == first) }
+            else { first = request.httpBody }
+            let compact = try CodexConnection.compactRequest(
+                input: input, model: "test-model", sessionID: "stable-session", accessToken: "test-token",
+                accountID: "test-workspace", instructions: "Stable instructions", tools: CodingTools.definitions
+            )
+            if let firstCompaction { try expect(compact.httpBody == firstCompaction) }
+            else { firstCompaction = compact.httpBody }
+            let search = try CodexConnection.webSearchRequest(query: "Same query", model: "search-model", effort: nil,
+                                                             accessToken: "test-token", accountID: "test-workspace")
+            let searchBody = try JSONSerialization.jsonObject(with: search.httpBody!) as! [String: Any]
+            let key = searchBody["prompt_cache_key"] as! String
+            // Search requests intentionally have independent routing keys. Compare
+            // all other bytes without reparsing/re-encoding away ordering differences.
+            let encoded = String(decoding: search.httpBody!, as: UTF8.self).replacingOccurrences(of: key, with: "SEARCH-KEY")
+            if let firstSearch { try expect(encoded == firstSearch) }
+            else { firstSearch = encoded }
+        }
+        let body = try JSONSerialization.jsonObject(with: first!) as! [String: Any]
+        let tools = body["tools"] as! [[String: Any]]
+        try expect(tools.compactMap { $0["name"] as? String } == CodingTools.definitions.map(\.name))
+        let parameters = tools[3]["parameters"] as! [String: Any]
+        try expect(parameters["required"] as? [String] == CodingTools.definitions[3].parameters.map(\.name))
+    }
+
     func readsAccountRoutingMetadata() throws {
         // Deliberately synthetic: this tests claim extraction, not token validation.
         let claims = try JSONSerialization.data(withJSONObject: ["https://api.openai.com/auth": ["chatgpt_account_id": "workspace"]])

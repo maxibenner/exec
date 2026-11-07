@@ -73,7 +73,9 @@ enum CodexConnection {
                                        "required": tool.parameters.map(\.name), "additionalProperties": false]]
             }
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        // Tool schemas form part of the reusable prompt prefix. Swift dictionaries
+        // do not preserve key order; recursively stabilize the wire representation.
+        request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         return request
     }
 
@@ -89,7 +91,7 @@ enum CodexConnection {
         body["tools"] = [["type": "web_search"]]
         body["tool_choice"] = "required"
         body["include"] = ["web_search_call.action.sources"]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         return request
     }
 
