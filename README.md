@@ -46,7 +46,13 @@ Choose a separate **Search model** in **Settings → General → Web Search**. I
 
 Usage diagnostics are saved with each conversation. The provider state contains `requestUsage` records for main responses, searches, and compaction: requested/reported models, timestamps, outcomes, input/output tokens, cached input, and reasoning tokens when supplied. Missing counts remain unknown; cached input and reasoning are subsets, not additional tokens. Incomplete requests can remain `unconfirmed` when no final accounting was saved. These records are never sent back as model context.
 
-`allowanceObservations` records fresh account-wide readings before and after each run, including stopped or failed runs. A failed reading is saved as unavailable and clears the stale display. These readings may include concurrent activity in other apps and are not an exact per-session charge. Existing sessions remain readable; historical usage cannot be reconstructed.
+`allowanceObservations` records fresh account-wide readings before and after each run, including stopped or failed runs. A failed reading is saved as unavailable; it never substitutes a cached display value. These readings may include concurrent activity in other apps and are not an exact per-session charge. Existing sessions remain readable; historical usage cannot be reconstructed.
+
+### Local-first startup
+
+Saved conversations open independently of model discovery and usage requests. The real interface appears after local credential/store setup; model and usage refreshes do not block navigation or draft editing. Keychain permission prompts and actual account changes still require local setup or account protection.
+
+Exec keeps a disposable, account-scoped metadata cache in `~/Library/Caches/Exec/AccountMetadata/`. Model catalogs can be reused for up to seven days, and last-known usage for up to five minutes, excluding expired usage windows. Successful refreshes update the cache; failures retain usable cached values. Signing out removes that account's cache, and missing or corrupt caches do not prevent opening saved conversations. **Settings → Account → Refresh Models** retries model discovery without restoring or blocking conversations.
 
 ## Access and storage
 

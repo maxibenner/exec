@@ -16,6 +16,19 @@ struct AccountUsage: Codable, Equatable, Sendable {
     }
 }
 
+/// A last-known display value, never a substitute for a fresh run observation.
+struct CachedAccountUsage: Codable, Sendable {
+    static let maximumAge: TimeInterval = 300
+    let usage: AccountUsage
+    let fetchedAt: Date
+
+    func current(at date: Date = .now) -> AccountUsage? {
+        guard (0...Self.maximumAge).contains(date.timeIntervalSince(fetchedAt)),
+              !usage.activeWindows(at: date).isEmpty else { return nil }
+        return usage
+    }
+}
+
 /// Account-wide observations, not an attribution of quota cost to this session.
 struct RunAllowanceObservation: Codable, Sendable {
     enum Phase: String, Codable { case before, after }

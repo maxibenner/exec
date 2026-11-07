@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// One grace period spans account setup and local session restoration. Removing
-/// this view cancels the delay; fast launches never mount a progress indicator.
+/// Only covers initial local credential/store setup (including a possible Keychain
+/// permission prompt). Session restoration and remote refresh use the real UI.
 struct StartupLoadingView: View {
     @State private var showsProgress = false
 

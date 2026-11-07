@@ -79,7 +79,7 @@ struct SettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     HStack {
-                        Button("Refresh Models", action: store.restore)
+                        Button("Refresh Models", action: store.refreshModels)
                         Button("Reconnect", action: store.connect)
                         Spacer()
                         Button("Sign Out", role: .destructive, action: store.disconnect)

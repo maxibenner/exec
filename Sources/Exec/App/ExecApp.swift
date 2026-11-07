@@ -10,7 +10,7 @@ import SwiftUI
     var body: some Scene {
         Window("Exec", id: "chat") {
             Group {
-                if let store, let windows, !store.current.isRestoringSession {
+                if let store, let windows {
                     ChatView(store: store, windows: windows)
                 } else if let startupError {
                     VStack(spacing: 16) {
@@ -46,7 +46,8 @@ import SwiftUI
             defer { starting = false }
             do {
                 let provider = try await OpenAIProvider.restored()
-                let library = try ChatLibrary(provider: provider, sessions: try SessionStore.applicationStore())
+                let library = try ChatLibrary(provider: provider, sessions: try SessionStore.applicationStore(),
+                                              metadataCache: AccountMetadataCache.applicationCache())
                 library.restore()
                 store = library
                 windows = SessionWindows(library: library)

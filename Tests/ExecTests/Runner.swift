@@ -20,6 +20,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Metadata cache persistence, isolation, corruption and expiry", { try await MetadataCacheTests().persistenceAndExpiry() }),
+            ("Cached startup stays interactive and rejects late signed-out results", { try await MetadataCacheTests().cachedStartupAndLateResults() }),
+            ("Metadata refresh preserves running settings and offline restoration", { try await MetadataCacheTests().refreshDuringRunAndOfflineMiss() }),
             ("Workspace picker waits for the owning conversation window", { try await WorkspacePickerTests().presentsPickerInOwningWindow() }),
             ("First send requires a workspace and preserves cancelled drafts", { try await WorkspacePickerTests().sendRequiresWorkspaceAndPreservesDraft() }),
             ("System prompts autosave and remain isolated per conversation", { try await SystemPromptTests().persistsAndSnapshots() }),

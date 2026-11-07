@@ -9,6 +9,7 @@ import Observation
     private(set) var navigating = false
     private(set) var authenticating = false
     private var navigationError: String?
+    private var modelRefreshError: String?
     private var savedSummaries: [SessionSummary] = []
     private var sidebarOrder: [UUID] = []
     private var catalogRequest = 0
@@ -26,7 +27,16 @@ import Observation
     private var accountTask: Task<Void, Never>?
     private var usageTask: Task<Void, Never>?
     private var usageRequest = 0
-    private(set) var accountUsage: AccountUsage?
+    private var modelTask: Task<Void, Never>?
+    private var metadataGeneration = 0
+    private var modelsAreCached = false
+    private let metadataCache: AccountMetadataCache?
+    private var cachedUsage: CachedAccountUsage?
+    var accountUsage: AccountUsage? { cachedUsage?.current() }
+    var accountUsageFetchedAt: Date? { cachedUsage?.fetchedAt }
+    private var metadataKey: String? {
+        provider.conversationIdentity.map { provider.displayName + ":" + $0 }
+    }
     private let provider: any ChatProvider
     private let residentLimit: Int
     private let sessions: SessionStore
@@ -73,7 +83,8 @@ import Observation
     }
 
     init(provider: any ChatProvider, sessions: SessionStore, residentLimit: Int = 8,
-         preferences: UserDefaults = .standard) throws {
+         preferences: UserDefaults = .standard, metadataCache: AccountMetadataCache? = nil) throws {
+        self.metadataCache = metadataCache
         self.preferences = preferences
         defaultModel = preferences.string(forKey: "defaultSessionModel") ?? ""
         defaultEffort = preferences.string(forKey: "defaultSessionEffort")
@@ -124,8 +135,8 @@ import Observation
         }
     }
     var error: String? {
-        get { navigationError ?? current.error }
-        set { navigationError = nil; current.error = newValue }
+        get { navigationError ?? current.error ?? modelRefreshError }
+        set { navigationError = nil; modelRefreshError = nil; current.error = newValue }
     }
     var account: String? { current.account }
     var providerName: String { provider.displayName }
@@ -230,39 +241,61 @@ import Observation
         cancelTitleGeneration()
         navigationTask?.cancel()
         accountTask?.cancel()
+        modelTask?.cancel()
+        metadataGeneration += 1
         usageTask?.cancel()
         for conversation in conversations { conversation.stop() }
     }
 
-    func restore() { accountOperation { self.current.restore() } }
-    func connect() { accountOperation { self.current.connect() } }
-    func disconnect() { accountOperation { self.current.disconnect() } }
+    func restore() { accountOperation { self.current.restore(loadModels: false) } }
+    func connect() { accountOperation { self.current.connect(loadModels: false) } }
+    func disconnect() { accountOperation(signingOut: true) { self.current.disconnect() } }
 
-    private func accountOperation(_ start: () -> Void) {
+    private func accountOperation(signingOut: Bool = false, _ start: () -> Void) {
         guard canModify, !conversations.contains(where: { $0.busy || $0.isSaving }) else { return }
         cancelTitleGeneration()
         let identity = provider.conversationIdentity
+        let oldKey = metadataKey
         for conversation in conversations { conversation.suspendAutoApproval() }
         authenticating = true
+        modelTask?.cancel()
+        metadataGeneration += 1
         usageTask?.cancel()
         usageRequest += 1
-        accountUsage = nil
+        cachedUsage = nil
+        modelRefreshError = nil
         navigationError = nil
         start()
         accountTask = Task {
             defer {
                 authenticating = false; accountTask = nil
-                if !Task.isCancelled { refreshAccountUsage() }
+                if !Task.isCancelled {
+                    refreshModels()
+                    refreshAccountUsage()
+                }
             }
             await current.waitUntilIdle()
+            // Eviction follows successful sign-out, even if cancellation arrived
+            // after the provider removed the credentials.
             if identity != provider.conversationIdentity {
+                models = []
+                cachedUsage = nil
+                savedSummaries = current.sessionList
+                sidebarOrder = []
                 detachedSessionIDs.removeAll()
                 openConversations = [current]
+                if let oldKey { await metadataCache?.remove(key: oldKey) }
             }
-            models = current.models
+            guard !Task.isCancelled else { return }
+            modelsAreCached = true
+            if let key = metadataKey, let saved = await metadataCache?.load(key: key) {
+                guard !Task.isCancelled, key == metadataKey else { return }
+                models = saved.usableModels()
+                if !signingOut { cachedUsage = saved.usage }
+            }
             for conversation in conversations {
                 conversation.account = provider.account
-                conversation.models = models
+                applyModels(to: conversation)
             }
             savedSummaries = current.sessionList
             remember(current)
@@ -272,6 +305,39 @@ import Observation
             }
             catch { navigationError = error.localizedDescription }
         }
+    }
+
+    /// Remote discovery is account-wide metadata, not a blocking account operation.
+    func refreshModels() {
+        guard !authenticating, provider.account != nil else { return }
+        modelTask?.cancel()
+        let generation = metadataGeneration
+        let key = metadataKey
+        modelTask = Task {
+            do {
+                let available = try await provider.models()
+                guard !Task.isCancelled, generation == metadataGeneration, key == metadataKey else { return }
+                guard !available.isEmpty else {
+                    throw ExecError("The provider returned no selectable models. Try Refresh Models in Settings.")
+                }
+                models = available
+                modelRefreshError = nil
+                modelsAreCached = false
+                for conversation in conversations { applyModels(to: conversation) }
+                if let key { await metadataCache?.saveModels(available, fetchedAt: .now, key: key) }
+            } catch {
+                // Keep cached/local state and never replace a recovery error.
+                if !Task.isCancelled, generation == metadataGeneration, key == metadataKey,
+                   models.isEmpty {
+                    modelRefreshError = "Could not load models. Use Refresh Models in Settings to try again."
+                }
+            }
+        }
+    }
+
+    private func applyModels(to conversation: ChatStore) {
+        guard !conversation.busy else { return } // Never change settings beneath a running turn.
+        conversation.installModels(models, cached: modelsAreCached)
     }
 
     /// Window ownership never creates a second runner or restores a resident provider.
@@ -496,7 +562,7 @@ import Observation
         let conversation = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions,
                                      selectOnCheckpoint: false, newConversation: true, workspace: workspace,
                                      systemPrompt: systemPrompt, defaultAutoApproveTools: defaultAutoApproveTools)
-        conversation.models = models
+        conversation.installModels(models, cached: modelsAreCached)
         conversation.selectedModel = defaultSessionModel?.id ?? defaultModel
         conversation.selectedEffort = models.isEmpty || defaultSessionModel?.efforts.contains(where: { $0.id == defaultEffort }) == true
             ? defaultEffort : nil
@@ -560,7 +626,8 @@ import Observation
         conversation.readAccountUsage = { [weak self] in
             await self?.readFreshAccountUsage()
         }
-        conversation.didFinish = { [weak self] capturedAllowance in
+        conversation.didFinish = { [weak self, weak conversation] capturedAllowance in
+            if let self, let conversation, !self.authenticating { self.applyModels(to: conversation) }
             self?.trimConversations()
             if !capturedAllowance { self?.refreshAccountUsage() }
         }
@@ -572,16 +639,23 @@ import Observation
     }
 
     private func readFreshAccountUsage() async -> AccountUsage? {
-        guard !authenticating, provider.account != nil else { accountUsage = nil; return nil }
+        guard !authenticating, provider.account != nil else { return nil }
         usageRequest += 1
         let request = usageRequest
-        let identity = provider.conversationIdentity
-        let usage = try? await provider.accountUsage()
-        guard !Task.isCancelled, identity == provider.conversationIdentity else { return nil }
-        // Concurrent conversations keep their own observations; only the newest
-        // request updates the account-wide display. Failed refreshes clear stale data.
-        if request == usageRequest { accountUsage = usage }
-        return usage
+        let generation = metadataGeneration
+        let key = metadataKey
+        do {
+            let usage = try await provider.accountUsage()
+            guard !Task.isCancelled, generation == metadataGeneration, key == metadataKey else { return nil }
+            // The display may retain recent data after a failure. Run observations
+            // below return only this fresh response, never the display fallback.
+            if request == usageRequest {
+                cachedUsage = usage.map { CachedAccountUsage(usage: $0, fetchedAt: .now) }
+                if let key { await metadataCache?.saveUsage(cachedUsage, key: key) }
+            }
+            guard !Task.isCancelled, generation == metadataGeneration, key == metadataKey else { return nil }
+            return usage
+        } catch { return nil }
     }
 
     private func remember(_ conversation: ChatStore) {
@@ -593,6 +667,7 @@ import Observation
     }
 
     private func activate(_ conversation: ChatStore) {
+        applyModels(to: conversation)
         remember(conversation)
         current = conversation
         openConversations.removeAll { $0 === conversation }

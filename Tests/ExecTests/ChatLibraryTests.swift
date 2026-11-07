@@ -42,7 +42,7 @@ import Observation
         let expected = try await sessions.list(identity: provider.conversationIdentity).map(\.id)
         let library = try ChatLibrary(provider: provider, sessions: sessions)
         var pending: CheckedContinuation<Void, Never>?
-        provider.children.last!.modelsAction = {
+        provider.modelsAction = {
             await withCheckedContinuation { pending = $0 }
         }
         defer { pending?.resume(); library.stopAll() }
@@ -50,7 +50,7 @@ import Observation
         try expect(library.current.isRestoringSession)
         try await wait { pending != nil }
         try expect(!library.current.isRestoringSession) // Show local data even while model discovery is stalled.
-        try expect(library.authenticating)
+        try expect(!library.authenticating && library.canNavigate && !library.current.busy)
         try expect(library.currentSessionID == ids[0])
         try expect(library.sidebarSessions.map(\.id) == expected)
         pending?.resume()

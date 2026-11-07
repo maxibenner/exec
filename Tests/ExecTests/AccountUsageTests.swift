@@ -41,7 +41,7 @@ import Foundation
         try expect(library.providerName == provider.displayName)
         provider.usageAction = { throw ExecError("Usage unavailable") }
         let failedRead = await library.current.readAccountUsage?()
-        try expect(failedRead == nil && library.accountUsage == nil && library.account != nil)
+        try expect(failedRead == nil && library.accountUsage == expected && library.account != nil)
         var pending: CheckedContinuation<AccountUsage?, Never>?
         var returned = false
         provider.usageAction = {

@@ -2,10 +2,15 @@ import SwiftUI
 
 struct AccountUsageLabel: View {
     let usage: AccountUsage?
+    var fetchedAt: Date? = nil
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            let windows = usage?.activeWindows(at: context.date) ?? []
+            let current = usage.flatMap { usage in
+                guard let fetchedAt else { return usage }
+                return CachedAccountUsage(usage: usage, fetchedAt: fetchedAt).current(at: context.date)
+            }
+            let windows = current?.activeWindows(at: context.date) ?? []
             if windows.isEmpty {
                 Text("Usage unavailable")
                     .help("No current allowance has been reported by this provider.")

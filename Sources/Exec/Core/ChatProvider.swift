@@ -34,13 +34,13 @@ struct Message: Identifiable, Codable, Sendable, Equatable {
     }
 }
 
-struct ChatEffort: Identifiable, Sendable {
+struct ChatEffort: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let name: String
     var description: String = ""
 }
 
-struct ChatModel: Identifiable, Sendable {
+struct ChatModel: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let name: String
     var contextWindow: Int? = nil

@@ -10,6 +10,7 @@ struct ChatView: View {
         let conversation: ObjectIdentifier
         let request: Int
         let navigating: Bool
+        let authenticating: Bool
     }
 
     var body: some View {
@@ -24,13 +25,14 @@ struct ChatView: View {
                              focused: $composerFocused, showsNavigationError: true)
                 .task(id: ComposerFocusTarget(conversation: ObjectIdentifier(store.current),
                                               request: windows.composerFocusRequest,
-                                              navigating: store.navigating)) {
+                                              navigating: store.navigating,
+                                              authenticating: store.authenticating)) {
                     // Deletion mounts the replacement before navigation finishes.
                     // Wait until its composer is enabled before requesting focus.
-                    guard !store.navigating else { return }
+                    guard !store.navigating, !store.authenticating else { return }
                     composerFocused = false
                     await Task.yield()
-                    guard !Task.isCancelled, !store.navigating else { return }
+                    guard !Task.isCancelled, !store.navigating, !store.authenticating else { return }
                     composerFocused = true
                 }
                 .id(ObjectIdentifier(store.current))

@@ -24,7 +24,22 @@ import Observation
     private(set) var isImportingImages = false
     private(set) var pendingInput: [Message] = [] { didSet { checkpointRevision += 1 } }
     var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || isImportingImages || !pendingInput.isEmpty }
+    private var modelsAreCached = false
     var models: [ChatModel] = [] { didSet { reconcileEffort(); updateContextUsage() } }
+
+    func installModels(_ available: [ChatModel], cached: Bool) {
+        guard !busy, models != available || modelsAreCached != cached else { return }
+        let automaticEffort = selectedModel.isEmpty ? selectedEffort : nil
+        modelsAreCached = cached
+        models = available
+        // Cached absence is not evidence that a saved model or effort disappeared.
+        if !available.isEmpty && (selectedModel.isEmpty || (!cached && model == nil)) {
+            selectedModel = available[0].id
+        }
+        if let automaticEffort, model?.efforts.contains(where: { $0.id == automaticEffort }) == true {
+            selectedEffort = automaticEffort
+        }
+    }
     var selectedModel = "" { didSet { checkpointRevision += 1; reconcileEffort(); updateContextUsage() } }
     var selectedEffort: String? { didSet { checkpointRevision += 1 } }
     var model: ChatModel? { models.first { $0.id == selectedModel } }
@@ -35,7 +50,7 @@ import Observation
 
     private func reconcileEffort() {
         // Preserve offline preferences until the catalog is available, but never send unknown levels.
-        if selectedModel.isEmpty || !models.isEmpty { selectedEffort = effectiveEffort }
+        if !modelsAreCached && (selectedModel.isEmpty || !models.isEmpty) { selectedEffort = effectiveEffort }
     }
     var account: String?
     var connectionTitle: String { provider.connectionTitle }
@@ -167,20 +182,20 @@ import Observation
         busy = true
         defer { busy = false }
         try await applySavedSession(id)
-        if !models.isEmpty && !models.contains(where: { $0.id == selectedModel }) {
+        if !modelsAreCached && !models.isEmpty && !models.contains(where: { $0.id == selectedModel }) {
             selectedModel = models.first?.id ?? ""
         }
         try Task.checkCancellation()
         try await checkpoint() // Only recovery or reconciled preferences need a write.
     }
 
-    func restore() {
+    func restore(loadModels: Bool = true) {
         guard !busy else { return }
         isRestoringSession = true
-        run { if self.account != nil { try await self.loadModels() } }
+        run { if loadModels && self.account != nil { try await self.loadModels() } }
     }
 
-    func connect() {
+    func connect(loadModels: Bool = true) {
         guard !busy else { return }
         tools.resetScreenshotPermission()
         tools.setAutoApproval(for: nil)
@@ -194,7 +209,7 @@ import Observation
             } else if !self.loadedSession || self.restorationBlocked {
                 try await self.loadSavedSession()
             }
-            try await self.loadModels()
+            if loadModels { try await self.loadModels() }
         }
     }
 
@@ -579,6 +594,7 @@ import Observation
         // An automatic model choice can still carry a new-session reasoning
         // preference. Validate it only after selecting the first available model.
         let automaticEffort = selectedModel.isEmpty ? selectedEffort : nil
+        modelsAreCached = false
         models = available
         if !models.contains(where: { $0.id == selectedModel }) { selectedModel = models.first?.id ?? "" }
         if let automaticEffort, model?.efforts.contains(where: { $0.id == automaticEffort }) == true {
@@ -699,7 +715,7 @@ import Observation
                 self.openingSessionID = nil // Model discovery remains cancellable, unlike local navigation.
                 try await self.loadModels()
             }
-            if !self.models.isEmpty && !self.models.contains(where: { $0.id == self.selectedModel }) {
+            if !self.modelsAreCached && !self.models.isEmpty && !self.models.contains(where: { $0.id == self.selectedModel }) {
                 self.selectedModel = self.models.first?.id ?? ""
             }
             // Standalone stores still own selection even when the loaded snapshot is unchanged.

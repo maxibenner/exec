@@ -31,6 +31,8 @@ struct ConversationView: View {
         Group {
             if panel.hasConversation {
                 conversation
+            } else if panel.current.isRestoringSession {
+                Color.clear
             } else {
                 VStack(spacing: 0) {
                     VStack(spacing: 12) {

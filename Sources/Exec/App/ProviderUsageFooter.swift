@@ -4,11 +4,12 @@ import SwiftUI
 struct ProviderUsageFooter: View {
     let providerName: String
     let usage: AccountUsage?
+    var fetchedAt: Date? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Divider()
-            AccountUsageLabel(usage: usage)
+            AccountUsageLabel(usage: usage, fetchedAt: fetchedAt)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)

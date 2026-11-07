@@ -43,7 +43,11 @@ import Foundation
     var pending: AsyncThrowingStream<ChatEvent, Error>.Continuation?
 
     func connect() async throws { account = "test@example.com" }
-    func disconnect() async throws { account = nil }
+    var disconnectAction: (() async -> Void)?
+    func disconnect() async throws {
+        account = nil
+        await disconnectAction?()
+    }
     var modelsAction: (() async throws -> Void)?
     func models() async throws -> [ChatModel] {
         try await modelsAction?()
