@@ -52,6 +52,9 @@ import Observation
     var defaultEffort: String? {
         didSet { preferences.set(defaultEffort, forKey: "defaultSessionEffort") }
     }
+    var defaultAutoApproveTools: Bool {
+        didSet { preferences.set(defaultAutoApproveTools, forKey: "defaultSessionAutoApproveTools") }
+    }
     var searchModel: String {
         didSet {
             preferences.set(searchModel, forKey: "searchModel")
@@ -74,6 +77,8 @@ import Observation
         self.preferences = preferences
         defaultModel = preferences.string(forKey: "defaultSessionModel") ?? ""
         defaultEffort = preferences.string(forKey: "defaultSessionEffort")
+        let autoApproveTools = preferences.object(forKey: "defaultSessionAutoApproveTools") as? Bool ?? true
+        defaultAutoApproveTools = autoApproveTools
         searchModel = preferences.string(forKey: "searchModel") ?? ChatStore.defaultSearchModel
         systemPrompt = preferences.string(forKey: "systemPrompt") ?? ""
         generatedTitlesEnabled = preferences.bool(forKey: "generatedTitlesEnabled")
@@ -82,7 +87,8 @@ import Observation
         self.provider = provider
         self.sessions = sessions
         current = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions, selectOnCheckpoint: false,
-                            systemPrompt: preferences.string(forKey: "systemPrompt") ?? "")
+                            systemPrompt: preferences.string(forKey: "systemPrompt") ?? "",
+                            defaultAutoApproveTools: autoApproveTools)
         current.selectedModel = defaultModel
         current.selectedEffort = defaultEffort
         observe(current)
@@ -488,7 +494,7 @@ import Observation
     private func makeConversation(workspace: Workspace? = nil) throws -> ChatStore {
         let conversation = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions,
                                      selectOnCheckpoint: false, newConversation: true, workspace: workspace,
-                                     systemPrompt: systemPrompt)
+                                     systemPrompt: systemPrompt, defaultAutoApproveTools: defaultAutoApproveTools)
         conversation.models = models
         conversation.selectedModel = defaultSessionModel?.id ?? defaultModel
         conversation.selectedEffort = models.isEmpty || defaultSessionModel?.efforts.contains(where: { $0.id == defaultEffort }) == true

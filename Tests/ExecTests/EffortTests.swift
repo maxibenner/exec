@@ -110,10 +110,64 @@ import Foundation
             fresh.stopAll()
         }
 
+        try await newSessionDefaults(provider: provider, root: root, preferences: preferences)
+
         var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved!)) as! [String: Any]
         legacy.removeValue(forKey: "effort")
         let decoded = try JSONDecoder().decode(SessionSnapshot.self, from: JSONSerialization.data(withJSONObject: legacy))
         try expect(decoded.effort == nil)
+    }
+
+    private func newSessionDefaults(provider: FakeProvider, root: URL, preferences: UserDefaults) async throws {
+        let sessions = SessionStore(directory: root.appendingPathComponent("defaults"))
+        let library = try ChatLibrary(provider: provider, sessions: sessions, preferences: preferences)
+        try expect(library.defaultAutoApproveTools) // Preserve the existing installation default.
+        library.restore()
+        try await wait { !library.hasRunningOperations }
+        library.defaultModel = "test"
+        library.defaultEffort = "high"
+        library.defaultAutoApproveTools = false
+        library.newConversation()
+        try await wait { !library.hasRunningOperations }
+        library.selectWorkspace(root)
+        try await wait { !library.hasRunningOperations }
+        try expect(!library.autoApproveTools) // Picking a workspace must not enable auto mode.
+        let workspace = library.workspace
+        library.selectedModel = "plain"
+        library.setAutoApproveTools(true)
+        let original = library.current
+        let originalID = library.currentSessionID!
+        await original.waitForPendingSave()
+
+        library.newConversation()
+        try await wait { !library.hasRunningOperations }
+        try expect(library.workspace?.root == workspace?.root)
+        try expect(library.selectedModel == "test" && library.selectedEffort == "high")
+        try expect(!library.autoApproveTools)
+        try expect(original.selectedModel == "plain" && original.autoApproveTools)
+        let snapshot = try await sessions.load(id: library.currentSessionID!)
+        try expect(snapshot?.selectedModel == "test" && snapshot?.effort == "high" && snapshot?.autoApproveTools == false)
+
+        library.selectedEffort = "low"
+        library.defaultAutoApproveTools = true
+        try expect(!library.autoApproveTools) // Changing defaults leaves the current session alone.
+        library.newConversation()
+        try await wait { !library.hasRunningOperations }
+        try expect(library.workspace?.root == workspace?.root && library.autoApproveTools)
+        try expect(library.selectedEffort == "high")
+        library.defaultAutoApproveTools = false
+        let restarted = try ChatLibrary(provider: provider, sessions: sessions, preferences: preferences)
+        try expect(!restarted.defaultAutoApproveTools)
+        restarted.restore()
+        try await wait { !restarted.hasRunningOperations }
+        try expect(restarted.autoApproveTools) // Saved sessions retain their own choices.
+        restarted.openSession(originalID)
+        try await wait { !restarted.hasRunningOperations }
+        try expect(restarted.selectedModel == "plain" && restarted.autoApproveTools)
+        restarted.newConversation()
+        try await wait { !restarted.hasRunningOperations }
+        try expect(restarted.workspace?.root == workspace?.root && !restarted.autoApproveTools)
+        try expect(restarted.selectedModel == "test" && restarted.selectedEffort == "high")
     }
 
     private func wait(_ condition: () -> Bool) async throws {

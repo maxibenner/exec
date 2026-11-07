@@ -40,6 +40,7 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(store.defaultSessionModel?.efforts.isEmpty != false)
+                Toggle("Auto mode", isOn: $settings.defaultAutoApproveTools)
             }
             Section("Web Search") {
                 Picker("Search model", selection: $settings.searchModel) {

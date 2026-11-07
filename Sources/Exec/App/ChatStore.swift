@@ -55,7 +55,8 @@ import Observation
     var isWorking: Bool { busy && openingSessionID == nil }
     var autoApproveTools: Bool { workspace != nil && tools.autoApprovedDirectory == workspace?.root }
 
-    private var prefersAutoApproval = true { didSet { checkpointRevision += 1 } }
+    private let defaultAutoApproveTools: Bool
+    private var prefersAutoApproval: Bool { didSet { checkpointRevision += 1 } }
 
     func setAutoApproveTools(_ enabled: Bool) {
         guard !enabled || ((!busy || isSending) && account != nil && workspace != nil) else { return }
@@ -112,6 +113,7 @@ import Observation
 
     init(provider: any ChatProvider, sessions: SessionStore? = nil, selectOnCheckpoint: Bool = true,
          newConversation: Bool = false, workspace: Workspace? = nil, systemPrompt: String = "",
+         defaultAutoApproveTools: Bool = true,
          fetchContent: @escaping @Sendable (URL) async throws -> String = { try await ContentFetcher().fetch($0) },
          captureScreenshot: @escaping @MainActor (ScreenshotTool.Request) async throws -> ScreenshotTool.Output = { try await ScreenshotCapture.capture($0) }) {
         self.captureScreenshot = captureScreenshot
@@ -121,7 +123,9 @@ import Observation
         self.sessions = sessions
         self.selectOnCheckpoint = selectOnCheckpoint
         self.workspace = workspace
-        tools.setAutoApproval(for: workspace?.root)
+        self.defaultAutoApproveTools = defaultAutoApproveTools
+        prefersAutoApproval = defaultAutoApproveTools
+        tools.setAutoApproval(for: defaultAutoApproveTools ? workspace?.root : nil)
         conversationIdentity = provider.conversationIdentity
         account = provider.account
         if newConversation {
@@ -218,7 +222,7 @@ import Observation
         }
         self.workspace = workspace
         needsInitialWorkspaceSelection = false
-        tools.setAutoApproval(for: workspace.root)
+        tools.setAutoApproval(for: prefersAutoApproval ? workspace.root : nil)
     }
 
     /// Selection is transactional: a failed load leaves the old chat and workspace intact.
@@ -247,8 +251,8 @@ import Observation
         }
         self.workspace = workspace
         needsInitialWorkspaceSelection = false
-        prefersAutoApproval = true
-        tools.setAutoApproval(for: workspace?.root)
+        prefersAutoApproval = defaultAutoApproveTools
+        tools.setAutoApproval(for: prefersAutoApproval ? workspace?.root : nil)
         messages = []; history = []; draft = ""; draftImages = []; error = nil
         pendingInput = []
         activeTurn = false; activeCallID = nil
