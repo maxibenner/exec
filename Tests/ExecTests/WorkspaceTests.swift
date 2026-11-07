@@ -39,9 +39,9 @@ struct WorkspaceTests {
         next.draft = "Keep queued"; next.send()
         try await wait { !next.busy }
         try expect(next.error != nil && nextProvider.instructions.isEmpty)
-        try expect(next.messages.isEmpty && next.queuedMessages.map(\.text) == ["Keep queued"])
+        try expect(next.messages.map(\.text) == ["Keep queued"] && next.pendingInput.map(\.text) == ["Keep queued"])
         try FileManager.default.removeItem(at: file)
-        next.resumeQueuedMessages()
+        next.draft = "Continue"; next.send()
         try await wait { !next.busy }
         try expect(nextProvider.instructions.count == 1)
         try expect(!nextProvider.instructions[0].contains("Old instructions"))

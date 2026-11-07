@@ -32,13 +32,15 @@ Quit any running copy before opening a rebuilt app. Sign-in uses local port 1455
 | Detach conversation | ⌘D |
 | Move detached conversation back | ⌘W |
 | Delete conversation | ⌘⇧Delete |
-| Send or queue a message | Return |
+| Send a message / steer the active turn | Return |
 | Stop current operation | Escape or ⌘. |
 | Open command menu | `/` in the composer |
 
 Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace`, `/finder`, `/terminal`.
 
 Switching conversations keeps background work running. Drag images into the composer to attach them.
+
+You can send new instructions while the assistant is working. They appear in the conversation immediately and reach the model after the current tool or model response finishes. Remaining tools from the old response are marked as not executed, and an unstarted approval is withdrawn so the assistant can reconsider. Send does not cancel a running operation; use Stop for that. After a stop or failure, unconsumed messages remain saved with the conversation and are included when you send your next message, without automatically restarting work.
 
 Choose a separate **Search model** in **Settings → General → Web Search**. It defaults to GPT-6 Luna and applies to searches in existing and new conversations. Searches use that model's default reasoning level, independently of the chat model and reasoning setting.
 

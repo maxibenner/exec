@@ -207,19 +207,6 @@ import Observation
         }
     }
 
-    func resumeQueuedMessages(in destination: ChatStore? = nil) {
-        let destination = destination ?? current
-        guard canModify, !destination.busy else { return }
-        navigate(reportingTo: destination) {
-            if destination === self.current, let id = destination.currentSessionID {
-                try await self.sessions.select(id)
-            }
-            try Task.checkCancellation()
-            self.remember(destination)
-            destination.resumeQueuedMessages()
-        }
-    }
-
     var canCompact: Bool { canModify && current.canCompact }
     func compact() {
         guard canCompact else { return }

@@ -22,9 +22,8 @@ import Observation
     var draft = ""
     var draftImages: [ImageAttachment] = []
     private(set) var isImportingImages = false
-    private(set) var queuedMessages: [Message] = []
-    private(set) var isQueuePaused = false
-    var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || isImportingImages || !queuedMessages.isEmpty }
+    private(set) var pendingInput: [Message] = [] { didSet { checkpointRevision += 1 } }
+    var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || isImportingImages || !pendingInput.isEmpty }
     var models: [ChatModel] = [] { didSet { reconcileEffort(); updateContextUsage() } }
     var selectedModel = "" { didSet { checkpointRevision += 1; reconcileEffort(); updateContextUsage() } }
     var selectedEffort: String? { didSet { checkpointRevision += 1 } }
@@ -251,7 +250,7 @@ import Observation
         prefersAutoApproval = true
         tools.setAutoApproval(for: workspace?.root)
         messages = []; history = []; draft = ""; draftImages = []; error = nil
-        queuedMessages = []; isQueuePaused = false
+        pendingInput = []
         activeTurn = false; activeCallID = nil
         loadedSession = true; restorationBlocked = false
         conversationIdentity = provider.conversationIdentity
@@ -286,36 +285,32 @@ import Observation
         guard !text.isEmpty || !draftImages.isEmpty, canEditDraft, !isImportingImages,
               account != nil, !selectedModel.isEmpty else { return }
         let user = Message(role: .user, text: text, images: draftImages)
-        queuedMessages.append(user)
+        pendingInput.append(user)
+        messages.append(user)
+        sessionActivityDate = Date()
         draft = ""; draftImages = []
-        if !busy { resumeQueuedMessages() }
+        tools.withdrawApprovalForInput()
+        if !busy { sendPendingInput() }
     }
 
-    func removeQueuedMessage(_ id: UUID) {
-        queuedMessages.removeAll { $0.id == id }
-        if queuedMessages.isEmpty { isQueuePaused = false }
+    /// Input is accepted in the transcript immediately, but enters model context
+    /// only after every call in the preceding response has an explicit outcome.
+    private func injectPendingInput(into input: inout [Message]) {
+        let accepted = pendingInput
+        pendingInput = []
+        input.append(contentsOf: accepted)
+        history = input
     }
 
-    func resumeQueuedMessages() {
-        guard !busy, !queuedMessages.isEmpty, account != nil, !selectedModel.isEmpty else { return }
-        isQueuePaused = false
-        sendNextQueuedMessage()
-    }
-
-    private func sendNextQueuedMessage() {
-        guard !busy, !isQueuePaused, let user = queuedMessages.first,
-              account != nil, !selectedModel.isEmpty else { return }
-        sendMessage(user)
-    }
-
-    private func sendMessage(_ user: Message) {
+    private func sendPendingInput() {
+        guard !busy, !pendingInput.isEmpty, account != nil, !selectedModel.isEmpty else { return }
         run(sending: true) {
             guard self.conversationIdentity == self.provider.conversationIdentity else {
                 throw ExecError("The connected account changed. Choose New before sending this conversation.")
             }
             // Freeze instructions at the first send, not when the workspace or
             // empty session was created. Existing conversations retain their snapshot.
-            if self.messages.isEmpty, let root = self.workspace?.root {
+            if self.messages.count == self.pendingInput.count, let root = self.workspace?.root {
                 let loading = Task.detached(priority: .userInitiated) { try Workspace.load(root) }
                 let workspace = try await withTaskCancellationHandler {
                     try await loading.value
@@ -323,24 +318,19 @@ import Observation
                 try Task.checkCancellation()
                 self.workspace = workspace
             }
-            // Removal can happen while restoring a session or loading instructions.
-            // Never send a removed item.
-            guard self.queuedMessages.first?.id == user.id else { return }
-            self.queuedMessages.removeFirst()
-            var input = self.history + [user]
-            self.messages.append(user)
-            self.sessionActivityDate = Date()
+            var input = self.history
             self.activeTurn = true
-            try await self.checkpoint()
-            self.didSendMessage?(user)
             var usedCallIDs = Set<String>()
             while true {
                 try Task.checkCancellation()
-                let assistant = try await self.receive(input)
+                let completedHistory = self.history
+                self.injectPendingInput(into: &input)
+                let assistant = try await self.receive(input, completedHistory: completedHistory)
                 input.append(assistant)
                 if assistant.toolCalls.isEmpty {
                     self.history = input
-                    return
+                    if self.pendingInput.isEmpty { return }
+                    continue
                 }
                 // Commit the completed model step before executing side effects.
                 self.history = input
@@ -352,11 +342,17 @@ import Observation
                     let result: ToolResult
                     do {
                         try Task.checkCancellation()
-                        if duplicate {
+                        if !self.pendingInput.isEmpty {
+                            result = ToolResult(call: call, text: ToolExecutor.supersededByInput)
+                        } else if duplicate {
                             result = ToolResult(call: call, text: "Duplicate tool call ID; not executed.")
                         } else {
                             usedCallIDs.insert(call.id)
-                            result = try await self.executeTool(call)
+                            do {
+                                result = try await self.executeTool(call)
+                            } catch is ToolExecutor.InputArrived {
+                                result = ToolResult(call: call, text: ToolExecutor.supersededByInput)
+                            }
                         }
                     } catch {
                         let interrupted: String
@@ -389,6 +385,8 @@ import Observation
     }
 
     private func executeTool(_ call: ToolCall) async throws -> ToolResult {
+        tools.shouldYieldForInput = { [weak self] in self?.pendingInput.isEmpty == false }
+        defer { tools.shouldYieldForInput = nil }
         if call.name == ImageGenerationTool.definition.name {
             guard provider.supportsImageGeneration else { throw ExecError("This provider does not support image generation.") }
             let image = try await provider.generateImage(ImageGenerationTool.request(call))
@@ -480,19 +478,26 @@ import Observation
         }
     }
 
-    private func receive(_ input: [Message]) async throws -> Message {
+    private func receive(_ input: [Message], completedHistory: [Message]) async throws -> Message {
         messages.append(Message(role: .assistant, text: "", status: .streaming))
         let index = messages.count - 1
         var fullText = ""
         var calls: [ToolCall] = []
         var lastUpdate = ContinuousClock.now
         var completed = false
+        var requestStarted = false
         defer {
             messages[index].text = fullText
             if messages[index].status == .streaming {
                 messages[index].status = Task.isCancelled ? .interrupted : .failed
             }
-            if messages[index].status == .interrupted {
+            if !requestStarted {
+                history = completedHistory
+                pendingInput.insert(contentsOf: input.dropFirst(completedHistory.count).filter { $0.role == .user }, at: 0)
+            } else if messages[index].status == .failed {
+                // A failed request is not completed context (including its images).
+                history = completedHistory
+            } else if messages[index].status == .interrupted {
                 // Preserve the submitted prompt and visible partial answer, not
                 // unfinished tool calls or an assumed successful model step.
                 history = input
@@ -505,13 +510,17 @@ import Observation
         let instructions = requestInstructions
         let definitions = toolDefinitions
         let model = models.first { $0.id == selectedModel } ?? ChatModel(id: selectedModel, name: selectedModel)
-        if try await provider.compactIfNeeded(history, pending: Array(input.dropFirst(history.count)),
+        if try await provider.compactIfNeeded(completedHistory, pending: Array(input.dropFirst(completedHistory.count)),
                                               model: model, instructions: instructions, tools: definitions) {
             updateContextUsage()
             checkpointRevision += 1
             try await checkpoint() // Compacted context must be durable before another inference request.
         }
         try Task.checkCancellation()
+        for user in input.dropFirst(completedHistory.count) where user.role == .user {
+            didSendMessage?(user)
+        }
+        requestStarted = true
         for try await event in provider.send(input, model: selectedModel, effort: effectiveEffort, instructions: instructions, tools: definitions) {
             try Task.checkCancellation()
             switch event {
@@ -548,7 +557,6 @@ import Observation
 
     func stop() {
         didStop?()
-        isQueuePaused = !queuedMessages.isEmpty
         task?.cancel()
     }
 
@@ -578,7 +586,8 @@ import Observation
         SessionSnapshot(identity: conversationIdentity, workspace: workspace, selectedModel: selectedModel,
                         messages: messages, history: history, providerState: try provider.encodeConversationState(),
                         activeTurn: activeTurn, activeCallID: activeCallID, activityDate: sessionActivityDate, effort: selectedEffort,
-                        autoApproveTools: prefersAutoApproval, systemPrompt: systemPrompt, allowanceObservations: allowanceObservations)
+                        autoApproveTools: prefersAutoApproval, systemPrompt: systemPrompt, allowanceObservations: allowanceObservations,
+                        pendingInputIDs: pendingInput.map(\.id))
     }
 
     private func checkpoint(force: Bool = false) async throws {
@@ -628,13 +637,21 @@ import Observation
         selectedEffort = saved.effort
         reconcileEffort()
         allowanceObservations = saved.allowanceObservations ?? []
-        messages = saved.messages; history = saved.history; draft = ""; draftImages = []
+        let accepted = isSending ? pendingInput : []
+        messages = saved.messages; history = saved.history
+        if !isSending { draft = ""; draftImages = [] }
+        let pendingIDs = Set(saved.pendingInputIDs ?? [])
+        pendingInput = messages.filter { pendingIDs.contains($0.id) && $0.role == .user }
+        for user in accepted where !messages.contains(where: { $0.id == user.id }) {
+            messages.append(user)
+            pendingInput.append(user)
+        }
         conversationIdentity = saved.identity
         currentSessionID = id
         sessionActivityDate = saved.activityDate ?? sessionList.first(where: { $0.id == id })?.updatedAt ?? Date()
         activeTurn = false; activeCallID = nil
         loadedSession = true; restorationBlocked = false
-        savedRevision = !interrupted && selectedModel == saved.selectedModel && selectedEffort == saved.effort
+        savedRevision = accepted.isEmpty && !interrupted && selectedModel == saved.selectedModel && selectedEffort == saved.effort
             ? checkpointRevision : nil
         if interrupted { error = "The previous turn was interrupted. No operations were resumed; inspect any possible file changes before retrying." }
     }
@@ -673,7 +690,6 @@ import Observation
         run(restoreSession: false) {
             if self.loadedSession && !self.restorationBlocked { try await self.checkpoint() }
             try await self.applySavedSession(id)
-            self.queuedMessages = []; self.isQueuePaused = false
             if loadModels && self.models.isEmpty && self.account != nil {
                 self.openingSessionID = nil // Model discovery remains cancellable, unlike local navigation.
                 try await self.loadModels()
@@ -720,9 +736,8 @@ import Observation
                 self.isCompacting = false
                 self.openingSessionID = nil
                 self.task = nil
-                if sending || compacting {
-                    if !completed || Task.isCancelled { self.isQueuePaused = !self.queuedMessages.isEmpty }
-                    else { self.sendNextQueuedMessage() }
+                if (sending || compacting) && completed && !Task.isCancelled {
+                    self.sendPendingInput()
                 }
                 self.didFinish?(usageRunID != nil)
             }

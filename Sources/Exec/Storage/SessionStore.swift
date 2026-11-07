@@ -18,6 +18,9 @@ struct SessionSnapshot: Codable, Sendable {
     var autoApproveTools: Bool?
     var systemPrompt: String?
     var allowanceObservations: [RunAllowanceObservation]?
+    // Accepted transcript messages not yet incorporated at a safe model boundary.
+    // Restoring these never starts inference automatically.
+    var pendingInputIDs: [UUID]?
 
     /// Only the last completed model step can have unanswered tool calls.
     /// Missing outcomes are never inferred to be successful or re-executed.

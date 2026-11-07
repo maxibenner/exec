@@ -16,7 +16,19 @@ import Observation
     func resetScreenshotPermission() {
         screenshotsAllowedForSession = false
     }
-    private var answer: CheckedContinuation<Bool, Never>?
+    struct InputArrived: Error {}
+    static let supersededByInput = "Not executed: new user input arrived. Reconsider this operation using the new instructions."
+    var shouldYieldForInput: (() -> Bool)?
+    private enum Decision { case approved, denied, superseded }
+    private var answer: CheckedContinuation<Decision, Never>?
+
+    func withdrawApprovalForInput() {
+        guard pendingApproval != nil else { return }
+        pendingApproval = nil
+        let continuation = answer
+        answer = nil
+        continuation?.resume(returning: .superseded)
+    }
 
     func setAutoApproval(for directory: URL?) {
         autoApprovedDirectory = directory
@@ -34,7 +46,7 @@ import Observation
         pendingApproval = nil
         let continuation = answer
         answer = nil
-        continuation?.resume(returning: approved)
+        continuation?.resume(returning: approved ? .approved : .denied)
     }
 
     func execute(_ call: ToolCall, workspace: Workspace?) async throws -> ToolResult {
@@ -61,6 +73,7 @@ import Observation
             }
             return ToolResult(call: call, text: try await background { try CodingTools.readOnly(call, workspace: workspace) })
         } catch is CancellationError { throw CancellationError() }
+        catch is InputArrived { throw InputArrived() }
         catch { return ToolResult(call: call, text: "Tool error: \(error.localizedDescription)") }
     }
 
@@ -72,6 +85,7 @@ import Observation
 
     private func requestApproval(_ approval: Approval) async throws -> Bool {
         try Task.checkCancellation()
+        guard shouldYieldForInput?() != true else { throw InputArrived() }
         guard pendingApproval == nil else { throw ExecError("Another operation is awaiting approval.") }
         if approval.kind == .screenshot {
             if autoApprovedDirectory != nil || screenshotsAllowedForSession { return true }
@@ -85,7 +99,10 @@ import Observation
             Task { @MainActor in self.resolveApproval(id: approval.id, approved: false) }
         }
         try Task.checkCancellation()
-        return approved
+        if approved == .superseded { throw InputArrived() }
+        // Input can arrive after an approval is resolved but before execution resumes.
+        if approved == .approved, shouldYieldForInput?() == true { throw InputArrived() }
+        return approved == .approved
     }
 
     private func background<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {

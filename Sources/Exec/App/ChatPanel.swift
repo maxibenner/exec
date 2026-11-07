@@ -129,7 +129,6 @@ import Observation
         }
         library.send(in: current)
     }
-    func resumeQueuedMessages() { if canNavigate { library.resumeQueuedMessages(in: current) } }
     func selectWorkspace(_ url: URL) { library.selectWorkspace(url, in: current) }
     func compact() { if canCompact { current.compact() } }
     func setAutoApproveTools(_ enabled: Bool) { if canNavigate { current.setAutoApproveTools(enabled) } }

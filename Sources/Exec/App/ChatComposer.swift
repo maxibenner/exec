@@ -111,10 +111,6 @@ struct ChatComposer: View {
 
     private var input: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if !store.current.queuedMessages.isEmpty {
-                QueuedMessagesView(store: store)
-                    .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
-            }
             if !store.current.draftImages.isEmpty {
                 AttachmentStrip(images: store.current.draftImages) { id in
                     store.current.draftImages.removeAll { $0.id == id }
