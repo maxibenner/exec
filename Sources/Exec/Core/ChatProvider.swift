@@ -51,7 +51,6 @@ struct ChatModel: Identifiable, Sendable {
 struct ContextUsage: Equatable, Sendable {
     let tokens: Int
     let limit: Int
-    let isEstimated: Bool
 
     var percent: Int {
         guard limit > 0 else { return 0 }

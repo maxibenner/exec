@@ -37,23 +37,23 @@ import Foundation
         ))
     }
 
-    func contextUsageReportsRestoredMeasurementsAndEstimates() throws {
+    func contextUsageReportsOnlyMatchingMeasurements() throws {
         let http = HTTPStub.makeSession([])
         defer { http.invalidateAndCancel() }
         let provider = try provider(http: http)
         let history = [Message(role: .user, text: "Question"), Message(role: .assistant, text: "Answer")]
-        try expect(provider.contextUsage([], model: model, instructions: "", tools: [])?.percent == 0)
+        try expect(provider.contextUsage([], model: model, instructions: "", tools: []) == nil)
         try expect(provider.contextUsage(history, model: ChatModel(id: "unknown", name: "Unknown"), instructions: "", tools: []) == nil)
         try provider.restoreConversationState(state(history, tokens: 2_500), history: history)
         let reported = provider.contextUsage(history, model: model, instructions: "", tools: [])
-        try expect(reported == ContextUsage(tokens: 2_500, limit: 10_000, isEstimated: false))
+        try expect(reported == ContextUsage(tokens: 2_500, limit: 10_000))
         try expect(reported?.percent == 25)
         let appended = history + [Message(role: .user, text: "Next question")]
-        let estimated = provider.contextUsage(appended, model: model, instructions: "", tools: [])
-        try expect(estimated?.isEstimated == true && estimated!.tokens > 2_500)
-        try expect(ContextUsage(tokens: 20_000, limit: 10_000, isEstimated: true).percent == 100)
+        let unavailable = provider.contextUsage(appended, model: model, instructions: "", tools: [])
+        try expect(unavailable == nil)
+        try expect(ContextUsage(tokens: 20_000, limit: 10_000).percent == 100)
         provider.clearConversationState()
-        try expect(provider.contextUsage(history, model: model, instructions: "", tools: [])?.isEstimated == true)
+        try expect(provider.contextUsage(history, model: model, instructions: "", tools: []) == nil)
         try expect(HTTPStub.state.requests.isEmpty)
     }
 
@@ -152,16 +152,21 @@ import Foundation
         try expect(HTTPStub.state.requests.count == 1)
     }
 
-    func estimatesLegacyStateAndClosedToolBoundaries() async throws {
+    func reportedCountsLegacyStateAndClosedToolBoundaries() async throws {
         let history = [Message(role: .user, text: "Question"), Message(role: .assistant, text: "old answer")]
         let measured = try CodexConversationState.restore(state(history, tokens: 8_000))
         let pending = Message(role: .user, text: String(repeating: "x", count: 6_000))
-        try expect(try measured.estimatedTokens(history + [pending], overhead: 0) >= 9_500)
+        try expect(measured.reportedTokens(history + [pending]) == nil)
         let legacy = try CodexConversationState.restore(JSONEncoder().encode(measured.outputs))
         try expect(legacy.prefix == nil && legacy.outputs == measured.outputs)
         let http = HTTPStub.makeSession([])
         defer { http.invalidateAndCancel() }
         let provider = try provider(http: http)
+        let withoutMeasurement = try await provider.compactIfNeeded(history, pending: [pending], model: model, instructions: "", tools: [])
+        try expect(!withoutMeasurement)
+        try provider.restoreConversationState(state(history, tokens: 8_000), history: history)
+        let belowThreshold = try await provider.compactIfNeeded(history, pending: [pending], model: model, instructions: "", tools: [])
+        try expect(!belowThreshold && HTTPStub.state.requests.isEmpty)
         var unfinished = history
         unfinished[1].toolCalls = [ToolCall(id: "pending", name: "shell", arguments: "{}")]
         try provider.restoreConversationState(state(unfinished, tokens: 9_500), history: unfinished)

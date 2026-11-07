@@ -132,22 +132,8 @@ import Foundation
 
     func contextUsage(_ messages: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) -> ContextUsage? {
         guard let limit = model.contextWindow, limit > 0 else { return nil }
-        guard !messages.isEmpty else { return ContextUsage(tokens: 0, limit: limit, isEstimated: false) }
-        guard let tokens = try? context.estimatedTokens(messages, overhead: Self.contextOverhead(instructions: instructions, tools: tools)) else { return nil }
-        let reported: Bool
-        if let measurement = context.measurement, messages.count >= 2 {
-            reported = messages[messages.count - 2].id == measurement.inputID && messages.last?.role == .assistant
-        } else { reported = false }
-        return ContextUsage(tokens: tokens, limit: limit, isEstimated: !reported)
-    }
-
-    private static func contextOverhead(instructions: String, tools: [ToolDefinition]) -> Int {
-        let toolBytes = tools.reduce(0) { total, tool in
-            total + tool.name.utf8.count + tool.description.utf8.count + 256 + tool.parameters.reduce(0) {
-                $0 + $1.name.utf8.count + $1.type.utf8.count + $1.description.utf8.count + 64
-            }
-        }
-        return (CodexConnection.systemInstructions(instructions).utf8.count + toolBytes + 2) / 3
+        guard let tokens = context.reportedTokens(messages) else { return nil }
+        return ContextUsage(tokens: tokens, limit: limit)
     }
 
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
@@ -155,8 +141,7 @@ import Foundation
         guard let window = model.contextWindow, window > 0 else {
             throw ExecError("Codex did not provide a context limit for this model. Refresh models before sending.")
         }
-        let overhead = Self.contextOverhead(instructions: instructions, tools: tools)
-        let tokens = try context.estimatedTokens(history + pending, overhead: overhead)
+        guard let tokens = context.reportedTokens(history) else { return false }
         guard tokens >= Int(ceil(Double(window) * 0.95)) else { return false }
         try await compact(history, model: model, instructions: instructions, tools: tools)
         return true

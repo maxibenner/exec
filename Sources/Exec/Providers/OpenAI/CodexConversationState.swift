@@ -88,30 +88,12 @@ struct CodexConversationState: Codable {
         return input
     }
 
-    func estimatedTokens(_ messages: [Message], overhead: Int) throws -> Int {
-        if let measurement, let index = messages.firstIndex(where: { $0.id == measurement.inputID }),
-           messages.indices.contains(index + 1), messages[index + 1].role == .assistant {
-            // Reported input + output already includes the completed assistant response.
-            let appended = Array(messages.dropFirst(index + 2))
-            return measurement.tokens + (appended.isEmpty ? 0 : try Self.estimate(Self().input(appended)))
-        }
-        return try Self.estimate(input(messages)) + overhead
-    }
-
-    static func estimate(_ input: [[String: Any]]) throws -> Int {
-        // Base64 bytes are not text tokens. Budget images separately; prefer reported usage.
-        var imageTokens = 0
-        let textInput = input.map { item in
-            var item = item
-            if let content = item["content"] as? [[String: Any]] {
-                item["content"] = content.filter {
-                    if $0["type"] as? String == "input_image" { imageTokens += 4_096; return false }
-                    return true
-                }
-            }
-            return item
-        }
-        return (try JSONSerialization.data(withJSONObject: textInput).count + 2) / 3 + imageTokens
+    func reportedTokens(_ messages: [Message]) -> Int? {
+        guard let measurement, messages.count >= 2,
+              messages[messages.count - 2].id == measurement.inputID,
+              messages.last?.role == .assistant,
+              messages.last?.status != .interrupted else { return nil }
+        return measurement.tokens
     }
 
     static func items(_ data: Data) throws -> [[String: Any]] {

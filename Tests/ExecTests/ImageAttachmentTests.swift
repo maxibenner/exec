@@ -49,14 +49,11 @@ import UniformTypeIdentifiers
         try expect(content[1]["image_url"] as? String == "data:\(image.mediaType);base64,\(image.data.base64EncodedString())")
         let onlyImage = try CodexConversationState().input([Message(role: .user, text: "", images: [image])])
         try expect((onlyImage[0]["content"] as? [[String: Any]])?.count == 1)
-        try expect(try CodexConversationState.estimate(input) >= 4_096)
         var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(message)) as! [String: Any]
         legacy.removeValue(forKey: "images")
         let decoded = try JSONDecoder().decode(Message.self, from: JSONSerialization.data(withJSONObject: legacy))
         try expect(decoded.images.isEmpty && decoded.text == message.text)
-        let large = ImageAttachment(name: "Large", mediaType: "image/jpeg", data: Data(count: 1_000_000))
-        let largeInput = try CodexConversationState().input([Message(role: .user, text: "", images: [large])])
-        try expect(try CodexConversationState.estimate(largeInput) < 5_000)
+
     }
 
     func sendsPersistsAndExcludesFailedImages() async throws {
