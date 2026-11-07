@@ -495,8 +495,9 @@ import Observation
                 history = completedHistory
                 pendingInput.insert(contentsOf: input.dropFirst(completedHistory.count).filter { $0.role == .user }, at: 0)
             } else if messages[index].status == .failed {
-                // A failed request is not completed context (including its images).
-                history = completedHistory
+                // Preserve submitted instructions and attachments, but exclude
+                // the failed assistant response and any unfinished tool calls.
+                history = input
             } else if messages[index].status == .interrupted {
                 // Preserve the submitted prompt and visible partial answer, not
                 // unfinished tool calls or an assumed successful model step.

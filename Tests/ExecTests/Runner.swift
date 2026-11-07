@@ -71,7 +71,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Effort persistence and conversation isolation", { try await EffortTests().selectionPersistenceAndIsolation() }),
             ("Image drop normalization and validation", { try await ImageAttachmentTests().normalizesAndRejectsInvalidDrops() }),
             ("Image wire format and legacy sessions", { try ImageAttachmentTests().wireFormatAndLegacyDecoding() }),
-            ("Image persistence and failed-turn isolation", { try await ImageAttachmentTests().sendsPersistsAndExcludesFailedImages() }),
+            ("Image persistence and preservation after failure", { try await ImageAttachmentTests().sendsPersistsAndPreservesImagesAfterFailure() }),
             ("Pending image drop conversation isolation", { try await ImageAttachmentTests().pendingDropsStayWithOriginalConversation() }),
             ("Read file headers show actual line ranges", { try ReadFileSummaryTests().showsActualReturnedLines() }),
             ("Steering accepts input immediately and batches at model boundaries", { try await SteeringTests().acceptsImmediatelyAndBatchesAtModelBoundary() }),
@@ -153,7 +153,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("OAuth form encoding", { try streaming.formEncodingEscapesReservedCharacters() }),
             ("OIDC signature and claims", { try IdentityTests().verifiesSignatureAndRejectsInvalidClaims() }),
             ("Follow-up and new conversation", { try await chat.successfulFollowupIncludesHistoryAndNewClearsIt() }),
-            ("Failed turn isolation", { try await chat.failedTurnsStayVisibleButAreExcludedFromContext() }),
+            ("Failed responses preserve prompts and exclude assistant output", { try await chat.failedResponsesPreservePromptsButExcludeAssistantOutput() }),
             ("Cancellation preserves partial context and restart history", { try await chat.stopPreservesPartialContext() })
         ]
         for (name, check) in checks {

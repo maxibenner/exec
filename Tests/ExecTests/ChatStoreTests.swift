@@ -155,7 +155,7 @@ import Foundation
         store.draft = "Follow-up"
         store.send()
         try await settle(store)
-        try expect(provider.inputs.last?.map(\.text) == ["First", "Final answer", "Follow-up"])
+        try expect(provider.inputs.last?.map(\.text) == ["First", "Final answer", "Empty response", "Follow-up"])
     }
 
     func interruptedToolTurnRetainsResultsWithoutReexecution() async throws {
@@ -299,25 +299,54 @@ import Foundation
         try expect(provider.inputs.last?.map(\.text) == ["Fresh"])
     }
 
-    func failedTurnsStayVisibleButAreExcludedFromContext() async throws {
-        let provider = FakeProvider()
-        let store = ChatStore(provider: provider)
-        store.selectedModel = "test"
-        store.draft = "First"
-        store.send()
-        try await settle(store)
-        provider.shouldFail = true
-        store.draft = "Failed"
-        store.send()
-        try await settle(store)
-        try expect(store.error == "failed")
-        try expect(store.messages.last?.text == "Hello world")
-        try expect(store.messages.last?.status == .failed)
-        provider.shouldFail = false
-        store.draft = "Retry"
-        store.send()
-        try await settle(store)
-        try expect(provider.inputs.last?.map(\.text) == ["First", "Hello world", "Retry"])
+    func failedResponsesPreservePromptsButExcludeAssistantOutput() async throws {
+        for incomplete in [false, true] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let sessions = SessionStore(directory: root)
+            let provider = FakeProvider()
+            let store = ChatStore(provider: provider, sessions: sessions)
+            store.selectedModel = "test"
+            store.draft = "First"
+            store.send()
+            try await settle(store)
+            if incomplete {
+                provider.scripted = [[.text("Partial answer"),
+                    .toolCall(ToolCall(id: "unfinished", name: "list_files", arguments: #"{"path":"."}"#))]]
+            } else {
+                provider.shouldFail = true
+            }
+            store.draft = "Now implement the fix"
+            store.send()
+            try await settle(store)
+            try expect(store.error != nil && provider.inputs.count == 2)
+            let failed = store.messages.last!
+            try expect(failed.status == .failed && !failed.text.isEmpty && failed.toolCalls.isEmpty)
+            try expect(store.pendingInput.isEmpty && !store.messages.contains { $0.role == .tool })
+            let expected = ["First", "Hello world", "Now implement the fix"]
+            let saved = try await sessions.load(id: store.currentSessionID)
+            try expect(saved?.history.map(\.text) == expected)
+            try expect(saved?.messages.last?.id == failed.id)
+
+            // Reopening does not retry the request or lose the submitted instruction.
+            let restoredProvider = FakeProvider()
+            let restored = ChatStore(provider: restoredProvider, sessions: sessions)
+            restored.restore()
+            try await settle(restored)
+            try expect(restoredProvider.inputs.isEmpty)
+            restored.draft = "Continue"
+            restored.send()
+            try await settle(restored)
+            try expect(restoredProvider.inputs.last?.map(\.text) == expected + ["Continue"])
+
+            provider.shouldFail = false
+            store.draft = "Continue"
+            store.send()
+            try await settle(store)
+            try expect(provider.inputs.count == 3)
+            try expect(provider.inputs.last?.map(\.text) == expected + ["Continue"])
+            try expect(provider.inputs.last?.contains { $0.id == failed.id } == false)
+        }
     }
 
     func stopPreservesPartialContext() async throws {
