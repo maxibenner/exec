@@ -81,6 +81,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Compaction queue success, interruption and save safety", { try await MessageQueueTests().queuesDuringCompactionAndPausesOnFailure() }),
             ("Session switches preserve native focus", { try await ComposerFocusTests().switchingSessionsDoesNotStealFocus() }),
             ("Pi progress animation frames", { try MessageQueueTests().progressFramesMatchPi() }),
+            ("Run allowance observations persist with unknown values and legacy compatibility", { try await AccountUsageTests().runObservationsPersist() }),
+            ("Response token details reject malformed counts", { try AccountUsageTests().responseUsageValidation() }),
             ("Account usage request, parsing and no retry", { try await AccountUsageTests().requestParsingAndFailure() }),
             ("Account usage sign-out isolation", { try await AccountUsageTests().accountIsolation() }),
             ("Composer command and path isolation", { try ComposerCommandTests().recognizesOnlyLeadingCommands() }),

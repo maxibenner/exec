@@ -563,27 +563,31 @@ import Observation
             self?.cancelTitleGeneration(for: id)
         }
         conversation.didCheckpoint = { [weak self] in try await self?.refreshCatalog() }
-        conversation.didFinish = { [weak self] in
+        conversation.readAccountUsage = { [weak self] in
+            await self?.readFreshAccountUsage()
+        }
+        conversation.didFinish = { [weak self] capturedAllowance in
             self?.trimConversations()
-            self?.refreshAccountUsage()
+            if !capturedAllowance { self?.refreshAccountUsage() }
         }
     }
 
     private func refreshAccountUsage() {
-        guard !authenticating else { return }
         usageTask?.cancel()
+        usageTask = Task { [weak self] in _ = await self?.readFreshAccountUsage() }
+    }
+
+    private func readFreshAccountUsage() async -> AccountUsage? {
+        guard !authenticating, provider.account != nil else { accountUsage = nil; return nil }
         usageRequest += 1
         let request = usageRequest
         let identity = provider.conversationIdentity
-        guard provider.account != nil else { accountUsage = nil; return }
-        usageTask = Task { [weak self, provider] in
-            // Optional account metadata must never fail a chat turn or retry inference.
-            let usage = try? await provider.accountUsage()
-            guard let self, !Task.isCancelled, request == self.usageRequest,
-                  identity == provider.conversationIdentity else { return }
-            self.accountUsage = usage
-            self.usageTask = nil
-        }
+        let usage = try? await provider.accountUsage()
+        guard !Task.isCancelled, identity == provider.conversationIdentity else { return nil }
+        // Concurrent conversations keep their own observations; only the newest
+        // request updates the account-wide display. Failed refreshes clear stale data.
+        if request == usageRequest { accountUsage = usage }
+        return usage
     }
 
     private func remember(_ conversation: ChatStore) {

@@ -14,6 +14,8 @@ struct CodexConversationState: Codable {
     var outputs: [UUID: Data] = [:]
     var prefix: Prefix?
     var measurement: Measurement?
+    // Optional for compatibility with sessions saved before usage recording.
+    var requestUsage: [CodexRequestUsage]?
 
     static func restore(_ data: Data?) throws -> Self {
         guard let data else { return Self() }

@@ -42,6 +42,10 @@ Switching conversations keeps background work running. Drag images into the comp
 
 Choose a separate **Search model** in **Settings → General → Web Search**. It defaults to GPT-6 Luna and applies to searches in existing and new conversations. Searches use that model's default reasoning level, independently of the chat model and reasoning setting.
 
+Usage diagnostics are saved with each conversation. The provider state contains `requestUsage` records for main responses, searches, and compaction: requested/reported models, timestamps, outcomes, input/output tokens, cached input, and reasoning tokens when supplied. Missing counts remain unknown; cached input and reasoning are subsets, not additional tokens. Incomplete requests can remain `unconfirmed` when no final accounting was saved. These records are never sent back as model context.
+
+`allowanceObservations` records fresh account-wide readings before and after each run, including stopped or failed runs. A failed reading is saved as unavailable and clears the stale display. These readings may include concurrent activity in other apps and are not an exact per-session charge. Existing sessions remain readable; historical usage cannot be reconstructed.
+
 ## Access and storage
 
 - Auto-approval starts on for workspace conversations. Turn it off with `/auto-approve` to review edits and shell commands. Commands run with your user permissions, outside a sandbox, and can affect files beyond the workspace. Stopping does not undo changes.

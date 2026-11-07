@@ -17,6 +17,7 @@ struct SessionSnapshot: Codable, Sendable {
     // Absent in older saves, which retain the default of Auto on.
     var autoApproveTools: Bool?
     var systemPrompt: String?
+    var allowanceObservations: [RunAllowanceObservation]?
 
     /// Only the last completed model step can have unanswered tool calls.
     /// Missing outcomes are never inferred to be successful or re-executed.

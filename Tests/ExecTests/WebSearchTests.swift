@@ -13,7 +13,9 @@ import Foundation
     }
 
     private func terminal(_ output: [[String: Any]]) throws -> Data {
-        let event: [String: Any] = ["type": "response.completed", "response": ["status": "completed", "output": output]]
+        let event: [String: Any] = ["type": "response.completed", "response": ["status": "completed", "output": output,
+            "model": "reported-model", "usage": ["input_tokens": 1000, "output_tokens": 100,
+                "input_tokens_details": ["cached_tokens": 900], "output_tokens_details": ["reasoning_tokens": 40]]]]
         return Data("data: ".utf8) + (try JSONSerialization.data(withJSONObject: event)) + Data("\n\n".utf8)
     }
 
@@ -85,6 +87,14 @@ import Foundation
         let continued = String(decoding: HTTPStub.body(of: requests[2]), as: UTF8.self)
         try expect(continued.contains("main-context") && !continued.contains("search-only-context"))
         let persisted = try await sessions.load(id: store.currentSessionID)!
+        let usage = try CodexConversationState.restore(persisted.providerState).requestUsage ?? []
+        try expect(usage.map(\.kind) == [.main, .search, .main])
+        try expect(usage.map(\.requestedModel) == ["test", searchModel ?? "gpt-6-luna", "test"])
+        try expect(usage.map(\.requestedEffort) == ["low", nil, "low"])
+        try expect(usage.allSatisfy { $0.outcome == .completed && $0.usage?.model == "reported-model"
+            && $0.usage?.cachedInputTokens == 900 && $0.usage?.reasoningTokens == 40
+            && $0.usage?.contextTokens == 1100 })
+        try expect(!continued.contains("cachedInputTokens") && !continued.contains("reported-model"))
         let result = persisted.messages.compactMap(\.toolResult).first!
         try expect(result.webSearch?.sources.map(\.url) == ["https://swift.org/", "https://swift.org/download/"])
         try expect(result.text.contains("Official Swift information.") && result.text.contains("https://swift.org/"))
@@ -93,6 +103,7 @@ import Foundation
         try resumed.restoreConversationState(persisted.providerState, history: persisted.history)
         for try await _ in resumed.send(persisted.history + [Message(role: .user, text: "Continue")],
                                         model: "test", effort: nil, instructions: "", tools: []) {}
+        try expect(try CodexConversationState.restore(resumed.encodeConversationState()).requestUsage?.count == 4)
         let followup = String(decoding: HTTPStub.body(of: HTTPStub.state.requests.last!), as: UTF8.self)
         try expect(followup.contains("Official Swift information.") && !followup.contains("search-only-context"))
         // Old tool results still decode without search metadata.
@@ -151,12 +162,17 @@ import Foundation
         ]
         for failure in failures {
             let http = HTTPStub.makeSession([.init(chunks: [try terminal(callOutput)]), failure])
-            let store = ChatStore(provider: try provider(http), newConversation: true)
+            let provider = try provider(http)
+            let store = ChatStore(provider: provider, newConversation: true)
             configure(store)
             store.draft = "Search"
             store.send()
             await store.waitUntilIdle()
             try expect(store.error != nil && HTTPStub.state.requests.count == 2)
+            let records = try CodexConversationState.restore(provider.encodeConversationState()).requestUsage ?? []
+            try expect(records.map(\.kind) == [.main, .search])
+            try expect(records.last?.requestedModel == "gpt-6-luna")
+            if failure.status == 403 { try expect(records.last?.outcome == .failed && records.last?.usage == nil) }
             let result = store.messages.compactMap(\.toolResult).last
             try expect(result?.webSearch == nil && result?.text == WebSearchTool.interrupted)
             try expect(store.messages.last?.role == .tool)
@@ -185,6 +201,9 @@ import Foundation
         try expect(HTTPStub.state.requests.count == 2 && store.error == nil)
         let saved = try await sessions.load(id: store.currentSessionID)!
         try expect(!saved.activeTurn && saved.activeCallID == nil)
+        let recorded = try CodexConversationState.restore(saved.providerState).requestUsage ?? []
+        try expect(recorded.map(\.kind) == [.main, .search])
+        try expect(recorded.last?.usage == nil && recorded.last?.outcome != .completed)
         try expect(saved.history.last?.text == WebSearchTool.interrupted && saved.history.last?.toolResult?.webSearch == nil)
         let restarted = ChatStore(provider: try provider(http), sessions: sessions, newConversation: true)
         configure(restarted)

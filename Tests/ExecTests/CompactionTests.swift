@@ -99,6 +99,8 @@ import Foundation
         try expect(nextInput[1]["content"] as? String == next.text)
         let resumedState = try CodexConversationState.restore(resumed.encodeConversationState())
         try expect(resumedState.measurement?.tokens == 210)
+        try expect(resumedState.requestUsage?.map(\.kind) == [.compaction, .main])
+        try expect(resumedState.requestUsage?.last?.usage?.cachedInputTokens == nil)
         resumed.clearConversationState()
         try expect(try CodexConversationState.restore(provider.encodeConversationState()).prefix != nil)
 

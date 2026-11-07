@@ -104,7 +104,9 @@ import Observation
     var didCheckpoint: (@MainActor () async throws -> Void)?
     var didSendMessage: (@MainActor (Message) -> Void)?
     var didStop: (@MainActor () -> Void)?
-    var didFinish: (@MainActor () -> Void)?
+    var didFinish: (@MainActor (_ capturedAllowance: Bool) -> Void)?
+    var readAccountUsage: (@MainActor () async -> AccountUsage?)?
+    private var allowanceObservations: [RunAllowanceObservation] = []
     private var sessionActivityDate = Date() { didSet { checkpointRevision += 1 } }
     private var activeTurn = false { didSet { checkpointRevision += 1 } }
     private var activeCallID: String? { didSet { checkpointRevision += 1 } }
@@ -254,6 +256,7 @@ import Observation
         loadedSession = true; restorationBlocked = false
         conversationIdentity = provider.conversationIdentity
         provider.clearConversationState()
+        allowanceObservations = []
     }
 
     // Capture the destination before asynchronous drop loading; navigation must not redirect attachments.
@@ -264,7 +267,7 @@ import Observation
         let identity = conversationIdentity
         isImportingImages = true
         return Task {
-            defer { isImportingImages = false; didFinish?() }
+            defer { isImportingImages = false; didFinish?(false) }
             do {
                 let images = try await load()
                 guard currentSessionID == sessionID, conversationIdentity == identity else { return }
@@ -575,7 +578,7 @@ import Observation
         SessionSnapshot(identity: conversationIdentity, workspace: workspace, selectedModel: selectedModel,
                         messages: messages, history: history, providerState: try provider.encodeConversationState(),
                         activeTurn: activeTurn, activeCallID: activeCallID, activityDate: sessionActivityDate, effort: selectedEffort,
-                        autoApproveTools: prefersAutoApproval, systemPrompt: systemPrompt)
+                        autoApproveTools: prefersAutoApproval, systemPrompt: systemPrompt, allowanceObservations: allowanceObservations)
     }
 
     private func checkpoint(force: Bool = false) async throws {
@@ -624,6 +627,7 @@ import Observation
         selectedModel = saved.selectedModel
         selectedEffort = saved.effort
         reconcileEffort()
+        allowanceObservations = saved.allowanceObservations ?? []
         messages = saved.messages; history = saved.history; draft = ""; draftImages = []
         conversationIdentity = saved.identity
         currentSessionID = id
@@ -707,6 +711,7 @@ import Observation
         error = nil
         task = Task {
             var completed = false
+            var usageRunID: UUID?
             defer {
                 self.account = self.provider.account
                 self.busy = false
@@ -719,7 +724,7 @@ import Observation
                     if !completed || Task.isCancelled { self.isQueuePaused = !self.queuedMessages.isEmpty }
                     else { self.sendNextQueuedMessage() }
                 }
-                self.didFinish?()
+                self.didFinish?(usageRunID != nil)
             }
             do {
                 // Finish an already-started preference save before this runner owns checkpoints.
@@ -728,6 +733,14 @@ import Observation
                 if restoreSession { try await self.loadSavedSession() }
                 self.isRestoringSession = false
                 try Task.checkCancellation()
+                if (sending || compacting), let readAccountUsage = self.readAccountUsage {
+                    let runID = UUID()
+                    usageRunID = runID
+                    let usage = await readAccountUsage()
+                    self.allowanceObservations.append(.init(runID: runID, phase: .before, observedAt: Date(), usage: usage))
+                    self.checkpointRevision += 1
+                    try Task.checkCancellation()
+                }
                 try await operation()
                 completed = true
             } catch {
@@ -740,6 +753,13 @@ import Observation
                 } else {
                     self.error = error.localizedDescription
                 }
+            }
+            if let runID = usageRunID, let readAccountUsage = self.readAccountUsage {
+                // A stopped inference still needs an after observation. This separate
+                // task performs only the bounded, read-only allowance request.
+                let usage = await Task { await readAccountUsage() }.value
+                self.allowanceObservations.append(.init(runID: runID, phase: .after, observedAt: Date(), usage: usage))
+                self.checkpointRevision += 1
             }
             if self.loadedSession && !self.restorationBlocked && (sending || self.savedRevision != self.checkpointRevision) {
                 do {

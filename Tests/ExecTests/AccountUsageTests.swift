@@ -45,8 +45,7 @@ import Foundation
             returned = true
             return result
         }
-        library.draft = "Refresh after this turn"
-        library.send()
+        library.restore()
         try await wait { !library.hasRunningOperations && pending != nil }
         library.disconnect()
         try expect(library.accountUsage == nil)
@@ -56,6 +55,64 @@ import Foundation
         await Task.yield()
         try expect(library.accountUsage == nil)
         library.stopAll()
+    }
+
+    func runObservationsPersist() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = SessionStore(directory: root)
+        let provider = FakeProvider()
+        let store = ChatStore(provider: provider, sessions: sessions, newConversation: true)
+        store.selectedModel = "test"
+        var reads = 0
+        let expected = AccountUsage(windows: [.init(durationSeconds: 604800, usedPercent: 30, resetsAt: Date().addingTimeInterval(1000))])
+        store.readAccountUsage = {
+            reads += 1
+            return reads == 1 ? expected : nil
+        }
+        var baselineReadBeforeSend = false
+        provider.onSend = { baselineReadBeforeSend = reads == 1 }
+        store.draft = "Measure this run"
+        store.send()
+        await store.waitUntilIdle()
+        try expect(store.error == nil && reads == 2 && baselineReadBeforeSend)
+        let saved = try await sessions.load(id: store.currentSessionID)!
+        let observations = saved.allowanceObservations ?? []
+        try expect(observations.count == 2 && observations.map(\.phase) == [.before, .after])
+        try expect(observations[0].runID == observations[1].runID)
+        try expect(observations[0].usage == expected && observations[1].usage == nil)
+        // Failed metadata must not fail the run or invent a zero-usage observation.
+        try expect(saved.history.last?.role == .assistant && !saved.activeTurn)
+        var old = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved)) as! [String: Any]
+        old.removeValue(forKey: "allowanceObservations")
+        let legacy = try JSONDecoder().decode(SessionSnapshot.self, from: JSONSerialization.data(withJSONObject: old))
+        try expect(legacy.allowanceObservations == nil)
+        provider.holdOpen = true
+        store.draft = "Stop this run"
+        store.send()
+        try await wait { provider.pending != nil }
+        store.stop()
+        await store.waitUntilIdle()
+        let stopped = try await sessions.load(id: store.currentSessionID)!
+        let stoppedObservations = stopped.allowanceObservations ?? []
+        try expect(reads == 4 && stoppedObservations.count == 4)
+        try expect(stoppedObservations.suffix(2).map(\.phase) == [.before, .after])
+        try expect(stoppedObservations[2].runID == stoppedObservations[3].runID
+                   && stoppedObservations[2].runID != observations[0].runID)
+        try expect(!stopped.activeTurn && store.error == nil)
+    }
+
+    func responseUsageValidation() throws {
+        let missing = CodexResponseUsage(response: [:])
+        try expect(missing.contextTokens == nil && missing.cachedInputTokens == nil)
+        let malformed = CodexResponseUsage(response: ["usage": [
+            "input_tokens": true, "output_tokens": -1,
+            "input_tokens_details": ["cached_tokens": 1.5]]])
+        try expect(malformed.inputTokens == nil && malformed.outputTokens == nil && malformed.cachedInputTokens == nil)
+        let invalidSubset = CodexResponseUsage(response: ["usage": [
+            "input_tokens": 10, "output_tokens": 5,
+            "input_tokens_details": ["cached_tokens": 20], "output_tokens_details": ["reasoning_tokens": 8]]])
+        try expect(invalidSubset.contextTokens == 15 && invalidSubset.cachedInputTokens == nil && invalidSubset.reasoningTokens == nil)
     }
 
     private func wait(_ condition: () -> Bool) async throws {

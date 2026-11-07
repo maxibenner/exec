@@ -5,7 +5,7 @@ import Foundation
 enum OpenAITransport {
     enum Event: Sendable {
         case text(String)
-        case completed(Data, tokens: Int?)
+        case completed(Data, usage: CodexResponseUsage)
     }
 
     static func stream(_ request: URLRequest, session: URLSession = OpenAIHTTP.session) -> AsyncThrowingStream<Event, Error> {
@@ -112,14 +112,7 @@ enum OpenAITransport {
                         items[slot] = (items[slot] ?? [:]).merging(item) { _, final in final }
                     }
                 }
-                let usage = response["usage"] as? [String: Any]
-                let input = usage?["input_tokens"] as? Int
-                let output = usage?["output_tokens"] as? Int
-                let tokens: Int?
-                if let input, let output, (0...500_000_000).contains(input), (0...500_000_000).contains(output) {
-                    tokens = input + output // Cached input is still part of the context window.
-                } else { tokens = nil }
-                return .completed(try serializedOutput(), tokens: tokens)
+                return .completed(try serializedOutput(), usage: CodexResponseUsage(response: response))
             case "response.failed", "response.incomplete", "error":
                 let response = event["response"] as? [String: Any]
                 let error = (response?["error"] as? [String: Any]) ?? (event["error"] as? [String: Any])

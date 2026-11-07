@@ -120,7 +120,7 @@ import Foundation
         try Task.checkCancellation()
         let request = try CodexConnection.webSearchRequest(query: query, model: model, effort: effort,
             accessToken: credentials.access, accountID: credentials.accountID)
-        for try await event in OpenAITransport.stream(request, session: http) {
+        for try await event in recordedStream(request, kind: .search, model: model, effort: effort) {
             try Task.checkCancellation()
             if case .completed(let output, _) = event {
                 return try CodexWebSearch.result(output, query: query)
@@ -183,7 +183,7 @@ import Foundation
             input: context.input(history), model: model.id, sessionID: history.first!.id.uuidString,
             accessToken: credentials.access, accountID: credentials.accountID, instructions: instructions, tools: tools
         )
-        for try await event in OpenAITransport.stream(request, session: http) {
+        for try await event in recordedStream(request, kind: .compaction, model: model.id, effort: nil, inputID: boundary) {
             try Task.checkCancellation()
             guard case .completed(let output, _) = event else { continue }
             // Only the opaque compaction item becomes the new prefix. Ignore
@@ -195,11 +195,50 @@ import Foundation
             let compacted = try JSONSerialization.data(withJSONObject: items)
             try CodexConversationState.validateCompaction(compacted)
             try Task.checkCancellation()
-            context = CodexConversationState(prefix: .init(throughID: boundary, output: compacted))
+            context = CodexConversationState(prefix: .init(throughID: boundary, output: compacted), requestUsage: context.requestUsage)
             return
         }
         try Task.checkCancellation()
         throw ExecError("Compaction ended before completion. The original conversation was kept. No retry was made.")
+    }
+
+    private func recordedStream(_ request: URLRequest, kind: CodexRequestUsage.Kind, model: String,
+                                effort: String?, inputID: UUID? = nil) -> AsyncThrowingStream<OpenAITransport.Event, Error> {
+        let startedAt = Date()
+        let id = UUID()
+        if context.requestUsage == nil { context.requestUsage = [] }
+        context.requestUsage?.append(CodexRequestUsage(
+            id: id, kind: kind, requestedModel: model, requestedEffort: effort, inputID: inputID,
+            startedAt: startedAt, finishedAt: nil, outcome: .unconfirmed, usage: nil
+        ))
+        return AsyncThrowingStream { continuation in
+            let task = Task { @MainActor in
+                var recorded = false
+                @MainActor func record(_ outcome: CodexRequestUsage.Outcome, usage: CodexResponseUsage? = nil) {
+                    guard !recorded else { return }
+                    recorded = true
+                    // A new/restored conversation must never receive a late record.
+                    guard let index = context.requestUsage?.firstIndex(where: { $0.id == id }) else { return }
+                    context.requestUsage?[index] = CodexRequestUsage(
+                        id: id, kind: kind, requestedModel: model, requestedEffort: effort,
+                        inputID: inputID, startedAt: startedAt, finishedAt: Date(), outcome: outcome, usage: usage
+                    )
+                }
+                do {
+                    for try await event in OpenAITransport.stream(request, session: http) {
+                        // Record terminal accounting even if cancellation races with completion.
+                        if case .completed(_, let usage) = event { record(.completed, usage: usage) }
+                        continuation.yield(event)
+                    }
+                    continuation.finish()
+                } catch {
+                    record(Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
+                           ? .interrupted : .failed)
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 
     func send(_ messages: [Message], model: String, effort: String? = nil, instructions: String = "", tools: [ToolDefinition] = []) -> AsyncThrowingStream<ChatEvent, Error> {
@@ -216,11 +255,11 @@ import Foundation
                         accessToken: credentials.access, accountID: credentials.accountID, instructions: instructions, tools: tools,
                         effort: effort
                     )
-                    for try await event in OpenAITransport.stream(request, session: http) {
+                    for try await event in recordedStream(request, kind: .main, model: model, effort: effort, inputID: messages.last?.id) {
                         try Task.checkCancellation()
                         switch event {
                         case .text(let delta): continuation.yield(.text(delta))
-                        case .completed(let output, let tokens):
+                        case .completed(let output, let usage):
                             guard let items = try JSONSerialization.jsonObject(with: output) as? [[String: Any]] else {
                                 throw ExecError("Invalid tool response.")
                             }
@@ -246,7 +285,7 @@ import Foundation
                             }
                             if let previousID = messages.last?.id {
                                 context.outputs[previousID] = output
-                                context.measurement = tokens.map { .init(inputID: previousID, tokens: $0) }
+                                context.measurement = usage.contextTokens.map { .init(inputID: previousID, tokens: $0) }
                             }
                             continuation.yield(.completed)
                         }
