@@ -40,6 +40,8 @@ Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace
 
 Switching conversations keeps background work running. Drag images into the composer to attach them.
 
+Choose a separate **Search model** in **Settings → General → Web Search**. It defaults to GPT-6 Luna and applies to searches in existing and new conversations. Searches use that model's default reasoning level, independently of the chat model and reasoning setting.
+
 ## Access and storage
 
 - Auto-approval starts on for workspace conversations. Turn it off with `/auto-approve` to review edits and shell commands. Commands run with your user permissions, outside a sandbox, and can affect files beyond the workspace. Stopping does not undo changes.

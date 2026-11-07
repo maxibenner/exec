@@ -52,6 +52,12 @@ import Observation
     var defaultEffort: String? {
         didSet { preferences.set(defaultEffort, forKey: "defaultSessionEffort") }
     }
+    var searchModel: String {
+        didSet {
+            preferences.set(searchModel, forKey: "searchModel")
+            for conversation in conversations { conversation.searchModel = searchModel }
+        }
+    }
     var defaultSessionModel: ChatModel? {
         models.first { $0.id == defaultModel } ?? models.first
     }
@@ -68,6 +74,7 @@ import Observation
         self.preferences = preferences
         defaultModel = preferences.string(forKey: "defaultSessionModel") ?? ""
         defaultEffort = preferences.string(forKey: "defaultSessionEffort")
+        searchModel = preferences.string(forKey: "searchModel") ?? ChatStore.defaultSearchModel
         systemPrompt = preferences.string(forKey: "systemPrompt") ?? ""
         generatedTitlesEnabled = preferences.bool(forKey: "generatedTitlesEnabled")
         titleModel = preferences.string(forKey: "sessionTitleModel") ?? ""
@@ -541,6 +548,7 @@ import Observation
     }
 
     private func observe(_ conversation: ChatStore) {
+        conversation.searchModel = searchModel
         conversation.didLoadSessionList = { [weak self, weak conversation] summaries in
             guard let self, let conversation, conversation === self.current else { return }
             self.catalogRequest += 1

@@ -61,6 +61,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Fetch context and persistence without a workspace", { try await FetchContentTests().persistsResultsWithoutWorkspaceOrSearchProvider() }),
             ("Fetch failure, cancellation and recovery", { try await FetchContentTests().failuresAndCancellationNeverReplay() }),
             ("Web search request, context isolation and persistence", { try await WebSearchTests().roundTripKeepsSearchSeparateAndSavesSources() }),
+            ("Custom search model stays independent of chat reasoning", { try await WebSearchTests().roundTripKeepsSearchSeparateAndSavesSources(searchModel: "custom-search") }),
+            ("Search model preference applies across conversations and restarts", { try await WebSearchTests().searchModelPreferencePersistsAcrossConversations() }),
             ("Web search failure and no-retry behavior", { try await WebSearchTests().failuresStopWithoutRetriesOrFalseSuccess() }),
             ("Web search cancellation and restart safety", { try await WebSearchTests().cancellationAndRestartDoNotResumeSearch() }),
             ("Web search bounds and source safety", { try WebSearchTests().parsingBoundsAndSourceSafety() }),

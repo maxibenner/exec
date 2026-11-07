@@ -41,6 +41,16 @@ struct SettingsView: View {
                 }
                 .disabled(store.defaultSessionModel?.efforts.isEmpty != false)
             }
+            Section("Web Search") {
+                Picker("Search model", selection: $settings.searchModel) {
+                    if !store.models.contains(where: { $0.id == store.searchModel }) {
+                        Text(store.searchModel).tag(store.searchModel)
+                    }
+                    ForEach(store.models) { model in
+                        Text(model.name).tag(model.id)
+                    }
+                }
+            }
             Section("Session Titles") {
                 Toggle("Generate session titles", isOn: $settings.generatedTitlesEnabled)
                 Picker("Title model", selection: $settings.titleModel) {

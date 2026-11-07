@@ -45,7 +45,7 @@ import Foundation
         store.selectedEffort = "low"
     }
 
-    func roundTripKeepsSearchSeparateAndSavesSources() async throws {
+    func roundTripKeepsSearchSeparateAndSavesSources(searchModel: String? = nil) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let sessions = SessionStore(directory: root)
@@ -57,6 +57,7 @@ import Foundation
         let provider = try provider(http)
         let store = ChatStore(provider: provider, sessions: sessions, newConversation: true)
         configure(store)
+        if let searchModel { store.searchModel = searchModel }
         store.draft = "Private conversation marker. Find Swift release notes."
         store.send()
         await store.waitUntilIdle()
@@ -68,8 +69,10 @@ import Foundation
         try expect(requests[1].url?.absoluteString == CodexConnection.baseURL + "/responses")
         try expect(requests[1].value(forHTTPHeaderField: "Authorization") == "Bearer test-access")
         try expect(requests[1].value(forHTTPHeaderField: "ChatGPT-Account-ID") == "workspace")
-        try expect(search["model"] as? String == "test" && search["tool_choice"] as? String == "required")
-        try expect((search["reasoning"] as? [String: String])?["effort"] == "low")
+        try expect(search["model"] as? String == (searchModel ?? "gpt-6-luna") && search["tool_choice"] as? String == "required")
+        try expect(search["reasoning"] == nil)
+        try expect(initial["model"] as? String == "test")
+        try expect((initial["reasoning"] as? [String: String])?["effort"] == "low")
         try expect(search["store"] as? Bool == false && search["stream"] as? Bool == true)
         try expect(search["include"] as? [String] == ["web_search_call.action.sources"])
         try expect((search["tools"] as? [[String: String]]) == [["type": "web_search"]])
@@ -95,6 +98,48 @@ import Foundation
         // Old tool results still decode without search metadata.
         let old = try JSONDecoder().decode(ToolResult.self, from: JSONEncoder().encode(ToolResult(call: call, text: "Old result")))
         try expect(old.webSearch == nil)
+    }
+
+    func searchModelPreferencePersistsAcrossConversations() async throws {
+        let suite = "ExecSearchModelTests.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer {
+            preferences.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let sessions = SessionStore(directory: root)
+        let library = try ChatLibrary(provider: FakeProvider(), sessions: sessions, preferences: preferences)
+        defer { library.stopAll() }
+        library.restore()
+        try await wait { !library.hasRunningOperations }
+        try expect(library.searchModel == "gpt-6-luna" && library.current.searchModel == "gpt-6-luna")
+        library.draft = "First conversation"
+        library.send()
+        try await wait { !library.hasRunningOperations }
+        let first = library.current
+        let firstID = library.currentSessionID!
+
+        library.searchModel = "custom-search"
+        try expect(first.searchModel == "custom-search" && first.selectedModel == "test")
+        library.newConversation()
+        try await wait { !library.hasRunningOperations }
+        try expect(library.current.searchModel == "custom-search")
+        library.searchModel = "another-search"
+        try expect(first.searchModel == "another-search" && library.current.searchModel == "another-search")
+        library.openSession(firstID)
+        try await wait { !library.hasRunningOperations }
+        try expect(library.current === first && library.current.searchModel == "another-search")
+
+        // Restoring old saved sessions must use the global choice, even if it is
+        // temporarily absent from the model catalog, rather than the chat model.
+        let restarted = try ChatLibrary(provider: FakeProvider(), sessions: sessions, preferences: preferences)
+        defer { restarted.stopAll() }
+        restarted.restore()
+        try await wait { !restarted.hasRunningOperations }
+        try expect(restarted.searchModel == "another-search")
+        try expect(restarted.currentSessionID == firstID && restarted.current.searchModel == "another-search")
+        try expect(restarted.selectedModel == "test")
     }
 
     func failuresStopWithoutRetriesOrFalseSuccess() async throws {

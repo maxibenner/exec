@@ -2,6 +2,8 @@ import Foundation
 import Observation
 
 @MainActor @Observable final class ChatStore: Identifiable {
+    static let defaultSearchModel = "gpt-6-luna"
+    var searchModel = defaultSearchModel
     var messages: [Message] = [] {
         didSet {
             checkpointRevision += 1
@@ -412,7 +414,7 @@ import Observation
         }
         if call.name == WebSearchTool.definition.name {
             guard provider.supportsWebSearch else { throw ExecError("This provider does not support web search.") }
-            let result = try await provider.searchWeb(query: WebSearchTool.query(call), model: selectedModel, effort: effectiveEffort)
+            let result = try await provider.searchWeb(query: WebSearchTool.query(call), model: searchModel, effort: nil)
             try Task.checkCancellation()
             return ToolResult(call: call, text: result.context, webSearch: result)
         }
