@@ -14,6 +14,8 @@ struct CodexConversationState: Codable {
     var outputs: [UUID: Data] = [:]
     var prefix: Prefix?
     var measurement: Measurement?
+    // Retained for display after compaction, never used for compaction decisions.
+    var displayMeasurement: Measurement?
     // Optional for compatibility with sessions saved before usage recording.
     var requestUsage: [CodexRequestUsage]?
 
@@ -29,7 +31,7 @@ struct CodexConversationState: Codable {
         }
         for output in state.outputs.values { _ = try items(output) }
         if let prefix = state.prefix { try validateCompaction(prefix.output) }
-        if let measurement = state.measurement {
+        for measurement in [state.measurement, state.displayMeasurement].compactMap({ $0 }) {
             guard (0...1_000_000_000).contains(measurement.tokens) else { throw ExecError("Invalid context usage.") }
         }
         return state
@@ -86,6 +88,17 @@ struct CodexConversationState: Codable {
             }
         }
         return input
+    }
+
+    // Display the last completed measurement even when a new turn has appended input.
+    // Compaction still uses reportedTokens to require an exact history boundary.
+    func lastReportedTokens(_ messages: [Message]) -> Int? {
+        guard let measurement = measurement ?? displayMeasurement,
+              let index = messages.firstIndex(where: { $0.id == measurement.inputID }),
+              index + 1 < messages.count,
+              messages[index + 1].role == .assistant,
+              messages[index + 1].status != .interrupted else { return nil }
+        return measurement.tokens
     }
 
     func reportedTokens(_ messages: [Message]) -> Int? {

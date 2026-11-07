@@ -133,7 +133,7 @@ import Foundation
 
     func contextUsage(_ messages: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) -> ContextUsage? {
         guard let limit = model.contextWindow, limit > 0 else { return nil }
-        guard let tokens = context.reportedTokens(messages) else { return nil }
+        guard let tokens = context.lastReportedTokens(messages) else { return nil }
         return ContextUsage(tokens: tokens, limit: limit)
     }
 
@@ -181,7 +181,9 @@ import Foundation
             let compacted = try JSONSerialization.data(withJSONObject: items)
             try CodexConversationState.validateCompaction(compacted)
             try Task.checkCancellation()
-            context = CodexConversationState(prefix: .init(throughID: boundary, output: compacted), requestUsage: context.requestUsage)
+            context = CodexConversationState(prefix: .init(throughID: boundary, output: compacted),
+                                             displayMeasurement: context.measurement ?? context.displayMeasurement,
+                                             requestUsage: context.requestUsage)
             return
         }
         try Task.checkCancellation()

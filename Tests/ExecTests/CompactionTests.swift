@@ -49,8 +49,19 @@ import Foundation
         try expect(reported == ContextUsage(tokens: 2_500, limit: 10_000))
         try expect(reported?.percent == 25)
         let appended = history + [Message(role: .user, text: "Next question")]
-        let unavailable = provider.contextUsage(appended, model: model, instructions: "", tools: [])
-        try expect(unavailable == nil)
+        try expect(provider.contextUsage(appended, model: model, instructions: "", tools: []) == reported)
+        let streaming = appended + [Message(role: .assistant, text: "Partial response")]
+        try expect(provider.contextUsage(streaming, model: model, instructions: "", tools: []) == reported)
+        let saved = try CodexConversationState.restore(state(history, tokens: 2_500))
+        try expect(saved.reportedTokens(appended) == nil)
+        let compactedDisplay = CodexConversationState(displayMeasurement: saved.measurement)
+        let restoredDisplay = try CodexConversationState.restore(JSONEncoder().encode(compactedDisplay))
+        try expect(restoredDisplay.lastReportedTokens(history) == 2_500)
+        try expect(restoredDisplay.reportedTokens(history) == nil)
+        try expect(provider.contextUsage(Array(appended.dropFirst()), model: model, instructions: "", tools: []) == nil)
+        var interrupted = history
+        interrupted[1].status = .interrupted
+        try expect(provider.contextUsage(interrupted + [appended.last!], model: model, instructions: "", tools: []) == nil)
         try expect(ContextUsage(tokens: 20_000, limit: 10_000).percent == 100)
         provider.clearConversationState()
         try expect(provider.contextUsage(history, model: model, instructions: "", tools: []) == nil)
