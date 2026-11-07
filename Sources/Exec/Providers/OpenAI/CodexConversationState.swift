@@ -93,12 +93,14 @@ struct CodexConversationState: Codable {
     // Display the last completed measurement even when a new turn has appended input.
     // Compaction still uses reportedTokens to require an exact history boundary.
     func lastReportedTokens(_ messages: [Message]) -> Int? {
-        guard let measurement = measurement ?? displayMeasurement,
-              let index = messages.firstIndex(where: { $0.id == measurement.inputID }),
-              index + 1 < messages.count,
-              messages[index + 1].role == .assistant,
-              messages[index + 1].status != .interrupted else { return nil }
-        return measurement.tokens
+        for candidate in [measurement, displayMeasurement].compactMap({ $0 }) {
+            guard let index = messages.firstIndex(where: { $0.id == candidate.inputID }),
+                  index + 1 < messages.count,
+                  messages[index + 1].role == .assistant,
+                  messages[index + 1].status != .interrupted else { continue }
+            return candidate.tokens
+        }
+        return nil
     }
 
     func reportedTokens(_ messages: [Message]) -> Int? {

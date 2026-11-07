@@ -273,6 +273,12 @@ import Foundation
                             }
                             if let previousID = messages.last?.id {
                                 context.outputs[previousID] = output
+                                // Retain the last valid display value while the new response
+                                // is not yet committed to history, or omits usage entirely.
+                                if let previous = context.measurement,
+                                   context.lastReportedTokens(messages) == previous.tokens {
+                                    context.displayMeasurement = previous
+                                }
                                 context.measurement = usage.contextTokens.map { .init(inputID: previousID, tokens: $0) }
                             }
                             continuation.yield(.completed)
