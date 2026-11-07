@@ -87,6 +87,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Response token details reject malformed counts", { try AccountUsageTests().responseUsageValidation() }),
             ("Account usage request, parsing and no retry", { try await AccountUsageTests().requestParsingAndFailure() }),
             ("Account usage sign-out isolation", { try await AccountUsageTests().accountIsolation() }),
+            ("Provider footer remaining allowance and expiry", { try ProviderUsageFooterTests().remainingAllowanceAndExpiry() }),
+            ("Provider footer fits narrow and wide sidebars", { try ProviderUsageFooterTests().fitsSidebarWidths() }),
             ("Composer command and path isolation", { try ComposerCommandTests().recognizesOnlyLeadingCommands() }),
             ("Composer cursor excludes controls", { try ComposerCursorTests().excludesControlsWithoutLeavingGaps() }),
             ("Batched snapshots flush on failure and cancellation", { try await chat.batchedSnapshotsFlushOnFailureAndCancellation() }),

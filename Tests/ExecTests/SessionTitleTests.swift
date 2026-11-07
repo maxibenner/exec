@@ -81,6 +81,7 @@ import Foundation
 }
 
 @MainActor private final class TitleTestProvider: ChatProvider {
+    let displayName = "Test"
     let connectionTitle = "Test"
     let account: String? = "isolated-test"
     var events: [ChatEvent] = []

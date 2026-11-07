@@ -8,6 +8,7 @@ import Foundation
     // Key each model step by its final input message (user or tool result), so
     // successive tool rounds don't overwrite earlier opaque reasoning/output.
     private var context = CodexConversationState()
+    let displayName = "OpenAI"
     let connectionTitle = "Connect to Codex"
     var account: String? { authentication.account }
     var conversationIdentity: String? { authentication.conversationIdentity }

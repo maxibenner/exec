@@ -51,6 +51,11 @@ struct SessionSidebar: View {
             .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) {}
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if store.account != nil, !store.authenticating {
+                ProviderUsageFooter(providerName: store.providerName, usage: store.accountUsage)
+            }
+        }
         .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
     }
 }

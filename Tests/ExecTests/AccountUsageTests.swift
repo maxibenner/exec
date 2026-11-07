@@ -38,6 +38,10 @@ import Foundation
         let library = try ChatLibrary(provider: provider, sessions: SessionStore(directory: root))
         library.restore()
         try await wait { !library.hasRunningOperations && library.accountUsage == expected }
+        try expect(library.providerName == provider.displayName)
+        provider.usageAction = { throw ExecError("Usage unavailable") }
+        let failedRead = await library.current.readAccountUsage?()
+        try expect(failedRead == nil && library.accountUsage == nil && library.account != nil)
         var pending: CheckedContinuation<AccountUsage?, Never>?
         var returned = false
         provider.usageAction = {

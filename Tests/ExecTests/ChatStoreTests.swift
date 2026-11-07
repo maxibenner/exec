@@ -5,6 +5,7 @@ import Foundation
 }
 
 @MainActor final class FakeProvider: ChatProvider {
+    let displayName = "Test"
     let connectionTitle = "Connect to Test"
     private let connection: FakeConnection
     var account: String? {
