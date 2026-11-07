@@ -132,8 +132,8 @@ struct ChatComposer: View {
                     else if command != nil { dismissedDraft = nil }
                     else { store.send() }
                 }
+                .background { ComposerDropRouting() }
                 .padding(.vertical, 8)
-                // Handle drops on the editor itself before its native file-path insertion.
                 .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier],
                         isTargeted: $imageDropTargeted, perform: importDroppedImages)
             HStack(spacing: 6) {

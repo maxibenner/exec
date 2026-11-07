@@ -79,6 +79,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Background queue and approval defaults", { try await MessageQueueTests().backgroundQueueStaysWithConversation() }),
             ("Queue stops on checkpoint failure", { try await MessageQueueTests().saveFailureDoesNotDrainQueue() }),
             ("Compaction queue success, interruption and save safety", { try await MessageQueueTests().queuesDuringCompactionAndPausesOnFailure() }),
+            ("Composer native drops defer to attachment routing", { try ComposerFocusTests().nativeDropsRouteOutsideTheEditor() }),
             ("Session switches preserve native focus", { try await ComposerFocusTests().switchingSessionsDoesNotStealFocus() }),
             ("Pi progress animation frames", { try MessageQueueTests().progressFramesMatchPi() }),
             ("Run allowance observations persist with unknown values and legacy compatibility", { try await AccountUsageTests().runObservationsPersist() }),
