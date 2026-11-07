@@ -128,6 +128,7 @@ import Observation
         set { navigationError = nil; current.error = newValue }
     }
     var account: String? { current.account }
+    var providerName: String { provider.displayName }
     var connectionTitle: String { provider.connectionTitle }
     var workspace: Workspace? { current.workspace }
     var canSelectWorkspace: Bool { canModify && !current.busy && current.messages.isEmpty }

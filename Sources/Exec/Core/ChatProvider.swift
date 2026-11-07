@@ -68,6 +68,7 @@ enum ChatEvent: Sendable {
 // Providers own authentication and wire formats. Core orchestration sees only
 // provider-neutral messages, tool definitions, and semantic events.
 @MainActor protocol ChatProvider: AnyObject {
+    var displayName: String { get }
     var connectionTitle: String { get }
     var account: String? { get }
     var conversationIdentity: String? { get }
