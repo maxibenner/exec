@@ -159,7 +159,7 @@ struct ChatComposer: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(imageDropTargeted || focused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: imageDropTargeted ? 2 : 1)
+                .strokeBorder(imageDropTargeted || focused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: imageDropTargeted ? 4 : 2)
                 .allowsHitTesting(false)
         }
         .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: $imageDropTargeted) { providers in
