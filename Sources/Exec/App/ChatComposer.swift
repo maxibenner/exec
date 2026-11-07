@@ -158,10 +158,17 @@ struct ChatComposer: View {
                 .strokeBorder(imageDropTargeted || focused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: imageDropTargeted ? 4 : 2)
                 .allowsHitTesting(false)
         }
-        .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: $imageDropTargeted) { providers in
-            guard store.canNavigate else { return false }
-            let destination = store.current
-            return destination.importImages { try await ImageDrop.load(providers) } != nil
+        .overlay {
+            // Keep file/image drops above the native text field so its default
+            // drop handling cannot insert a file path into the draft. Leave the
+            // clear layer without a contentShape so clicks and selection pass through.
+            Color.clear
+                .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: $imageDropTargeted) { providers in
+                    guard store.canNavigate else { return false }
+                    let destination = store.current
+                    return destination.importImages { try await ImageDrop.load(providers) } != nil
+                }
+                .accessibilityHidden(true)
         }
     }
 
