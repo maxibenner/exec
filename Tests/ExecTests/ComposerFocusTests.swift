@@ -91,37 +91,6 @@ import SwiftUI
         try await wait { !library.hasRunningOperations }
     }
 
-    func nativeDropsRouteOutsideTheEditor() throws {
-        _ = NSApplication.shared
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 200),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        let root = window.contentView!
-        let field = NSTextField(frame: NSRect(x: 20, y: 20, width: 300, height: 30))
-        field.stringValue = "Keep this draft"
-        root.addSubview(field)
-        let routing = ComposerDropRouting.RoutingView(frame: field.frame)
-        root.addSubview(routing)
-        defer { routing.restore(); window.orderOut(nil); window.contentView = nil }
-        window.makeKeyAndOrderFront(nil)
-        try expect(window.makeFirstResponder(field))
-        guard let editor = window.firstResponder as? NSTextView else {
-            throw CheckFailure(description: "Missing native field editor")
-        }
-        // Include string fallback: Finder can advertise a path as plain text.
-        let types: [NSPasteboard.PasteboardType] = [.fileURL, .png, .string]
-        field.registerForDraggedTypes(types)
-        editor.registerForDraggedTypes(types)
-        root.registerForDraggedTypes([.fileURL])
-        routing.updateRouting()
-        try expect(field.registeredDraggedTypes.isEmpty && editor.registeredDraggedTypes.isEmpty)
-        try expect(root.registeredDraggedTypes.contains(.fileURL))
-        try expect(field.stringValue == "Keep this draft")
-        try expect(window.firstResponder === editor)
-        routing.restore()
-        try expect(types.allSatisfy { field.registeredDraggedTypes.contains($0) })
-        try expect(types.allSatisfy { editor.registeredDraggedTypes.contains($0) })
-    }
-
     private func wait(_ condition: () -> Bool) async throws {
         for _ in 0..<400 {
             if condition() { return }

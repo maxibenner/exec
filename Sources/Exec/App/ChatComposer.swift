@@ -132,10 +132,7 @@ struct ChatComposer: View {
                     else if command != nil { dismissedDraft = nil }
                     else { store.send() }
                 }
-                .background { ComposerDropRouting() }
                 .padding(.vertical, 8)
-                .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier],
-                        isTargeted: $imageDropTargeted, perform: importDroppedImages)
             HStack(spacing: 6) {
                 Text(modelName.isEmpty ? "Model" : modelName)
                     .accessibilityLabel("Model: \(modelName)")
@@ -165,14 +162,11 @@ struct ChatComposer: View {
                 .strokeBorder(imageDropTargeted || focused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: imageDropTargeted ? 4 : 2)
                 .allowsHitTesting(false)
         }
-        .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier],
-                isTargeted: $imageDropTargeted, perform: importDroppedImages)
-    }
-
-    private func importDroppedImages(_ providers: [NSItemProvider]) -> Bool {
-        guard store.canNavigate else { return false }
-        let destination = store.current
-        return destination.importImages { try await ImageDrop.load(providers) } != nil
+        .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: $imageDropTargeted) { providers in
+            guard store.canNavigate else { return false }
+            let destination = store.current
+            return destination.importImages { try await ImageDrop.load(providers) } != nil
+        }
     }
 
     private var information: some View {
