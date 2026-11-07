@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Resources/AppIcon.png" alt="Exec app icon" width="64" height="64">
+  <img src="Resources/Glass_Icon.png" alt="Exec glass app icon" width="64" height="64">
 </p>
 
 # Exec
