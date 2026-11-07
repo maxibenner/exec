@@ -323,6 +323,9 @@ import Observation
 
     private func sendPendingInput() {
         guard !busy, !pendingInput.isEmpty, account != nil, !selectedModel.isEmpty else { return }
+        // Keep every tool round on the settings captured for this turn.
+        var turnModel = model ?? ChatModel(id: selectedModel, name: selectedModel)
+        var turnEffort = effectiveEffort
         run(sending: true) {
             guard self.conversationIdentity == self.provider.conversationIdentity else {
                 throw ExecError("The connected account changed. Choose New before sending this conversation.")
@@ -344,11 +347,13 @@ import Observation
                 try Task.checkCancellation()
                 let completedHistory = self.history
                 self.injectPendingInput(into: &input)
-                let assistant = try await self.receive(input, completedHistory: completedHistory)
+                let assistant = try await self.receive(input, completedHistory: completedHistory, model: turnModel, effort: turnEffort)
                 input.append(assistant)
                 if assistant.toolCalls.isEmpty {
                     self.history = input
                     if self.pendingInput.isEmpty { return }
+                    turnModel = self.model ?? ChatModel(id: self.selectedModel, name: self.selectedModel)
+                    turnEffort = self.effectiveEffort
                     continue
                 }
                 // Commit the completed model step before executing side effects.
@@ -497,7 +502,7 @@ import Observation
         }
     }
 
-    private func receive(_ input: [Message], completedHistory: [Message]) async throws -> Message {
+    private func receive(_ input: [Message], completedHistory: [Message], model: ChatModel, effort: String?) async throws -> Message {
         messages.append(Message(role: .assistant, text: "", status: .streaming))
         let index = messages.count - 1
         var fullText = ""
@@ -529,7 +534,6 @@ import Observation
         try await checkpoint()
         let instructions = requestInstructions
         let definitions = toolDefinitions
-        let model = models.first { $0.id == selectedModel } ?? ChatModel(id: selectedModel, name: selectedModel)
         if try await provider.compactIfNeeded(completedHistory, pending: Array(input.dropFirst(completedHistory.count)),
                                               model: model, instructions: instructions, tools: definitions) {
             updateContextUsage()
@@ -541,7 +545,7 @@ import Observation
             didSendMessage?(user)
         }
         requestStarted = true
-        for try await event in provider.send(input, model: selectedModel, effort: effectiveEffort, instructions: instructions, tools: definitions) {
+        for try await event in provider.send(input, model: model.id, effort: effort, instructions: instructions, tools: definitions) {
             try Task.checkCancellation()
             switch event {
             case .text(let delta):

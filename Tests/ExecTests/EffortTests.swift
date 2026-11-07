@@ -49,17 +49,21 @@ import Foundation
         library.send()
         try await wait { firstProvider.pending != nil }
         let firstID = library.currentSessionID!
-        library.selectedEffort = "low" // Controls cannot mutate an active turn.
-        try expect(library.selectedEffort == "high" && firstProvider.efforts == ["high"])
+        let panel = ChatPanel(library: library, conversation: library.current)
+        panel.selectedModel = "plain"
+        try expect(library.selectedModel == "plain" && library.selectedEffort == nil)
+        panel.selectedModel = "test"
+        panel.selectedEffort = "low"
+        try expect(library.selectedEffort == "low" && firstProvider.efforts == ["high"])
         firstProvider.pending?.yield(.completed)
         firstProvider.pending?.finish()
         try await wait { !library.hasRunningOperations }
         let saved = try await sessions.load(id: firstID)
-        try expect(saved?.effort == "high")
+        try expect(saved?.effort == "low")
 
         library.defaultModel = "test"
         library.defaultEffort = "low"
-        try expect(library.selectedEffort == "high") // Defaults never change the active session.
+        try expect(library.selectedEffort == "low") // Defaults never change the active session.
         library.newConversation()
         try await wait { !library.navigating }
         try expect(library.selectedModel == "test" && library.selectedEffort == "low")
@@ -69,7 +73,7 @@ import Foundation
         try expect(provider.children.last?.efforts == ["low"])
         library.openSession(firstID)
         try await wait { !library.navigating }
-        try expect(library.selectedEffort == "high")
+        try expect(library.selectedEffort == "low")
 
         // Selection is persisted independently of the immediate resident switch.
         try await wait { !library.hasRunningOperations }
@@ -77,7 +81,7 @@ import Foundation
         try expect(restarted.defaultModel == "test" && restarted.defaultEffort == "low")
         restarted.restore()
         try await wait { !restarted.hasRunningOperations }
-        try expect(restarted.selectedEffort == "high")
+        try expect(restarted.selectedEffort == "low")
         restarted.selectedModel = "plain"
         try expect(restarted.selectedEffort == nil && restarted.current.selectedEffort == nil)
         restarted.selectedModel = "test"
@@ -110,12 +114,45 @@ import Foundation
             fresh.stopAll()
         }
 
+        try await activeTurnSettings()
         try await newSessionDefaults(provider: provider, root: root, preferences: preferences)
 
         var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved!)) as! [String: Any]
         legacy.removeValue(forKey: "effort")
         let decoded = try JSONDecoder().decode(SessionSnapshot.self, from: JSONSerialization.data(withJSONObject: legacy))
         try expect(decoded.effort == nil)
+    }
+
+    private func activeTurnSettings() async throws {
+        let provider = FakeProvider()
+        let store = ChatStore(provider: provider)
+        store.models = [ChatModel(id: "first", name: "First", efforts: [ChatEffort(id: "high", name: "High")]),
+                        ChatModel(id: "second", name: "Second", efforts: [ChatEffort(id: "low", name: "Low")])]
+        store.selectedModel = "first"
+        store.selectedEffort = "high"
+        store.account = "test@example.com"
+        provider.holdOpen = true
+        store.draft = "Start"
+        store.send()
+        try await wait { provider.inputs.count == 1 }
+        store.selectedModel = "second"
+        store.selectedEffort = "low"
+        provider.pending?.yield(.toolCall(ToolCall(id: "unavailable", name: "unknown_tool", arguments: "{}")))
+        provider.pending?.yield(.completed)
+        provider.pending?.finish()
+        try await wait { provider.inputs.count == 2 }
+        try expect(provider.requestedModels == ["first", "first"])
+        try expect(provider.efforts == ["high", "high"])
+        // Queued input starts the next turn as soon as the current one finishes.
+        store.draft = "Next"
+        store.send()
+        provider.pending?.yield(.completed)
+        provider.pending?.finish()
+        try await wait { provider.inputs.count == 3 }
+        try expect(provider.requestedModels.last == "second" && provider.efforts.last == "low")
+        provider.pending?.yield(.completed)
+        provider.pending?.finish()
+        try await wait { !store.busy }
     }
 
     private func newSessionDefaults(provider: FakeProvider, root: URL, preferences: UserDefaults) async throws {

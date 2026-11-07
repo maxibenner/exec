@@ -46,13 +46,13 @@ struct ChatComposer: View {
                      Choice(id: "finder", title: "finder", detail: "Open workspace in Finder", enabled: store.workspace != nil),
                      Choice(id: "terminal", title: "terminal", detail: "Open workspace in Terminal", enabled: store.workspace != nil)]
         case .model:
-            var models = store.models.map { Choice(id: $0.id, title: $0.name, selected: $0.id == store.selectedModel, enabled: !store.busy) }
+            var models = store.models.map { Choice(id: $0.id, title: $0.name, selected: $0.id == store.selectedModel, enabled: store.canNavigate) }
             if !store.selectedModel.isEmpty && !models.contains(where: { $0.id == store.selectedModel }) {
-                models.append(Choice(id: store.selectedModel, title: store.selectedModel, selected: true, enabled: !store.busy))
+                models.append(Choice(id: store.selectedModel, title: store.selectedModel, selected: true, enabled: store.canNavigate))
             }
             items = models
         case .effort:
-            let available = !store.busy && store.current.model?.efforts.isEmpty == false
+            let available = store.canNavigate && store.current.model?.efforts.isEmpty == false
             items = [Choice(id: "", title: "Default", selected: store.current.selectedEffort == nil, enabled: available)] + (store.current.model?.efforts ?? []).map {
                 Choice(id: $0.id, title: $0.name, selected: store.current.selectedEffort == $0.id, enabled: available)
             }
@@ -295,8 +295,8 @@ struct ChatComposer: View {
             return
         }
         switch page {
-        case .model: guard !store.busy else { return }; store.selectedModel = choice.id
-        case .effort: guard !store.busy else { return }; store.selectedEffort = choice.id.isEmpty ? nil : choice.id
+        case .model: store.selectedModel = choice.id
+        case .effort: store.selectedEffort = choice.id.isEmpty ? nil : choice.id
         case .approve, .compact, .workspace, .finder, .terminal: return
         }
         store.draft = ""

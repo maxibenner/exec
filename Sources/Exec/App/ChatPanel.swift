@@ -42,7 +42,7 @@ import Observation
     var selectedModel: String {
         get { current.selectedModel }
         set {
-            guard !busy, newValue != current.selectedModel else { return }
+            guard canNavigate, newValue != current.selectedModel else { return }
             current.selectedModel = newValue
             current.scheduleSave()
         }
@@ -50,7 +50,7 @@ import Observation
     var selectedEffort: String? {
         get { current.effectiveEffort }
         set {
-            guard !busy, newValue == nil || current.model?.efforts.contains(where: { $0.id == newValue }) == true else { return }
+            guard canNavigate, newValue == nil || current.model?.efforts.contains(where: { $0.id == newValue }) == true else { return }
             current.selectedEffort = newValue
             current.scheduleSave()
         }

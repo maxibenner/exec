@@ -34,6 +34,7 @@ import Foundation
     }
     var inputs: [[Message]] = []
     var efforts: [String?] = []
+    var requestedModels: [String] = []
     var availableModels = [ChatModel(id: "test", name: "Test")]
     var instructions: [String] = []
     var scripted: [[ChatEvent]] = []
@@ -56,6 +57,7 @@ import Foundation
     func send(_ messages: [Message], model: String, effort: String?, instructions: String, tools: [ToolDefinition]) -> AsyncThrowingStream<ChatEvent, Error> {
         inputs.append(messages)
         efforts.append(effort)
+        requestedModels.append(model)
         self.instructions.append(instructions)
         onSend?()
         if !scripted.isEmpty {
