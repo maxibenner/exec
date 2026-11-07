@@ -90,11 +90,11 @@ struct ConversationView: View {
     }
 
     private func errorView(_ error: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
             ScrollView {
                 Text(verbatim: error).font(.callout).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 20, alignment: .leading)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { errorHeight = $0 }
             }
             .defaultScrollAnchor(.topLeading)

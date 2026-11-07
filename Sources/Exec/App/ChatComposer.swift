@@ -173,23 +173,18 @@ struct ChatComposer: View {
     }
 
     private var information: some View {
-        GeometryReader { geometry in
-            ZStack {
-                HStack(spacing: 0) {
-                    workingControl
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                usageInformation
-                    .frame(width: max(0, geometry.size.width / 2 - 70), alignment: .trailing)
-                    .clipped()
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+        HStack(spacing: 0) {
+            workingControl
+            Spacer(minLength: 0)
+            if let usage = store.current.contextUsage {
+                Text("Context \(usage.isEstimated ? "~" : "")\(usage.percent)%")
+                    .monospacedDigit().fixedSize()
+                    .help("\(usage.isEstimated ? "Estimated" : "Reported") context: \(usage.tokens.formatted()) / \(usage.limit.formatted()) tokens. Excludes unsent drafts and unfinished responses.")
+                    .accessibilityLabel("Context usage, \(usage.percent) percent")
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .font(.caption).foregroundStyle(.secondary)
         .lineLimit(1)
-        // Independent alignment keeps usage stationary when the spinner appears.
         .frame(height: 20)
     }
 
@@ -205,18 +200,6 @@ struct ChatComposer: View {
                     .allowsHitTesting(false)
             }
             .fixedSize()
-        }
-    }
-
-    private var usageInformation: some View {
-        HStack(spacing: 16) {
-            if let usage = store.current.contextUsage {
-                Text("Context \(usage.isEstimated ? "~" : "")\(usage.percent)%")
-                    .monospacedDigit().fixedSize()
-                    .help("\(usage.isEstimated ? "Estimated" : "Reported") context: \(usage.tokens.formatted()) / \(usage.limit.formatted()) tokens. Excludes unsent drafts and unfinished responses.")
-                    .accessibilityLabel("Context usage, \(usage.percent) percent")
-            }
-            if let usage = store.accountUsage { AccountUsageLabel(usage: usage) }
         }
     }
 
