@@ -12,6 +12,8 @@ import SwiftUI
         var modelsAction: (() async throws -> Void)?
         var catalog: [ChatModel]?
         var usage: AccountUsage?
+        var balance: [AccountBalance] = []
+        var balanceAction: (() async throws -> [AccountBalance])?
         var requests: [String] = []
         var inputs: [[Message]] = []
         var definitions: [[String]] = []
@@ -32,12 +34,17 @@ import SwiftUI
     func makeConversationProvider() throws -> any ChatProvider { RegistryProbe(displayName, connection: connection) }
     var connections: [ProviderConnection] {
         [.init(id: displayName, name: displayName, account: account,
-               authentication: displayName == "DeepSeek" ? .apiKey : .browser)]
+               authentication: displayName == "DeepSeek" ? .apiKey : .browser,
+               balanceIdentity: displayName == "DeepSeek" ? account : nil)]
     }
     var webSearchConfiguration: ProviderConnection.WebSearch {
         displayName == "DeepSeek" ? .service("DeepSeek Search") : .model
     }
     func accountUsage() async throws -> AccountUsage? { connection.usage }
+    func accountBalance(providerID: String) async throws -> [AccountBalance] {
+        try expect(providerID == displayName)
+        return try await connection.balanceAction?() ?? connection.balance
+    }
     func usesSearchModel(_ model: String) -> Bool { displayName == "OpenAI" }
     func connect() async throws {
         if connection.connectFails { throw ExecError("Connection failed") }
@@ -404,6 +411,53 @@ import SwiftUI
         try expect((preferences.dictionary(forKey: "providerDefaultModels") as? [String: String])?["openai"] == "preferred")
     }
 
+    func balanceCacheSurvivesRefreshAndClearsOnRemoval() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "BalanceCache.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        let cache = AccountMetadataCache(directory: root.appendingPathComponent("cache"))
+        let openAI = RegistryProbe("OpenAI"), deepSeek = RegistryProbe("DeepSeek")
+        let expected = [AccountBalance(amount: Decimal(string: "12.3456")!, currency: "USD")]
+        deepSeek.connection.balance = expected
+        let provider = MultiProvider(registry: registry(openAI, deepSeek))
+        let library = try ChatLibrary(provider: provider, sessions: SessionStore(directory: root.appendingPathComponent("sessions")),
+                                      preferences: preferences, metadataCache: cache)
+        defer { library.stopAll() }
+        await library.refreshAccountBalance(for: "deepseek")
+        try expect(library.accountBalance(for: "deepseek") == expected)
+        try expect(library.accountBalance(for: "openai").isEmpty)
+        deepSeek.connection.balanceAction = { throw ExecError("Offline") }
+        await library.refreshAccountBalance(for: "deepseek")
+        try expect(library.accountBalance(for: "deepseek") == expected)
+        let reopened = try ChatLibrary(provider: provider, sessions: SessionStore(directory: root.appendingPathComponent("sessions")),
+                                       preferences: preferences, metadataCache: cache)
+        defer { reopened.stopAll() }
+        await reopened.refreshAccountBalance(for: "deepseek")
+        try expect(reopened.accountBalance(for: "deepseek") == expected)
+
+        var pending: CheckedContinuation<[AccountBalance], Never>?
+        deepSeek.connection.balanceAction = { await withCheckedContinuation { pending = $0 } }
+        let refresh = Task { await library.refreshAccountBalance(for: "deepseek") }
+        try await wait { pending != nil }
+        try expect(library.accountBalance(for: "deepseek") == expected)
+        let updated = [AccountBalance(amount: 11, currency: "USD")]
+        pending?.resume(returning: updated)
+        await refresh.value
+        try expect(library.accountBalance(for: "deepseek") == updated)
+
+        pending = nil
+        let staleRefresh = Task { await library.refreshAccountBalance(for: "deepseek") }
+        try await wait { pending != nil }
+        library.disconnect(providerID: "deepseek")
+        try await wait { !library.hasRunningOperations }
+        pending?.resume(returning: expected)
+        await staleRefresh.value
+        try expect(library.accountBalance(for: "deepseek").isEmpty)
+        let disk = await cache.load(key: "account-balance:deepseek:account")
+        try expect(disk.balances == nil)
+    }
+
     func nativeProviderSettingsFitAndRender() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -418,6 +472,7 @@ import SwiftUI
             sessions: SessionStore(directory: root), preferences: preferences)
         defer { library.stopAll() }
         library.settingsTab = .accounts
+        deepSeek.connection.balance = [.init(amount: Decimal(string: "12.3456")!, currency: "USD")]
         library.restore()
         try await wait { !library.hasRunningOperations && library.models.count == 2 && library.accountUsage != nil }
         let previews = ProcessInfo.processInfo.environment["EXEC_SETTINGS_PREVIEWS"].map { URL(fileURLWithPath: $0) }

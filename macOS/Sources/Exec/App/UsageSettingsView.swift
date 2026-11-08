@@ -11,7 +11,9 @@ struct UsageSettingsView: View {
             }
             ForEach(connected) { connection in
                 Section(connection.name) {
-                    if connection.id == store.usageConnection?.id {
+                    if connection.balanceIdentity != nil {
+                        AccountBalanceRow(store: store, providerID: connection.id)
+                    } else if connection.id == store.usageConnection?.id {
                         AccountUsageLabel(usage: store.displayedAccountUsage, fetchedAt: store.accountUsageFetchedAt)
                             .accessibilityElement(children: .contain)
                             .accessibilityLabel("\(connection.name) remaining usage")

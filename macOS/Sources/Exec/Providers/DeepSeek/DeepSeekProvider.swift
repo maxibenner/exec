@@ -9,7 +9,7 @@ import Foundation
     var account: String? { authentication.account }
     var conversationIdentity: String? { authentication.identity }
     var connections: [ProviderConnection] {
-        [.init(id: displayName, name: displayName, account: account, authentication: .apiKey, webSearch: webSearchConfiguration)]
+        [.init(id: displayName, name: displayName, account: account, authentication: .apiKey, webSearch: webSearchConfiguration, balanceIdentity: authentication.identity)]
     }
 
     init(authentication: DeepSeekAuthentication, http: URLSession = DeepSeekHTTP.session) {
@@ -95,6 +95,17 @@ import Foundation
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    func accountBalance(providerID: String) async throws -> [AccountBalance] {
+        guard providerID == displayName, account != nil else { return [] }
+        let identity = authentication.identity
+        var request = DeepSeekHTTP.request("user/balance", key: try authentication.key())
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let data = try await DeepSeekHTTP.data(request, session: http)
+        try Task.checkCancellation()
+        guard identity == authentication.identity else { throw CancellationError() }
+        return try DeepSeekBalance.decode(data)
     }
 
     var webSearchConfiguration: ProviderConnection.WebSearch { .service("DeepSeek Search") }
