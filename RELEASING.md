@@ -8,7 +8,7 @@ https://maxibenner.github.io/exec/appcast.xml
 
 GitHub Pages serves `docs/` from `main`; release archives live in GitHub Releases, not in Git. In repository **Settings → Pages**, select **Deploy from a branch → main → /docs**. `docs/.nojekyll` disables Jekyll processing. No separate update service or CI secrets are needed. Do not change the Pages domain/path without preserving the URL used by already-installed apps.
 
-The initial feed deliberately has no releases. Do not add the older, pre-Sparkle build: it cannot update itself. The first updater-enabled build is `0.1.0 (3)`. People running an older build must install it manually once. Subsequent updates can be installed from Settings → Updates or the sidebar badge. Exec probes the feed silently on launch and later activations (at most once per six hours during a run); only an explicit user action opens the update flow. Badge dismissal is remembered per build. Sparkle's automatic prompting, downloading, and unattended installation remain disabled by default.
+The first updater-enabled release is `0.1.0 (3)`. Do not publish the older, pre-Sparkle build: it cannot update itself. People running an older build must install it manually once. Subsequent updates can be installed from Settings → Updates or the sidebar badge. Exec probes the feed silently on launch and later activations (at most once per six hours during a run); only an explicit user action opens the update flow. Badge dismissal is remembered per build. Sparkle's automatic prompting, downloading, and unattended installation remain disabled by default.
 
 ## Signing keys
 
@@ -48,7 +48,7 @@ The app's public key must match the release-signing key. `prepare-update.sh` che
 ## Publish in this order
 
 1. Review the candidate feed and verify its version, signature, architecture, and asset URL. Keep previous entries/URLs intact. Record release notes in the GitHub release.
-2. Create the matching `v<version>` release at the **source commit used for the build**. Upload the ZIP, its checksum, and optionally the DMG. Publish the release before publishing the feed.
+2. Create the matching `v<version>` release at the **source commit used for the build**. Upload the versioned ZIP, its checksum, and the DMG with its checksum. Always name the uploaded DMG **`Exec-macOS-arm64.dmg`** for Apple Silicon releases so the README's `/releases/latest/download/Exec-macOS-arm64.dmg` link continues to work. Renaming the finished DMG does not change its signature or notarization ticket; generate its checksum file using the uploaded filename. Publish the release before publishing the feed.
 3. Confirm the public ZIP URL works and matches the generated checksum. Do not alter or replace a ZIP after its signature has been generated.
 4. Copy the candidate `appcast.xml` to `docs/appcast.xml`, commit it, and push `main`. GitHub Pages deploys the feed. Confirm the live feed matches the reviewed file.
 5. Test **Settings → Updates → Check for Updates…** from a previous updater-enabled release installed in Applications. Confirm download, signature verification, installation, and relaunch. Also test cancellation and an unavailable feed. Local signing checks and mock tests do not verify the live install flow.

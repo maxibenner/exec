@@ -8,6 +8,8 @@ A minimal, native macOS coding agent. Starts up lightning fast and offers hotkey
 
 Currently supports OpenAI via subscription and DeepSeek via API key.
 
+[Download for macOS — Apple Silicon, macOS 14+](https://github.com/maxibenner/exec/releases/latest/download/Exec-macOS-arm64.dmg)
+
 # Philosophy
 
 Exec is not meant to be the everything-app. It is purposefully kept minimal to slot into existing workflows. E.g. Exec does not contain a voice dictation mode, but it can easily be used with tools like [Handy](https://handy.computer). It also does not include a native file viewer, but it does include / commands to open the current workspace in either the Finder or Terminal to easily check e.g. `git status` there.
@@ -15,7 +17,9 @@ Exec is not meant to be the everything-app. It is purposefully kept minimal to s
 
 ## Get started
 
-Needs to be built from source. Requires macOS 14+, Xcode 26 or later (including the Swift toolchain and Icon Composer asset compiler).
+[Download](https://github.com/maxibenner/exec/releases/latest/download/Exec-macOS-arm64.dmg)
+
+To build from source, use Xcode 26 or later (including the Swift toolchain and Icon Composer asset compiler):
 
 ```sh
 cd macOS
