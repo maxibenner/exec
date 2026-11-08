@@ -53,7 +53,6 @@ struct SessionSidebar: View {
             .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) {}
         }
-        .background(.background.secondary)
     }
 }
 

@@ -59,8 +59,10 @@ import SwiftUI
 
         for size in [NSSize(width: 980, height: 700), NSSize(width: 720, height: 480)] {
             let presentation = Presentation()
-            let controller = NSHostingController(rootView: Fixture(presentation: presentation))
+            let scheme: ColorScheme = size.width == 980 ? .dark : .light
+            let controller = NSHostingController(rootView: Fixture(presentation: presentation).environment(\.colorScheme, scheme))
             let window = NSWindow(contentViewController: controller)
+            window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
             window.setContentSize(size)
             window.orderFront(nil)
             defer { window.orderOut(nil) }
@@ -70,6 +72,7 @@ import SwiftUI
             let toolbar = window.toolbar
             try expect(toolbar != nil)
             let minimum = window.contentMinSize
+            let initialSidebarColor = try sidebarBackground(in: controller.view)
             for stage in 0..<3 {
                 presentation.failed = stage == 0
                 presentation.library = stage == 2 ? library : nil
@@ -82,6 +85,8 @@ import SwiftUI
                 // macOS 26 overlays the sidebar and changes the detail safe area.
                 // Its intrinsic fitting size changes; the window minimum must not.
                 try expect(window.contentMinSize == minimum)
+                let restoredColor = try sidebarBackground(in: controller.view)
+                try expect(zip(initialSidebarColor, restoredColor).allSatisfy { abs($0 - $1) < 1.0 / 255 })
             }
             guard let split = splitView(in: controller.view),
                   let splitController = split.delegate as? NSSplitViewController,
@@ -113,6 +118,7 @@ import SwiftUI
                 let directory = URL(fileURLWithPath: path)
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 for dark in [false, true] {
+                    controller.rootView = Fixture(presentation: presentation).environment(\.colorScheme, dark ? .dark : .light)
                     window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
                     try await settle(window)
                     let view = controller.view
@@ -184,6 +190,19 @@ import SwiftUI
             try FileManager.default.removeItem(at: file)
             try expect(!SessionStore.hasSavedSessions(in: root))
         }
+    }
+
+    private func sidebarBackground(in view: NSView) throws -> [CGFloat] {
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            throw CheckFailure(description: "Cannot render startup sidebar")
+        }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        // Sample empty sidebar space, away from rows, dividers and the toolbar.
+        let x = Int(60 * CGFloat(bitmap.pixelsWide) / view.bounds.width)
+        guard let color = bitmap.colorAt(x: x, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.deviceRGB) else {
+            throw CheckFailure(description: "Cannot read startup sidebar background")
+        }
+        return [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent]
     }
 
     private func splitView(in view: NSView) -> NSSplitView? {
