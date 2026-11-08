@@ -20,12 +20,17 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Storage rename preserves conversations and rejects conflicts", { try await StorageMigrationTests().migratesAndProtectsExistingData() }),
             ("Optimistic startup renders before credentials and reconciles in place", { try await OptimisticStartupTests().rendersBeforeCredentialsAndReconcilesInPlace() }),
             ("Optimistic startup rejects account mismatches and clears sign-out", { try await OptimisticStartupTests().rejectsMismatchesAndClearsSignout() }),
             ("Startup credential failures, explicit retry and cancellation", { try await OptimisticStartupTests().credentialFailureRetryAndCancellation() }),
             ("Startup corruption and opaque provider state remain safe", { try await OptimisticStartupTests().corruptionAndProviderStateRemainSafe() }),
             ("Expired cached usage keeps footer geometry without stale values", { try OptimisticStartupTests().expiredUsageKeepsItsGeometry() }),
             ("Startup keeps native window geometry stable", { try await StartupWindowTests().preservesGeometryAcrossStartup() }),
+            ("Window placement round-trips without toolbar height drift", { try MainWindowGeometryTests().roundTripsWithoutChromeDrift() }),
+            ("Window placement adapts to changed and missing displays", { try MainWindowGeometryTests().adaptsToDisplayChanges() }),
+            ("Window placement ignores invalid preferences", { try MainWindowGeometryTests().rejectsInvalidPreferences() }),
+            ("Window geometry observes only the visible normal main window", { try await MainWindowGeometryTests().observesOnlyVisibleNormalMainWindow() }),
             ("Metadata cache persistence, isolation, corruption and expiry", { try await MetadataCacheTests().persistenceAndExpiry() }),
             ("Cached startup stays interactive and rejects late signed-out results", { try await MetadataCacheTests().cachedStartupAndLateResults() }),
             ("Metadata refresh preserves running settings and offline restoration", { try await MetadataCacheTests().refreshDuringRunAndOfflineMiss() }),

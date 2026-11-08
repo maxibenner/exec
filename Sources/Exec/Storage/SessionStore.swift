@@ -121,8 +121,36 @@ actor SessionStore {
         guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             throw ExecError("Application Support is unavailable.")
         }
-        // Keep the original location so existing conversations remain available after renaming.
-        return SessionStore(directory: base.appendingPathComponent("Harness", isDirectory: true))
+        return try applicationStore(in: base)
+    }
+
+    /// Rename the complete store on the same volume, preserving image references
+    /// and permissions. Never merge two stores or overwrite an existing destination.
+    static func applicationStore(in base: URL) throws -> SessionStore {
+        let current = base.appendingPathComponent("Exec", isDirectory: true)
+        let legacy = base.appendingPathComponent("Harness", isDirectory: true)
+        func exists(_ url: URL) throws -> Bool {
+            var info = stat()
+            if lstat(url.path, &info) == 0 {
+                guard info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid() else {
+                    throw ExecError("Conversation storage must be an owned directory, not a symbolic link: \(url.path)")
+                }
+                return true
+            }
+            guard errno == ENOENT else { throw ExecError("Cannot inspect conversation storage: \(url.path)") }
+            return false
+        }
+        let hasCurrent = try exists(current)
+        let hasLegacy = try exists(legacy)
+        if hasLegacy {
+            guard !hasCurrent else {
+                throw ExecError("Both Exec and Harness conversation folders exist in Application Support. Resolve the duplicate folders before reopening Exec; neither was changed.")
+            }
+            guard renamex_np(legacy.path, current.path, UInt32(RENAME_EXCL)) == 0 else {
+                throw ExecError("Cannot migrate Harness conversation storage to Exec. The original folder was not moved.")
+            }
+        }
+        return SessionStore(directory: current)
     }
 
     func prepareShellLogDirectory(id: UUID) throws -> URL {
