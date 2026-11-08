@@ -50,14 +50,6 @@ Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace
 
 Tests use isolated stores and fake transports, not your Keychain or live model calls. The Settings tests inject update actions and do not start Sparkle.
 
-## Updates
-
-Exec silently checks for updates on launch and when activated again, at most once every six hours during a run. A blue **Update available** badge at the bottom of the sidebar opens Sparkle's standard update flow. Its × dismisses the badge for that build, including after relaunch; a newer build can show it again. Silent checks do not download or install updates or open dialogs.
-
-You can always use **Settings → Updates → Check for Updates…**, including for a dismissed update. Sparkle handles download verification, installation, and relaunch with its standard macOS interface.
-
-The update feed lives in [`docs/appcast.xml`](docs/appcast.xml) and is served by GitHub Pages. See [RELEASING.md](RELEASING.md) for signing keys, Pages setup, and publishing updates.
-
 For consistent Keychain access across rebuilds, configure a stable signing certificate:
 
 ```sh
