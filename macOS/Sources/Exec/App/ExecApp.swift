@@ -56,7 +56,7 @@ import SwiftUI
     }
 
     private var chatWindow: some Scene {
-        Window("Exec", id: "chat") {
+        Window("", id: "chat") {
             ChatWindowLayout(initiallyShowsSidebar: initiallyHasSavedSessions) {
                 if let store = startup.store, let windows = startup.windows {
                     SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {

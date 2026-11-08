@@ -18,6 +18,10 @@ import Observation
         self.presentWorkspacePicker = presentWorkspacePicker
     }
 
+    var title: String {
+        guard hasConversation else { return "" }
+        return library.sessionList.first { $0.id == current.currentSessionID }?.title ?? "Untitled"
+    }
     var hasConversation: Bool { library.hasConversation(current) }
     var navigating: Bool { library.navigating }
     var canNavigate: Bool {

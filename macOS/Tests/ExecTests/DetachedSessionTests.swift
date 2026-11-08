@@ -146,7 +146,7 @@ import SwiftUI
         // Exercise the actual NSWindow close delegate, not just library attachment.
         let native = NSApp.windows.first { $0.title == "A saved conversation" }
         try expect(native != nil)
-        try expect(native?.titleVisibility == .hidden)
+        try expect(native?.titleVisibility == .visible)
         try expect(native?.toolbar == nil)
         native?.performClose(nil)
         try expect(library.detachedSessionIDs.isEmpty && library.current === detached)
