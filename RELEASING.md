@@ -8,7 +8,7 @@ https://maxibenner.github.io/exec/appcast.xml
 
 GitHub Pages serves `docs/` from `main`; release archives live in GitHub Releases, not in Git. In repository **Settings → Pages**, select **Deploy from a branch → main → /docs**. `docs/.nojekyll` disables Jekyll processing. No separate update service or CI secrets are needed. Do not change the Pages domain/path without preserving the URL used by already-installed apps.
 
-The initial feed deliberately has no releases. Do not add the older, pre-Sparkle build: it cannot update itself. The first updater-enabled build is `0.1.0 (3)`. People running an older build must install it manually once. Subsequent updates can be installed from Settings → Updates. Automatic checks and unattended installation are disabled by default.
+The initial feed deliberately has no releases. Do not add the older, pre-Sparkle build: it cannot update itself. The first updater-enabled build is `0.1.0 (3)`. People running an older build must install it manually once. Subsequent updates can be installed from Settings → Updates or the sidebar badge. Exec probes the feed silently on launch and later activations (at most once per six hours during a run); only an explicit user action opens the update flow. Badge dismissal is remembered per build. Sparkle's automatic prompting, downloading, and unattended installation remain disabled by default.
 
 ## Signing keys
 

@@ -66,6 +66,13 @@ import SwiftUI
                         guard store.canNavigate, !store.isSessionRunning($0.id) else { return }
                         store.deleteSession($0.id)
                     })
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        if updater.notice.isVisible {
+                            UpdateBadge(canCheckForUpdates: updater.canCheckForUpdates,
+                                        update: updater.checkForUpdates, dismiss: updater.notice.dismiss)
+                                .padding(12)
+                        }
+                    }
                 } else {
                     Color.clear
                 }
@@ -96,6 +103,9 @@ import SwiftUI
             .task {
                 // macOS 14 lacks suppressed scene launch; retain its existing path.
                 if #unavailable(macOS 15.0), startup.store == nil, startup.error == nil { start() }
+            }
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                if phase == .active { updater.checkSilentlyIfNeeded() }
             }
             .onChange(of: startup.store.map(ObjectIdentifier.init), initial: true) { _, _ in
                 delegate.store = startup.store

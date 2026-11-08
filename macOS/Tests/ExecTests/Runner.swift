@@ -20,6 +20,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Update badge dismissal persists per build", { try UpdateNoticeTests().dismissalSurvivesRelaunchAndOnlyHidesThatBuild() }),
+            ("Silent update checks throttle failures and respect busy sessions", { try UpdateNoticeTests().silentChecksAreThrottledAndDoNotConsumeBusyAttempts() }),
+            ("Update badge fits sidebar widths in light and dark appearances", { try UpdateNoticeTests().badgeFitsSidebarWidths() }),
             ("Provider availability reconciles windows, defaults and drafts", { try await MultiProviderTests().availabilityReconcilesEveryWindowAndDefaults() }),
             ("Failed account actions and late catalogs cannot revive models", { try await MultiProviderTests().failedConnectionsAndLateCatalogsDoNotReviveModels() }),
             ("Offline catalogs stay usable only for connected providers", { try await MultiProviderTests().cachedCatalogSurvivesOnlyWhileAuthenticated() }),
