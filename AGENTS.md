@@ -9,6 +9,8 @@
 ## Git
 
 - This directory is its own Git repository. Run Git commands here, not in the parent workspace repository.
+- When the working directory is a Git project, implement each new feature on a dedicated feature branch in a separate Git worktree.
+- Once the feature is implemented and verified, merge its branch into the repository's default branch, then remove the feature worktree and delete the merged feature branch. Preserve unrelated work and do not force cleanup of uncommitted changes.
 - Always use Conventional Commits: `type(scope): imperative summary` (scope optional).
 - Examples: `feat(auth): add session recovery`, `fix(stream): cancel stalled responses`, `test: cover sign-out failures`.
 - Make focused commits after verification. Never commit credentials, tokens, Keychain exports, `.build/`, or `dist/`.
@@ -32,6 +34,7 @@
 
 ## Verification
 
+- When working on a Swift app, rebuild the app after every implemented feature change. For Exec, run `./scripts/build-app.sh` from `macOS/`.
 - Run `./scripts/test.sh` and `./scripts/build-app.sh` from `macOS/` before committing macOS code changes.
 - Keep tests small, practical and focused on meaningful behavior and regressions. Prioritize authentication, cancellation, conversation integrity and error recovery; do not build an oversized suite, chase coverage percentages or test trivial implementation details.
 - Tests must use isolated stores/fake transports, not the user's Keychain or live model calls.
