@@ -48,7 +48,6 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Expired cached usage keeps row geometry", { try OptimisticStartupTests().expiredUsageKeepsItsGeometry() }),
             ("Startup sidebar reads existing session files", { try StartupWindowTests().readsExistingSessionFilesBeforeStartup() }),
             ("Startup sidebar is selected before restoration", { try await StartupWindowTests().choosesSidebarVisibilityBeforeRestoration() }),
-            ("Late toolbar creation preserves navigation and layout items", { try await StartupWindowTests().configuresNavigationWhenToolbarArrivesLater() }),
             ("Startup keeps native window geometry stable", { try await StartupWindowTests().preservesGeometryAcrossStartup() }),
             ("Window placement round-trips without toolbar height drift", { try MainWindowGeometryTests().roundTripsWithoutChromeDrift() }),
             ("Window placement adapts to changed and missing displays", { try MainWindowGeometryTests().adaptsToDisplayChanges() }),

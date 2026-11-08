@@ -28,7 +28,7 @@ struct ChatWindowLayout<Sidebar: View, Detail: View>: View {
                 .background(SidebarResizeBehavior())
         }
         .navigationSplitViewStyle(.balanced)
-        .background(ChatWindowAppearance())
+        .background(WindowReference { ChatWindowAppearance.configure($0) })
         .frame(minWidth: 720, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
     }
 }
