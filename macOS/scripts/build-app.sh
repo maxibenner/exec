@@ -15,7 +15,7 @@ if [[ -z "$identity" || "$identity" == "-" ]]; then
     printf 'WARNING: Ad-hoc development signing; rebuilds may trigger Keychain prompts.\n' >&2
     printf 'See README.md for configuring a stable signing certificate.\n' >&2
 else
-    options+=(--options runtime)
+    options+=(--options runtime --timestamp)
     printf 'Signing with configured identity: %s\n' "$identity"
 fi
 
@@ -26,7 +26,8 @@ minimum_macos="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' Reso
 # otherwise stamp the minimum OS as the SDK, opting into legacy system styling.
 build_options=(-c release --sdk "$sdk_path"
     -Xlinker -platform_version -Xlinker macos
-    -Xlinker "$minimum_macos" -Xlinker "$sdk_version")
+    -Xlinker "$minimum_macos" -Xlinker "$sdk_version"
+    -Xlinker -rpath -Xlinker '@executable_path/../Frameworks')
 swift build "${build_options[@]}" --product Exec
 bin="$(swift build "${build_options[@]}" --show-bin-path)"
 app="$PWD/dist/Exec.app"
@@ -45,9 +46,20 @@ xcrun actool "$PWD/Design/Icons/Glass_Icon.icon" \
     --app-icon Glass_Icon --platform macosx \
     --minimum-deployment-target "$minimum_macos" --target-device mac \
     --output-format human-readable-text
+# SwiftPM links the binary framework but does not assemble a distributable app.
+framework="$built/Contents/Frameworks/Sparkle.framework"
+mkdir -p "$built/Contents/Frameworks"
+ditto .build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework "$framework"
+# Sign inside out, including Sparkle's helpers, with the same identity as Exec.
+# Never use --deep for signing; the downloader can have its own entitlements.
+codesign "${options[@]}" --sign "$identity" "$framework/Versions/B/XPCServices/Installer.xpc"
+codesign "${options[@]}" --sign "$identity" --preserve-metadata=entitlements "$framework/Versions/B/XPCServices/Downloader.xpc"
+codesign "${options[@]}" --sign "$identity" "$framework/Versions/B/Autoupdate"
+codesign "${options[@]}" --sign "$identity" "$framework/Versions/B/Updater.app"
+codesign "${options[@]}" --sign "$identity" "$framework"
 bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Resources/Info.plist)"
 codesign "${options[@]}" --sign "$identity" --identifier "$bundle_id" "$built"
-codesign --verify --strict "$built"
+codesign --verify --deep --strict "$built"
 # Never truncate a running, signed executable: macOS can kill it for invalid code pages.
 # Publish only after signing succeeds; old processes keep their original executable inode.
 if [[ -e "$app" ]]; then mv "$app" "$staging/Previous.app"; fi

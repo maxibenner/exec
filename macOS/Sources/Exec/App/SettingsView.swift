@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SettingsView: View {
     let store: ChatLibrary
+    let canCheckForUpdates: Bool
+    let checkForUpdates: () -> Void
 
     var body: some View {
         @Bindable var settings = store
@@ -15,6 +17,9 @@ struct SettingsView: View {
             UsageSettingsView(store: store)
                 .tabItem { Label("Usage", systemImage: "chart.bar") }
                 .tag(ChatLibrary.SettingsTab.usage)
+            UpdatesSettingsView(canCheckForUpdates: canCheckForUpdates, checkForUpdates: checkForUpdates)
+                .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
+                .tag(ChatLibrary.SettingsTab.updates)
         }
         .frame(width: 500)
         .frame(minHeight: 360, idealHeight: 560)

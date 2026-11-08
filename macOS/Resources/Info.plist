@@ -9,7 +9,11 @@
     <key>CFBundleIconName</key><string>Glass_Icon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleVersion</key><string>3</string>
+    <key>SUFeedURL</key><string>https://maxibenner.github.io/exec/appcast.xml</string>
+    <key>SUPublicEDKey</key><string>2BVvY5oGpDWary0HgMaMNArY/pYJ1+2DeVAksydZp3A=</string>
+    <key>SUEnableAutomaticChecks</key><false/>
+    <key>SUAllowsAutomaticUpdates</key><false/>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>

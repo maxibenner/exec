@@ -10,7 +10,7 @@ import Observation
         _ = authenticating
         return isPresentingStartup ? discoveredModels : discoveredModels.filter { provider.isModelAvailable($0.id) }
     }
-    enum SettingsTab { case modelsAndTools, accounts, usage }
+    enum SettingsTab { case modelsAndTools, accounts, usage, updates }
     var settingsTab = SettingsTab.modelsAndTools
     var connectionError: String?
     private var rememberedModels: [String: String]

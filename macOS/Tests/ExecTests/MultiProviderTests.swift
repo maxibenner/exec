@@ -477,14 +477,14 @@ import SwiftUI
         try await wait { !library.hasRunningOperations && library.models.count == 2 && library.accountUsage != nil }
         let previews = ProcessInfo.processInfo.environment["EXEC_SETTINGS_PREVIEWS"].map { URL(fileURLWithPath: $0) }
         if let previews { try FileManager.default.createDirectory(at: previews, withIntermediateDirectories: true) }
-        for tab in [ChatLibrary.SettingsTab.accounts, .modelsAndTools, .usage] {
+        for tab in [ChatLibrary.SettingsTab.accounts, .modelsAndTools, .usage, .updates] {
             library.settingsTab = tab
             for dark in [false, true] {
                 let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 500, height: 420),
                                       styleMask: [.titled], backing: .buffered, defer: false)
                 window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
                 defer { window.orderOut(nil); window.contentView = nil }
-                let host = NSHostingView(rootView: SettingsView(store: library)
+                let host = NSHostingView(rootView: SettingsView(store: library, canCheckForUpdates: false, checkForUpdates: {})
                     .frame(width: 500, height: 420).environment(\.colorScheme, dark ? .dark : .light))
                 window.contentView = host
                 window.orderFront(nil)
@@ -501,17 +501,17 @@ import SwiftUI
         try expect(sheet.fittingSize.width <= 410 && sheet.fittingSize.height < 260)
         if let previews {
             library.settingsTab = .modelsAndTools
-            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 680),
+            try await renderPreview(SettingsView(store: library, canCheckForUpdates: false, checkForUpdates: {}), size: NSSize(width: 500, height: 680),
                                     to: previews.appendingPathComponent("models-and-tools-all.png"))
             library.settingsTab = .usage
-            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
+            try await renderPreview(SettingsView(store: library, canCheckForUpdates: false, checkForUpdates: {}), size: NSSize(width: 500, height: 420),
                                     to: previews.appendingPathComponent("usage-both.png"))
             try await renderPreview(ProviderKeySheet(providerName: "DeepSeek", connect: { _ in }),
                                     size: NSSize(width: 360, height: 166), to: previews.appendingPathComponent("key-sheet.png"))
             library.disconnect(providerID: "openai")
             try await wait { !library.hasRunningOperations && library.models.count == 1 }
             library.settingsTab = .accounts
-            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
+            try await renderPreview(SettingsView(store: library, canCheckForUpdates: false, checkForUpdates: {}), size: NSSize(width: 500, height: 420),
                                     to: previews.appendingPathComponent("providers-single.png"))
             library.defaultModel = "model" // A remembered Codex default is unavailable.
             let panel = ChatPanel(library: library, conversation: library.current)
@@ -519,7 +519,7 @@ import SwiftUI
             try await renderPreview(ComposerPreview(panel: panel), size: NSSize(width: 540, height: 160),
                                     to: previews.appendingPathComponent("composer-model-unavailable.png"))
             library.settingsTab = .modelsAndTools
-            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
+            try await renderPreview(SettingsView(store: library, canCheckForUpdates: false, checkForUpdates: {}), size: NSSize(width: 500, height: 420),
                                     to: previews.appendingPathComponent("deepseek-defaults.png"))
             library.disconnect(providerID: "deepseek")
             try await wait { !library.hasRunningOperations }
@@ -527,13 +527,13 @@ import SwiftUI
             try await renderPreview(ComposerPreview(panel: panel), size: NSSize(width: 540, height: 160),
                                     to: previews.appendingPathComponent("composer-provider-unavailable.png"))
             library.settingsTab = .accounts
-            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
+            try await renderPreview(SettingsView(store: library, canCheckForUpdates: false, checkForUpdates: {}), size: NSSize(width: 500, height: 420),
                                     to: previews.appendingPathComponent("providers-empty.png"))
             library.settingsTab = .modelsAndTools
-            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
+            try await renderPreview(SettingsView(store: library, canCheckForUpdates: false, checkForUpdates: {}), size: NSSize(width: 500, height: 420),
                                     to: previews.appendingPathComponent("models-and-tools-empty.png"))
             library.settingsTab = .usage
-            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
+            try await renderPreview(SettingsView(store: library, canCheckForUpdates: false, checkForUpdates: {}), size: NSSize(width: 500, height: 420),
                                     to: previews.appendingPathComponent("usage-empty.png"))
         }
     }

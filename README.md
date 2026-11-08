@@ -18,6 +18,7 @@ Exec is not meant to be the everything-app. It is purposefully kept minimal to s
 Needs to be built from source. Requires macOS 14+, Xcode 26 or later (including the Swift toolchain and Icon Composer asset compiler).
 
 ```sh
+cd macOS
 ./scripts/build-app.sh
 ```
 
@@ -38,14 +39,20 @@ Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace
 
 ## Development
 
-No third-party dependencies. Open `Package.swift` in Xcode, or run:
+[Sparkle](https://sparkle-project.org/) provides native in-app updates. Open `macOS/Package.swift` in Xcode, or run from `macOS/`:
 
 ```sh
 ./scripts/test.sh
 ./scripts/build-app.sh
 ```
 
-Tests use isolated stores and fake transports, not your Keychain or live model calls. 
+Tests use isolated stores and fake transports, not your Keychain or live model calls. The Settings tests inject update actions and do not start Sparkle.
+
+## Updates
+
+Use **Settings → Updates → Check for Updates…**. Checks are manual by default; Sparkle handles download verification, installation, and relaunch with its standard macOS interface.
+
+The update feed lives in [`docs/appcast.xml`](docs/appcast.xml) and is served by GitHub Pages. See [RELEASING.md](RELEASING.md) for signing keys, Pages setup, and publishing updates.
 
 For consistent Keychain access across rebuilds, configure a stable signing certificate:
 
