@@ -201,7 +201,13 @@ import Observation
         set { navigationError = nil; modelRefreshError = nil; current.error = newValue }
     }
     var account: String? { current.account }
-    var providerName: String { provider.displayName }
+    var providerName: String { provider.usageProviderName }
+    var showsAccountUsage: Bool { account != nil && provider.recordsAccountUsage(model: current.selectedModel) }
+    var connections: [ProviderConnection] {
+        _ = authenticating // Refresh account presentation after account operations.
+        return provider.connections
+    }
+    var searchModels: [ChatModel] { models.filter { provider.usesSearchModel($0.id) } }
     var connectionTitle: String { provider.connectionTitle }
     var workspace: Workspace? { current.workspace }
     var canSelectWorkspace: Bool { canModify && !current.busy && current.messages.isEmpty }
@@ -312,6 +318,12 @@ import Observation
 
     func restore() { accountOperation { self.current.restore(loadModels: false) } }
     func connect() { accountOperation { self.current.connect(loadModels: false) } }
+    func connect(providerID: String, credential: String? = nil) {
+        accountOperation { self.current.connect(loadModels: false, providerID: providerID, credential: credential) }
+    }
+    func disconnect(providerID: String) {
+        accountOperation(signingOut: true) { self.current.disconnect(providerID: providerID) }
+    }
     func disconnect() { accountOperation(signingOut: true) { self.current.disconnect() } }
 
     private func accountOperation(signingOut: Bool = false, _ start: () -> Void) {
@@ -361,9 +373,10 @@ import Observation
             modelsAreCached = true
             if let key = metadataKey, let saved = await metadataCache?.load(key: key) {
                 guard !Task.isCancelled, key == metadataKey else { return }
-                models = saved.usableModels()
+                models = saved.usableModels().filter { provider.isModelAvailable($0.id) }
                 if !signingOut { cachedUsage = saved.usage }
             }
+            models = models.filter { provider.isModelAvailable($0.id) }
             for conversation in conversations {
                 conversation.account = provider.account
                 applyModels(to: conversation)
@@ -392,7 +405,7 @@ import Observation
                     throw ExecError("The provider returned no selectable models. Try Refresh Models in Settings.")
                 }
                 models = available
-                modelRefreshError = nil
+                modelRefreshError = provider.modelDiscoveryWarning
                 modelsAreCached = false
                 for conversation in conversations { applyModels(to: conversation) }
                 if let key { await metadataCache?.saveModels(available, fetchedAt: .now, key: key) }
@@ -634,7 +647,8 @@ import Observation
                                      selectOnCheckpoint: false, newConversation: true, workspace: workspace,
                                      systemPrompt: systemPrompt, defaultAutoApproveTools: defaultAutoApproveTools)
         conversation.installModels(models, cached: modelsAreCached)
-        conversation.selectedModel = defaultSessionModel?.id ?? defaultModel
+        conversation.selectedModel = provider.preservesModelSelection && !defaultModel.isEmpty
+            ? defaultModel : defaultSessionModel?.id ?? defaultModel
         conversation.selectedEffort = models.isEmpty || defaultSessionModel?.efforts.contains(where: { $0.id == defaultEffort }) == true
             ? defaultEffort : nil
         observe(conversation)
@@ -700,7 +714,7 @@ import Observation
         conversation.didFinish = { [weak self, weak conversation] capturedAllowance in
             if let self, let conversation, !self.authenticating { self.applyModels(to: conversation) }
             self?.trimConversations()
-            if !capturedAllowance { self?.refreshAccountUsage() }
+            if !capturedAllowance, conversation?.recordsAccountUsage == true { self?.refreshAccountUsage() }
         }
     }
 

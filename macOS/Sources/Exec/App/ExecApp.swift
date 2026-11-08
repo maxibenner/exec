@@ -72,7 +72,7 @@ import SwiftUI
 
     private func start() {
         startup.start(makeSessions: SessionStore.applicationStore, cache: AccountMetadataCache.applicationCache()) {
-            try await OpenAIProvider.restored()
+            try await MultiProvider(registry: ProviderRegistry.restored())
         }
     }
 }

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     let store: ChatLibrary
+    @State private var apiKeys: [String: String] = [:]
 
     var body: some View {
         TabView {
@@ -42,13 +43,15 @@ struct SettingsView: View {
                 .disabled(store.defaultSessionModel?.efforts.isEmpty != false)
                 Toggle("Auto mode", isOn: $settings.defaultAutoApproveTools)
             }
-            Section("Web Search") {
-                Picker("Search model", selection: $settings.searchModel) {
-                    if !store.models.contains(where: { $0.id == store.searchModel }) {
-                        Text(store.searchModel).tag(store.searchModel)
-                    }
-                    ForEach(store.models) { model in
-                        Text(model.name).tag(model.id)
+            if !store.searchModels.isEmpty {
+                Section("Web Search") {
+                    Picker("Search model", selection: $settings.searchModel) {
+                        if !store.searchModels.contains(where: { $0.id == store.searchModel }) {
+                            Text(store.searchModel).tag(store.searchModel)
+                        }
+                        ForEach(store.searchModels) { model in
+                            Text(model.name).tag(model.id)
+                        }
                     }
                 }
             }
@@ -71,26 +74,42 @@ struct SettingsView: View {
 
     private var accountSection: some View {
         Form {
-            Section("Account") {
-                if let account = store.account {
-                    LabeledContent("Signed in as") {
-                        Text(verbatim: account)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
+            ForEach(store.connections) { connection in
+                Section(connection.name) {
+                    if let account = connection.account {
+                        LabeledContent("Connected") {
+                            Text(verbatim: account).textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if connection.authentication == .apiKey {
+                        SecureField("API key", text: Binding(
+                            get: { apiKeys[connection.id] ?? "" },
+                            set: { apiKeys[connection.id] = $0 }
+                        ))
+                        .autocorrectionDisabled()
                     }
                     HStack {
-                        Button("Refresh Models", action: store.refreshModels)
-                        Button("Reconnect", action: store.connect)
-                        Spacer()
-                        Button("Sign Out", role: .destructive, action: store.disconnect)
+                        Button(connection.account == nil ? "Connect" : "Reconnect") {
+                            let credential = apiKeys.removeValue(forKey: connection.id)
+                            store.connect(providerID: connection.id, credential: credential)
+                        }
+                        .disabled(connection.authentication == .apiKey &&
+                                  (apiKeys[connection.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if connection.account != nil {
+                            Spacer()
+                            Button("Disconnect", role: .destructive) { store.disconnect(providerID: connection.id) }
+                        }
                     }
-                } else {
-                    Button("Sign In", action: store.connect)
                 }
             }
-            .disabled(store.accountBusy || !store.canNavigate)
+            if store.account != nil {
+                Section { Button("Refresh Models", action: store.refreshModels) }
+            }
         }
         .formStyle(.grouped)
+        .disabled(store.accountBusy || !store.canNavigate)
+        .onDisappear { apiKeys.removeAll() }
     }
 
     private var systemPromptSection: some View {

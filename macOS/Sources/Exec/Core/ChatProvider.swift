@@ -46,6 +46,7 @@ struct ChatModel: Identifiable, Codable, Equatable, Sendable {
     var contextWindow: Int? = nil
     var efforts: [ChatEffort] = []
     var defaultEffort: String? = nil
+    var acceptsImages: Bool? = nil
 }
 
 struct ContextUsage: Equatable, Sendable {
@@ -65,10 +66,34 @@ enum ChatEvent: Sendable {
     case completed
 }
 
+struct ProviderConnection: Identifiable, Equatable {
+    enum Authentication { case browser, apiKey }
+    let id: String
+    let name: String
+    let account: String?
+    var authentication: Authentication = .browser
+}
+
 // Providers own authentication and wire formats. Core orchestration sees only
 // provider-neutral messages, tool definitions, and semantic events.
 @MainActor protocol ChatProvider: AnyObject {
     var displayName: String { get }
+    var connections: [ProviderConnection] { get }
+    var retainsLocalConversations: Bool { get }
+    var preservesModelSelection: Bool { get }
+    var usageProviderName: String { get }
+    var modelDiscoveryWarning: String? { get }
+    func recordsAccountUsage(model: String) -> Bool
+    func connect(id: String, credential: String?) async throws
+    func disconnect(id: String) async throws
+    func isModelAvailable(_ model: String) -> Bool
+    func supportsWebSearch(model: String) -> Bool
+    func supportsImageGeneration(model: String) -> Bool
+    func searchModel(for model: String, preferred: String) -> String
+    func searchQueryLimit(model: String) -> Int?
+    func usesSearchModel(_ model: String) -> Bool
+    func generateImage(_ request: ImageGenerationTool.Request, model: String) async throws -> ImageAttachment
+    func supportsCompaction(model: String) -> Bool
     var connectionTitle: String { get }
     var account: String? { get }
     var conversationIdentity: String? { get }
@@ -98,6 +123,31 @@ enum ChatEvent: Sendable {
 }
 
 extension ChatProvider {
+    var connections: [ProviderConnection] { [.init(id: displayName, name: displayName, account: account)] }
+    var retainsLocalConversations: Bool { false }
+    var preservesModelSelection: Bool { false }
+    var usageProviderName: String { displayName }
+    var modelDiscoveryWarning: String? { nil }
+    func recordsAccountUsage(model: String) -> Bool { true }
+    func connect(id: String, credential: String?) async throws {
+        guard id == displayName else { throw ExecError("Unknown provider.") }
+        try await connect()
+    }
+    func disconnect(id: String) async throws {
+        guard id == displayName else { throw ExecError("Unknown provider.") }
+        try await disconnect()
+    }
+    func isModelAvailable(_ model: String) -> Bool { account != nil }
+    func supportsWebSearch(model: String) -> Bool { supportsWebSearch }
+    func supportsImageGeneration(model: String) -> Bool { supportsImageGeneration }
+    func searchModel(for model: String, preferred: String) -> String { preferred }
+    func searchQueryLimit(model: String) -> Int? { nil }
+    func usesSearchModel(_ model: String) -> Bool { supportsWebSearch }
+    func generateImage(_ request: ImageGenerationTool.Request, model: String) async throws -> ImageAttachment {
+        try await generateImage(request)
+    }
+    func supportsCompaction(model: String) -> Bool { supportsCompaction }
+
     var supportsCompaction: Bool { false }
     func compact(_ history: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) async throws {
         throw ExecError("This provider does not support manual compaction.")

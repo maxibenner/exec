@@ -20,6 +20,15 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("DeepSeek validates credentials before replacing the working key", { try await DeepSeekTests().authenticationIsTransactionalAndIndependent() }),
+            ("DeepSeek streams tools, uses native search and persists reasoning", { try await DeepSeekTests().toolRoundTripPersistsReasoningAndNativeSearch() }),
+            ("DeepSeek rejects incomplete streams without executing tools", { try await DeepSeekTests().incompleteStreamsNeverCommitToolsOrReasoning() }),
+            ("DeepSeek cancellation and image capability checks", { try await DeepSeekTests().cancellationStopsTransportAndTextOnlyModelsRejectImages() }),
+            ("Provider switching preserves mixed transcripts and opaque state", { try await MultiProviderTests().switchesProvidersAndRestoresMixedHistory() }),
+            ("Tools stay with the running provider when model selection changes", { try await MultiProviderTests().toolsStayWithRunningProviderWhileSelectionChanges() }),
+            ("Provider connections and catalog failures remain independent", { try await MultiProviderTests().independentDisconnectAndPartialCatalogFailure() }),
+            ("Legacy provider state respects account boundaries", { try await MultiProviderTests().legacyStateAndAccountBoundaries() }),
+            ("Library sign-out preserves sessions and other providers", { try await MultiProviderTests().libraryRetainsSessionsAndOtherConnectionOnSignout() }),
             ("Storage rename preserves conversations and rejects conflicts", { try await StorageMigrationTests().migratesAndProtectsExistingData() }),
             ("Optimistic startup renders before credentials and reconciles in place", { try await OptimisticStartupTests().rendersBeforeCredentialsAndReconcilesInPlace() }),
             ("Optimistic startup rejects account mismatches and clears sign-out", { try await OptimisticStartupTests().rejectsMismatchesAndClearsSignout() }),

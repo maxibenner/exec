@@ -53,7 +53,7 @@ struct SessionSidebar: View {
             Button("Cancel", role: .cancel) {}
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if store.account != nil {
+            if store.showsAccountUsage {
                 ProviderUsageFooter(providerName: store.providerName, usage: store.displayedAccountUsage,
                                     fetchedAt: store.accountUsageFetchedAt)
                     .background(Color(nsColor: .windowBackgroundColor))
