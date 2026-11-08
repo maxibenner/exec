@@ -38,7 +38,8 @@ mkdir -p "$built/Contents/MacOS" "$built/Contents/Resources"
 cp "$bin/Exec" "$built/Contents/MacOS/Exec"
 cp Resources/Info.plist "$built/Contents/Info.plist"
 # Compile the layered glass icon and the compatibility ICNS for older macOS.
-xcrun actool Design/Icons/Glass_Icon.icon \
+# Use an absolute input path: the asset compiler service can outlive a worktree.
+xcrun actool "$PWD/Design/Icons/Glass_Icon.icon" \
     --compile "$built/Contents/Resources" \
     --output-partial-info-plist "$staging/IconInfo.plist" \
     --app-icon Glass_Icon --platform macosx \
