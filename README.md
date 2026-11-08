@@ -6,7 +6,12 @@
 
 A minimal, native macOS coding agent. Starts up lightning fast and offers hotkeys for quick navigation and config changes.
 
-Currently supports two providers: OpenAI via subscription and DeepSeek via API key.
+Currently supports OpenAI via subscription and DeepSeek via API key.
+
+# Philosophy
+
+Exec is not meant to be the everything-app. It is purposefully kept minimal to slot into existing workflows. E.g. Exec does not contain a voice dictation mode, but it can easily be used with tools like [Handy](https://handy.computer). It also does not include a native file viewer, but it does include / commands to open the current workspace in either the Finder or Terminal to easily check e.g. `git status` there.
+
 
 ## Get started
 
