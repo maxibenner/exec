@@ -88,16 +88,29 @@ import SwiftUI
             ChatWindowLayout(workspace: nil, initiallyShowsSidebar: false) { Color.clear } detail: { Color.clear }))
         window.setContentSize(CGSize(width: 980, height: 700))
         window.center()
+        window.animationBehavior = .documentWindow
         geometry.observe(window)
         defer { geometry.observe(nil); window.orderOut(nil) }
         let center = NotificationCenter.default
         center.post(name: NSWindow.didResizeNotification, object: window)
         try expect(geometry.saved == nil) // Attaching cannot overwrite the saved placement with a startup frame.
         window.orderFront(nil)
-        for _ in 0..<3 {
-            try await Task.sleep(for: .milliseconds(30))
+        var visibleSamples = 0
+        for _ in 0..<30 {
+            try await Task.sleep(for: .milliseconds(10))
             window.contentView?.layoutSubtreeIfNeeded()
+            // The opening animation transforms the composited window without
+            // changing NSWindow.frame, so inspect its actual onscreen bounds.
+            if let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(window.windowNumber))
+                           as? [[String: Any]])?.first,
+               let bounds = info[kCGWindowBounds as String] as? [String: Any],
+               let visible = CGRect(dictionaryRepresentation: bounds as CFDictionary) {
+                visibleSamples += 1
+                try expect(abs(visible.width - window.frame.width) < 1)
+                try expect(abs(visible.height - window.frame.height) < 1)
+            }
         }
+        try expect(visibleSamples > 0)
         center.post(name: NSWindow.didBecomeKeyNotification, object: window)
         let snapshot = geometry.saved!
         try expect(snapshot.frame == window.frame && snapshot.titlebarHeight == window.frame.height - window.contentLayoutRect.height)

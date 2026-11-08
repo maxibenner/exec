@@ -104,6 +104,10 @@ import AppKit
         self.window = window
         changingFullScreen = false
         guard let window else { return }
+        // Initial placement already supplies the final frame. AppKit's opening
+        // animation can still overshoot its visible width while window.frame
+        // stays unchanged; opt out before the main window is ordered onscreen.
+        window.animationBehavior = .none
         let center = NotificationCenter.default
         for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification, NSWindow.didChangeScreenNotification,
                      NSWindow.didEndLiveResizeNotification, NSWindow.didBecomeKeyNotification,

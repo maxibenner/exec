@@ -27,6 +27,9 @@ import SwiftUI
             return SceneBuilder.buildOptional(SceneBuilder.buildLimitedAvailability(
                 chatWindow.restorationBehavior(.disabled)
                     .defaultWindowPlacement { content, context in
+                        // Configure before ordering onscreen; the view's window
+                        // reference can attach after the opening animation starts.
+                        windowGeometry.observe(NSApp.windows.first { $0.identifier?.rawValue == "chat" })
                         guard let placement = windowGeometry.placement(
                             minimumContentSize: content.sizeThatFits(.zero),
                             defaultDisplayBounds: context.defaultDisplay.bounds) else { return WindowPlacement() }
