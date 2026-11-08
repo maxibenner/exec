@@ -129,7 +129,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Workspace instructions refresh on first send", { try await WorkspaceTests().refreshesInstructionsOnFirstSend() }),
             ("Workspace instruction loading", { try WorkspaceTests().loadsOnlyRootInstructionsAndRejectsUnsafeFiles() }),
             ("Workspace context isolation", { try await chat.workspaceChangesKeepInstructionsAndHistoryIsolated() }),
-            ("Context usage reports and estimates", { try CompactionTests().contextUsageReportsOnlyMatchingMeasurements() }),
+            ("Context usage reports and estimates", { try await CompactionTests().contextUsageReportsOnlyMatchingMeasurements() }),
             ("Compaction threshold and durable continuation", { try await CompactionTests().thresholdAndDurableOpaqueContinuation() }),
             ("Compaction failure and cancellation safety", { try await CompactionTests().failedAndCancelledCompactionKeepsOriginalContext() }),
             ("Compaction estimates and tool boundaries", { try await CompactionTests().reportedCountsLegacyStateAndClosedToolBoundaries() }),

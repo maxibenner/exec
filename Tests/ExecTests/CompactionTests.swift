@@ -37,7 +37,7 @@ import Foundation
         ))
     }
 
-    func contextUsageReportsOnlyMatchingMeasurements() throws {
+    func contextUsageReportsOnlyMatchingMeasurements() async throws {
         let http = HTTPStub.makeSession([])
         defer { http.invalidateAndCancel() }
         let provider = try provider(http: http)
@@ -54,6 +54,19 @@ import Foundation
         try expect(provider.contextUsage(streaming, model: model, instructions: "", tools: []) == reported)
         let saved = try CodexConversationState.restore(state(history, tokens: 2_500))
         try expect(saved.reportedTokens(appended) == nil)
+        // A completed transport can publish accounting before history commits the reply.
+        var updating = CodexConversationState(
+            measurement: .init(inputID: appended.last!.id, tokens: 3_000),
+            displayMeasurement: saved.measurement)
+        try expect(updating.lastReportedTokens(appended) == 2_500)
+        try expect(updating.lastReportedTokens(streaming) == 3_000)
+        var cancelled = streaming
+        cancelled[cancelled.count - 1].status = .interrupted
+        try expect(updating.lastReportedTokens(cancelled) == 2_500)
+        updating.measurement = nil // A response without accounting must not erase the footer.
+        try expect(updating.lastReportedTokens(streaming) == 2_500)
+        try expect(updating.reportedTokens(streaming) == nil)
+        try expect(updating.lastReportedTokens([]) == nil)
         let compactedDisplay = CodexConversationState(displayMeasurement: saved.measurement)
         let restoredDisplay = try CodexConversationState.restore(JSONEncoder().encode(compactedDisplay))
         try expect(restoredDisplay.lastReportedTokens(history) == 2_500)
@@ -66,6 +79,16 @@ import Foundation
         provider.clearConversationState()
         try expect(provider.contextUsage(history, model: model, instructions: "", tools: []) == nil)
         try expect(HTTPStub.state.requests.isEmpty)
+
+        let withoutUsage = Data("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Next answer\"}]}]}}\n\n".utf8)
+        let responseHTTP = HTTPStub.makeSession([.init(chunks: [withoutUsage])])
+        defer { responseHTTP.invalidateAndCancel() }
+        let responding = try self.provider(http: responseHTTP)
+        try responding.restoreConversationState(state(history, tokens: 2_500), history: history)
+        for try await _ in responding.send(appended, model: model.id) {
+            try expect(responding.contextUsage(appended, model: model, instructions: "", tools: []) == reported)
+        }
+        try expect(responding.contextUsage(streaming, model: model, instructions: "", tools: []) == reported)
     }
 
     func thresholdAndDurableOpaqueContinuation() async throws {
