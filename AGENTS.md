@@ -1,5 +1,11 @@
 # Exec project instructions
 
+## Layout
+
+- `macOS/` contains the current macOS application.
+- `Relay/` and `iOS/` are reserved for separate applications and are currently empty.
+- Run macOS build and test commands from `macOS/`.
+
 ## Git
 
 - This directory is its own Git repository. Run Git commands here, not in the parent workspace repository.
@@ -26,7 +32,7 @@
 
 ## Verification
 
-- Run `./scripts/test.sh` and `./scripts/build-app.sh` before committing code changes.
+- Run `./scripts/test.sh` and `./scripts/build-app.sh` from `macOS/` before committing macOS code changes.
 - Keep tests small, practical and focused on meaningful behavior and regressions. Prioritize authentication, cancellation, conversation integrity and error recovery; do not build an oversized suite, chase coverage percentages or test trivial implementation details.
 - Tests must use isolated stores/fake transports, not the user's Keychain or live model calls.
 - Report manual checks or signing steps that remain unverified; do not claim mocks verify live service behavior.
