@@ -111,7 +111,6 @@ import SwiftUI
         let frame = window.frame
         let contentRect = window.contentLayoutRect
         let toolbar = window.toolbar
-        try expect(toolbar != nil)
         pending?.resume(); pending = nil
         try await wait { !startup.starting && !library.hasRunningOperations }
         try await settle(window)

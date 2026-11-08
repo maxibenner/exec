@@ -69,7 +69,6 @@ import SwiftUI
             let frame = window.frame
             let content = window.contentLayoutRect
             let toolbar = window.toolbar
-            try expect(toolbar != nil)
             try expect(window.titleVisibility == .hidden)
             let minimum = window.contentMinSize
             let initialSidebarColor = try sidebarBackground(in: controller.view)

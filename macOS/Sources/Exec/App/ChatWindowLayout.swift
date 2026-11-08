@@ -28,16 +28,6 @@ struct ChatWindowLayout<Sidebar: View, Detail: View>: View {
                 .background(SidebarResizeBehavior())
         }
         .navigationSplitViewStyle(.balanced)
-        .toolbar(removing: .sidebarToggle)
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-                } label: { Image(systemName: "sidebar.left") }
-                .help("Toggle Sidebar")
-                .accessibilityLabel("Toggle Sidebar")
-            }
-        }
         .background(WindowReference { ChatWindowAppearance.configure($0) })
         .frame(minWidth: 720, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
     }
