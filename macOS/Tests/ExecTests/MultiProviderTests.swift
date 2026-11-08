@@ -455,6 +455,9 @@ import SwiftUI
                                     size: NSSize(width: 360, height: 166), to: previews.appendingPathComponent("key-sheet.png"))
             library.disconnect(providerID: "openai")
             try await wait { !library.hasRunningOperations && library.models.count == 1 }
+            library.settingsTab = .accounts
+            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
+                                    to: previews.appendingPathComponent("providers-single.png"))
             library.defaultModel = "model" // A remembered Codex default is unavailable.
             let panel = ChatPanel(library: library, conversation: library.current)
             try expect(panel.modelUnavailableReason == "Model unavailable")

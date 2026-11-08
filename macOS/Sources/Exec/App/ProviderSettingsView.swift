@@ -6,7 +6,6 @@ struct ProviderSettingsView: View {
     let store: ChatLibrary
     @State private var selection: String?
     @State private var adding: ProviderConnection?
-    private let rowHeight: CGFloat = 48
 
     private var connected: [ProviderConnection] { store.connections.filter { $0.account != nil } }
     private var available: [ProviderConnection] { store.connections.filter { $0.account == nil } }
@@ -16,7 +15,7 @@ struct ProviderSettingsView: View {
             Group {
                 if connected.isEmpty {
                     Text("No providers connected").foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity).frame(height: 36)
+                        .frame(maxWidth: .infinity).padding(12)
                 } else {
                     providerList
                 }
@@ -27,6 +26,7 @@ struct ProviderSettingsView: View {
             Spacer(minLength: 0)
         }
         .padding(20)
+        .background(.background)
         .disabled(store.accountBusy || !store.canNavigate)
         .onChange(of: connected.map(\.id)) { _, ids in
             if !ids.contains(selection ?? "") { selection = ids.first }
@@ -47,34 +47,45 @@ struct ProviderSettingsView: View {
     }
 
     private var providerList: some View {
-        List(connected, selection: $selection) { connection in
-            HStack(spacing: 10) {
-                Image(systemName: connection.authentication == .apiKey ? "key" : "person.crop.circle")
-                    .frame(width: 24)
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(connection.name)
-                    if let account = connection.account {
-                        Text(verbatim: account).font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.middle)
-                    }
+        // This short account list sizes itself from its rows, including padding.
+        // There is no scroll container or separate height to keep in sync.
+        VStack(spacing: 0) {
+            ForEach(connected) { connection in
+                if connection.id != connected.first?.id {
+                    Divider().padding(.horizontal, 12)
                 }
-                Spacer()
+                Button { selection = connection.id } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: connection.authentication == .apiKey ? "key" : "person.crop.circle")
+                            .frame(width: 24)
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(connection.name)
+                            if let account = connection.account {
+                                Text(verbatim: account).font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(1).truncationMode(.middle)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .background(selection == connection.id ? Color.primary.opacity(0.08) : Color.clear)
+                .accessibilityAddTraits(selection == connection.id ? [.isSelected] : [])
             }
-            .padding(.horizontal, 8)
-            .frame(height: rowHeight)
-            .listRowInsets(EdgeInsets())
-            .tag(connection.id)
         }
-        .listStyle(.inset)
-        .scrollContentBackground(.hidden)
-        .contentMargins(.vertical, 4, for: .scrollContent)
-        .frame(height: CGFloat(connected.count) * rowHeight + 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Connected providers")
     }
 
     private var providerControls: some View {
-        HStack(spacing: 12) {
-            ControlGroup {
+        HStack {
+            Spacer(minLength: 0)
+            HStack(spacing: 0) {
                 Menu {
                     ForEach(available) { connection in
                         Button(connection.name) {
@@ -82,21 +93,24 @@ struct ProviderSettingsView: View {
                             else { store.connect(providerID: connection.id) }
                         }
                     }
-                } label: { Image(systemName: "plus").frame(width: 16, height: 18) }
-                .menuIndicator(.visible)
+                } label: { Image(systemName: "plus").frame(width: 30, height: 26) }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .disabled(available.isEmpty)
                 .help("Add Provider")
                 .accessibilityLabel("Add Provider")
+                Divider().frame(height: 14)
                 Button {
                     guard let selection else { return }
                     store.disconnect(providerID: selection)
-                } label: { Image(systemName: "minus").frame(width: 16, height: 18) }
+                } label: { Image(systemName: "minus").frame(width: 30, height: 26) }
+                .buttonStyle(.borderless)
                 .disabled(!connected.contains { $0.id == selection })
                 .help("Remove Provider")
                 .accessibilityLabel("Remove Provider")
             }
-            .fixedSize()
-            Spacer()
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 6))
         }
         .controlSize(.small)
     }
