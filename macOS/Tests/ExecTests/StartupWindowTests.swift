@@ -89,7 +89,7 @@ import SwiftUI
                 try expect(zip(initialSidebarColor, restoredColor).allSatisfy { abs($0 - $1) < 1.0 / 255 })
             }
             try expect(window.title == "Restored conversation")
-            try expect(window.titlebarSeparatorStyle == .line)
+            try expect(window.titlebarSeparatorStyle == .none)
             guard let split = splitView(in: controller.view),
                   let splitController = split.delegate as? NSSplitViewController,
                   let sidebar = split.arrangedSubviews.first,

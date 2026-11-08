@@ -1,13 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// Use the native title bar and its standard hairline for every chat window.
+/// Keep native title controls; ConversationView owns the conditional divider.
 @MainActor enum ChatWindowAppearance {
     static func configure(_ window: NSWindow?) {
         guard let window else { return }
         if window.titleVisibility != .visible { window.titleVisibility = .visible }
-        let separator: NSTitlebarSeparatorStyle = window.title.isEmpty ? .none : .line
-        if window.titlebarSeparatorStyle != separator { window.titlebarSeparatorStyle = separator }
+        if window.titlebarSeparatorStyle != .none { window.titlebarSeparatorStyle = .none }
     }
 }
 
