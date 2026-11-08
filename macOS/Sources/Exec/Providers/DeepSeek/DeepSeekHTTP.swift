@@ -37,7 +37,7 @@ enum DeepSeekHTTP {
         guard (200..<300).contains(response.statusCode) else {
             let message: String
             switch response.statusCode {
-            case 401: message = "DeepSeek rejected the API key. Update it in Settings."
+            case 401: message = "DeepSeek rejected the API key. Remove and add DeepSeek in Settings → Providers."
             case 402: message = "Your DeepSeek balance is insufficient. Add funds to your DeepSeek account."
             case 403: message = "DeepSeek denied access to this request."
             case 429: message = "DeepSeek rate limit reached. Try again later."

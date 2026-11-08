@@ -96,7 +96,7 @@ import Security
         if needsPersistence { try persist() }
         guard let current = session else { throw ExecError("Connect to Codex first.") }
         guard current.requiresReconnect != true else {
-            throw ExecError("Your session needs to be renewed. Choose Reconnect from the account menu.")
+            throw ExecError("Your session needs to be renewed. Remove and add OpenAI in Settings → Providers.")
         }
         if current.expires.timeIntervalSinceNow > 60 { return current }
         var pending = current
@@ -107,7 +107,7 @@ import Security
         let task = Task { @MainActor in
             let response = try await token(CodexConnection.refreshFields(current.refresh))
             guard try CodexConnection.accountID(in: response.access_token) == current.accountID else {
-                throw ExecError("Session refresh returned a different workspace. Please reconnect.")
+                throw ExecError("Session refresh returned a different workspace. Remove and add OpenAI in Settings → Providers.")
             }
             var updated = current
             updated.access = response.access_token

@@ -16,7 +16,7 @@ import Foundation
         self.store = store
         if let restoredData {
             do { credential = try JSONDecoder().decode(Credential.self, from: restoredData) }
-            catch { throw ExecError("Saved DeepSeek credentials could not be read. Remove the deepseek.api-key item in Keychain Access and reconnect.") }
+            catch { throw ExecError("Saved DeepSeek credentials could not be read. Remove the deepseek.api-key item in Keychain Access and add DeepSeek again.") }
         }
     }
 

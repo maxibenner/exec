@@ -87,6 +87,7 @@ struct ProviderConnection: Identifiable, Equatable {
     func connect(id: String, credential: String?) async throws
     func disconnect(id: String) async throws
     func isModelAvailable(_ model: String) -> Bool
+    func providerID(for model: String) -> String?
     func supportsWebSearch(model: String) -> Bool
     func supportsImageGeneration(model: String) -> Bool
     func searchModel(for model: String, preferred: String) -> String
@@ -138,6 +139,7 @@ extension ChatProvider {
         try await disconnect()
     }
     func isModelAvailable(_ model: String) -> Bool { account != nil }
+    func providerID(for model: String) -> String? { model.isEmpty ? nil : displayName }
     func supportsWebSearch(model: String) -> Bool { supportsWebSearch }
     func supportsImageGeneration(model: String) -> Bool { supportsImageGeneration }
     func searchModel(for model: String, preferred: String) -> String { preferred }

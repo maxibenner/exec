@@ -47,6 +47,7 @@ import Foundation
     }
     func disconnect(id: String) async throws { try await registry.disconnect(id: id) }
     func models() async throws -> [ChatModel] { try await registry.models() }
+    func providerID(for model: String) -> String? { registry.route(model)?.entry.id }
     func isModelAvailable(_ model: String) -> Bool { registry.route(model)?.entry.provider.account != nil }
 
     private func child(_ entry: ProviderRegistry.Entry) throws -> any ChatProvider {

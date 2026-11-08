@@ -4,7 +4,17 @@ import Observation
 /// Owns navigation and account-wide actions. Each conversation keeps its own runner and provider context.
 @MainActor @Observable final class ChatLibrary {
     private(set) var current: ChatStore
-    private(set) var models: [ChatModel] = []
+    private var discoveredModels: [ChatModel] = []
+    // A remembered catalog is never evidence that a disconnected provider is usable.
+    var models: [ChatModel] {
+        _ = authenticating
+        return isPresentingStartup ? discoveredModels : discoveredModels.filter { provider.isModelAvailable($0.id) }
+    }
+    enum SettingsTab { case general, accounts, systemPrompt }
+    var settingsTab = SettingsTab.general
+    var connectionError: String?
+    private var rememberedModels: [String: String]
+    private var rememberedEfforts: [String: String]
     private(set) var openingSessionID: UUID?
     private(set) var navigating = false
     private(set) var authenticating = false
@@ -59,11 +69,22 @@ import Observation
     var defaultModel: String {
         didSet {
             preferences.set(defaultModel, forKey: "defaultSessionModel")
-            if defaultModel != oldValue { defaultEffort = nil }
+            if let id = provider.providerID(for: defaultModel), !defaultModel.isEmpty {
+                rememberedModels[id] = defaultModel
+                preferences.set(rememberedModels, forKey: "providerDefaultModels")
+            }
+            if defaultModel != oldValue { defaultEffort = rememberedEfforts[defaultModel] }
         }
     }
     var defaultEffort: String? {
-        didSet { preferences.set(defaultEffort, forKey: "defaultSessionEffort") }
+        didSet {
+            preferences.set(defaultEffort, forKey: "defaultSessionEffort")
+            let model = defaultModel.isEmpty ? defaultSessionModel?.id ?? "" : defaultModel
+            if !model.isEmpty {
+                rememberedEfforts[model] = defaultEffort
+                preferences.set(rememberedEfforts, forKey: "modelDefaultEfforts")
+            }
+        }
     }
     var defaultAutoApproveTools: Bool {
         didSet { preferences.set(defaultAutoApproveTools, forKey: "defaultSessionAutoApproveTools") }
@@ -71,11 +92,38 @@ import Observation
     var searchModel: String {
         didSet {
             preferences.set(searchModel, forKey: "searchModel")
-            for conversation in conversations { conversation.searchModel = searchModel }
+            for conversation in conversations { conversation.searchModel = resolvedSearchModel }
         }
     }
     var defaultSessionModel: ChatModel? {
-        models.first { $0.id == defaultModel } ?? models.first
+        if let preferred = models.first(where: { $0.id == defaultModel }) { return preferred }
+        for connection in connections where connection.account != nil {
+            if let remembered = rememberedModels[connection.id], let model = models.first(where: { $0.id == remembered }) {
+                return model
+            }
+        }
+        return models.first
+    }
+    var effectiveDefaultModel: String { defaultModel.isEmpty ? "" : defaultSessionModel?.id ?? "" }
+    var effectiveDefaultEffort: String? {
+        guard let model = defaultSessionModel else { return nil }
+        let effort: String?
+        if defaultModel.isEmpty || model.id == defaultModel { effort = defaultEffort }
+        else if provider.providerID(for: defaultModel) != provider.providerID(for: model.id) { effort = rememberedEfforts[model.id] }
+        else { effort = nil }
+        return model.efforts.contains(where: { $0.id == effort }) ? effort : nil
+    }
+    func setDefaultEffort(_ effort: String?) {
+        guard let model = defaultSessionModel else { return }
+        if !defaultModel.isEmpty && defaultModel != model.id { defaultModel = model.id }
+        defaultEffort = effort
+    }
+    var effectiveSearchModel: String { searchModels.first { $0.id == searchModel }?.id ?? searchModels.first?.id ?? "" }
+    private var resolvedSearchModel: String { effectiveSearchModel.isEmpty ? searchModel : effectiveSearchModel }
+    var effectiveTitleModel: String { models.contains { $0.id == titleModel } ? titleModel : "" }
+    func titleModel(for conversation: ChatStore) -> String? {
+        let selected = effectiveTitleModel.isEmpty ? conversation.requestModelID : effectiveTitleModel
+        return models.contains { $0.id == selected } ? selected : nil
     }
 
     var titleModel: String {
@@ -89,6 +137,8 @@ import Observation
          preferences: UserDefaults = .standard, metadataCache: AccountMetadataCache? = nil) throws {
         self.metadataCache = metadataCache
         self.preferences = preferences
+        rememberedModels = preferences.dictionary(forKey: "providerDefaultModels") as? [String: String] ?? [:]
+        rememberedEfforts = preferences.dictionary(forKey: "modelDefaultEfforts") as? [String: String] ?? [:]
         defaultModel = preferences.string(forKey: "defaultSessionModel") ?? ""
         defaultEffort = preferences.string(forKey: "defaultSessionEffort")
         let autoApproveTools = preferences.object(forKey: "defaultSessionAutoApproveTools") as? Bool ?? true
@@ -105,8 +155,17 @@ import Observation
                             defaultAutoApproveTools: autoApproveTools)
         current.selectedModel = defaultModel
         current.selectedEffort = defaultEffort
+        rememberDefaultPreference()
         observe(current)
         remember(current)
+    }
+
+    private func rememberDefaultPreference() {
+        guard !defaultModel.isEmpty, let id = provider.providerID(for: defaultModel) else { return }
+        rememberedModels[id] = defaultModel
+        if let defaultEffort { rememberedEfforts[defaultModel] = defaultEffort }
+        preferences.set(rememberedModels, forKey: "providerDefaultModels")
+        preferences.set(rememberedEfforts, forKey: "modelDefaultEfforts")
     }
 
     /// Bootstrap the same UI objects from disk before asking Keychain for anything.
@@ -122,7 +181,7 @@ import Observation
         library.isPresentingStartup = true
         library.authenticating = true
         library.modelsAreCached = true
-        library.models = metadata.usableModels()
+        library.discoveredModels = metadata.usableModels()
         library.cachedUsage = metadata.usage
         library.applyModels(to: library.current)
         do { try await library.current.presentStartup() }
@@ -147,7 +206,7 @@ import Observation
             // Remove the old account's visible data immediately, while retaining
             // the read-only guard until disk invalidation completes.
             current.clearStartupPresentation()
-            models = []
+            discoveredModels = []
             cachedUsage = nil
             savedSummaries = []
             sidebarOrder = []
@@ -161,6 +220,7 @@ import Observation
             observe(current)
         }
         provider = restored
+        rememberDefaultPreference()
         // No suspension between unlocking the preview and starting real local
         // restoration, which validates provider context before enabling actions.
         isPresentingStartup = false
@@ -183,7 +243,7 @@ import Observation
     var selectedModel: String {
         get { current.selectedModel }
         set {
-            guard canNavigate, newValue != current.selectedModel else { return }
+            guard canNavigate, models.contains(where: { $0.id == newValue }), newValue != current.selectedModel else { return }
             current.selectedModel = newValue
             current.scheduleSave()
         }
@@ -206,6 +266,16 @@ import Observation
     var connections: [ProviderConnection] {
         _ = authenticating // Refresh account presentation after account operations.
         return provider.connections
+    }
+    var hasConnectedProvider: Bool { connections.contains { $0.account != nil } }
+    var modelGroups: [ProviderModelGroup] {
+        connections.compactMap { connection in
+            let available = models.filter { provider.providerID(for: $0.id) == connection.id }
+            return available.isEmpty ? nil : ProviderModelGroup(id: connection.id, name: connection.name, models: available)
+        }
+    }
+    func providerName(for model: String) -> String {
+        connections.first { $0.id == provider.providerID(for: model) }?.name ?? ""
     }
     var searchModels: [ChatModel] { models.filter { provider.usesSearchModel($0.id) } }
     var connectionTitle: String { provider.connectionTitle }
@@ -280,7 +350,8 @@ import Observation
 
     func send(in destination: ChatStore? = nil) {
         let destination = destination ?? current
-        guard canModify else { return }
+        guard canModify, destination.hasUsableModel,
+              !provider.preservesModelSelection || models.contains(where: { $0.id == destination.selectedModel }) else { return }
         if destination.isSending || destination.isCompacting { destination.send(); return }
         guard !destination.busy else { return }
         navigate(reportingTo: destination) {
@@ -319,16 +390,17 @@ import Observation
     func restore() { accountOperation { self.current.restore(loadModels: false) } }
     func connect() { accountOperation { self.current.connect(loadModels: false) } }
     func connect(providerID: String, credential: String? = nil) {
-        accountOperation { self.current.connect(loadModels: false, providerID: providerID, credential: credential) }
+        accountOperation(reportConnectionError: true) { self.current.connect(loadModels: false, providerID: providerID, credential: credential) }
     }
     func disconnect(providerID: String) {
-        accountOperation(signingOut: true) { self.current.disconnect(providerID: providerID) }
+        accountOperation(signingOut: true, reportConnectionError: true) { self.current.disconnect(providerID: providerID) }
     }
     func disconnect() { accountOperation(signingOut: true) { self.current.disconnect() } }
 
-    private func accountOperation(signingOut: Bool = false, _ start: () -> Void) {
+    private func accountOperation(signingOut: Bool = false, reportConnectionError: Bool = false, _ start: () -> Void) {
         guard canModify, !conversations.contains(where: { $0.busy || $0.isSaving }) else { return }
         cancelTitleGeneration()
+        if reportConnectionError { connectionError = nil }
         let identity = provider.conversationIdentity
         let oldKey = metadataKey
         for conversation in conversations { conversation.suspendAutoApproval() }
@@ -350,10 +422,14 @@ import Observation
                 }
             }
             await current.waitUntilIdle()
+            // Run even after cancellation: removed credentials must immediately
+            // invalidate choices and send eligibility in every resident window.
+            synchronizeConnections()
+            if reportConnectionError { connectionError = current.error }
             // Eviction follows successful sign-out, even if cancellation arrived
             // after the provider removed the credentials.
             if identity != provider.conversationIdentity {
-                models = []
+                discoveredModels = []
                 cachedUsage = nil
                 savedSummaries = current.sessionList
                 sidebarOrder = []
@@ -373,14 +449,10 @@ import Observation
             modelsAreCached = true
             if let key = metadataKey, let saved = await metadataCache?.load(key: key) {
                 guard !Task.isCancelled, key == metadataKey else { return }
-                models = saved.usableModels().filter { provider.isModelAvailable($0.id) }
+                discoveredModels = saved.usableModels().filter { provider.isModelAvailable($0.id) }
                 if !signingOut { cachedUsage = saved.usage }
             }
-            models = models.filter { provider.isModelAvailable($0.id) }
-            for conversation in conversations {
-                conversation.account = provider.account
-                applyModels(to: conversation)
-            }
+            synchronizeConnections()
             savedSummaries = current.sessionList
             remember(current)
             do {
@@ -399,16 +471,25 @@ import Observation
         let key = metadataKey
         modelTask = Task {
             do {
+                try Task.checkCancellation()
                 let available = try await provider.models()
                 guard !Task.isCancelled, generation == metadataGeneration, key == metadataKey else { return }
                 guard !available.isEmpty else {
                     throw ExecError("The provider returned no selectable models. Try Refresh Models in Settings.")
                 }
-                models = available
+                var updated = available
+                if provider.modelDiscoveryWarning != nil {
+                    // A failed provider refresh may still have a usable disk catalog.
+                    let refreshed = Set(available.compactMap { provider.providerID(for: $0.id) })
+                    updated += models.filter { model in
+                        provider.providerID(for: model.id).map { !refreshed.contains($0) } ?? false
+                    }
+                }
+                discoveredModels = updated
                 modelRefreshError = provider.modelDiscoveryWarning
                 modelsAreCached = false
                 for conversation in conversations { applyModels(to: conversation) }
-                if let key { await metadataCache?.saveModels(available, fetchedAt: .now, key: key) }
+                if let key { await metadataCache?.saveModels(updated, fetchedAt: .now, key: key) }
             } catch {
                 // Keep cached/local state and never replace a recovery error.
                 if !Task.isCancelled, generation == metadataGeneration, key == metadataKey,
@@ -419,9 +500,23 @@ import Observation
         }
     }
 
+    private func synchronizeConnections() {
+        discoveredModels = discoveredModels.filter { provider.isModelAvailable($0.id) }
+        for conversation in conversations {
+            conversation.account = provider.account
+            applyModels(to: conversation)
+        }
+    }
+
     private func applyModels(to conversation: ChatStore) {
         guard !conversation.busy else { return } // Never change settings beneath a running turn.
+        let needsDefault = conversation.messages.isEmpty && !models.contains { $0.id == conversation.selectedModel }
         conversation.installModels(models, cached: modelsAreCached)
+        conversation.searchModel = resolvedSearchModel
+        if needsDefault, provider.preservesModelSelection {
+            conversation.selectedModel = defaultSessionModel?.id ?? ""
+            conversation.selectedEffort = effectiveDefaultEffort
+        }
     }
 
     /// Window ownership never creates a second runner or restores a resident provider.
@@ -647,10 +742,8 @@ import Observation
                                      selectOnCheckpoint: false, newConversation: true, workspace: workspace,
                                      systemPrompt: systemPrompt, defaultAutoApproveTools: defaultAutoApproveTools)
         conversation.installModels(models, cached: modelsAreCached)
-        conversation.selectedModel = provider.preservesModelSelection && !defaultModel.isEmpty
-            ? defaultModel : defaultSessionModel?.id ?? defaultModel
-        conversation.selectedEffort = models.isEmpty || defaultSessionModel?.efforts.contains(where: { $0.id == defaultEffort }) == true
-            ? defaultEffort : nil
+        conversation.selectedModel = defaultSessionModel?.id ?? ""
+        conversation.selectedEffort = effectiveDefaultEffort
         observe(conversation)
         return conversation
     }
@@ -666,11 +759,10 @@ import Observation
     private func generateTitle(for conversation: ChatStore, message: Message) {
         guard let id = conversation.currentSessionID else { return }
         cancelTitleGeneration(for: id)
-        guard generatedTitlesEnabled, models.contains(where: { $0.id == titleModel }),
+        guard generatedTitlesEnabled, let model = titleModel(for: conversation),
               let summary = sessionList.first(where: { $0.id == id }) else { return }
         let request = UUID()
         let identity = provider.conversationIdentity
-        let model = titleModel
         titleRequests[id] = request
         titleTasks[id] = Task { [weak self, provider, sessions] in
             defer {
@@ -693,7 +785,7 @@ import Observation
     }
 
     private func observe(_ conversation: ChatStore) {
-        conversation.searchModel = searchModel
+        conversation.searchModel = resolvedSearchModel
         conversation.didLoadSessionList = { [weak self, weak conversation] summaries in
             guard let self, let conversation, conversation === self.current else { return }
             self.catalogRequest += 1

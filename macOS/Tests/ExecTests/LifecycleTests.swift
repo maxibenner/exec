@@ -82,7 +82,7 @@ import Foundation
         do {
             _ = try await restarted.credentials()
             throw CheckFailure(description: "Uncertain refresh token was reused")
-        } catch let error as ExecError { try expect(error.message.contains("Reconnect")) }
+        } catch let error as ExecError { try expect(error.message.contains("Remove and add OpenAI")) }
         try expect(HTTPStub.state.requests.count == 1)
     }
 

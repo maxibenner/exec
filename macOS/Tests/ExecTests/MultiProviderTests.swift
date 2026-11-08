@@ -1,9 +1,16 @@
 import Foundation
+import AppKit
+import SwiftUI
 
 @MainActor private final class RegistryProbe: ChatProvider {
     final class Connection {
         var account: String? = "account"
         var discoveriesFail = false
+        var connectFails = false
+        var disconnectFails = false
+        var disconnectAction: (() async -> Void)?
+        var modelsAction: (() async throws -> Void)?
+        var catalog: [ChatModel]?
         var requests: [String] = []
         var inputs: [[Message]] = []
         var definitions: [[String]] = []
@@ -22,11 +29,24 @@ import Foundation
     var state: Data?
     init(_ name: String, connection: Connection = Connection()) { displayName = name; self.connection = connection }
     func makeConversationProvider() throws -> any ChatProvider { RegistryProbe(displayName, connection: connection) }
-    func connect() async throws { connection.account = "account" }
-    func disconnect() async throws { connection.account = nil }
+    var connections: [ProviderConnection] {
+        [.init(id: displayName, name: displayName, account: account,
+               authentication: displayName == "DeepSeek" ? .apiKey : .browser)]
+    }
+    func usesSearchModel(_ model: String) -> Bool { displayName == "OpenAI" }
+    func connect() async throws {
+        if connection.connectFails { throw ExecError("Connection failed") }
+        connection.account = "account"
+    }
+    func disconnect() async throws {
+        if connection.disconnectFails { throw ExecError("Disconnect failed") }
+        connection.account = nil
+        await connection.disconnectAction?()
+    }
     func models() async throws -> [ChatModel] {
+        try await connection.modelsAction?()
         if connection.discoveriesFail { throw ExecError("Unavailable") }
-        return [ChatModel(id: "model", name: displayName, acceptsImages: supportsImageGeneration)]
+        return connection.catalog ?? [ChatModel(id: "model", name: displayName, acceptsImages: supportsImageGeneration)]
     }
     func encodeConversationState() throws -> Data? { state }
     func restoreConversationState(_ data: Data?, history: [Message]) throws {
@@ -137,7 +157,7 @@ import Foundation
         store.draft = "Keep my chosen provider"
         store.send()
         await store.waitUntilIdle()
-        try expect(store.error?.contains("Connect OpenAI") == true && deepSeek.connection.requests.isEmpty)
+        try expect(store.error == nil && store.draft == "Keep my chosen provider" && store.messages.isEmpty && deepSeek.connection.requests.isEmpty)
         try expect(!provider.supportsImageGeneration(model: "deepseek/model") && !provider.supportsCompaction(model: "deepseek/model"))
         for try await _ in child.send([Message(role: .user, text: "Continue")], model: "deepseek/model", effort: nil, instructions: "", tools: []) {}
         try expect(deepSeek.connection.requests == ["model"])
@@ -189,6 +209,244 @@ import Foundation
         library.connect(providerID: "deepseek")
         try await wait { !library.hasRunningOperations && library.models.count == 1 }
         try expect(library.currentSessionID == id && library.messages.contains { $0.text == "Preserve me" })
+    }
+
+    func availabilityReconcilesEveryWindowAndDefaults() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "ProviderAvailability.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        preferences.set("model", forKey: "defaultSessionModel")
+        preferences.set("high", forKey: "defaultSessionEffort")
+        preferences.set("model", forKey: "sessionTitleModel")
+        let openAI = RegistryProbe("OpenAI"), deepSeek = RegistryProbe("DeepSeek")
+        openAI.connection.catalog = [.init(id: "model", name: "Codex", efforts: [.init(id: "high", name: "High")])]
+        deepSeek.connection.catalog = [.init(id: "model", name: "DeepSeek"),
+                                      .init(id: "other", name: "DeepSeek Other", efforts: [.init(id: "low", name: "Low")])]
+        deepSeek.connection.account = nil
+        let provider = MultiProvider(registry: registry(openAI, deepSeek))
+        let library = try ChatLibrary(provider: provider, sessions: SessionStore(directory: root), preferences: preferences)
+        defer { library.stopAll() }
+        library.restore()
+        try await wait { !library.hasRunningOperations && library.models.count == 1 }
+        library.draft = "Existing conversation"
+        library.send()
+        try await wait { !library.hasRunningOperations }
+        let existing = library.current
+        let existingID = existing.currentSessionID!
+        let panel = ChatPanel(library: library, conversation: existing)
+        library.detachSession(existingID) { _ in }
+        try await wait { !library.hasRunningOperations && library.detachedSessionIDs.contains(existingID) }
+        let empty = library.current
+        existing.draft = "Keep this draft"
+        library.disconnect(providerID: "openai")
+        try await wait { !library.hasRunningOperations }
+        try expect(!library.hasConnectedProvider && library.models.isEmpty && library.modelGroups.isEmpty)
+        try expect(panel.selectedModel.isEmpty && !panel.canSend && existing.selectedModel == "model")
+        try expect(library.defaultSessionModel == nil && library.effectiveTitleModel.isEmpty && library.searchModels.isEmpty)
+        let messageCount = existing.messages.count
+        panel.send()
+        existing.send() // The runner guards this too, independently of SwiftUI.
+        try expect(existing.messages.count == messageCount && existing.draft == "Keep this draft")
+        try expect(existing.pendingInput.isEmpty && openAI.connection.requests.count == 1)
+
+        library.connect(providerID: "deepseek", credential: "test-key")
+        try await wait { !library.hasRunningOperations && library.models.count == 2 }
+        try expect(library.models.allSatisfy { $0.id.hasPrefix("deepseek/") })
+        try expect(library.effectiveDefaultModel == "deepseek/model" && library.effectiveDefaultEffort == nil)
+        try expect(empty.selectedModel == "deepseek/model" && empty.hasUsableModel)
+        try expect(panel.selectedModel.isEmpty && !panel.canSend)
+        try expect(library.effectiveTitleModel.isEmpty && library.titleModel(for: empty) == "deepseek/model")
+        try expect(library.searchModels.isEmpty)
+        panel.selectedModel = "model" // Stale programmatic selections cannot bypass the picker.
+        try expect(panel.selectedModel.isEmpty)
+        panel.selectedModel = "deepseek/other"
+        try await wait { !library.hasRunningOperations }
+        try expect(panel.canSend && existing.draft == "Keep this draft")
+        library.defaultModel = "deepseek/other"
+        library.setDefaultEffort("low")
+        library.titleModel = "" // Same as chat, even when another provider returns.
+        library.connect(providerID: "openai")
+        try await wait { !library.hasRunningOperations && library.models.count == 3 }
+        try expect(panel.selectedModel == "deepseek/other" && library.effectiveDefaultModel == "deepseek/other")
+        try expect(library.effectiveTitleModel.isEmpty && library.modelGroups.count == 2)
+        library.defaultModel = "model"
+        try expect(library.effectiveDefaultEffort == "high")
+        library.disconnect(providerID: "openai")
+        try await wait { !library.hasRunningOperations }
+        try expect(library.effectiveDefaultModel == "deepseek/other" && library.effectiveDefaultEffort == "low")
+        library.newConversation()
+        try await wait { !library.hasRunningOperations }
+        try expect(library.current.selectedModel == "deepseek/other" && library.current.effectiveEffort == "low")
+        let restarted = try ChatLibrary(provider: provider, sessions: SessionStore(directory: root), preferences: preferences)
+        defer { restarted.stopAll() }
+        restarted.restore()
+        try await wait { !restarted.hasRunningOperations && restarted.models.count == 2 }
+        try expect(restarted.effectiveDefaultModel == "deepseek/other" && restarted.effectiveDefaultEffort == "low")
+    }
+
+    func failedConnectionsAndLateCatalogsDoNotReviveModels() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "ProviderRaces.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        let openAI = RegistryProbe("OpenAI"), deepSeek = RegistryProbe("DeepSeek")
+        let library = try ChatLibrary(provider: MultiProvider(registry: registry(openAI, deepSeek)),
+                                      sessions: SessionStore(directory: root), preferences: preferences)
+        defer { library.stopAll() }
+        library.restore()
+        try await wait { !library.hasRunningOperations && library.models.count == 2 }
+        openAI.connection.disconnectFails = true
+        library.disconnect(providerID: "openai")
+        try await wait { !library.hasRunningOperations }
+        try expect(library.connectionError == "Disconnect failed" && library.models.count == 2)
+        openAI.connection.disconnectFails = false
+        var pending: CheckedContinuation<Void, Never>?
+        openAI.connection.modelsAction = { await withCheckedContinuation { pending = $0 } }
+        defer { pending?.resume() }
+        library.refreshModels()
+        try await wait { pending != nil }
+        library.disconnect(providerID: "openai")
+        try await wait { !library.hasRunningOperations && library.models.count == 1 }
+        pending?.resume(); pending = nil
+        openAI.connection.modelsAction = nil
+        await Task.yield()
+        try expect(library.models.map(\.id) == ["deepseek/model"] && library.connectionError == nil)
+        openAI.connection.connectFails = true
+        library.connect(providerID: "openai")
+        try await wait { !library.hasRunningOperations }
+        try expect(library.connectionError == "Connection failed" && library.models.map(\.id) == ["deepseek/model"])
+        openAI.connection.connectFails = false
+        library.connect(providerID: "openai")
+        try await wait { !library.hasRunningOperations && library.models.count == 2 }
+        try expect(library.connectionError == nil)
+        // Cancellation after Keychain removal must still invalidate every model route.
+        var removing: CheckedContinuation<Void, Never>?
+        deepSeek.connection.disconnectAction = { await withCheckedContinuation { removing = $0 } }
+        defer { removing?.resume() }
+        library.disconnect(providerID: "deepseek")
+        try await wait { removing != nil }
+        library.stop()
+        removing?.resume(); removing = nil
+        try await wait { !library.hasRunningOperations }
+        try expect(library.models.map(\.id) == ["model"])
+        try expect(!library.connections.contains { $0.id == "deepseek" && $0.account != nil })
+    }
+
+    func cachedCatalogSurvivesOnlyWhileAuthenticated() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "ProviderOffline.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        let cache = AccountMetadataCache(directory: root.appendingPathComponent("cache"))
+        let cached = [ChatModel(id: "model", name: "Cached Codex"), ChatModel(id: "deepseek/model", name: "Cached DeepSeek")]
+        await cache.saveModels(cached, fetchedAt: .now, key: "Providers:account")
+        let openAI = RegistryProbe("OpenAI"), deepSeek = RegistryProbe("DeepSeek")
+        openAI.connection.discoveriesFail = true
+        let library = try ChatLibrary(provider: MultiProvider(registry: registry(openAI, deepSeek)),
+            sessions: SessionStore(directory: root.appendingPathComponent("sessions")), preferences: preferences, metadataCache: cache)
+        defer { library.stopAll() }
+        library.restore()
+        try await wait { !library.hasRunningOperations && library.models.count == 2 }
+        // Wait for the successful provider's replacement of its cached entry.
+        try await wait { library.models.contains { $0.name == "DeepSeek" } }
+        try expect(library.models.contains { $0.id == "model" && $0.name == "Cached Codex" })
+        library.disconnect(providerID: "openai")
+        try await wait { !library.hasRunningOperations }
+        try expect(library.models.map(\.id) == ["deepseek/model"])
+    }
+
+    func optimisticStartupRemembersRealProviderDefaults() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "ProviderStartupDefaults.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        preferences.set("preferred", forKey: "defaultSessionModel")
+        preferences.set("high", forKey: "defaultSessionEffort")
+        let openAI = RegistryProbe("OpenAI"), deepSeek = RegistryProbe("DeepSeek")
+        openAI.connection.catalog = [.init(id: "model", name: "First"),
+            .init(id: "preferred", name: "Preferred", efforts: [.init(id: "high", name: "High")])]
+        let provider = MultiProvider(registry: registry(openAI, deepSeek))
+        let cache = AccountMetadataCache(directory: root.appendingPathComponent("cache"))
+        await cache.saveStartupAccount(.init(providerName: provider.displayName, connectionTitle: provider.connectionTitle,
+                                            accountName: provider.account!, conversationIdentity: provider.conversationIdentity!))
+        await cache.saveModels(try await provider.models(), fetchedAt: .now, key: "Providers:account")
+        let preview = try await ChatLibrary.startupPresentation(sessions: SessionStore(directory: root.appendingPathComponent("sessions")),
+                                                               cache: cache, preferences: preferences)!
+        defer { preview.stopAll() }
+        try await preview.reconcileStartup(with: provider)
+        try await wait { !preview.hasRunningOperations && preview.models.count == 3 }
+        preview.defaultModel = "deepseek/model"
+        preview.disconnect(providerID: "deepseek")
+        try await wait { !preview.hasRunningOperations }
+        try expect(preview.effectiveDefaultModel == "preferred" && preview.effectiveDefaultEffort == "high")
+        try expect((preferences.dictionary(forKey: "providerDefaultModels") as? [String: String])?["openai"] == "preferred")
+    }
+
+    func nativeProviderSettingsFitAndRender() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "ProviderLayout.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        let openAI = RegistryProbe("OpenAI"), deepSeek = RegistryProbe("DeepSeek")
+        let library = try ChatLibrary(provider: MultiProvider(registry: registry(openAI, deepSeek)),
+            sessions: SessionStore(directory: root), preferences: preferences)
+        defer { library.stopAll() }
+        library.settingsTab = .accounts
+        library.restore()
+        try await wait { !library.hasRunningOperations && library.models.count == 2 }
+        let previews = ProcessInfo.processInfo.environment["EXEC_SETTINGS_PREVIEWS"].map { URL(fileURLWithPath: $0) }
+        if let previews { try FileManager.default.createDirectory(at: previews, withIntermediateDirectories: true) }
+        for dark in [false, true] {
+            let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 500, height: 420),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            defer { window.orderOut(nil); window.contentView = nil }
+            let host = NSHostingView(rootView: SettingsView(store: library)
+                .frame(width: 500, height: 420).environment(\.colorScheme, dark ? .dark : .light))
+            window.contentView = host
+            window.orderFront(nil)
+            try await Task.sleep(for: .milliseconds(100))
+            host.layoutSubtreeIfNeeded()
+            try expect(abs(host.fittingSize.width - 500) < 1 && host.fittingSize.height <= 421)
+            if let previews, let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])?.write(to: previews.appendingPathComponent(dark ? "providers-dark.png" : "providers-light.png"))
+            }
+        }
+        let sheet = NSHostingView(rootView: ProviderKeySheet(providerName: "DeepSeek", connect: { _ in }))
+        try expect(sheet.fittingSize.width <= 410 && sheet.fittingSize.height < 260)
+        if let previews {
+            try await renderPreview(ProviderKeySheet(providerName: "DeepSeek", connect: { _ in }),
+                                    size: NSSize(width: 360, height: 166), to: previews.appendingPathComponent("key-sheet.png"))
+            library.disconnect(providerID: "openai")
+            try await wait { !library.hasRunningOperations && library.models.count == 1 }
+            library.defaultModel = "model" // A remembered Codex default is unavailable.
+            library.settingsTab = .general
+            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
+                                    to: previews.appendingPathComponent("deepseek-defaults.png"))
+            library.disconnect(providerID: "deepseek")
+            try await wait { !library.hasRunningOperations }
+            library.settingsTab = .accounts
+            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
+                                    to: previews.appendingPathComponent("providers-empty.png"))
+        }
+    }
+
+    private func renderPreview<V: View>(_ view: V, size: NSSize, to url: URL) async throws {
+        let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -10000, y: -10000), size: size),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height)
+            .background(Color(nsColor: .windowBackgroundColor)))
+        defer { window.orderOut(nil); window.contentView = nil }
+        window.contentView = host
+        window.orderFront(nil)
+        try await Task.sleep(for: .milliseconds(100))
+        host.layoutSubtreeIfNeeded()
+        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw ExecError("Preview unavailable") }
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        try bitmap.representation(using: .png, properties: [:])?.write(to: url)
     }
 
     private func wait(_ condition: () -> Bool) async throws {

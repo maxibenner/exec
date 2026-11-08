@@ -5,7 +5,7 @@ struct OpenAIHTTPError: ContextSafeError, Sendable {
     var details: String? = nil
     var errorDescription: String? {
         let summary = switch status {
-        case 401: "Your session was rejected. Reconnect to Codex and try again."
+        case 401: "Your session was rejected. Remove and add OpenAI in Settings → Providers, then try again."
         case 403: "Codex denied access. Check your account and workspace permissions."
         case 429: "Codex usage or rate limit reached. Wait before trying again."
         case 500...599: "Codex is temporarily unavailable (HTTP \(status)). Try again later."

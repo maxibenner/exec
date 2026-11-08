@@ -41,12 +41,14 @@ struct ConversationView: View {
                             .foregroundStyle(.secondary)
                             .accessibilityHidden(true)
                         VStack(spacing: 6) {
-                            Text("No Sessions")
-                                .font(.headline.bold())
-                            Text("Press ⌘T to create one.")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .accessibilityLabel("Press Command T to create one.")
+                            if panel.library.hasConnectedProvider {
+                                Text("No Sessions").font(.headline.bold())
+                                Text("Press ⌘T to create one.")
+                                    .font(.callout).foregroundStyle(.secondary)
+                                    .accessibilityLabel("Press Command T to create one.")
+                            } else {
+                                ConnectProviderButton(library: panel.library)
+                            }
                         }
                     }
                     .multilineTextAlignment(.center)

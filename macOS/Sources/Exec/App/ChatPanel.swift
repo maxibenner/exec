@@ -29,6 +29,9 @@ import Observation
     var isSending: Bool { current.isSending }
     var canEditDraft: Bool { canNavigate && current.canEditDraft }
     var models: [ChatModel] { library.models }
+    var canSend: Bool {
+        canNavigate && current.hasUsableModel && models.contains { $0.id == current.selectedModel } && !isChoosingWorkspace
+    }
     var account: String? { current.account }
     var accountUsage: AccountUsage? { library.accountUsage }
     var workspace: Workspace? { current.workspace }
@@ -40,9 +43,9 @@ import Observation
         set { if canNavigate { current.draft = newValue } }
     }
     var selectedModel: String {
-        get { current.selectedModel }
+        get { models.contains(where: { $0.id == current.selectedModel }) ? current.selectedModel : "" }
         set {
-            guard canNavigate, newValue != current.selectedModel else { return }
+            guard canNavigate, models.contains(where: { $0.id == newValue }), newValue != current.selectedModel else { return }
             current.selectedModel = newValue
             current.scheduleSave()
         }
@@ -121,7 +124,7 @@ import Observation
     }
 
     func send() {
-        guard canNavigate, !isChoosingWorkspace else { return }
+        guard canSend else { return }
         if workspace == nil && current.messages.isEmpty {
             guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !current.draftImages.isEmpty else { return }
             chooseWorkspace()

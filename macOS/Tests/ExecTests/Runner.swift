@@ -20,6 +20,11 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Provider availability reconciles windows, defaults and drafts", { try await MultiProviderTests().availabilityReconcilesEveryWindowAndDefaults() }),
+            ("Failed account actions and late catalogs cannot revive models", { try await MultiProviderTests().failedConnectionsAndLateCatalogsDoNotReviveModels() }),
+            ("Offline catalogs stay usable only for connected providers", { try await MultiProviderTests().cachedCatalogSurvivesOnlyWhileAuthenticated() }),
+            ("Optimistic startup remembers defaults under real provider identities", { try await MultiProviderTests().optimisticStartupRemembersRealProviderDefaults() }),
+            ("Native provider Settings fit in light and dark appearances", { try await MultiProviderTests().nativeProviderSettingsFitAndRender() }),
             ("DeepSeek validates credentials before replacing the working key", { try await DeepSeekTests().authenticationIsTransactionalAndIndependent() }),
             ("DeepSeek streams tools, uses native search and persists reasoning", { try await DeepSeekTests().toolRoundTripPersistsReasoningAndNativeSearch() }),
             ("DeepSeek rejects incomplete streams without executing tools", { try await DeepSeekTests().incompleteStreamsNeverCommitToolsOrReasoning() }),

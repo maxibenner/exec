@@ -332,6 +332,8 @@ import Observation
         defer { try? FileManager.default.removeItem(at: root) }
         let sessions = SessionStore(directory: root)
         let provider = FakeProvider()
+        provider.availableModels += [ChatModel(id: "another-model", name: "Another"),
+                                     ChatModel(id: "pending-save", name: "Pending")]
         var ids: [UUID] = []
         for index in 0..<7 {
             let messages = [Message(role: .user, text: "Session \(index)"), Message(role: .assistant, text: "Completed reply")]

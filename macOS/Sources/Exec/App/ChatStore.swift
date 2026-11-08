@@ -6,6 +6,13 @@ import Observation
     var searchModel = defaultSearchModel
     private var runningModel: String?
     private var toolModel: String { runningModel ?? selectedModel }
+    var requestModelID: String { toolModel }
+    // Legacy standalone providers may select a model before discovery. The
+    // multi-provider adapter requires a catalog match and an authenticated route.
+    var hasUsableModel: Bool {
+        account != nil && !selectedModel.isEmpty && provider.isModelAvailable(selectedModel) &&
+            (model != nil || !provider.preservesModelSelection)
+    }
     var recordsAccountUsage: Bool { provider.recordsAccountUsage(model: toolModel) }
     var messages: [Message] = [] {
         didSet {
@@ -36,7 +43,7 @@ import Observation
         modelsAreCached = cached
         models = available
         // Cached absence is not evidence that a saved model or effort disappeared.
-        if !available.isEmpty && (selectedModel.isEmpty || (!cached && model == nil && !provider.preservesModelSelection)) {
+        if !available.isEmpty && ((selectedModel.isEmpty && (messages.isEmpty || !provider.preservesModelSelection)) || (!cached && model == nil && !provider.preservesModelSelection)) {
             selectedModel = available[0].id
         }
         if let automaticEffort, model?.efforts.contains(where: { $0.id == automaticEffort }) == true {
@@ -349,7 +356,7 @@ import Observation
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !draftImages.isEmpty, canEditDraft, !isImportingImages,
-              account != nil, !selectedModel.isEmpty else { return }
+              hasUsableModel else { return }
         let user = Message(role: .user, text: text, images: draftImages)
         pendingInput.append(user)
         messages.append(user)
@@ -369,7 +376,7 @@ import Observation
     }
 
     private func sendPendingInput() {
-        guard !busy, !pendingInput.isEmpty, account != nil, !selectedModel.isEmpty else { return }
+        guard !busy, !pendingInput.isEmpty, hasUsableModel else { return }
         // Keep every tool round on the settings captured for this turn.
         var turnModel = model ?? ChatModel(id: selectedModel, name: selectedModel)
         var turnEffort = effectiveEffort
@@ -680,7 +687,7 @@ import Observation
         if let automaticEffort, model?.efforts.contains(where: { $0.id == automaticEffort }) == true {
             selectedEffort = automaticEffort
         }
-        if models.isEmpty { throw ExecError("The provider returned no selectable models. Try reconnecting or updating Exec.") }
+        if models.isEmpty { throw ExecError("The provider returned no selectable models. Remove and add the provider in Settings → Providers, or update Exec.") }
     }
 
     private func snapshot() throws -> SessionSnapshot {
@@ -723,7 +730,7 @@ import Observation
         }
         try Task.checkCancellation()
         guard saved.identity == provider.conversationIdentity else {
-            throw ExecError("Saved conversation belongs to another account. Reconnect to that account to open it.")
+            throw ExecError("Saved conversation belongs to another account. Connect that account again to open it.")
         }
         // Provider restoration must succeed before replacing any visible conversation state.
         if !presentationOnly { try provider.restoreConversationState(saved.providerState, history: saved.history) }

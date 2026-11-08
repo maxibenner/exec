@@ -26,7 +26,7 @@ struct ChatComposer: View {
         if let action = command?.page, !action.hasOptions { return action.commandName }
         return command?.query ?? ""
     }
-    private var modelName: String { store.models.first { $0.id == store.selectedModel }?.name ?? store.selectedModel }
+    private var modelName: String { store.models.first { $0.id == store.selectedModel }?.name ?? "Choose a model" }
     private var effortName: String {
         let model = store.current.model
         return model?.efforts.first { $0.id == (store.selectedEffort ?? model?.defaultEffort) }?.name ?? "Default"
@@ -38,19 +38,18 @@ struct ChatComposer: View {
         let items: [Choice]
         switch page {
         case nil:
-            items = [Choice(id: "model", title: "model", detail: modelName),
-                     Choice(id: "effort", title: "reasoning", detail: effortName),
+            items = [Choice(id: "model", title: "model", detail: modelName, enabled: !store.models.isEmpty),
+                     Choice(id: "effort", title: "reasoning", detail: effortName, enabled: store.current.model?.efforts.isEmpty == false),
                      Choice(id: "approve", title: "auto-approve", detail: store.autoApproveTools ? "On" : "Off", enabled: canApprove),
                      Choice(id: "compact", title: "compact", enabled: store.canCompact),
                      Choice(id: "workspace", title: "workspace", detail: "Change workspace…", enabled: store.canChooseWorkspace),
                      Choice(id: "finder", title: "finder", detail: "Open workspace in Finder", enabled: store.workspace != nil),
                      Choice(id: "terminal", title: "terminal", detail: "Open workspace in Terminal", enabled: store.workspace != nil)]
         case .model:
-            var models = store.models.map { Choice(id: $0.id, title: $0.name, selected: $0.id == store.selectedModel, enabled: store.canNavigate) }
-            if !store.selectedModel.isEmpty && !models.contains(where: { $0.id == store.selectedModel }) {
-                models.append(Choice(id: store.selectedModel, title: store.selectedModel, selected: true, enabled: store.canNavigate))
+            items = store.models.map {
+                Choice(id: $0.id, title: $0.name, detail: store.library.modelGroups.count > 1 ? store.library.providerName(for: $0.id) : "",
+                       selected: $0.id == store.selectedModel, enabled: store.canNavigate)
             }
-            items = models
         case .effort:
             let available = store.canNavigate && store.current.model?.efforts.isEmpty == false
             items = [Choice(id: "", title: "Default", selected: store.current.selectedEffort == nil, enabled: available)] + (store.current.model?.efforts ?? []).map {
@@ -130,17 +129,38 @@ struct ChatComposer: View {
                 }
                 .padding(.vertical, 8)
             HStack(spacing: 6) {
-                Text(modelName.isEmpty ? "Model" : modelName)
-                    .accessibilityLabel("Model: \(modelName)")
-                Text("·")
-                Text(effortName).accessibilityLabel("Reasoning: \(effortName)")
+                if !store.library.hasConnectedProvider {
+                    ConnectProviderButton(library: store.library)
+                        .controlSize(.small)
+                        .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
+                } else if store.models.isEmpty {
+                    Button("Refresh Models", action: store.library.refreshModels)
+                        .controlSize(.small)
+                        .disabled(!store.canNavigate)
+                        .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
+                } else {
+                    Picker("Model", selection: $store.selectedModel) {
+                        if store.selectedModel.isEmpty { Text("Choose a model").tag("") }
+                        ModelPickerOptions(groups: store.library.modelGroups)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .controlSize(.small)
+                    .frame(maxWidth: 260, alignment: .leading)
+                    .disabled(!store.canNavigate || store.models.isEmpty)
+                    .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
+                    if store.current.model != nil {
+                        Text("·")
+                        Text(effortName).accessibilityLabel("Reasoning: \(effortName)")
+                    }
+                }
                 Spacer(minLength: 8)
                 Text(store.autoApproveTools ? "Auto on" : "Auto off")
                     .foregroundStyle(store.autoApproveTools ? Color.accentColor : Color.secondary)
                     .layoutPriority(1)
             }
             .font(.caption).foregroundStyle(.secondary)
-            .lineLimit(1).allowsHitTesting(false)
+            .lineLimit(1)
         }
         .padding(12)
         .background {

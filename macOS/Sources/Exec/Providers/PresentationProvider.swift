@@ -9,6 +9,7 @@ import Foundation
     var displayName: String { presentation.providerName }
     var connectionTitle: String { presentation.connectionTitle }
     var account: String? { presentation.accountName }
+    func providerID(for model: String) -> String? { nil }
     var conversationIdentity: String? { presentation.conversationIdentity }
     func makeConversationProvider() throws -> any ChatProvider { PresentationProvider(presentation) }
     private var unavailable: ExecError { ExecError("The account has not finished restoring.") }

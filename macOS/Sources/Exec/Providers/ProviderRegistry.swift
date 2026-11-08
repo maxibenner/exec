@@ -43,6 +43,7 @@ import Foundation
     func models() async throws -> [ChatModel] {
         var warnings: [String] = []
         for entry in entries {
+            try Task.checkCancellation()
             guard entry.provider.account != nil else { catalogs[entry.id] = nil; continue }
             do {
                 let available = try await entry.provider.models()
@@ -55,7 +56,7 @@ import Foundation
                 }
             } catch {
                 try Task.checkCancellation()
-                warnings.append("Could not refresh \(entry.provider.displayName) models. Reconnect or refresh models in Settings.")
+                warnings.append("Could not refresh \(entry.provider.displayName) models. Remove and add the provider, or refresh models in Settings.")
             }
         }
         modelWarning = warnings.isEmpty ? nil : warnings.joined(separator: "\n")
