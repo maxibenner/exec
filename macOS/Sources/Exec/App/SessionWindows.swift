@@ -13,8 +13,19 @@ import Observation
     @ObservationIgnored private var presentations: [ObjectIdentifier: TranscriptState] = [:]
 
     private(set) var composerFocusRequest = 0
+    private(set) var sidebarRevealRequest = 0
 
     init(library: ChatLibrary) { self.library = library }
+
+    func newConversation() {
+        let previous = library.current
+        let hadOneSession = library.sessionList.count == 1
+        library.newConversation()
+        if hadOneSession, library.current !== previous {
+            sidebarRevealRequest += 1
+        }
+        showMainWindow()
+    }
 
     func openSession(_ id: UUID) {
         library.openSession(id) { [weak self] in

@@ -57,7 +57,8 @@ import SwiftUI
 
     private var chatWindow: some Scene {
         Window("", id: "chat") {
-            ChatWindowLayout(initiallyShowsSidebar: initiallyHasSavedSessions) {
+            ChatWindowLayout(initiallyShowsSidebar: initiallyHasSavedSessions,
+                             sidebarRevealRequest: startup.windows?.sidebarRevealRequest ?? 0) {
                 if let store = startup.store, let windows = startup.windows {
                     SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {
                         guard store.canNavigate, !store.isSessionRunning($0.id) else { return }

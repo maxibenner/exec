@@ -127,6 +127,25 @@ import SwiftUI
                 try expect(abs(transcript.state.layout.width - contentWidth) < 2)
                 try expect(composerFrame.minX >= transcriptFrame.minX && composerFrame.maxX <= transcriptFrame.maxX)
             }
+            if size.width == 980 {
+                for sidebarWidth in [CGFloat(266), CGFloat(320)] {
+                    window.setContentSize(size)
+                    try await settle(window)
+                    split.setPosition(sidebarWidth, ofDividerAt: 0)
+                    try await settle(window)
+                    let heldWidth = sidebar.frame.width
+                    for width in [800, 740, 730, 725, 721, 720, 721, 730, 980] {
+                        window.setContentSize(NSSize(width: CGFloat(width), height: size.height))
+                        try await settle(window)
+                        let transcriptFrame = transcript.convert(transcript.bounds, to: controller.view)
+                        let composerFrame = composer.convert(composer.bounds, to: controller.view)
+                        try expect(abs(sidebar.frame.width - heldWidth) < 1)
+                        try expect(abs(transcriptFrame.maxX - controller.view.bounds.maxX) < 2)
+                        try expect(abs(composerFrame.width - min(820, transcript.contentSize.width - 40)) < 2)
+                        try expect(abs(transcript.state.layout.width - composerFrame.width) < 2)
+                    }
+                }
+            }
             if size.width == 980, let path = ProcessInfo.processInfo.environment["EXEC_SETTINGS_PREVIEWS"] {
                 let directory = URL(fileURLWithPath: path)
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -147,12 +166,13 @@ import SwiftUI
 
     @Observable fileprivate final class SidebarPresentation {
         var hasSessions = false
+        var revealRequest = 0
     }
 
     private struct SidebarFixture: View {
         let presentation: SidebarPresentation
         var body: some View {
-            ChatWindowLayout(initiallyShowsSidebar: presentation.hasSessions) {
+            ChatWindowLayout(initiallyShowsSidebar: presentation.hasSessions, sidebarRevealRequest: presentation.revealRequest) {
                 Text("Sessions")
             } detail: {
                 Text("Conversation")
@@ -185,6 +205,19 @@ import SwiftUI
             presentation.hasSessions = !hasSessions
             try await settle(window)
             try expect(split.isSubviewCollapsed(sidebar) == !hasSessions)
+            if !split.isSubviewCollapsed(sidebar) {
+                splitController.toggleSidebar(nil)
+                try await Task.sleep(for: .milliseconds(350))
+            }
+            presentation.revealRequest += 1
+            try await settle(window)
+            try expect(!split.isSubviewCollapsed(sidebar))
+            // The reveal request must not keep forcing the sidebar open.
+            splitController.toggleSidebar(nil)
+            try await Task.sleep(for: .milliseconds(350))
+            presentation.hasSessions.toggle()
+            try await settle(window)
+            try expect(split.isSubviewCollapsed(sidebar))
         }
     }
 
