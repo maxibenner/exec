@@ -97,7 +97,6 @@ import Observation
         library.sessionList.first { $0.id == id }?.title ?? "Conversation"
     }
 
-    func updateTitle(for id: UUID) { controllers[id]?.window?.title = title(for: id) }
 }
 
 @MainActor private final class DetachedSessionController: NSWindowController, NSWindowDelegate {
@@ -128,9 +127,6 @@ private struct DetachedConversationView: View {
             .modifier(SessionCommandScope(windows: windows, conversation: conversation))
             .onAppear { composerFocused = true }
             .onChange(of: windows.library.detachedSessionIDs) { _, _ in windows.closeInvalidWindows() }
-            .onChange(of: conversation.summary?.title) { _, _ in
-                if let id = conversation.currentSessionID { windows.updateTitle(for: id) }
-            }
     }
 }
 

@@ -43,6 +43,7 @@ struct ConversationView: View {
         .frame(minWidth: 460, minHeight: 480)
         .onExitCommand { if panel.isWorking { panel.stop() } }
         .background(WindowReference { panel.window = $0 })
+        .background(ChatWindowTitle(title: panel.title))
         .task(id: panel.shouldChooseInitialWorkspace) {
             // Wait for the owning window and leave the SwiftUI update before
             // presenting a native sheet. A remount must not reopen a cancelled picker.
