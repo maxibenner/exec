@@ -12,7 +12,7 @@ struct AccountBalanceRow: View {
             } else {
                 ForEach(Array(balances.enumerated()), id: \.offset) { _, balance in
                     LabeledContent("Remaining balance") {
-                        Text(balance.amount.formatted(.currency(code: balance.currency).precision(.fractionLength(2...6))))
+                        Text(balance.amount.formatted(.currency(code: balance.currency).precision(.fractionLength(2))))
                             .monospacedDigit()
                     }
                 }
