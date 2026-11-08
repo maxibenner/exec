@@ -16,7 +16,7 @@ import SwiftUI
         @FocusState private var focused: Bool
 
         var body: some View {
-            ChatWindowLayout(workspace: library.workspace?.root, initiallyShowsSidebar: true) {
+            ChatWindowLayout(initiallyShowsSidebar: true) {
                 SessionSidebar(store: library, open: { _ in }, delete: { _ in })
             } detail: {
                 ConversationView(library: library, conversation: library.current,

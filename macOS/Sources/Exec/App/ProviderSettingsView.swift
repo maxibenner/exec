@@ -6,67 +6,24 @@ struct ProviderSettingsView: View {
     let store: ChatLibrary
     @State private var selection: String?
     @State private var adding: ProviderConnection?
+    private let rowHeight: CGFloat = 48
 
     private var connected: [ProviderConnection] { store.connections.filter { $0.account != nil } }
     private var available: [ProviderConnection] { store.connections.filter { $0.account == nil } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            List(connected, selection: $selection) { connection in
-                HStack(spacing: 10) {
-                    Image(systemName: connection.authentication == .apiKey ? "key" : "person.crop.circle")
-                        .frame(width: 24)
-                        .foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(connection.name)
-                        if let account = connection.account {
-                            Text(verbatim: account).font(.caption).foregroundStyle(.secondary)
-                                .lineLimit(1).truncationMode(.middle)
-                        }
-                    }
-                    Spacer()
-                }
-                .padding(.vertical, 4)
-                .tag(connection.id)
-            }
-            .listStyle(.inset)
-            .scrollContentBackground(.hidden)
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay {
+            Group {
                 if connected.isEmpty {
                     Text("No providers connected").foregroundStyle(.secondary)
-                        .allowsHitTesting(false)
+                        .frame(maxWidth: .infinity).frame(height: 36)
+                } else {
+                    providerList
                 }
             }
-            .frame(height: max(88, CGFloat(connected.count) * 60 + 16))
-            HStack(spacing: 12) {
-                Menu {
-                    ForEach(available) { connection in
-                        Button(connection.name) {
-                            if connection.authentication == .apiKey { adding = connection }
-                            else { store.connect(providerID: connection.id) }
-                        }
-                    }
-                } label: { Image(systemName: "plus").frame(width: 16, height: 18) }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .disabled(available.isEmpty)
-                .help("Add Provider")
-                .accessibilityLabel("Add Provider")
-                Button {
-                    guard let selection else { return }
-                    store.disconnect(providerID: selection)
-                } label: { Image(systemName: "minus").frame(width: 16, height: 18) }
-                .buttonStyle(.borderless)
-                .disabled(!connected.contains { $0.id == selection })
-                .help("Remove Provider")
-                .accessibilityLabel("Remove Provider")
-                Spacer()
-            }
-            .controlSize(.small)
-            .padding(.horizontal, 8)
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            providerControls
             Spacer(minLength: 0)
         }
         .padding(20)
@@ -88,6 +45,62 @@ struct ProviderSettingsView: View {
             Text(store.connectionError ?? "")
         }
     }
+
+    private var providerList: some View {
+        List(connected, selection: $selection) { connection in
+            HStack(spacing: 10) {
+                Image(systemName: connection.authentication == .apiKey ? "key" : "person.crop.circle")
+                    .frame(width: 24)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(connection.name)
+                    if let account = connection.account {
+                        Text(verbatim: account).font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .frame(height: rowHeight)
+            .listRowInsets(EdgeInsets())
+            .tag(connection.id)
+        }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+        .contentMargins(.vertical, 4, for: .scrollContent)
+        .frame(height: CGFloat(connected.count) * rowHeight + 8)
+    }
+
+    private var providerControls: some View {
+        HStack(spacing: 12) {
+            ControlGroup {
+                Menu {
+                    ForEach(available) { connection in
+                        Button(connection.name) {
+                            if connection.authentication == .apiKey { adding = connection }
+                            else { store.connect(providerID: connection.id) }
+                        }
+                    }
+                } label: { Image(systemName: "plus").frame(width: 16, height: 18) }
+                .menuIndicator(.visible)
+                .disabled(available.isEmpty)
+                .help("Add Provider")
+                .accessibilityLabel("Add Provider")
+                Button {
+                    guard let selection else { return }
+                    store.disconnect(providerID: selection)
+                } label: { Image(systemName: "minus").frame(width: 16, height: 18) }
+                .disabled(!connected.contains { $0.id == selection })
+                .help("Remove Provider")
+                .accessibilityLabel("Remove Provider")
+            }
+            .fixedSize()
+            Spacer()
+        }
+        .controlSize(.small)
+    }
+
 }
 
 struct ProviderKeySheet: View {

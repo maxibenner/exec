@@ -1,16 +1,14 @@
 import SwiftUI
 
-/// Keep the split view, toolbar and sizing constraints mounted while local data
+/// Keep the split view and sizing constraints mounted while local data
 /// becomes available. Startup changes the contents, not the window's structure.
 struct ChatWindowLayout<Sidebar: View, Detail: View>: View {
-    let workspace: URL?
     @State private var columnVisibility: NavigationSplitViewVisibility
     private let sidebar: Sidebar
     private let detail: Detail
 
-    init(workspace: URL?, initiallyShowsSidebar: Bool,
+    init(initiallyShowsSidebar: Bool,
          @ViewBuilder sidebar: () -> Sidebar, @ViewBuilder detail: () -> Detail) {
-        self.workspace = workspace
         _columnVisibility = State(initialValue: initiallyShowsSidebar ? .all : .detailOnly)
         self.sidebar = sidebar()
         self.detail = detail()
@@ -28,22 +26,19 @@ struct ChatWindowLayout<Sidebar: View, Detail: View>: View {
                 .frame(minWidth: 460, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
                 .background(.background)
                 .background(SidebarResizeBehavior())
-                .toolbar {
-                    if #available(macOS 26.0, *) {
-                        ToolbarItem(placement: .primaryAction) { workspaceItem }
-                            .sharedBackgroundVisibility(.hidden)
-                    } else {
-                        ToolbarItem(placement: .primaryAction) { workspaceItem }
-                    }
-                }
         }
         .navigationSplitViewStyle(.balanced)
+        .toolbar(removing: .sidebarToggle)
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+                } label: { Image(systemName: "sidebar.left") }
+                .help("Toggle Sidebar")
+                .accessibilityLabel("Toggle Sidebar")
+            }
+        }
+        .background(WindowReference { ChatWindowAppearance.configure($0) })
         .frame(minWidth: 720, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
-    }
-
-    private var workspaceItem: some View {
-        WorkspaceBar(root: workspace)
-            .frame(maxWidth: 300)
-            .padding(.trailing, 14)
     }
 }

@@ -14,8 +14,7 @@ import SwiftUI
         @FocusState private var focused: Bool
 
         var body: some View {
-            ChatWindowLayout(workspace: presentation.library?.workspace?.root,
-                             initiallyShowsSidebar: true) {
+            ChatWindowLayout(initiallyShowsSidebar: true) {
                 if let library = presentation.library {
                     SessionSidebar(store: library, open: { _ in }, delete: { _ in })
                 } else {
@@ -71,6 +70,7 @@ import SwiftUI
             let content = window.contentLayoutRect
             let toolbar = window.toolbar
             try expect(toolbar != nil)
+            try expect(window.titleVisibility == .hidden)
             let minimum = window.contentMinSize
             let initialSidebarColor = try sidebarBackground(in: controller.view)
             for stage in 0..<3 {
@@ -121,7 +121,7 @@ import SwiftUI
                     controller.rootView = Fixture(presentation: presentation).environment(\.colorScheme, dark ? .dark : .light)
                     window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
                     try await settle(window)
-                    let view = controller.view
+                    let view = window.contentView!.superview!
                     if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                         view.cacheDisplay(in: view.bounds, to: bitmap)
                         try bitmap.representation(using: .png, properties: [:])?.write(to:
@@ -139,7 +139,7 @@ import SwiftUI
     private struct SidebarFixture: View {
         let presentation: SidebarPresentation
         var body: some View {
-            ChatWindowLayout(workspace: nil, initiallyShowsSidebar: presentation.hasSessions) {
+            ChatWindowLayout(initiallyShowsSidebar: presentation.hasSessions) {
                 Text("Sessions")
             } detail: {
                 Text("Conversation")
