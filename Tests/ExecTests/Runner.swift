@@ -20,6 +20,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Storage rename preserves conversations and rejects conflicts", { try await StorageMigrationTests().migratesAndProtectsExistingData() }),
             ("Optimistic startup renders before credentials and reconciles in place", { try await OptimisticStartupTests().rendersBeforeCredentialsAndReconcilesInPlace() }),
             ("Optimistic startup rejects account mismatches and clears sign-out", { try await OptimisticStartupTests().rejectsMismatchesAndClearsSignout() }),
             ("Startup credential failures, explicit retry and cancellation", { try await OptimisticStartupTests().credentialFailureRetryAndCancellation() }),

@@ -60,7 +60,9 @@ Exec keeps the disposable cache in `~/Library/Caches/Exec/AccountMetadata/`, inc
 
 - Auto-approval starts on for workspace conversations. Turn it off with `/auto-approve` to review edits and shell commands. Commands run with your user permissions, outside a sandbox, and can affect files beyond the workspace. Stopping does not undo changes.
 - Requested files, workspace instructions, attachments, tool results, and screenshots may be sent to the provider. Screenshots require macOS Screen Recording permission. Web searches send queries to the provider; page fetching contacts websites directly.
-- Credentials stay in Keychain. Conversations and managed images are stored in `~/Library/Application Support/Harness/` (the app's former name), without app-level encryption. Unsent drafts and attachments do not survive restarts.
+- Credentials stay in Keychain. Conversations and managed images are stored in `~/Library/Application Support/Exec/`, without app-level encryption. Unsent drafts and attachments do not survive restarts.
+- On first launch, Exec renames the former `Application Support/Harness/` folder to `Exec/`, preserving its contents and permissions. Quit older copies before upgrading. If both folders exist, startup reports a conflict rather than merging or overwriting data; back up both folders before resolving it. Historical tool-result text may still mention the old absolute image paths, but saved image attachments use relative paths and remain readable. Older builds do not know about the new location.
+- Settings remain in the `local.swift-harness` UserDefaults domain, and credentials retain the same Keychain service. These compatibility identifiers (including the bundle ID) are intentionally unchanged so existing settings and sign-in remain available.
 - Exec uses a Codex-compatible backend, not OpenAI's public API. Usage limits and feature availability depend on your account and model; service support can change.
 
 ## Development
