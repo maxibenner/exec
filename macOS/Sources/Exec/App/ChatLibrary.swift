@@ -10,7 +10,7 @@ import Observation
         _ = authenticating
         return isPresentingStartup ? discoveredModels : discoveredModels.filter { provider.isModelAvailable($0.id) }
     }
-    enum SettingsTab { case modelsAndTools, accounts, usage, systemPrompt }
+    enum SettingsTab { case modelsAndTools, accounts, usage }
     var settingsTab = SettingsTab.modelsAndTools
     var connectionError: String?
     private var rememberedModels: [String: String]
@@ -62,9 +62,6 @@ import Observation
             preferences.set(generatedTitlesEnabled, forKey: "generatedTitlesEnabled")
             if !generatedTitlesEnabled { cancelTitleGeneration() }
         }
-    }
-    var systemPrompt: String {
-        didSet { preferences.set(systemPrompt, forKey: "systemPrompt") }
     }
     var defaultModel: String {
         didSet {
@@ -144,14 +141,13 @@ import Observation
         let autoApproveTools = preferences.object(forKey: "defaultSessionAutoApproveTools") as? Bool ?? true
         defaultAutoApproveTools = autoApproveTools
         searchModel = preferences.string(forKey: "searchModel") ?? ChatStore.defaultSearchModel
-        systemPrompt = preferences.string(forKey: "systemPrompt") ?? ""
+        preferences.removeObject(forKey: "systemPrompt")
         generatedTitlesEnabled = preferences.bool(forKey: "generatedTitlesEnabled")
         titleModel = preferences.string(forKey: "sessionTitleModel") ?? ""
         self.residentLimit = max(1, residentLimit)
         self.provider = provider
         self.sessions = sessions
         current = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions, selectOnCheckpoint: false,
-                            systemPrompt: preferences.string(forKey: "systemPrompt") ?? "",
                             defaultAutoApproveTools: autoApproveTools)
         current.selectedModel = defaultModel
         current.selectedEffort = defaultEffort
@@ -214,7 +210,7 @@ import Observation
             if let oldKey { await metadataCache?.remove(key: oldKey) }
             try Task.checkCancellation()
             current = ChatStore(provider: conversationProvider, sessions: sessions, selectOnCheckpoint: false,
-                                systemPrompt: systemPrompt, defaultAutoApproveTools: defaultAutoApproveTools)
+                                defaultAutoApproveTools: defaultAutoApproveTools)
             current.selectedModel = defaultModel
             current.selectedEffort = defaultEffort
             openConversations = [current]
@@ -748,7 +744,7 @@ import Observation
     private func makeConversation(workspace: Workspace? = nil) throws -> ChatStore {
         let conversation = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions,
                                      selectOnCheckpoint: false, newConversation: true, workspace: workspace,
-                                     systemPrompt: systemPrompt, defaultAutoApproveTools: defaultAutoApproveTools)
+                                     defaultAutoApproveTools: defaultAutoApproveTools)
         conversation.installModels(models, cached: modelsAreCached)
         conversation.selectedModel = defaultSessionModel?.id ?? ""
         conversation.selectedEffort = effectiveDefaultEffort

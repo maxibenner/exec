@@ -16,7 +16,6 @@ struct SessionSnapshot: Codable, Sendable {
     var effort: String?
     // Absent in older saves, which retain the default of Auto on.
     var autoApproveTools: Bool?
-    var systemPrompt: String?
     var allowanceObservations: [RunAllowanceObservation]?
     // Accepted transcript messages not yet incorporated at a safe model boundary.
     // Restoring these never starts inference automatically.

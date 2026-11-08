@@ -55,7 +55,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Metadata refresh preserves running settings and offline restoration", { try await MetadataCacheTests().refreshDuringRunAndOfflineMiss() }),
             ("Workspace picker waits for the owning conversation window", { try await WorkspacePickerTests().presentsPickerInOwningWindow() }),
             ("First send requires a workspace and preserves cancelled drafts", { try await WorkspacePickerTests().sendRequiresWorkspaceAndPreservesDraft() }),
-            ("System prompts autosave and remain isolated per conversation", { try await SystemPromptTests().persistsAndSnapshots() }),
+            ("Legacy custom prompts are ignored while workspace instructions survive", { try await SessionInstructionsTests().ignoresLegacyPrompts() }),
             ("Generated titles persist with isolated context and preferences", { try await SessionTitleTests().updatesPersistWithoutChangingChatContext() }),
             ("Title generation rejects incomplete and cancelled responses", { try await SessionTitleTests().rejectsFailedAndCancelledGeneration() }),
             ("Image file migration, deduplication and integrity", { try await ImageStorageTests().migrationAndIntegrity() }),
