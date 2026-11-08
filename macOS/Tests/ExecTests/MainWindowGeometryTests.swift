@@ -85,7 +85,7 @@ import SwiftUI
         defer { preferences.removePersistentDomain(forName: suite) }
         let geometry = MainWindowGeometry(preferences: preferences)
         let window = NSWindow(contentViewController: NSHostingController(rootView:
-            ChatWindowLayout(workspace: nil) { Color.clear } detail: { Color.clear }))
+            ChatWindowLayout(workspace: nil, initiallyShowsSidebar: false) { Color.clear } detail: { Color.clear }))
         window.setContentSize(CGSize(width: 980, height: 700))
         window.center()
         geometry.observe(window)

@@ -53,12 +53,6 @@ struct SessionSidebar: View {
             .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) {}
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if store.showsAccountUsage {
-                ProviderUsageFooter(providerName: store.providerName, usage: store.displayedAccountUsage,
-                                    fetchedAt: store.accountUsageFetchedAt)
-            }
-        }
         .background(.background.secondary)
     }
 }

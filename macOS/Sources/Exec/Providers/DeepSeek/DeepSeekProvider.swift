@@ -9,7 +9,7 @@ import Foundation
     var account: String? { authentication.account }
     var conversationIdentity: String? { authentication.identity }
     var connections: [ProviderConnection] {
-        [.init(id: displayName, name: displayName, account: account, authentication: .apiKey)]
+        [.init(id: displayName, name: displayName, account: account, authentication: .apiKey, webSearch: webSearchConfiguration)]
     }
 
     init(authentication: DeepSeekAuthentication, http: URLSession = DeepSeekHTTP.session) {
@@ -97,6 +97,7 @@ import Foundation
         }
     }
 
+    var webSearchConfiguration: ProviderConnection.WebSearch { .service("DeepSeek Search") }
     func usesSearchModel(_ model: String) -> Bool { false }
     func searchQueryLimit(model: String) -> Int? { 128 }
     let supportsWebSearch = true

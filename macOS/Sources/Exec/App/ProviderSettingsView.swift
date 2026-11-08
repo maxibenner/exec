@@ -17,12 +17,7 @@ struct ProviderSettingsView: View {
                     Image(systemName: connection.authentication == .apiKey ? "key" : "person.crop.circle")
                         .frame(width: 24)
                         .foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(connection.name)
-                        if let account = connection.account {
-                            Text(verbatim: account).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
+                    Text(connection.name)
                     Spacer()
                 }
                 .padding(.vertical, 4)
@@ -65,6 +60,15 @@ struct ProviderSettingsView: View {
             .controlSize(.small)
             .padding(10)
             .background(.bar)
+            if let connection = connected.first(where: { $0.id == selection }) {
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    LabeledContent("Account", value: connection.account ?? "")
+                    LabeledContent("Authentication", value: connection.authentication == .apiKey ? "API key" : "Browser sign-in")
+                }
+                .font(.callout)
+                .padding(12)
+            }
         }
         .border(Color(nsColor: .separatorColor))
         .padding(20)

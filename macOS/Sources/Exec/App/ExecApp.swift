@@ -2,6 +2,7 @@ import SwiftUI
 
 @main struct ExecApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    private let initiallyShowsSidebar = SessionStore.applicationHasSavedSessions()
     @State private var startup = ChatStartup()
     @State private var windowGeometry = MainWindowGeometry()
 
@@ -39,7 +40,7 @@ import SwiftUI
     private var chatWindow: some Scene {
         Window("Exec", id: "chat") {
             ChatWindowLayout(workspace: startup.store?.workspace?.root,
-                             hasSessions: startup.store.flatMap { $0.authenticating ? nil : !$0.sessionList.isEmpty }) {
+                             initiallyShowsSidebar: initiallyShowsSidebar) {
                 if let store = startup.store, let windows = startup.windows {
                     SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {
                         guard store.canNavigate, !store.isSessionRunning($0.id) else { return }

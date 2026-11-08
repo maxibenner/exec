@@ -4,12 +4,17 @@ import SwiftUI
 /// becomes available. Startup changes the contents, not the window's structure.
 struct ChatWindowLayout<Sidebar: View, Detail: View>: View {
     let workspace: URL?
-    // nil while the local session catalog is still loading.
-    var hasSessions: Bool? = nil
-    @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
-    @State private var didSetInitialVisibility = false
-    @ViewBuilder var sidebar: Sidebar
-    @ViewBuilder var detail: Detail
+    @State private var columnVisibility: NavigationSplitViewVisibility
+    private let sidebar: Sidebar
+    private let detail: Detail
+
+    init(workspace: URL?, initiallyShowsSidebar: Bool,
+         @ViewBuilder sidebar: () -> Sidebar, @ViewBuilder detail: () -> Detail) {
+        self.workspace = workspace
+        _columnVisibility = State(initialValue: initiallyShowsSidebar ? .all : .detailOnly)
+        self.sidebar = sidebar()
+        self.detail = detail()
+    }
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -30,11 +35,6 @@ struct ChatWindowLayout<Sidebar: View, Detail: View>: View {
                 }
         }
         .navigationSplitViewStyle(.balanced)
-        .onChange(of: hasSessions, initial: true) { _, hasSessions in
-            guard !didSetInitialVisibility, let hasSessions else { return }
-            didSetInitialVisibility = true
-            columnVisibility = hasSessions ? .all : .detailOnly
-        }
         .frame(minWidth: 720, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
     }
 

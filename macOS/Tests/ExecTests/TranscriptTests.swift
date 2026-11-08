@@ -85,6 +85,38 @@ import SwiftUI
         }
     }
 
+    func resizingCommitsRowsBeforeDisplay() throws {
+        _ = NSApplication.shared
+        for style in [NSScroller.Style.overlay, .legacy] {
+            let state = TranscriptState()
+            let view = TranscriptScrollView(state: state)
+            defer { view.detach() }
+            view.scrollerStyle = style
+            view.frame = NSRect(x: 0, y: 0, width: 980, height: 600)
+            view.update(messages: (0..<30).map {
+                Message(role: $0.isMultiple(of: 2) ? .user : .assistant,
+                        text: String(repeating: "A paragraph that reflows while the sidebar moves. ", count: 8))
+            }, jumpRequest: 0)
+            for width in [900, 820, 740, 680, 600, 540, 600, 740, 900, 980] {
+                view.setFrameSize(NSSize(width: width, height: 600))
+                view.layoutSubtreeIfNeeded()
+                // No run-loop yield or explicit refresh: the next displayed frame
+                // must already use the new viewport, including mounted row hosts.
+                let expectedWidth = min(820, view.contentSize.width - 40)
+                try expect(abs(state.layout.width - expectedWidth) < 1)
+                let rows = view.documentView!.subviews
+                try expect(!rows.isEmpty && rows.count < 30)
+                for row in rows {
+                    try expect(abs(row.frame.width - expectedWidth) < 1)
+                    try expect(abs(row.frame.midX - view.contentSize.width / 2) < 1)
+                    try expect(abs(row.subviews[0].frame.width - expectedWidth) < 1)
+                }
+                let maximum = max(0, view.documentView!.bounds.height - view.contentView.bounds.height)
+                try expect(abs(view.contentView.bounds.minY - maximum) < 1)
+            }
+        }
+    }
+
     func preservesNearBottomScrolling() throws {
         _ = NSApplication.shared
         let messages = (0..<100).map { Message(role: .user, text: "Message \($0)") }

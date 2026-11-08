@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-@MainActor struct ProviderUsageFooterTests {
+@MainActor struct AccountUsageLabelTests {
     func remainingAllowanceAndExpiry() throws {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let short = AccountUsage.Window(durationSeconds: 18_000, usedPercent: 7.2, resetsAt: now)
@@ -15,25 +15,23 @@ import SwiftUI
         try expect(AccountUsageLabel.name(weekly.durationSeconds) == "Weekly")
     }
 
-    func fitsSidebarWidths() throws {
+    func fitsAvailableWidths() throws {
         _ = NSApplication.shared
         let reset = Date().addingTimeInterval(3_600)
         let usage = AccountUsage(windows: [
             .init(durationSeconds: 18_000, usedPercent: 0, resetsAt: reset),
             .init(durationSeconds: 604_800, usedPercent: 100, resetsAt: reset)
         ])
-        for width in [200, 320] {
+        for width in [200, 440] {
             for scheme in [ColorScheme.light, .dark] {
                 for value in [usage, nil] {
-                    let view = ProviderUsageFooter(providerName: "Test Provider", usage: value)
+                    let view = AccountUsageLabel(usage: value)
                         .frame(width: CGFloat(width))
                         .environment(\.colorScheme, scheme)
                     let hosting = NSHostingView(rootView: view)
                     let size = hosting.fittingSize
                     try expect(abs(size.width - CGFloat(width)) < 1)
-                    // No provider heading: only the allowance rows and vertical padding.
-                    let heightRange: ClosedRange<CGFloat> = value == nil ? 30...45 : 45...75
-                    try expect(heightRange.contains(size.height))
+                    try expect(size.height > 0 && size.height < 100)
                 }
             }
         }

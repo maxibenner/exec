@@ -16,7 +16,7 @@ import SwiftUI
         @FocusState private var focused: Bool
 
         var body: some View {
-            ChatWindowLayout(workspace: library.workspace?.root) {
+            ChatWindowLayout(workspace: library.workspace?.root, initiallyShowsSidebar: true) {
                 SessionSidebar(store: library, open: { _ in }, delete: { _ in })
             } detail: {
                 ConversationView(library: library, conversation: library.current,
@@ -223,8 +223,8 @@ import SwiftUI
         let usage = AccountUsage(windows: [
             .init(durationSeconds: 18000, usedPercent: 20, resetsAt: Date().addingTimeInterval(3600)),
             .init(durationSeconds: 604800, usedPercent: 40, resetsAt: Date().addingTimeInterval(7200))])
-        let recent = NSHostingView(rootView: ProviderUsageFooter(providerName: "Test", usage: usage, fetchedAt: .now).frame(width: 240))
-        let expired = NSHostingView(rootView: ProviderUsageFooter(providerName: "Test", usage: usage,
+        let recent = NSHostingView(rootView: AccountUsageLabel(usage: usage, fetchedAt: .now).frame(width: 240))
+        let expired = NSHostingView(rootView: AccountUsageLabel(usage: usage,
             fetchedAt: Date().addingTimeInterval(-301)).frame(width: 240))
         try expect(recent.fittingSize == expired.fittingSize)
         try expect(CachedAccountUsage(usage: usage, fetchedAt: Date().addingTimeInterval(-301)).current() == nil)

@@ -28,10 +28,13 @@ import Foundation
     var connections: [ProviderConnection] {
         registry.entries.map { entry in
             ProviderConnection(id: entry.id, name: entry.provider.displayName, account: entry.provider.account,
-                               authentication: entry.provider.connections[0].authentication)
+                               authentication: entry.provider.connections[0].authentication,
+                               webSearch: entry.provider.webSearchConfiguration,
+                               supportsImageGeneration: entry.provider.supportsImageGeneration)
         }
     }
     var usageProviderName: String { "OpenAI" }
+    var usageConnection: ProviderConnection? { connections.first { $0.id == "openai" && $0.account != nil } }
     func recordsAccountUsage(model: String) -> Bool { registry.route(model)?.entry.id == "openai" && isModelAvailable(model) }
     var modelDiscoveryWarning: String? { registry.modelWarning }
     init(registry: ProviderRegistry) { self.registry = registry }

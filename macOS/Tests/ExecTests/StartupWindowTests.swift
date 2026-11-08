@@ -15,7 +15,7 @@ import SwiftUI
 
         var body: some View {
             ChatWindowLayout(workspace: presentation.library?.workspace?.root,
-                             hasSessions: presentation.library.flatMap { $0.authenticating ? nil : !$0.sessionList.isEmpty }) {
+                             initiallyShowsSidebar: true) {
                 if let library = presentation.library {
                     SessionSidebar(store: library, open: { _ in }, delete: { _ in })
                 } else {
@@ -127,13 +127,13 @@ import SwiftUI
     }
 
     @Observable fileprivate final class SidebarPresentation {
-        var hasSessions: Bool?
+        var hasSessions = false
     }
 
     private struct SidebarFixture: View {
         let presentation: SidebarPresentation
         var body: some View {
-            ChatWindowLayout(workspace: nil, hasSessions: presentation.hasSessions) {
+            ChatWindowLayout(workspace: nil, initiallyShowsSidebar: presentation.hasSessions) {
                 Text("Sessions")
             } detail: {
                 Text("Conversation")
@@ -141,10 +141,11 @@ import SwiftUI
         }
     }
 
-    func choosesSidebarVisibilityOnceAfterRestoration() async throws {
+    func choosesSidebarVisibilityBeforeRestoration() async throws {
         _ = NSApplication.shared
         for hasSessions in [false, true] {
             let presentation = SidebarPresentation()
+            presentation.hasSessions = hasSessions
             let controller = NSHostingController(rootView: SidebarFixture(presentation: presentation))
             let window = NSWindow(contentViewController: controller)
             window.setContentSize(NSSize(width: 980, height: 700))
@@ -152,8 +153,6 @@ import SwiftUI
             defer { window.orderOut(nil) }
             try await settle(window)
             let frame = window.frame
-            presentation.hasSessions = hasSessions
-            try await settle(window)
             guard let split = splitView(in: controller.view), let sidebar = split.arrangedSubviews.first else {
                 throw CheckFailure(description: "Missing native sidebar split view")
             }
@@ -163,6 +162,27 @@ import SwiftUI
             presentation.hasSessions = !hasSessions
             try await settle(window)
             try expect(split.isSubviewCollapsed(sidebar) == !hasSessions)
+        }
+    }
+
+    func readsExistingSessionFilesBeforeStartup() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try expect(!SessionStore.hasSavedSessions(in: root))
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try expect(!SessionStore.hasSavedSessions(in: root))
+        // An orphaned index or unfinished atomic save must not open the sidebar.
+        for name in ["index.json", "account.json", "temporary.json"] {
+            try Data().write(to: root.appendingPathComponent(name))
+        }
+        try expect(!SessionStore.hasSavedSessions(in: root))
+        for name in [UUID().uuidString + ".json", "session.json"] {
+            let file = root.appendingPathComponent(name)
+            // Unreadable snapshots still have a recoverable sidebar entry.
+            try Data("invalid snapshot".utf8).write(to: file)
+            try expect(SessionStore.hasSavedSessions(in: root))
+            try FileManager.default.removeItem(at: file)
+            try expect(!SessionStore.hasSavedSessions(in: root))
         }
     }
 

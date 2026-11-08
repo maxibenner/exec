@@ -117,6 +117,27 @@ actor SessionStore {
         }
     }
 
+    /// Decide the initial split layout before creating the window. The existing
+    /// snapshot filenames are authoritative even when index.json is stale; no
+    /// transcripts, credentials or network requests are needed for this check.
+    static func hasSavedSessions(in directory: URL) -> Bool {
+        var info = stat()
+        guard lstat(directory.path, &info) == 0,
+              info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return false }
+        return names.contains { name in
+            name == "session.json" || (name.hasSuffix(".json") && UUID(uuidString: String(name.dropLast(5))) != nil)
+        }
+    }
+
+    static func applicationHasSavedSessions() -> Bool {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return false
+        }
+        // Check the old location too, before normal startup migrates it.
+        return ["Exec", "Harness"].contains { hasSavedSessions(in: base.appendingPathComponent($0)) }
+    }
+
     static func applicationStore() throws -> SessionStore {
         guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             throw ExecError("Application Support is unavailable.")

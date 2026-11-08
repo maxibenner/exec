@@ -110,7 +110,9 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
     override func layout() {
         super.layout()
-        if contentSize != lastSize { scheduleRefresh() }
+        // Commit row widths in this layout pass. Deferring to the main queue lets
+        // a live split-view resize display one frame with the previous text width.
+        if contentSize != lastSize { refresh() }
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()

@@ -30,7 +30,7 @@ import Observation
     var canEditDraft: Bool { canNavigate && current.canEditDraft }
     var models: [ChatModel] { library.models }
     var modelUnavailableReason: String? {
-        if !library.hasConnectedProvider { return "Provider unavailable" }
+        if !library.hasConnectedProvider { return "Connect a provider in settings" }
         return models.contains { $0.id == current.selectedModel } ? nil : "Model unavailable"
     }
     var canSend: Bool {

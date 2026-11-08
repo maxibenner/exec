@@ -11,6 +11,7 @@ import SwiftUI
         var disconnectAction: (() async -> Void)?
         var modelsAction: (() async throws -> Void)?
         var catalog: [ChatModel]?
+        var usage: AccountUsage?
         var requests: [String] = []
         var inputs: [[Message]] = []
         var definitions: [[String]] = []
@@ -33,6 +34,10 @@ import SwiftUI
         [.init(id: displayName, name: displayName, account: account,
                authentication: displayName == "DeepSeek" ? .apiKey : .browser)]
     }
+    var webSearchConfiguration: ProviderConnection.WebSearch {
+        displayName == "DeepSeek" ? .service("DeepSeek Search") : .model
+    }
+    func accountUsage() async throws -> AccountUsage? { connection.usage }
     func usesSearchModel(_ model: String) -> Bool { displayName == "OpenAI" }
     func connect() async throws {
         if connection.connectFails { throw ExecError("Connection failed") }
@@ -242,8 +247,9 @@ import SwiftUI
         library.disconnect(providerID: "openai")
         try await wait { !library.hasRunningOperations }
         try expect(!library.hasConnectedProvider && library.models.isEmpty && library.modelGroups.isEmpty)
+        try expect(library.connectedProviders.isEmpty && library.usageConnection == nil)
         try expect(panel.selectedModel.isEmpty && !panel.canSend && existing.selectedModel == "model")
-        try expect(panel.modelUnavailableReason == "Provider unavailable")
+        try expect(panel.modelUnavailableReason == "Connect a provider in settings")
         try expect(library.defaultSessionModel == nil && library.effectiveTitleModel.isEmpty && library.searchModels.isEmpty)
         let messageCount = existing.messages.count
         panel.send()
@@ -254,6 +260,9 @@ import SwiftUI
         library.connect(providerID: "deepseek", credential: "test-key")
         try await wait { !library.hasRunningOperations && library.models.count == 2 }
         try expect(library.models.allSatisfy { $0.id.hasPrefix("deepseek/") })
+        try expect(library.connectedProviders.map(\.id) == ["deepseek"])
+        try expect(library.connectedProviders[0].webSearch == .service("DeepSeek Search"))
+        try expect(!library.connectedProviders[0].supportsImageGeneration && library.usageConnection == nil)
         try expect(library.effectiveDefaultModel == "deepseek/model" && library.effectiveDefaultEffort == nil)
         try expect(empty.selectedModel == "model" && !empty.hasUsableModel)
         let emptyPanel = ChatPanel(library: library, conversation: empty)
@@ -276,6 +285,11 @@ import SwiftUI
         library.connect(providerID: "openai")
         try await wait { !library.hasRunningOperations && library.models.count == 3 }
         try expect(panel.selectedModel == "deepseek/other" && library.effectiveDefaultModel == "deepseek/other")
+        try expect(library.usageConnection?.id == "openai")
+        try expect(library.connectedProviders.first { $0.id == "openai" }?.webSearch == .model)
+        try expect(library.connectedProviders.first { $0.id == "openai" }?.supportsImageGeneration == true)
+        try expect(library.searchModels(for: "deepseek").isEmpty)
+        try expect(library.searchModels(for: "openai").map(\.id) == ["model"])
         try expect(library.effectiveTitleModel.isEmpty && library.modelGroups.count == 2)
         library.defaultModel = "model"
         try expect(library.effectiveDefaultEffort == "high")
@@ -397,34 +411,46 @@ import SwiftUI
         let preferences = UserDefaults(suiteName: suite)!
         defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
         let openAI = RegistryProbe("OpenAI"), deepSeek = RegistryProbe("DeepSeek")
+        openAI.connection.usage = AccountUsage(windows: [
+            .init(durationSeconds: 18_000, usedPercent: 24, resetsAt: .now.addingTimeInterval(3_600)),
+            .init(durationSeconds: 604_800, usedPercent: 62, resetsAt: .now.addingTimeInterval(86_400))])
         let library = try ChatLibrary(provider: MultiProvider(registry: registry(openAI, deepSeek)),
             sessions: SessionStore(directory: root), preferences: preferences)
         defer { library.stopAll() }
         library.settingsTab = .accounts
         library.restore()
-        try await wait { !library.hasRunningOperations && library.models.count == 2 }
+        try await wait { !library.hasRunningOperations && library.models.count == 2 && library.accountUsage != nil }
         let previews = ProcessInfo.processInfo.environment["EXEC_SETTINGS_PREVIEWS"].map { URL(fileURLWithPath: $0) }
         if let previews { try FileManager.default.createDirectory(at: previews, withIntermediateDirectories: true) }
-        for dark in [false, true] {
-            let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 500, height: 420),
-                                  styleMask: [.titled], backing: .buffered, defer: false)
-            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            defer { window.orderOut(nil); window.contentView = nil }
-            let host = NSHostingView(rootView: SettingsView(store: library)
-                .frame(width: 500, height: 420).environment(\.colorScheme, dark ? .dark : .light))
-            window.contentView = host
-            window.orderFront(nil)
-            try await Task.sleep(for: .milliseconds(100))
-            host.layoutSubtreeIfNeeded()
-            try expect(abs(host.fittingSize.width - 500) < 1 && host.fittingSize.height <= 421)
-            if let previews, let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
-                host.cacheDisplay(in: host.bounds, to: bitmap)
-                try bitmap.representation(using: .png, properties: [:])?.write(to: previews.appendingPathComponent(dark ? "providers-dark.png" : "providers-light.png"))
+        for tab in [ChatLibrary.SettingsTab.accounts, .modelsAndTools, .usage] {
+            library.settingsTab = tab
+            for dark in [false, true] {
+                let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 500, height: 420),
+                                      styleMask: [.titled], backing: .buffered, defer: false)
+                window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                defer { window.orderOut(nil); window.contentView = nil }
+                let host = NSHostingView(rootView: SettingsView(store: library)
+                    .frame(width: 500, height: 420).environment(\.colorScheme, dark ? .dark : .light))
+                window.contentView = host
+                window.orderFront(nil)
+                try await Task.sleep(for: .milliseconds(100))
+                host.layoutSubtreeIfNeeded()
+                try expect(abs(host.fittingSize.width - 500) < 1 && host.fittingSize.height <= 421)
+                if let previews, let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                    host.cacheDisplay(in: host.bounds, to: bitmap)
+                    try bitmap.representation(using: .png, properties: [:])?.write(to: previews.appendingPathComponent("\(tab)-\(dark ? "dark" : "light").png"))
+                }
             }
         }
         let sheet = NSHostingView(rootView: ProviderKeySheet(providerName: "DeepSeek", connect: { _ in }))
         try expect(sheet.fittingSize.width <= 410 && sheet.fittingSize.height < 260)
         if let previews {
+            library.settingsTab = .modelsAndTools
+            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 680),
+                                    to: previews.appendingPathComponent("models-and-tools-all.png"))
+            library.settingsTab = .usage
+            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
+                                    to: previews.appendingPathComponent("usage-both.png"))
             try await renderPreview(ProviderKeySheet(providerName: "DeepSeek", connect: { _ in }),
                                     size: NSSize(width: 360, height: 166), to: previews.appendingPathComponent("key-sheet.png"))
             library.disconnect(providerID: "openai")
@@ -434,17 +460,23 @@ import SwiftUI
             try expect(panel.modelUnavailableReason == "Model unavailable")
             try await renderPreview(ComposerPreview(panel: panel), size: NSSize(width: 540, height: 160),
                                     to: previews.appendingPathComponent("composer-model-unavailable.png"))
-            library.settingsTab = .general
+            library.settingsTab = .modelsAndTools
             try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
                                     to: previews.appendingPathComponent("deepseek-defaults.png"))
             library.disconnect(providerID: "deepseek")
             try await wait { !library.hasRunningOperations }
-            try expect(panel.modelUnavailableReason == "Provider unavailable")
+            try expect(panel.modelUnavailableReason == "Connect a provider in settings")
             try await renderPreview(ComposerPreview(panel: panel), size: NSSize(width: 540, height: 160),
                                     to: previews.appendingPathComponent("composer-provider-unavailable.png"))
             library.settingsTab = .accounts
             try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
                                     to: previews.appendingPathComponent("providers-empty.png"))
+            library.settingsTab = .modelsAndTools
+            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
+                                    to: previews.appendingPathComponent("models-and-tools-empty.png"))
+            library.settingsTab = .usage
+            try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
+                                    to: previews.appendingPathComponent("usage-empty.png"))
         }
     }
 

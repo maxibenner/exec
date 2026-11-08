@@ -68,10 +68,13 @@ enum ChatEvent: Sendable {
 
 struct ProviderConnection: Identifiable, Equatable {
     enum Authentication { case browser, apiKey }
+    enum WebSearch: Equatable { case unavailable, model, service(String) }
     let id: String
     let name: String
     let account: String?
     var authentication: Authentication = .browser
+    var webSearch: WebSearch = .unavailable
+    var supportsImageGeneration = false
 }
 
 // Providers own authentication and wire formats. Core orchestration sees only
@@ -82,6 +85,8 @@ struct ProviderConnection: Identifiable, Equatable {
     var retainsLocalConversations: Bool { get }
     var preservesModelSelection: Bool { get }
     var usageProviderName: String { get }
+    var usageConnection: ProviderConnection? { get }
+    var webSearchConfiguration: ProviderConnection.WebSearch { get }
     var modelDiscoveryWarning: String? { get }
     func recordsAccountUsage(model: String) -> Bool
     func connect(id: String, credential: String?) async throws
@@ -124,7 +129,12 @@ struct ProviderConnection: Identifiable, Equatable {
 }
 
 extension ChatProvider {
-    var connections: [ProviderConnection] { [.init(id: displayName, name: displayName, account: account)] }
+    var connections: [ProviderConnection] {
+        [.init(id: displayName, name: displayName, account: account,
+               webSearch: webSearchConfiguration, supportsImageGeneration: supportsImageGeneration)]
+    }
+    var usageConnection: ProviderConnection? { connections.first { $0.account != nil } }
+    var webSearchConfiguration: ProviderConnection.WebSearch { supportsWebSearch ? .model : .unavailable }
     var retainsLocalConversations: Bool { false }
     var preservesModelSelection: Bool { false }
     var usageProviderName: String { displayName }

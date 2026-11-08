@@ -6,6 +6,7 @@ import Foundation
 @MainActor final class PresentationProvider: ChatProvider {
     private let presentation: AccountPresentation
     init(_ presentation: AccountPresentation) { self.presentation = presentation }
+    var usageConnection: ProviderConnection? { nil }
     var displayName: String { presentation.providerName }
     var connectionTitle: String { presentation.connectionTitle }
     var account: String? { presentation.accountName }

@@ -10,8 +10,8 @@ import Observation
         _ = authenticating
         return isPresentingStartup ? discoveredModels : discoveredModels.filter { provider.isModelAvailable($0.id) }
     }
-    enum SettingsTab { case general, accounts, systemPrompt }
-    var settingsTab = SettingsTab.general
+    enum SettingsTab { case modelsAndTools, accounts, usage, systemPrompt }
+    var settingsTab = SettingsTab.modelsAndTools
     var connectionError: String?
     private var rememberedModels: [String: String]
     private var rememberedEfforts: [String: String]
@@ -262,7 +262,11 @@ import Observation
     }
     var account: String? { current.account }
     var providerName: String { provider.usageProviderName }
-    var showsAccountUsage: Bool { account != nil && provider.recordsAccountUsage(model: current.selectedModel) }
+    var usageConnection: ProviderConnection? {
+        _ = authenticating
+        return provider.usageConnection
+    }
+    var connectedProviders: [ProviderConnection] { connections.filter { $0.account != nil } }
     var connections: [ProviderConnection] {
         _ = authenticating // Refresh account presentation after account operations.
         return provider.connections
@@ -278,6 +282,9 @@ import Observation
         connections.first { $0.id == provider.providerID(for: model) }?.name ?? ""
     }
     var searchModels: [ChatModel] { models.filter { provider.usesSearchModel($0.id) } }
+    func searchModels(for providerID: String) -> [ChatModel] {
+        searchModels.filter { provider.providerID(for: $0.id) == providerID }
+    }
     var connectionTitle: String { provider.connectionTitle }
     var workspace: Workspace? { current.workspace }
     var canSelectWorkspace: Bool { canModify && !current.busy && current.messages.isEmpty }
