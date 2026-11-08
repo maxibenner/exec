@@ -183,11 +183,6 @@ struct ChatComposer: View {
                 .monospacedDigit().fixedSize()
                 .help(usage.map { "Last reported context: \($0.tokens.formatted()) / \($0.limit.formatted()) tokens. Excludes unsent drafts and unfinished responses." } ?? "Context usage has not been reported yet.")
                 .accessibilityLabel(usage.map { "Context usage, \($0.percent) percent" } ?? "Context usage, 0 percent; not yet reported")
-            if let root = store.workspace?.root {
-                WorkspaceBar(root: root)
-                    .padding(.leading, 10)
-                    .layoutPriority(-1)
-            }
         }
         .font(.caption).foregroundStyle(.secondary)
         .lineLimit(1)
