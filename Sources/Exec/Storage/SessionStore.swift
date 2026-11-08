@@ -125,6 +125,13 @@ actor SessionStore {
         return SessionStore(directory: base.appendingPathComponent("Harness", isDirectory: true))
     }
 
+    func prepareShellLogDirectory(id: UUID) throws -> URL {
+        guard try readCatalog().sessions.contains(where: { $0.id == id }) else {
+            throw ExecError("Cannot save shell logs for an unsaved or deleted session.")
+        }
+        return try SessionShellLogs(directory: directory).prepare(id: id)
+    }
+
     func saveImage(_ image: ImageAttachment) throws -> URL {
         let images = directory.appendingPathComponent("images", isDirectory: true)
         let path = try ImageFiles(directory: images).save(image.data, mediaType: image.mediaType)
@@ -230,6 +237,9 @@ actor SessionStore {
     func delete(id: UUID) throws {
         var catalog = try readCatalog()
         guard catalog.sessions.contains(where: { $0.id == id }) else { return }
+        // Cleanup must succeed before removing the snapshot. A failure leaves the
+        // session available for explicit recovery, not orphaned logs after deletion.
+        try SessionShellLogs(directory: directory).remove(id: id)
         // Read references without loading image bytes, so missing or damaged images
         // do not prevent deletion. Unknown references conservatively skip cleanup.
         if var paths = try imagePaths(id: id) {

@@ -50,7 +50,7 @@ enum CodingTools {
             .init(name: "old_text", type: "string", description: "Exact unique text to replace"),
             .init(name: "new_text", type: "string", description: "Replacement text")
         ]),
-        .init(name: "shell", description: "Run a bash command in the workspace subject to the user's approval setting. Not sandboxed. Commands have a 120-second timeout. Combined output over 32 KiB keeps the first and last 16 KiB and provides a private temporary log of the full captured output when saving succeeds. Inspect that log with a separate approved shell command rather than rerunning the original command; temporary logs may be removed by the OS. Never automatically retry commands or assume a cancelled command had no effects.", parameters: [
+        .init(name: "shell", description: "Run a bash command in the workspace subject to the user's approval setting. Not sandboxed. Commands have a 120-second timeout. Combined output over 32 KiB keeps the first and last 16 KiB and provides a private session-owned log of the full captured output when saving succeeds. Inspect that log with a separate approved shell command rather than rerunning the original command; deleting the session deletes its logs. Never automatically retry commands or assume a cancelled command had no effects.", parameters: [
             .init(name: "command", type: "string", description: "Exact shell command to show for approval")
         ])
     ]

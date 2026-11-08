@@ -49,7 +49,7 @@ import Observation
         continuation?.resume(returning: approved ? .approved : .denied)
     }
 
-    func execute(_ call: ToolCall, workspace: Workspace?) async throws -> ToolResult {
+    func execute(_ call: ToolCall, workspace: Workspace?, shellLogDirectory: URL? = nil) async throws -> ToolResult {
         try Task.checkCancellation()
         guard let workspace else { return ToolResult(call: call, text: "Error: select a workspace before using tools.") }
         do {
@@ -59,7 +59,9 @@ import Observation
                 guard try await requestApproval(approval) else {
                     return ToolResult(call: call, text: "User denied this command. It was not executed. Do not retry it without a new user request.")
                 }
-                return ToolResult(call: call, text: try await background { try await ShellRunner.run(command, in: workspace.root) })
+                return ToolResult(call: call, text: try await background {
+                    try await ShellRunner.run(command, in: workspace.root, logDirectory: shellLogDirectory)
+                })
             }
             if call.name == "edit_file" {
                 let arguments = try CodingTools.decode(FileEdit.Arguments.self, call)

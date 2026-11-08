@@ -2,26 +2,28 @@ import Foundation
 import Darwin
 
 /// Keeps a bounded preview in memory; only overflowing output is spooled to disk.
+/// The owner supplies an existing session directory; capture never recreates it.
 /// Unpublished logs (including cancelled commands) are removed on release.
 final class ShellOutputCapture {
     private static let halfLimit = 16_384
-    private let temporaryDirectory: URL
+    private let directory: URL?
     private var head = Data()
     private var tail = Data()
     private var byteCount = 0
-    private var logDirectory: URL?
+    private var directoryFD: Int32 = -1
     private var logURL: URL?
     private var log: FileHandle?
     private var logFailed = false
     private var published = false
 
-    init(temporaryDirectory: URL = FileManager.default.temporaryDirectory) {
-        self.temporaryDirectory = temporaryDirectory
+    init(directory: URL? = nil) {
+        self.directory = directory
     }
 
     deinit {
         try? log?.close()
-        if !published, let logDirectory { try? FileManager.default.removeItem(at: logDirectory) }
+        if !published { removeLog() }
+        if directoryFD >= 0 { close(directoryFD) }
     }
 
     func append(_ data: Data) {
@@ -56,24 +58,25 @@ final class ShellOutputCapture {
             + "\n[Output truncated: \(omitted) bytes omitted; showing first and last 16 KiB.]\n"
             + String(decoding: tail, as: UTF8.self)
         guard !logFailed, let logURL else {
-            return preview + "\n[Full output log unavailable: saving failed. The command was not retried.]"
+            return preview + "\n[Full output log unavailable: session storage is unavailable or saving failed. The command was not retried.]"
         }
         published = true
-        return preview + "\n[Full captured output (\(byteCount) bytes) saved to temporary log: \(logURL.path)\n"
-            + "Read it with a separate shell command (subject to approval); do not rerun the original command to recover output. The OS may remove temporary logs.]"
+        return preview + "\n[Full captured output (\(byteCount) bytes) saved to session log: \(logURL.path)\n"
+            + "Read it with a separate shell command (subject to approval); do not rerun the original command to recover output. Deleting this session deletes its logs.]"
     }
 
     private func openLog() throws {
-        var template = Array(temporaryDirectory.appendingPathComponent("exec-shell-XXXXXX").path.utf8CString)
-        guard mkdtemp(&template) != nil else { throw ExecError("Cannot create shell log directory.") }
-        let path = String(decoding: template.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)
-        let directory = URL(fileURLWithPath: path, isDirectory: true)
-        logDirectory = directory // mkdtemp creates a private (0700) directory.
-        let url = directory.appendingPathComponent("output.log")
-        let descriptor = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard let directory else { throw ExecError("Session log storage is unavailable.") }
+        directoryFD = try WorkspaceFiles(root: directory).openPath(".", directory: true)
+        let name = UUID().uuidString + ".log"
+        let descriptor = openat(directoryFD, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard descriptor >= 0 else { throw ExecError("Cannot create shell log.") }
-        logURL = url
+        logURL = directory.appendingPathComponent(name)
         log = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
+
+    private func removeLog() {
+        if directoryFD >= 0, let logURL { unlinkat(directoryFD, logURL.lastPathComponent, 0) }
     }
 
     private func failLog() {
@@ -81,6 +84,6 @@ final class ShellOutputCapture {
         try? log?.close()
         log = nil
         // Do not expose an incomplete file as a full log, or retry writes.
-        if let logDirectory { try? FileManager.default.removeItem(at: logDirectory) }
+        removeLog()
     }
 }

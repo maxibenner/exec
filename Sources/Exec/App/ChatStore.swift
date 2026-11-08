@@ -481,7 +481,13 @@ import Observation
             try Task.checkCancellation()
             return ToolResult(call: call, text: result.context, webSearch: result)
         }
-        return try await tools.execute(call, workspace: workspace)
+        var shellLogDirectory: URL?
+        if call.name == "shell", let sessions, let id = currentSessionID {
+            // A durable checkpoint already owns this turn. Storage failure must
+            // not replay or suppress a command; capture will report unavailable logs.
+            shellLogDirectory = try? await sessions.prepareShellLogDirectory(id: id)
+        }
+        return try await tools.execute(call, workspace: workspace, shellLogDirectory: shellLogDirectory)
     }
 
     private func recordTool(_ call: ToolCall, text: String, input: inout [Message]) {

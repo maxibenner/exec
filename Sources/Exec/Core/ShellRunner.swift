@@ -4,7 +4,8 @@ import Darwin
 /// Approved commands run with normal user privileges, NOT in a sandbox.
 /// A new process group lets Stop/timeout terminate ordinary child processes too.
 enum ShellRunner {
-    static func run(_ command: String, in directory: URL, timeout: Duration = .seconds(120)) async throws -> String {
+    static func run(_ command: String, in directory: URL, timeout: Duration = .seconds(120),
+                    logDirectory: URL? = nil) async throws -> String {
         try Task.checkCancellation()
         var pipeFD: [Int32] = [0, 0]
         guard pipe(&pipeFD) == 0 else { throw ExecError("Cannot create command output pipe.") }
@@ -57,7 +58,7 @@ enum ShellRunner {
             }
         }
         let deadline = ContinuousClock.now.advanced(by: timeout)
-        let output = ShellOutputCapture()
+        let output = ShellOutputCapture(directory: logDirectory)
         var buffer = [UInt8](repeating: 0, count: 8192)
         func drain() {
             // Bound each pass so continuous output cannot starve cancellation.
