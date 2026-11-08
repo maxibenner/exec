@@ -35,21 +35,7 @@ struct ConversationView: View {
                 Color.clear
             } else {
                 VStack(spacing: 0) {
-                    VStack(spacing: 12) {
-                        Image(systemName: "bubble.left.and.bubble.right")
-                            .font(.system(size: 28, weight: .regular))
-                            .foregroundStyle(.secondary)
-                            .accessibilityHidden(true)
-                        VStack(spacing: 6) {
-                            Text("No Sessions").font(.headline.bold())
-                            Text("Press ⌘T to create one.")
-                                .font(.callout).foregroundStyle(.secondary)
-                                .accessibilityLabel("Press Command T to create one.")
-                        }
-                    }
-                    .multilineTextAlignment(.center)
-                    .padding(24)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    NoSessionsView()
                     if let error { errorView(error) }
                 }
             }

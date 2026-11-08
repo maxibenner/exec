@@ -11,27 +11,35 @@ struct ProviderSettingsView: View {
     private var available: [ProviderConnection] { store.connections.filter { $0.account == nil } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 8) {
             List(connected, selection: $selection) { connection in
                 HStack(spacing: 10) {
                     Image(systemName: connection.authentication == .apiKey ? "key" : "person.crop.circle")
                         .frame(width: 24)
                         .foregroundStyle(.secondary)
-                    Text(connection.name)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(connection.name)
+                        if let account = connection.account {
+                            Text(verbatim: account).font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.middle)
+                        }
+                    }
                     Spacer()
                 }
                 .padding(.vertical, 4)
                 .tag(connection.id)
             }
             .listStyle(.inset)
+            .scrollContentBackground(.hidden)
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay {
                 if connected.isEmpty {
                     Text("No providers connected").foregroundStyle(.secondary)
                         .allowsHitTesting(false)
                 }
             }
-            .frame(minHeight: 180)
-            Divider()
+            .frame(height: max(88, CGFloat(connected.count) * 60 + 16))
             HStack(spacing: 12) {
                 Menu {
                     ForEach(available) { connection in
@@ -58,19 +66,9 @@ struct ProviderSettingsView: View {
                 Spacer()
             }
             .controlSize(.small)
-            .padding(10)
-            .background(.bar)
-            if let connection = connected.first(where: { $0.id == selection }) {
-                Divider()
-                VStack(alignment: .leading, spacing: 8) {
-                    LabeledContent("Account", value: connection.account ?? "")
-                    LabeledContent("Authentication", value: connection.authentication == .apiKey ? "API key" : "Browser sign-in")
-                }
-                .font(.callout)
-                .padding(12)
-            }
+            .padding(.horizontal, 8)
+            Spacer(minLength: 0)
         }
-        .border(Color(nsColor: .separatorColor))
         .padding(20)
         .disabled(store.accountBusy || !store.canNavigate)
         .onChange(of: connected.map(\.id)) { _, ids in

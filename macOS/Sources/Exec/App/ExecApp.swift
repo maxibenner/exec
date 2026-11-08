@@ -2,7 +2,7 @@ import SwiftUI
 
 @main struct ExecApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    private let initiallyShowsSidebar = SessionStore.applicationHasSavedSessions()
+    private let initiallyHasSavedSessions = SessionStore.applicationHasSavedSessions()
     @State private var startup = ChatStartup()
     @State private var windowGeometry = MainWindowGeometry()
 
@@ -40,7 +40,7 @@ import SwiftUI
     private var chatWindow: some Scene {
         Window("Exec", id: "chat") {
             ChatWindowLayout(workspace: startup.store?.workspace?.root,
-                             initiallyShowsSidebar: initiallyShowsSidebar) {
+                             initiallyShowsSidebar: initiallyHasSavedSessions) {
                 if let store = startup.store, let windows = startup.windows {
                     SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {
                         guard store.canNavigate, !store.isSessionRunning($0.id) else { return }
@@ -58,6 +58,16 @@ import SwiftUI
                     .padding().frame(maxWidth: 480)
                 } else if let store = startup.store, let windows = startup.windows {
                     ChatView(store: store, windows: windows)
+                        .overlay {
+                            // Keep the first-frame empty state visible while the
+                            // blank runner restores, without remounting ChatView.
+                            if !initiallyHasSavedSessions, store.current.isRestoringSession,
+                               !store.hasConversation(store.current) {
+                                NoSessionsView()
+                            }
+                        }
+                } else if !initiallyHasSavedSessions {
+                    NoSessionsView()
                 } else {
                     Color.clear
                 }
