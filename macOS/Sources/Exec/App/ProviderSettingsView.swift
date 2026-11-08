@@ -70,7 +70,7 @@ struct ProviderSettingsView: View {
                     .padding(.vertical, 10)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ProviderRowButtonStyle())
                 .background(selection == connection.id ? Color.primary.opacity(0.08) : Color.clear)
                 .accessibilityAddTraits(selection == connection.id ? [.isSelected] : [])
             }
@@ -114,6 +114,13 @@ struct ProviderSettingsView: View {
         .controlSize(.small)
     }
 
+}
+
+/// Keep row selection separate from transient button press feedback.
+private struct ProviderRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+    }
 }
 
 struct ProviderKeySheet: View {
