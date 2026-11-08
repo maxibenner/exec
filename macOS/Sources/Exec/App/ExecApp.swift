@@ -14,7 +14,7 @@ import SwiftUI
                 SettingsView(store: store)
             }
         }
-        .defaultSize(width: 500, height: 420)
+        .defaultSize(width: 500, height: 560)
         .windowResizability(.contentSize)
     }
 

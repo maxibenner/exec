@@ -33,11 +33,10 @@ struct ModelsAndToolsSettingsView: View {
                 Toggle("Auto mode", isOn: $settings.defaultAutoApproveTools)
             } header: {
                 Text("New Chats")
-            } footer: {
-                Text("Defaults apply to new chats.")
             }
             Section("Session Titles") {
                 Toggle("Generate session titles", isOn: $settings.generatedTitlesEnabled)
+                    .disabled(connected.isEmpty || store.models.isEmpty)
                 if !connected.isEmpty {
                     Picker("Title model", selection: Binding(
                         get: { store.effectiveTitleModel }, set: { store.titleModel = $0 }
@@ -71,7 +70,7 @@ struct ModelsAndToolsSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .disabled(store.authenticating)
+        .disabled(store.authenticating || connected.isEmpty)
     }
 
     @ViewBuilder private func searchSettings(_ connection: ProviderConnection) -> some View {

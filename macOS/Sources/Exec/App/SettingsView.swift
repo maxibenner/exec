@@ -20,14 +20,14 @@ struct SettingsView: View {
                 .tag(ChatLibrary.SettingsTab.systemPrompt)
         }
         .frame(width: 500)
-        .frame(minHeight: 360, idealHeight: 420)
+        .frame(minHeight: 360, idealHeight: 560)
     }
 
     private var systemPromptSection: some View {
         @Bindable var settings = store
         return GeometryReader { geometry in
             Form {
-                Section("System Prompt") {
+                Section {
                     TextEditor(text: $settings.systemPrompt)
                         .font(.body)
                         .accessibilityLabel("System Prompt")
