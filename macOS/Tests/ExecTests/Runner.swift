@@ -72,6 +72,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Detached sessions preserve running context and window-local controls", { try await DetachedSessionTests().movingRunningConversationsPreservesOwnershipAndControls() }),
             ("Detaching all workspace sessions shows the empty placeholder", { try await DetachedSessionTests().detachingAllWorkspaceSessionsShowsPlaceholder() }),
             ("Cold detach and native window close preserve drafts and presentation", { try await DetachedSessionTests().coldDetachAndNativeClosePreserveState() }),
+            ("Creating a second session requests sidebar expansion only once", { try await DetachedSessionTests().revealsSidebarWhenCreatingSecondSession() }),
             ("Sidebar reordering preserves detached conversations and saved order", { try await DetachedSessionTests().sidebarReorderingPreservesDetachedConversations() }),
             ("Pending approvals survive detach and reattach without execution", { try await DetachedSessionTests().pendingApprovalsMoveWithoutExecutionOrReplay() }),
             ("Session deletion selects adjacent rows and preserves drafts", { try await SessionDeletionTests().selectsAdjacentRowsInSidebarOrder() }),

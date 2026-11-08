@@ -52,8 +52,7 @@ struct SessionCommands: Commands {
     var body: some Commands {
         CommandMenu("Sessions") {
             Button("New Session") {
-                store?.newConversation()
-                windows?.showMainWindow()
+                windows?.newConversation()
             }
             .keyboardShortcut("t", modifiers: .command)
             .disabled(store?.canNavigate != true)

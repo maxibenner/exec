@@ -40,7 +40,7 @@ struct ConversationView: View {
                 }
             }
         }
-        .frame(minWidth: 460, minHeight: 480)
+        .frame(minWidth: 400, minHeight: 480)
         .onExitCommand { if panel.isWorking { panel.stop() } }
         .background(WindowReference { panel.window = $0 })
         .background(ChatWindowTitle(title: panel.title))

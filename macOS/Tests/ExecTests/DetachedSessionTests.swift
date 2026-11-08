@@ -240,6 +240,41 @@ import SwiftUI
         try expect(conversation.messages.filter { $0.toolResult?.call.id == "pending" }.count == 1)
     }
 
+    func revealsSidebarWhenCreatingSecondSession() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let preferenceID = "SecondSession-" + UUID().uuidString
+        let preferences = UserDefaults(suiteName: preferenceID)!
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            preferences.removePersistentDomain(forName: preferenceID)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let library = try ChatLibrary(provider: FakeProvider(), sessions: SessionStore(directory: root), preferences: preferences)
+        defer { library.stopAll() }
+        let windows = SessionWindows(library: library)
+        library.restore()
+        try await wait { !library.hasRunningOperations }
+        windows.newConversation()
+        try expect(windows.sidebarRevealRequest == 0)
+        library.selectWorkspace(root)
+        try await wait { !library.hasRunningOperations }
+        try expect(library.sessionList.count == 1 && windows.sidebarRevealRequest == 0)
+        windows.newConversation()
+        try expect(library.sessionList.count == 2 && windows.sidebarRevealRequest == 1)
+        try await wait { !library.hasRunningOperations }
+        windows.newConversation()
+        try expect(library.sessionList.count == 3 && windows.sidebarRevealRequest == 1)
+        try await wait { !library.hasRunningOperations }
+        for remaining in [2, 1] {
+            library.deleteSession(library.current.currentSessionID!)
+            try await wait { !library.hasRunningOperations }
+            try expect(library.sessionList.count == remaining && windows.sidebarRevealRequest == 1)
+        }
+        windows.newConversation()
+        try expect(library.sessionList.count == 2 && windows.sidebarRevealRequest == 2)
+        try await wait { !library.hasRunningOperations }
+    }
+
     private func wait(file: String = #fileID, line: Int = #line, _ condition: () -> Bool) async throws {
         for _ in 0..<500 {
             if condition() { return }
