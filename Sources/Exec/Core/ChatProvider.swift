@@ -123,7 +123,11 @@ extension ChatProvider {
     }
 }
 
-struct ExecError: LocalizedError, Sendable {
+// Only curated app errors and provider-redacted diagnostics may be persisted
+// verbatim in model context. System errors can carry sensitive userInfo.
+protocol ContextSafeError: LocalizedError {}
+
+struct ExecError: ContextSafeError, Sendable {
     let message: String
     init(_ message: String) { self.message = message }
     var errorDescription: String? { message }

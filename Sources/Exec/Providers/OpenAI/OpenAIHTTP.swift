@@ -1,6 +1,6 @@
 import Foundation
 
-struct OpenAIHTTPError: LocalizedError, Sendable {
+struct OpenAIHTTPError: ContextSafeError, Sendable {
     let status: Int
     var details: String? = nil
     var errorDescription: String? {

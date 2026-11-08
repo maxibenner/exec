@@ -105,7 +105,10 @@ import Foundation
             }
             await store.waitUntilIdle()
             try expect(captures == (mode == "deny" ? 0 : 1) && provider.inputs.count == 1)
-            try expect(store.messages.last?.text == ScreenshotTool.interrupted)
+            let detail = mode == "deny" ? "Screenshot denied. Do not retry without a new user request." : "Capture unavailable"
+            let expected = ScreenshotTool.interrupted + (mode == "cancel" ? "" : "\nTool error: \(detail)\nThe turn was stopped. Do not retry without a new user request.")
+            try expect(store.messages.last?.text == expected)
+            try expect((store.error == nil) == (mode == "cancel"))
             try expect(store.messages.compactMap(\.toolResult).allSatisfy { $0.screenshot == nil })
         }
         for arguments in [#"{"target":"window","window_id":0}"#, #"{"target":"desktop","window_id":9}"#,

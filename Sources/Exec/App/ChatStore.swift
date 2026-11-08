@@ -425,7 +425,18 @@ import Observation
                         case FetchContentTool.definition.name: interrupted = FetchContentTool.interrupted
                         default: interrupted = "Interrupted. An operation may have changed files; inspect before retrying. No automatic retry was performed."
                         }
-                        self.recordTool(call, text: interrupted, input: &input)
+                        let cancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
+                        var outcome = interrupted
+                        if !cancelled {
+                            // App errors are user-facing. Strip system error metadata, which
+                            // can contain request URLs, credentials, or raw response details.
+                            let systemError = error as NSError
+                            let detail = (error as? any ContextSafeError)?.errorDescription ?? NSError(
+                                domain: systemError.domain, code: systemError.code, userInfo: nil
+                            ).localizedDescription
+                            outcome += "\nTool error: \(detail)\nThe turn was stopped. Do not retry without a new user request."
+                        }
+                        self.recordTool(call, text: outcome, input: &input)
                         for pending in assistant.toolCalls.dropFirst(index + 1) {
                             self.recordTool(pending, text: "Not executed: the turn was stopped.", input: &input)
                         }
@@ -562,13 +573,9 @@ import Observation
             if !requestStarted {
                 history = completedHistory
                 pendingInput.insert(contentsOf: input.dropFirst(completedHistory.count).filter { $0.role == .user }, at: 0)
-            } else if messages[index].status == .failed {
-                // Preserve submitted instructions and attachments, but exclude
-                // the failed assistant response and any unfinished tool calls.
-                history = input
-            } else if messages[index].status == .interrupted {
-                // Preserve the submitted prompt and visible partial answer, not
-                // unfinished tool calls or an assumed successful model step.
+            } else if messages[index].status == .failed || messages[index].status == .interrupted {
+                // Preserve submitted input and visible partial text with its failure
+                // status, never unfinished tool calls or an assumed successful step.
                 history = input
                 if !fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     history.append(messages[index])

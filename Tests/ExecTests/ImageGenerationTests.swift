@@ -79,7 +79,7 @@ import AppKit
             await store.waitUntilIdle()
             try expect(store.error != nil && HTTPStub.state.requests.count == 2)
             try expect(store.messages.last?.toolResult?.generatedImage == nil)
-            try expect(store.messages.last?.text == ImageGenerationTool.interrupted)
+            try expect(store.messages.last?.text == ImageGenerationTool.interrupted + "\nTool error: \(store.error!)\nThe turn was stopped. Do not retry without a new user request.")
             http.invalidateAndCancel()
         }
         try expectFailure { _ = try ImageGenerationTool.Request(prompt: "  ", transparent_background: false).validated() }

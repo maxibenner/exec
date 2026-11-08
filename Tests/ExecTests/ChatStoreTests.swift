@@ -306,7 +306,7 @@ import Foundation
         try expect(provider.inputs.last?.map(\.text) == ["Fresh"])
     }
 
-    func failedResponsesPreservePromptsButExcludeAssistantOutput() async throws {
+    func failedResponsesPreservePartialContextWithoutToolCalls() async throws {
         for incomplete in [false, true] {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: root) }
@@ -330,12 +330,13 @@ import Foundation
             let failed = store.messages.last!
             try expect(failed.status == .failed && !failed.text.isEmpty && failed.toolCalls.isEmpty)
             try expect(store.pendingInput.isEmpty && !store.messages.contains { $0.role == .tool })
-            let expected = ["First", "Hello world", "Now implement the fix"]
-            let saved = try await sessions.load(id: store.currentSessionID)
-            try expect(saved?.history.map(\.text) == expected)
-            try expect(saved?.messages.last?.id == failed.id)
+            let expected = ["First", "Hello world", "Now implement the fix", failed.text]
+            let saved = try await sessions.load(id: store.currentSessionID)!
+            try expect(saved.history.map(\.text) == expected)
+            try expect(saved.history.last?.id == failed.id && saved.history.last?.status == .failed)
+            try expect(saved.messages.last?.id == failed.id)
 
-            // Reopening does not retry the request or lose the submitted instruction.
+            // Reopening retains partial text without retrying or reviving unfinished calls.
             let restoredProvider = FakeProvider()
             let restored = ChatStore(provider: restoredProvider, sessions: sessions)
             restored.restore()
@@ -345,6 +346,7 @@ import Foundation
             restored.send()
             try await settle(restored)
             try expect(restoredProvider.inputs.last?.map(\.text) == expected + ["Continue"])
+            try expect(restoredProvider.inputs.last?[3].status == .failed)
 
             provider.shouldFail = false
             store.draft = "Continue"
@@ -352,7 +354,22 @@ import Foundation
             try await settle(store)
             try expect(provider.inputs.count == 3)
             try expect(provider.inputs.last?.map(\.text) == expected + ["Continue"])
-            try expect(provider.inputs.last?.contains { $0.id == failed.id } == false)
+            try expect(provider.inputs.last?.contains { $0.id == failed.id && $0.toolCalls.isEmpty } == true)
+
+            // Even cached terminal output must not replace a failed partial response.
+            let prompt = saved.history[2]
+            let output = Data(#"[{"type":"function_call","call_id":"unexecuted","name":"shell","arguments":"{}"}]"#.utf8)
+            var context = CodexConversationState(outputs: [prompt.id: output])
+            context.measurement = .init(inputID: prompt.id, tokens: 123)
+            var partial = failed
+            partial.toolCalls = [ToolCall(id: "unfinished", name: "shell", arguments: "{}")]
+            for state in [context, CodexConversationState()] {
+                let wire = try state.input([prompt, partial])
+                try expect(wire.count == 2)
+                try expect(wire[1]["content"] as? String == "[Incomplete assistant response: generation failed.]\n\n\(failed.text)")
+                try expect(state.reportedTokens([prompt, partial]) == nil)
+                try expect(state.lastReportedTokens([prompt, partial]) == nil)
+            }
         }
     }
 

@@ -86,7 +86,8 @@ import UniformTypeIdentifiers
         let failedID = store.messages.last(where: { $0.role == .user })!.id
         let failedReplyID = store.messages.last!.id
         let afterFailure = try await sessions.load(id: store.currentSessionID)
-        try expect(afterFailure?.history.last?.id == failedID && afterFailure?.history.last?.images == [image])
+        try expect(afterFailure?.history.first(where: { $0.id == failedID })?.images == [image])
+        try expect(afterFailure?.history.last?.id == failedReplyID && afterFailure?.history.last?.status == .failed)
         let recoveredProvider = FakeProvider()
         let recovered = ChatStore(provider: recoveredProvider, sessions: sessions)
         recovered.restore()
@@ -96,13 +97,13 @@ import UniformTypeIdentifiers
         recovered.send()
         await recovered.waitUntilIdle()
         try expect(recoveredProvider.inputs.last?.first(where: { $0.id == failedID })?.images == [image])
-        try expect(recoveredProvider.inputs.last?.contains(where: { $0.id == failedReplyID }) == false)
+        try expect(recoveredProvider.inputs.last?.first(where: { $0.id == failedReplyID })?.status == .failed)
         provider.shouldFail = false
         store.draft = "Continue"
         store.send()
         await store.waitUntilIdle()
         try expect(provider.inputs.last?.first(where: { $0.id == failedID })?.images == [image])
-        try expect(provider.inputs.last?.contains(where: { $0.id == failedReplyID }) == false)
+        try expect(provider.inputs.last?.first(where: { $0.id == failedReplyID })?.status == .failed)
     }
 
     func pendingDropsStayWithOriginalConversation() async throws {
