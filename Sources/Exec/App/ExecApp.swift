@@ -5,6 +5,30 @@ import SwiftUI
     @State private var startup = ChatStartup()
 
     var body: some Scene {
+        startupWindow
+
+        Settings {
+            if let store = startup.store {
+                SettingsView(store: store)
+            }
+        }
+        .defaultSize(width: 500, height: 420)
+        .windowResizability(.contentSize)
+    }
+
+    private var startupWindow: some Scene {
+        // SceneBuilder has no if/else support; erase both branches through its
+        // availability wrapper to keep macOS 14 support without duplicating windows.
+        if #available(macOS 15.0, *) {
+            // Startup trial: isolate saved window geometry from first-layout sizing.
+            return SceneBuilder.buildOptional(SceneBuilder.buildLimitedAvailability(
+                chatWindow.restorationBehavior(.disabled)))
+        } else {
+            return SceneBuilder.buildOptional(SceneBuilder.buildLimitedAvailability(chatWindow))
+        }
+    }
+
+    private var chatWindow: some Scene {
         Window("Exec", id: "chat") {
             ChatWindowLayout(workspace: startup.store?.workspace?.root) {
                 if let store = startup.store, let windows = startup.windows {
@@ -35,14 +59,6 @@ import SwiftUI
         }
         .defaultSize(width: 980, height: 700)
         .commands { SessionCommands(store: startup.store, windows: startup.windows) }
-
-        Settings {
-            if let store = startup.store {
-                SettingsView(store: store)
-            }
-        }
-        .defaultSize(width: 500, height: 420)
-        .windowResizability(.contentSize)
     }
 
     private func start() {
