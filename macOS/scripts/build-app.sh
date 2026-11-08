@@ -50,6 +50,7 @@ xcrun actool "$PWD/Design/Icons/Glass_Icon.icon" \
 framework="$built/Contents/Frameworks/Sparkle.framework"
 mkdir -p "$built/Contents/Frameworks"
 ditto .build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework "$framework"
+cp .build/artifacts/sparkle/Sparkle/LICENSE "$built/Contents/Resources/Sparkle-LICENSE.txt"
 # Sign inside out, including Sparkle's helpers, with the same identity as Exec.
 # Never use --deep for signing; the downloader can have its own entitlements.
 codesign "${options[@]}" --sign "$identity" "$framework/Versions/B/XPCServices/Installer.xpc"
