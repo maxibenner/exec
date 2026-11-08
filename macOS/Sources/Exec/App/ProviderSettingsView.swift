@@ -82,7 +82,7 @@ struct ProviderSettingsView: View {
     private var providerControls: some View {
         HStack {
             Spacer(minLength: 0)
-            HStack(spacing: 0) {
+            ControlGroup {
                 Menu {
                     ForEach(available) { connection in
                         Button(connection.name) {
@@ -90,26 +90,20 @@ struct ProviderSettingsView: View {
                             else { store.connect(providerID: connection.id) }
                         }
                     }
-                } label: { Image(systemName: "plus").frame(width: 30, height: 26) }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
+                } label: { Image(systemName: "plus").frame(width: 16, height: 18) }
                 .menuIndicator(.hidden)
-                .frame(width: 30, height: 26)
                 .disabled(available.isEmpty)
                 .help("Add Provider")
                 .accessibilityLabel("Add Provider")
-                Divider().frame(height: 14)
                 Button {
                     guard let selection else { return }
                     store.disconnect(providerID: selection)
-                } label: { Image(systemName: "minus").frame(width: 30, height: 26) }
-                .buttonStyle(.plain)
-                .frame(width: 30, height: 26)
+                } label: { Image(systemName: "minus").frame(width: 16, height: 18) }
                 .disabled(!connected.contains { $0.id == selection })
                 .help("Remove Provider")
                 .accessibilityLabel("Remove Provider")
             }
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 6))
+            .fixedSize()
         }
         .controlSize(.small)
     }
