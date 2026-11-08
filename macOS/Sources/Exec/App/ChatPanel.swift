@@ -29,8 +29,12 @@ import Observation
     var isSending: Bool { current.isSending }
     var canEditDraft: Bool { canNavigate && current.canEditDraft }
     var models: [ChatModel] { library.models }
+    var modelUnavailableReason: String? {
+        if !library.hasConnectedProvider { return "Provider unavailable" }
+        return models.contains { $0.id == current.selectedModel } ? nil : "Model unavailable"
+    }
     var canSend: Bool {
-        canNavigate && current.hasUsableModel && models.contains { $0.id == current.selectedModel } && !isChoosingWorkspace
+        canNavigate && current.hasUsableModel && modelUnavailableReason == nil && !isChoosingWorkspace
     }
     var account: String? { current.account }
     var accountUsage: AccountUsage? { library.accountUsage }

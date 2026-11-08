@@ -40,6 +40,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Startup credential failures, explicit retry and cancellation", { try await OptimisticStartupTests().credentialFailureRetryAndCancellation() }),
             ("Startup corruption and opaque provider state remain safe", { try await OptimisticStartupTests().corruptionAndProviderStateRemainSafe() }),
             ("Expired cached usage keeps footer geometry", { try OptimisticStartupTests().expiredUsageKeepsItsGeometry() }),
+            ("Startup sidebar follows restored chats once", { try await StartupWindowTests().choosesSidebarVisibilityOnceAfterRestoration() }),
             ("Startup keeps native window geometry stable", { try await StartupWindowTests().preservesGeometryAcrossStartup() }),
             ("Window placement round-trips without toolbar height drift", { try MainWindowGeometryTests().roundTripsWithoutChromeDrift() }),
             ("Window placement adapts to changed and missing displays", { try MainWindowGeometryTests().adaptsToDisplayChanges() }),

@@ -61,8 +61,6 @@ struct ProviderSettingsView: View {
                 .help("Remove Provider")
                 .accessibilityLabel("Remove Provider")
                 Spacer()
-                Button("Refresh Models", action: store.refreshModels)
-                    .disabled(connected.isEmpty)
             }
             .controlSize(.small)
             .padding(10)

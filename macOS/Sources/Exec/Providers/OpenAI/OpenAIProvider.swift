@@ -140,7 +140,7 @@ import Foundation
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
                          instructions: String, tools: [ToolDefinition]) async throws -> Bool {
         guard let window = model.contextWindow, window > 0 else {
-            throw ExecError("Codex did not provide a context limit for this model. Refresh models before sending.")
+            throw ExecError("Codex did not provide a context limit for this model. Remove and add OpenAI in Settings → Providers before sending.")
         }
         guard let tokens = context.reportedTokens(history) else { return false }
         guard tokens >= Int(ceil(Double(window) * 0.95)) else { return false }

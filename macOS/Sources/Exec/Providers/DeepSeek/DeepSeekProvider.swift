@@ -57,7 +57,7 @@ import Foundation
                     if authentication.catalog.isEmpty { _ = try await models() }
                     try Task.checkCancellation()
                     guard let selected = authentication.catalog.first(where: { $0.id == model }) else {
-                        throw ExecError("The selected DeepSeek model is unavailable. Refresh models in Settings.")
+                        throw ExecError("The selected DeepSeek model is unavailable. Select another model, or remove and add DeepSeek in Settings → Providers.")
                     }
                     var body: [String: Any] = ["model": model, "stream": true, "stream_options": ["include_usage": true],
                         "messages": try context.input(messages, instructions: instructions, acceptsImages: selected.acceptsImages == true)]

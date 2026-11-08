@@ -26,7 +26,7 @@ struct ChatComposer: View {
         if let action = command?.page, !action.hasOptions { return action.commandName }
         return command?.query ?? ""
     }
-    private var modelName: String { store.models.first { $0.id == store.selectedModel }?.name ?? "Choose a model" }
+    private var modelName: String { store.models.first { $0.id == store.selectedModel }?.name ?? "Model unavailable" }
     private var effortName: String {
         let model = store.current.model
         return model?.efforts.first { $0.id == (store.selectedEffort ?? model?.defaultEffort) }?.name ?? "Default"
@@ -129,30 +129,12 @@ struct ChatComposer: View {
                 }
                 .padding(.vertical, 8)
             HStack(spacing: 6) {
-                if !store.library.hasConnectedProvider {
-                    ConnectProviderButton(library: store.library)
-                        .controlSize(.small)
-                        .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
-                } else if store.models.isEmpty {
-                    Button("Refresh Models", action: store.library.refreshModels)
-                        .controlSize(.small)
-                        .disabled(!store.canNavigate)
-                        .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
+                if let reason = store.modelUnavailableReason {
+                    Text(reason).foregroundStyle(AppColors.subduedRed)
                 } else {
-                    Picker("Model", selection: $store.selectedModel) {
-                        if store.selectedModel.isEmpty { Text("Choose a model").tag("") }
-                        ModelPickerOptions(groups: store.library.modelGroups)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .controlSize(.small)
-                    .frame(maxWidth: 260, alignment: .leading)
-                    .disabled(!store.canNavigate || store.models.isEmpty)
-                    .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
-                    if store.current.model != nil {
-                        Text("·")
-                        Text(effortName).accessibilityLabel("Reasoning: \(effortName)")
-                    }
+                    Text(modelName).accessibilityLabel("Model: \(modelName)")
+                    Text("·")
+                    Text(effortName).accessibilityLabel("Reasoning: \(effortName)")
                 }
                 Spacer(minLength: 8)
                 Text(store.autoApproveTools ? "Auto on" : "Auto off")
@@ -160,7 +142,7 @@ struct ChatComposer: View {
                     .layoutPriority(1)
             }
             .font(.caption).foregroundStyle(.secondary)
-            .lineLimit(1)
+            .lineLimit(1).allowsHitTesting(false)
         }
         .padding(12)
         .background {

@@ -243,6 +243,7 @@ import SwiftUI
         try await wait { !library.hasRunningOperations }
         try expect(!library.hasConnectedProvider && library.models.isEmpty && library.modelGroups.isEmpty)
         try expect(panel.selectedModel.isEmpty && !panel.canSend && existing.selectedModel == "model")
+        try expect(panel.modelUnavailableReason == "Provider unavailable")
         try expect(library.defaultSessionModel == nil && library.effectiveTitleModel.isEmpty && library.searchModels.isEmpty)
         let messageCount = existing.messages.count
         panel.send()
@@ -254,15 +255,21 @@ import SwiftUI
         try await wait { !library.hasRunningOperations && library.models.count == 2 }
         try expect(library.models.allSatisfy { $0.id.hasPrefix("deepseek/") })
         try expect(library.effectiveDefaultModel == "deepseek/model" && library.effectiveDefaultEffort == nil)
-        try expect(empty.selectedModel == "deepseek/model" && empty.hasUsableModel)
+        try expect(empty.selectedModel == "model" && !empty.hasUsableModel)
+        let emptyPanel = ChatPanel(library: library, conversation: empty)
+        try expect(emptyPanel.modelUnavailableReason == "Model unavailable" && !emptyPanel.canSend)
+        empty.draft = "Keep the unsent draft too"
+        emptyPanel.send()
+        try expect(empty.draft == "Keep the unsent draft too" && empty.messages.isEmpty)
+        try expect(panel.modelUnavailableReason == "Model unavailable")
         try expect(panel.selectedModel.isEmpty && !panel.canSend)
-        try expect(library.effectiveTitleModel.isEmpty && library.titleModel(for: empty) == "deepseek/model")
+        try expect(library.effectiveTitleModel.isEmpty && library.titleModel(for: empty) == nil)
         try expect(library.searchModels.isEmpty)
         panel.selectedModel = "model" // Stale programmatic selections cannot bypass the picker.
         try expect(panel.selectedModel.isEmpty)
         panel.selectedModel = "deepseek/other"
         try await wait { !library.hasRunningOperations }
-        try expect(panel.canSend && existing.draft == "Keep this draft")
+        try expect(panel.canSend && panel.modelUnavailableReason == nil && existing.draft == "Keep this draft")
         library.defaultModel = "deepseek/other"
         library.setDefaultEffort("low")
         library.titleModel = "" // Same as chat, even when another provider returns.
@@ -423,15 +430,28 @@ import SwiftUI
             library.disconnect(providerID: "openai")
             try await wait { !library.hasRunningOperations && library.models.count == 1 }
             library.defaultModel = "model" // A remembered Codex default is unavailable.
+            let panel = ChatPanel(library: library, conversation: library.current)
+            try expect(panel.modelUnavailableReason == "Model unavailable")
+            try await renderPreview(ComposerPreview(panel: panel), size: NSSize(width: 540, height: 160),
+                                    to: previews.appendingPathComponent("composer-model-unavailable.png"))
             library.settingsTab = .general
             try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
                                     to: previews.appendingPathComponent("deepseek-defaults.png"))
             library.disconnect(providerID: "deepseek")
             try await wait { !library.hasRunningOperations }
+            try expect(panel.modelUnavailableReason == "Provider unavailable")
+            try await renderPreview(ComposerPreview(panel: panel), size: NSSize(width: 540, height: 160),
+                                    to: previews.appendingPathComponent("composer-provider-unavailable.png"))
             library.settingsTab = .accounts
             try await renderPreview(SettingsView(store: library), size: NSSize(width: 500, height: 420),
                                     to: previews.appendingPathComponent("providers-empty.png"))
         }
+    }
+
+    private struct ComposerPreview: View {
+        let panel: ChatPanel
+        @FocusState private var focused: Bool
+        var body: some View { ChatComposer(store: panel, focused: $focused) }
     }
 
     private func renderPreview<V: View>(_ view: V, size: NSSize, to url: URL) async throws {

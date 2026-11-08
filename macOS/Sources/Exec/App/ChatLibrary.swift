@@ -475,7 +475,7 @@ import Observation
                 let available = try await provider.models()
                 guard !Task.isCancelled, generation == metadataGeneration, key == metadataKey else { return }
                 guard !available.isEmpty else {
-                    throw ExecError("The provider returned no selectable models. Try Refresh Models in Settings.")
+                    throw ExecError("The provider returned no selectable models. Remove and add the provider in Settings → Providers.")
                 }
                 var updated = available
                 if provider.modelDiscoveryWarning != nil {
@@ -494,7 +494,7 @@ import Observation
                 // Keep cached/local state and never replace a recovery error.
                 if !Task.isCancelled, generation == metadataGeneration, key == metadataKey,
                    models.isEmpty {
-                    modelRefreshError = "Could not load models. Use Refresh Models in Settings to try again."
+                    modelRefreshError = "Could not load models. Remove and add the provider in Settings → Providers to try again."
                 }
             }
         }
@@ -510,7 +510,7 @@ import Observation
 
     private func applyModels(to conversation: ChatStore) {
         guard !conversation.busy else { return } // Never change settings beneath a running turn.
-        let needsDefault = conversation.messages.isEmpty && !models.contains { $0.id == conversation.selectedModel }
+        let needsDefault = conversation.messages.isEmpty && conversation.selectedModel.isEmpty
         conversation.installModels(models, cached: modelsAreCached)
         conversation.searchModel = resolvedSearchModel
         if needsDefault, provider.preservesModelSelection {

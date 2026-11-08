@@ -36,6 +36,7 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        // Let the shared sidebar surface show through the list.
         .scrollContentBackground(.hidden)
         .padding(.horizontal, 10)
         // Selection is drawn above, not by the native list, so responder changes
@@ -56,10 +57,9 @@ struct SessionSidebar: View {
             if store.showsAccountUsage {
                 ProviderUsageFooter(providerName: store.providerName, usage: store.displayedAccountUsage,
                                     fetchedAt: store.accountUsageFetchedAt)
-                    .background(Color(nsColor: .windowBackgroundColor))
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(.background.secondary)
     }
 }
 

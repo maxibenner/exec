@@ -81,7 +81,7 @@ struct DiffView: View {
             var text = AttributedString(numbers && content.isEmpty ? " " : content)
             switch line?.kind {
             case .added: text.backgroundColor = Color.green.opacity(0.24)
-            case .removed: text.backgroundColor = Color.red.opacity(0.22)
+            case .removed: text.backgroundColor = AppColors.subduedRed
             case .header: text.foregroundColor = Color.secondary
             default: break
             }

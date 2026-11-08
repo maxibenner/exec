@@ -38,7 +38,8 @@ import SwiftUI
 
     private var chatWindow: some Scene {
         Window("Exec", id: "chat") {
-            ChatWindowLayout(workspace: startup.store?.workspace?.root) {
+            ChatWindowLayout(workspace: startup.store?.workspace?.root,
+                             hasSessions: startup.store.flatMap { $0.authenticating ? nil : !$0.sessionList.isEmpty }) {
                 if let store = startup.store, let windows = startup.windows {
                     SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {
                         guard store.canNavigate, !store.isSessionRunning($0.id) else { return }

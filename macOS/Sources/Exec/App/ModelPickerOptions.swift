@@ -22,16 +22,3 @@ struct ModelPickerOptions: View {
         }
     }
 }
-
-struct ConnectProviderButton: View {
-    let library: ChatLibrary
-    @Environment(\.openSettings) private var openSettings
-
-    var body: some View {
-        Button("Connect a Provider…") {
-            library.settingsTab = .accounts
-            openSettings()
-        }
-        .disabled(!library.canNavigate)
-    }
-}

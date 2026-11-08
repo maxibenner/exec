@@ -56,7 +56,7 @@ import Foundation
                 }
             } catch {
                 try Task.checkCancellation()
-                warnings.append("Could not refresh \(entry.provider.displayName) models. Remove and add the provider, or refresh models in Settings.")
+                warnings.append("Could not refresh \(entry.provider.displayName) models. Remove and add the provider in Settings → Providers to try again.")
             }
         }
         modelWarning = warnings.isEmpty ? nil : warnings.joined(separator: "\n")
