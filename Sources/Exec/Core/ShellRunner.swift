@@ -57,24 +57,21 @@ enum ShellRunner {
             }
         }
         let deadline = ContinuousClock.now.advanced(by: timeout)
-        var output = Data()
-        var truncated = false
+        let output = ShellOutputCapture()
         var buffer = [UInt8](repeating: 0, count: 8192)
         func drain() {
             // Bound each pass so continuous output cannot starve cancellation.
             for _ in 0..<16 {
                 let count = Darwin.read(pipeFD[0], &buffer, buffer.count)
                 if count <= 0 { break }
-                let available = max(0, 32_768 - output.count)
-                output.append(contentsOf: buffer.prefix(min(count, available)))
-                if count > available { truncated = true }
+                output.append(Data(buffer.prefix(count)))
             }
         }
         while true {
             drain()
             try Task.checkCancellation()
             if ContinuousClock.now >= deadline {
-                return "Command timed out; termination requested for its process group. It may have changed files.\n" + String(decoding: output, as: UTF8.self) + (truncated ? "\n[Output truncated at 32 KiB.]" : "")
+                return "Command timed out; termination requested for its process group. It may have changed files.\n" + output.finish()
             }
             var status: Int32 = 0
             let waited = waitpid(pid, &status, WNOHANG)
@@ -82,7 +79,7 @@ enum ShellRunner {
                 reaped = true
                 drain()
                 let exit = status & 0x7f == 0 ? "Exit code: \((status >> 8) & 0xff)" : "Terminated by signal: \(status & 0x7f)"
-                return exit + "\n" + String(decoding: output, as: UTF8.self) + (truncated ? "\n[Output truncated at 32 KiB.]" : "")
+                return exit + "\n" + output.finish()
             }
             if waited == -1 && errno != EINTR { throw ExecError("Could not collect command status; it may have changed files.") }
             try await Task.sleep(for: .milliseconds(10))
