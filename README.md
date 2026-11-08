@@ -56,6 +56,8 @@ This initial presentation is read-only: cached identity never authorizes sending
 
 Exec keeps the disposable cache in `~/Library/Caches/Exec/AccountMetadata/`, including an owner-only `startup.json` with the last-used provider, account display name and opaque conversation identity—not tokens or authentication responses. This local presentation data is not encrypted. Model catalogs can be reused for up to seven days, and usage values for up to five minutes, excluding expired usage windows. Expired usage keeps its cached row layout but displays unknown values. Successful refreshes update the cache; failures retain usable cached values. Signing out removes that account's cache and startup pointer. Missing or corrupt caches fall back to normal local restoration. **Settings → Account → Refresh Models** retries discovery without restoring or blocking conversations.
 
+On macOS 15 and later, Exec remembers the main window's normal size, position and display in local preferences. The next window uses that geometry during initial placement, while native scene restoration stays disabled to avoid its startup height correction. No post-appearance resize is used. Changed or disconnected displays are handled by fitting the window onto an available display. Full-screen transitions do not overwrite the normal frame; relaunch opens a normal window. The first launch of this version starts a new geometry record. macOS 14 retains native restoration.
+
 ## Access and storage
 
 - Auto-approval starts on for workspace conversations. Turn it off with `/auto-approve` to review edits and shell commands. Commands run with your user permissions, outside a sandbox, and can affect files beyond the workspace. Stopping does not undo changes.

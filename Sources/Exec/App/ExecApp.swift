@@ -3,6 +3,7 @@ import SwiftUI
 @main struct ExecApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var startup = ChatStartup()
+    @State private var windowGeometry = MainWindowGeometry()
 
     var body: some Scene {
         startupWindow
@@ -20,9 +21,16 @@ import SwiftUI
         // SceneBuilder has no if/else support; erase both branches through its
         // availability wrapper to keep macOS 14 support without duplicating windows.
         if #available(macOS 15.0, *) {
-            // Startup trial: isolate saved window geometry from first-layout sizing.
+            // Native restoration caused a visible startup resize. Supply our saved
+            // geometry during initial placement instead, before the window appears.
             return SceneBuilder.buildOptional(SceneBuilder.buildLimitedAvailability(
-                chatWindow.restorationBehavior(.disabled)))
+                chatWindow.restorationBehavior(.disabled)
+                    .defaultWindowPlacement { content, context in
+                        guard let placement = windowGeometry.placement(
+                            minimumContentSize: content.sizeThatFits(.zero),
+                            defaultDisplayBounds: context.defaultDisplay.bounds) else { return WindowPlacement() }
+                        return WindowPlacement(placement.position, size: placement.size)
+                    }))
         } else {
             return SceneBuilder.buildOptional(SceneBuilder.buildLimitedAvailability(chatWindow))
         }
@@ -52,6 +60,7 @@ import SwiftUI
                     Color.clear
                 }
             }
+            .background(WindowReference { windowGeometry.observe($0) })
             .task { if startup.store == nil && startup.error == nil { start() } }
             .onChange(of: startup.store.map(ObjectIdentifier.init)) { _, _ in
                 delegate.store = startup.store
