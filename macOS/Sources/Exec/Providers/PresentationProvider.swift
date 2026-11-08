@@ -9,7 +9,7 @@ import Foundation
     var usageConnection: ProviderConnection? { nil }
     var displayName: String { presentation.providerName }
     var connectionTitle: String { presentation.connectionTitle }
-    var account: String? { presentation.accountName }
+    var account: String? { presentation.accountName.isEmpty ? nil : presentation.accountName }
     func providerID(for model: String) -> String? { nil }
     var conversationIdentity: String? { presentation.conversationIdentity }
     func makeConversationProvider() throws -> any ChatProvider { PresentationProvider(presentation) }

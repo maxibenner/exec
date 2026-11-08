@@ -171,10 +171,11 @@ import Observation
     /// Bootstrap the same UI objects from disk before asking Keychain for anything.
     /// The existing session store supplies order, selection and transcript; the cache
     /// supplies only last-known account presentation and normalized remote metadata.
-    static func startupPresentation(sessions: SessionStore, cache: AccountMetadataCache,
-                                    preferences: UserDefaults = .standard) async throws -> ChatLibrary? {
-        guard let account = await cache.startupAccount() else { return nil }
-        let metadata = await cache.load(key: account.metadataKey)
+    static func startupPresentation(sessions: SessionStore, cache: AccountMetadataCache?,
+                                    preferences: UserDefaults = .standard,
+                                    fallback: AccountPresentation? = nil) async throws -> ChatLibrary? {
+        guard let account = await cache?.startupAccount() ?? fallback else { return nil }
+        let metadata = await cache?.load(key: account.metadataKey) ?? AccountMetadataCache.Snapshot()
         try Task.checkCancellation()
         let library = try ChatLibrary(provider: PresentationProvider(account), sessions: sessions,
                                       preferences: preferences, metadataCache: cache)

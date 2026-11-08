@@ -58,6 +58,8 @@ Codex usage diagnostics are saved with each conversation inside its entry in the
 
 ### Local-first startup
 
+On macOS 15 and later, the main window is presented after the local session list and selected transcript are ready; its first visible frame contains the restored conversation. Provider authentication and remote model/usage refreshes do not delay a valid local presentation. If account metadata is missing, the saved local library identity still allows a read-only preview. First-run or legacy startup without a local identity falls back to credential restoration, and startup failures present the error window. macOS 14 retains its existing immediate-window startup.
+
 Saved conversations open independently of model discovery and usage requests. On subsequent launches, Exec reads the last-known account presentation, models and usage from disk **before requesting credentials from Keychain**. The existing session files supply sidebar order, selection and the selected transcript; no second transcript cache is created. The same window, sidebar and conversation objects remain mounted when the restored account matches.
 
 This initial presentation is read-only: cached identity never authorizes sending, tools, auto-approval or session writes. Credentials and opaque conversation context must restore successfully before work can run. A missing or different account discards the old presentation and invalidates its cache; credential-read failures offer an explicit retry. After local restoration, model and usage refreshes do not block navigation or draft editing.

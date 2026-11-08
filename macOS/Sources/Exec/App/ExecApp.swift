@@ -5,6 +5,10 @@ import SwiftUI
     private let initiallyHasSavedSessions = SessionStore.applicationHasSavedSessions()
     @State private var startup = ChatStartup()
     @State private var windowGeometry = MainWindowGeometry()
+    @State private var hasPresentedMainWindow = false
+    @State private var hasStarted = false
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
         startupWindow
@@ -26,6 +30,7 @@ import SwiftUI
             // geometry during initial placement instead, before the window appears.
             return SceneBuilder.buildOptional(SceneBuilder.buildLimitedAvailability(
                 chatWindow.restorationBehavior(.disabled)
+                    .defaultLaunchBehavior(hasPresentedMainWindow ? .automatic : .suppressed)
                     .defaultWindowPlacement { content, context in
                         // Configure before ordering onscreen; the view's window
                         // reference can attach after the opening animation starts.
@@ -34,6 +39,16 @@ import SwiftUI
                             minimumContentSize: content.sizeThatFits(.zero),
                             defaultDisplayBounds: context.defaultDisplay.bounds) else { return WindowPlacement() }
                         return WindowPlacement(placement.position, size: placement.size)
+                    }
+                    .onChange(of: scenePhase, initial: true) { _, _ in
+                        guard !hasStarted else { return }
+                        hasStarted = true
+                        start()
+                    }
+                    .onChange(of: startup.isReadyForPresentation, initial: true) { _, ready in
+                        guard ready, !hasPresentedMainWindow else { return }
+                        hasPresentedMainWindow = true
+                        openWindow(id: "chat")
                     }))
         } else {
             return SceneBuilder.buildOptional(SceneBuilder.buildLimitedAvailability(chatWindow))
@@ -75,8 +90,11 @@ import SwiftUI
                 }
             }
             .background(WindowReference { windowGeometry.observe($0) })
-            .task { if startup.store == nil && startup.error == nil { start() } }
-            .onChange(of: startup.store.map(ObjectIdentifier.init)) { _, _ in
+            .task {
+                // macOS 14 lacks suppressed scene launch; retain its existing path.
+                if #unavailable(macOS 15.0), startup.store == nil, startup.error == nil { start() }
+            }
+            .onChange(of: startup.store.map(ObjectIdentifier.init), initial: true) { _, _ in
                 delegate.store = startup.store
             }
         }
@@ -85,7 +103,8 @@ import SwiftUI
     }
 
     private func start() {
-        startup.start(makeSessions: SessionStore.applicationStore, cache: AccountMetadataCache.applicationCache()) {
+        startup.start(makeSessions: SessionStore.applicationStore, cache: AccountMetadataCache.applicationCache(),
+                      localPresentation: ProviderRegistry.localPresentation()) {
             try await MultiProvider(registry: ProviderRegistry.restored())
         }
     }

@@ -74,8 +74,11 @@ import SwiftUI
         live.usageAction = { saved.usage }
         var pending: CheckedContinuation<Void, Never>?
         var credentialReads = 0
+        try expect(!startup.isReadyForPresentation)
         startup.start(makeSessions: { saved.sessions }, cache: saved.cache, preferences: preferences) {
             credentialReads += 1
+            try expect(startup.isReadyForPresentation && startup.windows != nil)
+            try expect(startup.store?.messages.last?.text == "Saved reply")
             // A usable cached presentation is published before the credential loader even starts.
             try expect(startup.store?.account == saved.account.accountName)
             try expect(startup.store?.accountUsage == saved.usage)
@@ -167,7 +170,7 @@ import SwiftUI
         }
         try await wait { !startup.starting }
         let preview = startup.store!
-        try expect(startup.error != nil && preview.isPresentingStartup && !preview.canNavigate)
+        try expect(startup.isReadyForPresentation && startup.error != nil && preview.isPresentingStartup && !preview.canNavigate)
         try expect(preview.accountUsage == saved.usage && !preview.hasRunningOperations && reads == 1)
         var pending: CheckedContinuation<Void, Never>?
         let live = FakeProvider()
@@ -216,6 +219,83 @@ import SwiftUI
         defer { startup.cancel() }
         try await wait { startup.store != nil && !startup.starting && startup.store?.hasRunningOperations == false }
         try expect(startup.error == nil && startup.store?.account == nil)
+    }
+
+    func localFallbackPreparesChatsWithoutCredentialsOrMetadata() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "LocalStartup.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        let saved = try await fixture(root)
+        preferences.set(saved.account.conversationIdentity, forKey: "providerLibraryIdentity")
+        let startup = ChatStartup()
+        var pending: CheckedContinuation<Void, Never>?
+        let live = MultiProvider(registry: ProviderRegistry(entries: [.init(id: "openai", provider: FakeProvider())],
+                                                            libraryIdentity: saved.account.conversationIdentity))
+        defer { pending?.resume(); startup.cancel() }
+        startup.start(makeSessions: { saved.sessions }, cache: nil, preferences: preferences,
+                      localPresentation: ProviderRegistry.localPresentation(preferences: preferences)) {
+            await withCheckedContinuation { pending = $0 }
+            return live
+        }
+        try await wait { startup.isReadyForPresentation && pending != nil }
+        let preview = startup.store!
+        let conversation = preview.current
+        try expect(startup.windows != nil && preview.currentSessionID == saved.id)
+        try expect(preview.sidebarSessions.map(\.id) == [saved.id] && preview.messages.last?.text == "Saved reply")
+        try expect(preview.account == nil && !preview.hasConnectedProvider && !preview.canNavigate)
+        let original = try Data(contentsOf: saved.file)
+        preview.draft = "Read-only until credentials restore"
+        preview.send()
+        try expect(try Data(contentsOf: saved.file) == original)
+        pending?.resume(); pending = nil
+        try await wait { !startup.starting && !preview.hasRunningOperations }
+        try expect(startup.store === preview && preview.current === conversation && preview.canNavigate)
+    }
+
+    func coldStartupPublishesLocalContentBeforeRemoteModels() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "ColdStartup.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: root); preferences.removePersistentDomain(forName: suite) }
+        let saved = try await fixture(root)
+        let startup = ChatStartup()
+        let live = FakeProvider()
+        var modelRequest: CheckedContinuation<Void, Never>?
+        live.modelsAction = { await withCheckedContinuation { modelRequest = $0 } }
+        defer { modelRequest?.resume(); startup.cancel() }
+        startup.start(makeSessions: { saved.sessions }, cache: nil, preferences: preferences) { live }
+        try expect(!startup.isReadyForPresentation && startup.store == nil)
+        try await wait { startup.isReadyForPresentation }
+        try expect(startup.windows != nil && startup.store?.currentSessionID == saved.id)
+        try expect(startup.store?.sidebarSessions.map(\.id) == [saved.id])
+        try expect(startup.store?.messages.last?.text == "Saved reply")
+        try await wait { modelRequest != nil }
+        modelRequest?.resume(); modelRequest = nil
+    }
+
+    func startupFailureIsVisibleAndCancellationDoesNotPresent() async throws {
+        let failed = ChatStartup()
+        var credentialReads = 0
+        failed.start(makeSessions: { throw ExecError("Storage unavailable") }, cache: nil) {
+            credentialReads += 1
+            return FakeProvider()
+        }
+        try expect(failed.isReadyForPresentation && failed.error == "Storage unavailable" && credentialReads == 0)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cancelled = ChatStartup()
+        var pending: CheckedContinuation<Void, Never>?
+        defer { pending?.resume(); cancelled.cancel() }
+        cancelled.start(makeSessions: { SessionStore(directory: root) }, cache: nil) {
+            await withCheckedContinuation { pending = $0 }
+            return FakeProvider()
+        }
+        try await wait { pending != nil }
+        cancelled.cancel()
+        pending?.resume(); pending = nil
+        try await wait { !cancelled.starting }
+        try expect(!cancelled.isReadyForPresentation && cancelled.store == nil)
     }
 
     func expiredUsageKeepsItsGeometry() throws {

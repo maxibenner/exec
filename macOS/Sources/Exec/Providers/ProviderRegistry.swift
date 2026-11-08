@@ -19,6 +19,14 @@ import Foundation
         self.libraryIdentity = libraryIdentity
     }
 
+    /// The local library survives provider sign-out and does not require Keychain.
+    /// An empty account name deliberately carries no claimed connection status.
+    static func localPresentation(preferences: UserDefaults = .standard) -> AccountPresentation? {
+        guard let identity = preferences.string(forKey: "providerLibraryIdentity"), !identity.isEmpty else { return nil }
+        return AccountPresentation(providerName: "Providers", connectionTitle: "Connect a provider in Settings",
+                                   accountName: "", conversationIdentity: identity)
+    }
+
     static func restored(preferences: UserDefaults = .standard) async throws -> ProviderRegistry {
         let openAI = try await OpenAIProvider.restored()
         let deepSeek = try await DeepSeekProvider.restored()
