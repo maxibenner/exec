@@ -103,6 +103,35 @@ import Foundation
         provider.usageAction = { throw ExecError("Offline") }
         let measurement = await library.current.readAccountUsage?()
         try expect(measurement == nil && library.accountUsage == usage)
+        // Last-known display values survive missing data, age expiry and reset times.
+        let expired = AccountUsage(windows: [
+            .init(durationSeconds: 604800, usedPercent: 40, resetsAt: Date().addingTimeInterval(-60))])
+        provider.usageAction = { expired }
+        let fresh = await library.current.readAccountUsage?()
+        try expect(fresh == expired && library.displayedAccountUsage == expired)
+        let fetchedAt = library.accountUsageFetchedAt
+        provider.usageAction = { nil }
+        let missing = await library.current.readAccountUsage?()
+        try expect(missing == nil && library.displayedAccountUsage == expired)
+        provider.usageAction = { AccountUsage(windows: []) }
+        let empty = await library.current.readAccountUsage?()
+        try expect(empty?.windows.isEmpty == true && library.displayedAccountUsage == expired)
+        provider.usageAction = { throw ExecError("Offline") }
+        let failed = await library.current.readAccountUsage?()
+        try expect(failed == nil && library.displayedAccountUsage == expired)
+        try expect(library.accountUsageFetchedAt == fetchedAt)
+        let retained = await cache.load(key: accountKey)
+        try expect(retained.usage?.usage == expired)
+        // Startup keeps old reports too; freshness remains separate from display.
+        await cache.saveUsage(.init(usage: expired, fetchedAt: Date().addingTimeInterval(-604800)), key: accountKey)
+        let restored = try ChatLibrary(provider: FakeProvider(), sessions: sessions, metadataCache: cache)
+        restored.restore()
+        try await wait { !restored.hasRunningOperations && restored.displayedAccountUsage == expired }
+        try expect(restored.accountUsage == nil)
+        restored.stopAll()
+        provider.usageAction = { usage }
+        let updated = await library.current.readAccountUsage?()
+        try expect(updated == usage && library.displayedAccountUsage == usage)
         var signout: CheckedContinuation<Void, Never>?
         provider.children.last!.disconnectAction = { await withCheckedContinuation { signout = $0 } }
         defer { signout?.resume() }

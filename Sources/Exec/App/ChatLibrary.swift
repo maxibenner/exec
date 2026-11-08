@@ -34,7 +34,7 @@ import Observation
     private let metadataCache: AccountMetadataCache?
     private var cachedUsage: CachedAccountUsage?
     var accountUsage: AccountUsage? { cachedUsage?.current() }
-    // The footer may retain the row shape while expired values render as unknown.
+    // Keep the last report visible until a new one arrives, even after its reset time.
     var displayedAccountUsage: AccountUsage? { cachedUsage?.usage }
     var accountUsageFetchedAt: Date? { cachedUsage?.fetchedAt }
     private var metadataKey: String? {
@@ -718,10 +718,10 @@ import Observation
         do {
             let usage = try await provider.accountUsage()
             guard !Task.isCancelled, generation == metadataGeneration, key == metadataKey else { return nil }
-            // The display may retain recent data after a failure. Run observations
-            // below return only this fresh response, never the display fallback.
-            if request == usageRequest {
-                cachedUsage = usage.map { CachedAccountUsage(usage: $0, fetchedAt: .now) }
+            // Keep the last display report when a refresh fails or reports no windows.
+            // Run observations return only the fresh response, never the display fallback.
+            if request == usageRequest, let usage, !usage.windows.isEmpty {
+                cachedUsage = CachedAccountUsage(usage: usage, fetchedAt: .now)
                 if let key { await metadataCache?.saveUsage(cachedUsage, key: key) }
             }
             guard !Task.isCancelled, generation == metadataGeneration, key == metadataKey else { return nil }
