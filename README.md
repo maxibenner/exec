@@ -41,14 +41,14 @@ Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace
 
 ## Development
 
-[Sparkle](https://sparkle-project.org/) provides native in-app updates. Open `macOS/Package.swift` in Xcode, or run from `macOS/`:
+Open `macOS/Package.swift` in Xcode, or run from `macOS/`:
 
 ```sh
 ./scripts/test.sh
 ./scripts/build-app.sh
 ```
 
-Tests use isolated stores and fake transports, not your Keychain or live model calls. The Settings tests inject update actions and do not start Sparkle.
+Tests use isolated stores and fake transports, not your Keychain or live model calls.
 
 For consistent Keychain access across rebuilds, configure a stable signing certificate:
 
