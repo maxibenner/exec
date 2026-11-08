@@ -29,6 +29,8 @@ Needs to be built from source. Requires macOS 14+, Xcode 26 or later (including 
 
 Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace`, `/finder`, `/terminal`.
 
+![Exec screenshot](screenshot.png)
+
 ## Development
 
 No third-party dependencies. Open `Package.swift` in Xcode, or run:
