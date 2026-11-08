@@ -130,7 +130,7 @@ struct ChatComposer: View {
                 .padding(.vertical, 8)
             HStack(spacing: 6) {
                 if let reason = store.modelUnavailableReason {
-                    Text(reason).foregroundStyle(AppColors.subduedRed)
+                    Text(reason).foregroundStyle(AppColors.unavailableRed)
                 } else {
                     Text(modelName).accessibilityLabel("Model: \(modelName)")
                     Text("·")
