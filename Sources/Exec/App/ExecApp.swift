@@ -2,15 +2,12 @@ import SwiftUI
 
 @main struct ExecApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @State private var store: ChatLibrary?
-    @State private var windows: SessionWindows?
-    @State private var startupError: String?
-    @State private var starting = false
+    @State private var startup = ChatStartup()
 
     var body: some Scene {
         Window("Exec", id: "chat") {
-            ChatWindowLayout(workspace: store?.workspace?.root) {
-                if let store, let windows {
+            ChatWindowLayout(workspace: startup.store?.workspace?.root) {
+                if let store = startup.store, let windows = startup.windows {
                     SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {
                         guard store.canNavigate, !store.isSessionRunning($0.id) else { return }
                         store.deleteSession($0.id)
@@ -19,25 +16,28 @@ import SwiftUI
                     Color.clear
                 }
             } detail: {
-                if let store, let windows {
-                    ChatView(store: store, windows: windows)
-                } else if let startupError {
+                if let error = startup.error {
                     VStack(spacing: 16) {
-                        Text(startupError).textSelection(.enabled)
+                        Text(error).textSelection(.enabled)
                         Button("Try Again", action: start)
                     }
                     .padding().frame(maxWidth: 480)
+                } else if let store = startup.store, let windows = startup.windows {
+                    ChatView(store: store, windows: windows)
                 } else {
                     Color.clear
                 }
             }
-            .task { if store == nil && startupError == nil { start() } }
+            .task { if startup.store == nil && startup.error == nil { start() } }
+            .onChange(of: startup.store.map(ObjectIdentifier.init)) { _, _ in
+                delegate.store = startup.store
+            }
         }
         .defaultSize(width: 980, height: 700)
-        .commands { SessionCommands(store: store, windows: windows) }
+        .commands { SessionCommands(store: startup.store, windows: startup.windows) }
 
         Settings {
-            if let store {
+            if let store = startup.store {
                 SettingsView(store: store)
             }
         }
@@ -46,22 +46,8 @@ import SwiftUI
     }
 
     private func start() {
-        guard !starting else { return }
-        starting = true
-        startupError = nil
-        Task { @MainActor in
-            defer { starting = false }
-            do {
-                let provider = try await OpenAIProvider.restored()
-                let library = try ChatLibrary(provider: provider, sessions: try SessionStore.applicationStore(),
-                                              metadataCache: AccountMetadataCache.applicationCache())
-                library.restore()
-                store = library
-                windows = SessionWindows(library: library)
-                delegate.store = library
-            } catch {
-                startupError = error.localizedDescription
-            }
+        startup.start(makeSessions: SessionStore.applicationStore, cache: AccountMetadataCache.applicationCache()) {
+            try await OpenAIProvider.restored()
         }
     }
 }

@@ -20,6 +20,11 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Optimistic startup renders before credentials and reconciles in place", { try await OptimisticStartupTests().rendersBeforeCredentialsAndReconcilesInPlace() }),
+            ("Optimistic startup rejects account mismatches and clears sign-out", { try await OptimisticStartupTests().rejectsMismatchesAndClearsSignout() }),
+            ("Startup credential failures, explicit retry and cancellation", { try await OptimisticStartupTests().credentialFailureRetryAndCancellation() }),
+            ("Startup corruption and opaque provider state remain safe", { try await OptimisticStartupTests().corruptionAndProviderStateRemainSafe() }),
+            ("Expired cached usage keeps footer geometry without stale values", { try OptimisticStartupTests().expiredUsageKeepsItsGeometry() }),
             ("Startup keeps native window geometry stable", { try await StartupWindowTests().preservesGeometryAcrossStartup() }),
             ("Metadata cache persistence, isolation, corruption and expiry", { try await MetadataCacheTests().persistenceAndExpiry() }),
             ("Cached startup stays interactive and rejects late signed-out results", { try await MetadataCacheTests().cachedStartupAndLateResults() }),

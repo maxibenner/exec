@@ -68,7 +68,9 @@ import Observation
     private(set) var openingSessionID: UUID?
     var sidebarSelectionID: UUID? { openingSessionID ?? currentSessionID }
     var isWorking: Bool { busy && openingSessionID == nil }
-    var autoApproveTools: Bool { workspace != nil && tools.autoApprovedDirectory == workspace?.root }
+    var autoApproveTools: Bool {
+        workspace != nil && (isStartupPresentation ? prefersAutoApproval : tools.autoApprovedDirectory == workspace?.root)
+    }
 
     private let defaultAutoApproveTools: Bool
     private var prefersAutoApproval: Bool { didSet { checkpointRevision += 1 } }
@@ -95,7 +97,43 @@ import Observation
                                              instructions: requestInstructions, tools: toolDefinitions)
     }
 
-    private let provider: any ChatProvider
+    private var provider: any ChatProvider
+    private var isStartupPresentation = false
+
+    /// Read existing local documents for display only: no provider-context restore,
+    /// checkpoints, permission grants, or pending input execution before credentials.
+    func presentStartup() async throws {
+        guard provider is PresentationProvider else { return }
+        isStartupPresentation = true
+        busy = true
+        defer { loadedSession = false }
+        try await loadSavedSession(presentationOnly: true)
+    }
+
+    func clearStartupPresentation() {
+        guard isStartupPresentation else { return }
+        account = nil
+        messages = []; history = []; pendingInput = []
+        workspace = nil
+        models = []; selectedModel = ""; selectedEffort = nil
+        currentSessionID = nil
+        sessionList = []
+        error = nil
+        tools.setAutoApproval(for: nil)
+    }
+
+    func adoptRestoredProvider(_ restored: any ChatProvider) throws {
+        guard isStartupPresentation, restored.conversationIdentity == conversationIdentity else {
+            throw ExecError("The startup account no longer matches the restored account.")
+        }
+        provider = restored
+        account = restored.account
+        isStartupPresentation = false
+        busy = false
+        // Normal restoration must validate opaque provider state before enabling work.
+        loadedSession = false
+    }
+
     private let captureScreenshot: @MainActor (ScreenshotTool.Request) async throws -> ScreenshotTool.Output
     private let fetchContent: @Sendable (URL) async throws -> String
     private var task: Task<Void, Never>?
@@ -641,7 +679,7 @@ import Observation
         }
     }
 
-    private func applySavedSession(_ id: UUID) async throws {
+    private func applySavedSession(_ id: UUID, presentationOnly: Bool = false) async throws {
         guard let sessions, var saved = try await sessions.load(id: id) else {
             throw ExecError("The saved conversation no longer exists.")
         }
@@ -650,14 +688,14 @@ import Observation
             throw ExecError("Saved conversation belongs to another account. Reconnect to that account to open it.")
         }
         // Provider restoration must succeed before replacing any visible conversation state.
-        try provider.restoreConversationState(saved.providerState, history: saved.history)
+        if !presentationOnly { try provider.restoreConversationState(saved.providerState, history: saved.history) }
         let interrupted = saved.recoverInterruptedTurn()
         needsInitialWorkspaceSelection = false
         workspace = saved.workspace
         systemPrompt = saved.systemPrompt ?? ""
         prefersAutoApproval = saved.autoApproveTools ?? true
         tools.resetScreenshotPermission()
-        tools.setAutoApproval(for: prefersAutoApproval ? workspace?.root : nil)
+        tools.setAutoApproval(for: !presentationOnly && prefersAutoApproval ? workspace?.root : nil)
         selectedModel = saved.selectedModel
         selectedEffort = saved.effort
         reconcileEffort()
@@ -681,7 +719,7 @@ import Observation
         if interrupted { error = "The previous turn was interrupted. No operations were resumed; inspect any possible file changes before retrying." }
     }
 
-    private func loadSavedSession(mostRecent: Bool = false) async throws {
+    private func loadSavedSession(mostRecent: Bool = false, presentationOnly: Bool = false) async throws {
         guard !loadedSession || restorationBlocked else { return }
         guard let sessions else {
             conversationIdentity = provider.conversationIdentity
@@ -693,7 +731,7 @@ import Observation
             // Publish the local catalog before restoring the transcript or fetching models.
             didLoadSessionList?(sessionList)
             if let id = try await sessions.preferredID(identity: provider.conversationIdentity, mostRecent: mostRecent) {
-                try await applySavedSession(id)
+                try await applySavedSession(id, presentationOnly: presentationOnly)
             } else {
                 needsInitialWorkspaceSelection = false
                 conversationIdentity = provider.conversationIdentity

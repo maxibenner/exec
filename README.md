@@ -50,9 +50,11 @@ Usage diagnostics are saved with each conversation. The provider state contains 
 
 ### Local-first startup
 
-Saved conversations open independently of model discovery and usage requests. The window's split view and toolbar appear immediately, without a separate loading view; their contents populate after local credential/store setup. Model and usage refreshes do not block navigation or draft editing. Keychain permission prompts and actual account changes still require local setup or account protection.
+Saved conversations open independently of model discovery and usage requests. On subsequent launches, Exec reads the last-known account presentation, models and usage from disk **before requesting credentials from Keychain**. The existing session files supply sidebar order, selection and the selected transcript; no second transcript cache is created. The same window, sidebar, footer and conversation objects remain mounted when the restored account matches.
 
-Exec keeps a disposable, account-scoped metadata cache in `~/Library/Caches/Exec/AccountMetadata/`. Model catalogs can be reused for up to seven days, and last-known usage for up to five minutes, excluding expired usage windows. Successful refreshes update the cache; failures retain usable cached values. Signing out removes that account's cache, and missing or corrupt caches do not prevent opening saved conversations. **Settings → Account → Refresh Models** retries model discovery without restoring or blocking conversations.
+This initial presentation is read-only: cached identity never authorizes sending, tools, auto-approval or session writes. Credentials and opaque conversation context must restore successfully before work can run. A missing or different account discards the old presentation and invalidates its cache; credential-read failures offer an explicit retry. After local restoration, model and usage refreshes do not block navigation or draft editing.
+
+Exec keeps the disposable cache in `~/Library/Caches/Exec/AccountMetadata/`, including an owner-only `startup.json` with the last-used provider, account display name and opaque conversation identity—not tokens or authentication responses. This local presentation data is not encrypted. Model catalogs can be reused for up to seven days, and usage values for up to five minutes, excluding expired usage windows. Expired usage keeps its cached row layout but displays unknown values. Successful refreshes update the cache; failures retain usable cached values. Signing out removes that account's cache and startup pointer. Missing or corrupt caches fall back to normal local restoration. **Settings → Account → Refresh Models** retries discovery without restoring or blocking conversations.
 
 ## Access and storage
 

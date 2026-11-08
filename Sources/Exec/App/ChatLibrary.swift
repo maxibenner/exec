@@ -8,6 +8,7 @@ import Observation
     private(set) var openingSessionID: UUID?
     private(set) var navigating = false
     private(set) var authenticating = false
+    private(set) var isPresentingStartup = false
     private var navigationError: String?
     private var modelRefreshError: String?
     private var savedSummaries: [SessionSummary] = []
@@ -33,11 +34,13 @@ import Observation
     private let metadataCache: AccountMetadataCache?
     private var cachedUsage: CachedAccountUsage?
     var accountUsage: AccountUsage? { cachedUsage?.current() }
+    // The footer may retain the row shape while expired values render as unknown.
+    var displayedAccountUsage: AccountUsage? { cachedUsage?.usage }
     var accountUsageFetchedAt: Date? { cachedUsage?.fetchedAt }
     private var metadataKey: String? {
         provider.conversationIdentity.map { provider.displayName + ":" + $0 }
     }
-    private let provider: any ChatProvider
+    private var provider: any ChatProvider
     private let residentLimit: Int
     private let sessions: SessionStore
 
@@ -106,6 +109,65 @@ import Observation
         remember(current)
     }
 
+    /// Bootstrap the same UI objects from disk before asking Keychain for anything.
+    /// The existing session store supplies order, selection and transcript; the cache
+    /// supplies only last-known account presentation and normalized remote metadata.
+    static func startupPresentation(sessions: SessionStore, cache: AccountMetadataCache,
+                                    preferences: UserDefaults = .standard) async throws -> ChatLibrary? {
+        guard let account = await cache.startupAccount() else { return nil }
+        let metadata = await cache.load(key: account.metadataKey)
+        try Task.checkCancellation()
+        let library = try ChatLibrary(provider: PresentationProvider(account), sessions: sessions,
+                                      preferences: preferences, metadataCache: cache)
+        library.isPresentingStartup = true
+        library.authenticating = true
+        library.modelsAreCached = true
+        library.models = metadata.usableModels()
+        library.cachedUsage = metadata.usage
+        library.applyModels(to: library.current)
+        do { try await library.current.presentStartup() }
+        catch is CancellationError { throw CancellationError() }
+        catch { library.current.error = error.localizedDescription }
+        try Task.checkCancellation()
+        return library
+    }
+
+    /// Keep the conversation and window identities when the optimistic account
+    /// matches. A mismatch drops the old presentation before any real work begins.
+    func reconcileStartup(with restored: any ChatProvider) async throws {
+        guard isPresentingStartup else { return }
+        try Task.checkCancellation()
+        let oldKey = metadataKey
+        let matches = provider.displayName == restored.displayName &&
+            provider.conversationIdentity == restored.conversationIdentity
+        let conversationProvider = try restored.makeConversationProvider()
+        if matches {
+            try current.adoptRestoredProvider(conversationProvider)
+        } else {
+            // Remove the old account's visible data immediately, while retaining
+            // the read-only guard until disk invalidation completes.
+            current.clearStartupPresentation()
+            models = []
+            cachedUsage = nil
+            savedSummaries = []
+            sidebarOrder = []
+            if let oldKey { await metadataCache?.remove(key: oldKey) }
+            try Task.checkCancellation()
+            current = ChatStore(provider: conversationProvider, sessions: sessions, selectOnCheckpoint: false,
+                                systemPrompt: systemPrompt, defaultAutoApproveTools: defaultAutoApproveTools)
+            current.selectedModel = defaultModel
+            current.selectedEffort = defaultEffort
+            openConversations = [current]
+            observe(current)
+        }
+        provider = restored
+        // No suspension between unlocking the preview and starting real local
+        // restoration, which validates provider context before enabling actions.
+        isPresentingStartup = false
+        authenticating = false
+        restore()
+    }
+
     /// A blank runner supports account restoration but is not a chat document.
     /// Previously saved sessions remain openable even without messages/workspace.
     func hasConversation(_ conversation: ChatStore) -> Bool {
@@ -158,7 +220,8 @@ import Observation
     var hasUnsavedChanges: Bool { conversations.contains { $0.hasUnsavedChanges } }
     var hasUnsentDrafts: Bool { conversations.contains { $0.hasUnsentDraft } }
     var hasRunningOperations: Bool {
-        navigating || authenticating || selectionTask != nil || !titleTasks.isEmpty || conversations.contains { $0.busy || $0.isSaving }
+        if isPresentingStartup { return false } // Read-only preview must not hold up Quit.
+        return navigating || authenticating || selectionTask != nil || !titleTasks.isEmpty || conversations.contains { $0.busy || $0.isSaving }
     }
 
     private var conversations: [ChatStore] {
@@ -262,7 +325,7 @@ import Observation
         metadataGeneration += 1
         usageTask?.cancel()
         usageRequest += 1
-        cachedUsage = nil
+        if signingOut { cachedUsage = nil }
         modelRefreshError = nil
         navigationError = nil
         start()
@@ -286,6 +349,14 @@ import Observation
                 openConversations = [current]
                 if let oldKey { await metadataCache?.remove(key: oldKey) }
             }
+            guard !Task.isCancelled else { return }
+            let presentation = provider.account.flatMap { name in
+                provider.conversationIdentity.map { identity in
+                    AccountPresentation(providerName: provider.displayName, connectionTitle: provider.connectionTitle,
+                                        accountName: name, conversationIdentity: identity)
+                }
+            }
+            await metadataCache?.saveStartupAccount(presentation)
             guard !Task.isCancelled else { return }
             modelsAreCached = true
             if let key = metadataKey, let saved = await metadataCache?.load(key: key) {
