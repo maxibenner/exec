@@ -64,10 +64,17 @@ struct CodexConversationState: Codable {
                         ["type": "input_image", "image_url": "data:\(image.mediaType);base64,\(image.data.base64EncodedString())"]
                     ]])
                 }
-            } else if message.role == .assistant, message.status != .interrupted,
+            } else if message.role == .assistant, message.status != .complete {
+                // Failed/interrupted text is useful context, not a completed response.
+                // Never revive cached output or unfinished tool calls on this path.
+                if !message.text.isEmpty {
+                    let text = message.status == .failed
+                        ? "[Incomplete assistant response: generation failed.]\n\n\(message.text)"
+                        : message.text
+                    input.append(["role": "assistant", "content": text])
+                }
+            } else if message.role == .assistant,
                       let previousID, let output = outputs[previousID] {
-                // A terminal response can race with cancellation. Interrupted
-                // messages must use their visible text, never cached tool calls.
                 input.append(contentsOf: try Self.items(output))
             } else {
                 if !message.images.isEmpty {
@@ -97,7 +104,7 @@ struct CodexConversationState: Codable {
             guard let index = messages.firstIndex(where: { $0.id == candidate.inputID }),
                   index + 1 < messages.count,
                   messages[index + 1].role == .assistant,
-                  messages[index + 1].status != .interrupted else { continue }
+                  messages[index + 1].status == .complete else { continue }
             return candidate.tokens
         }
         return nil

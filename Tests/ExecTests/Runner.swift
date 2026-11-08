@@ -177,7 +177,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("OAuth form encoding", { try streaming.formEncodingEscapesReservedCharacters() }),
             ("OIDC signature and claims", { try IdentityTests().verifiesSignatureAndRejectsInvalidClaims() }),
             ("Follow-up and new conversation", { try await chat.successfulFollowupIncludesHistoryAndNewClearsIt() }),
-            ("Failed responses preserve prompts and exclude assistant output", { try await chat.failedResponsesPreservePromptsButExcludeAssistantOutput() }),
+            ("Failed responses preserve partial context without tool calls", { try await chat.failedResponsesPreservePartialContextWithoutToolCalls() }),
+            ("Tool failures retain history and safe diagnostics without replay", { try await ToolFailureTests().preservesHistoryAndSafeFailureDetailsWithoutReplay() }),
             ("Cancellation preserves partial context and restart history", { try await chat.stopPreservesPartialContext() })
         ]
         for (name, check) in checks {

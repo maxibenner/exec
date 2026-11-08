@@ -174,7 +174,8 @@ import Foundation
             try expect(records.last?.requestedModel == "gpt-6-luna")
             if failure.status == 403 { try expect(records.last?.outcome == .failed && records.last?.usage == nil) }
             let result = store.messages.compactMap(\.toolResult).last
-            try expect(result?.webSearch == nil && result?.text == WebSearchTool.interrupted)
+            try expect(result?.webSearch == nil)
+            try expect(result?.text == WebSearchTool.interrupted + "\nTool error: \(store.error!)\nThe turn was stopped. Do not retry without a new user request.")
             try expect(store.messages.last?.role == .tool)
             http.invalidateAndCancel()
         }
