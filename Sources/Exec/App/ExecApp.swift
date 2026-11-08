@@ -34,6 +34,7 @@ import SwiftUI
             }
         }
         .defaultSize(width: 980, height: 700)
+        .windowToolbarStyle(.unified)
         .commands { SessionCommands(store: startup.store, windows: startup.windows) }
 
         Settings {
