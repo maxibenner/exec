@@ -51,9 +51,6 @@ struct ProviderSettingsView: View {
         // There is no scroll container or separate height to keep in sync.
         VStack(spacing: 0) {
             ForEach(connected) { connection in
-                if connection.id != connected.first?.id {
-                    Divider().padding(.horizontal, 12)
-                }
                 Button { selection = connection.id } label: {
                     HStack(spacing: 10) {
                         Image(systemName: connection.authentication == .apiKey ? "key" : "person.crop.circle")
@@ -94,9 +91,10 @@ struct ProviderSettingsView: View {
                         }
                     }
                 } label: { Image(systemName: "plus").frame(width: 30, height: 26) }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
                 .menuIndicator(.hidden)
-                .fixedSize()
+                .frame(width: 30, height: 26)
                 .disabled(available.isEmpty)
                 .help("Add Provider")
                 .accessibilityLabel("Add Provider")
@@ -105,7 +103,8 @@ struct ProviderSettingsView: View {
                     guard let selection else { return }
                     store.disconnect(providerID: selection)
                 } label: { Image(systemName: "minus").frame(width: 30, height: 26) }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
+                .frame(width: 30, height: 26)
                 .disabled(!connected.contains { $0.id == selection })
                 .help("Remove Provider")
                 .accessibilityLabel("Remove Provider")
