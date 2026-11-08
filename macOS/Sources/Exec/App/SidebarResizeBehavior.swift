@@ -9,6 +9,10 @@ struct SidebarResizeBehavior: NSViewRepresentable {
     final class ConfigurationView: NSView {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); configure() }
+        // SwiftUI can attach the containing hierarchy after the representable
+        // receives its move callbacks. Resolve the split controller at layout too,
+        // before AppKit chooses how to animate the first sidebar expansion.
+        override func layout() { super.layout(); configure() }
         override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); configure() }
 
         func configure() {
@@ -16,7 +20,7 @@ struct SidebarResizeBehavior: NSViewRepresentable {
             while let view = ancestor {
                 if let split = view as? NSSplitView,
                    let controller = split.delegate as? NSSplitViewController {
-                    for item in controller.splitViewItems where item.behavior == .sidebar {
+                    for item in controller.splitViewItems where item.behavior == .sidebar && item.collapseBehavior != .useConstraints {
                         // AppKit's default resize heuristic can grow a window
                         // already at its minimum width. Let the split view's
                         // existing constraints resize the chat pane instead.
