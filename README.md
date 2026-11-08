@@ -50,7 +50,7 @@ Usage diagnostics are saved with each conversation. The provider state contains 
 
 ### Local-first startup
 
-Saved conversations open independently of model discovery and usage requests. The real interface appears after local credential/store setup; model and usage refreshes do not block navigation or draft editing. Keychain permission prompts and actual account changes still require local setup or account protection.
+Saved conversations open independently of model discovery and usage requests. The window's split view and toolbar appear immediately, without a separate loading view; their contents populate after local credential/store setup. Model and usage refreshes do not block navigation or draft editing. Keychain permission prompts and actual account changes still require local setup or account protection.
 
 Exec keeps a disposable, account-scoped metadata cache in `~/Library/Caches/Exec/AccountMetadata/`. Model catalogs can be reused for up to seven days, and last-known usage for up to five minutes, excluding expired usage windows. Successful refreshes update the cache; failures retain usable cached values. Signing out removes that account's cache, and missing or corrupt caches do not prevent opening saved conversations. **Settings → Account → Refresh Models** retries model discovery without restoring or blocking conversations.
 

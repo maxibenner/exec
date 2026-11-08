@@ -57,7 +57,6 @@ struct SessionSidebar: View {
                                     fetchedAt: store.accountUsageFetchedAt)
             }
         }
-        .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
     }
 }
 

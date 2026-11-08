@@ -20,6 +20,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Startup keeps native window geometry stable", { try await StartupWindowTests().preservesGeometryAcrossStartup() }),
             ("Metadata cache persistence, isolation, corruption and expiry", { try await MetadataCacheTests().persistenceAndExpiry() }),
             ("Cached startup stays interactive and rejects late signed-out results", { try await MetadataCacheTests().cachedStartupAndLateResults() }),
             ("Metadata refresh preserves running settings and offline restoration", { try await MetadataCacheTests().refreshDuringRunAndOfflineMiss() }),

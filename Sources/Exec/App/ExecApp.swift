@@ -9,7 +9,16 @@ import SwiftUI
 
     var body: some Scene {
         Window("Exec", id: "chat") {
-            Group {
+            ChatWindowLayout(workspace: store?.workspace?.root) {
+                if let store, let windows {
+                    SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {
+                        guard store.canNavigate, !store.isSessionRunning($0.id) else { return }
+                        store.deleteSession($0.id)
+                    })
+                } else {
+                    Color.clear
+                }
+            } detail: {
                 if let store, let windows {
                     ChatView(store: store, windows: windows)
                 } else if let startupError {
@@ -19,11 +28,9 @@ import SwiftUI
                     }
                     .padding().frame(maxWidth: 480)
                 } else {
-                    StartupLoadingView()
+                    Color.clear
                 }
             }
-            .frame(minWidth: 720, minHeight: 480)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .task { if store == nil && startupError == nil { start() } }
         }
         .defaultSize(width: 980, height: 700)

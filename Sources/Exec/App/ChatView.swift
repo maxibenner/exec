@@ -14,53 +14,28 @@ struct ChatView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {
-                guard store.canNavigate, !store.isSessionRunning($0.id) else { return }
-                store.deleteSession($0.id)
-            })
-        } detail: {
-            ConversationView(library: store, conversation: store.current,
-                             presentation: windows.presentation(for: store.current),
-                             focused: $composerFocused, showsNavigationError: true)
-                .task(id: ComposerFocusTarget(conversation: ObjectIdentifier(store.current),
-                                              request: windows.composerFocusRequest,
-                                              navigating: store.navigating,
-                                              authenticating: store.authenticating)) {
-                    // Deletion mounts the replacement before navigation finishes.
-                    // Wait until its composer is enabled before requesting focus.
-                    guard !store.navigating, !store.authenticating else { return }
-                    composerFocused = false
-                    await Task.yield()
-                    guard !Task.isCancelled, !store.navigating, !store.authenticating else { return }
-                    composerFocused = true
-                }
-                .id(ObjectIdentifier(store.current))
-                .transaction(value: ObjectIdentifier(store.current)) { transaction in
-                    transaction.animation = nil
-                    transaction.disablesAnimations = true
-                }
-                .toolbar {
-                    if #available(macOS 26.0, *) {
-                        ToolbarItem(placement: .primaryAction) {
-                            WorkspaceBar(root: store.workspace?.root)
-                                .frame(maxWidth: 300)
-                                .padding(.trailing, 14)
-                        }
-                        .sharedBackgroundVisibility(.hidden)
-                    } else {
-                        ToolbarItem(placement: .primaryAction) {
-                            WorkspaceBar(root: store.workspace?.root)
-                                .frame(maxWidth: 300)
-                                .padding(.trailing, 14)
-                        }
-                    }
-                }
-        }
-        .frame(minWidth: 720, minHeight: 480)
-        .modifier(SessionCommandScope(windows: windows, conversation: store.current))
-        .background(WindowReference { windows.mainWindow = $0 })
-        .onChange(of: store.detachedSessionIDs) { _, _ in windows.closeInvalidWindows() }
-        .onAppear { windows.reopenMainWindow = { openWindow(id: "chat") } }
+        ConversationView(library: store, conversation: store.current,
+                         presentation: windows.presentation(for: store.current),
+                         focused: $composerFocused, showsNavigationError: true)
+            .task(id: ComposerFocusTarget(conversation: ObjectIdentifier(store.current),
+                                          request: windows.composerFocusRequest,
+                                          navigating: store.navigating,
+                                          authenticating: store.authenticating)) {
+                // Wait until local restoration/navigation enables the composer.
+                guard !store.navigating, !store.authenticating else { return }
+                composerFocused = false
+                await Task.yield()
+                guard !Task.isCancelled, !store.navigating, !store.authenticating else { return }
+                composerFocused = true
+            }
+            .id(ObjectIdentifier(store.current))
+            .transaction(value: ObjectIdentifier(store.current)) { transaction in
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
+            .modifier(SessionCommandScope(windows: windows, conversation: store.current))
+            .background(WindowReference { windows.mainWindow = $0 })
+            .onChange(of: store.detachedSessionIDs) { _, _ in windows.closeInvalidWindows() }
+            .onAppear { windows.reopenMainWindow = { openWindow(id: "chat") } }
     }
 }
