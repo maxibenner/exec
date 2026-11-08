@@ -4,12 +4,14 @@ import Foundation
     private let model = ChatModel(id: "test", name: "Test", contextWindow: 10_000)
     private let compacted: [[String: String]] = [["type": "compaction", "encrypted_content": "opaque-summary"]]
 
-    private func stream(_ output: [[String: Any]], completed: Bool = true) throws -> Data {
+    private func stream(_ output: [[String: Any]], completed: Bool = true, tokens: Int? = nil) throws -> Data {
         var events: [[String: Any]] = output.enumerated().map { index, item in
             ["type": "response.output_item.done", "output_index": index, "item": item]
         }
         if completed {
-            events.append(["type": "response.completed", "response": ["status": "completed", "output": []]])
+            var response: [String: Any] = ["status": "completed", "output": []]
+            if let tokens { response["usage"] = ["input_tokens": tokens, "output_tokens": 0] }
+            events.append(["type": "response.completed", "response": response])
         }
         return try events.reduce(into: Data()) { data, event in
             data.append(Data("data: ".utf8))
@@ -219,6 +221,103 @@ import Foundation
         let catalogProvider = try self.provider(http: catalogHTTP)
         let catalog = try await catalogProvider.models()
         try expect(catalog.first?.contextWindow == 16_000)
+    }
+
+    func toolResultMeasurementsStayBoundToCompletedResponse() async throws {
+        let calls = [ToolCall(id: "first", name: "list_files", arguments: #"{"path":"."}"#),
+                     ToolCall(id: "second", name: "list_files", arguments: #"{"path":"."}"#)]
+        let history = [Message(role: .user, text: "Inspect"),
+                       Message(role: .assistant, text: "", toolCalls: calls)]
+        let results = calls.map { Message(role: .tool, text: "file.swift", toolResult: ToolResult(call: $0, text: "file.swift")) }
+        let measured = CodexConversationState(measurement: .init(inputID: history[0].id, tokens: 9_500))
+        let resolved = history + results
+        try expect(measured.reportedTokens(resolved) == 9_500)
+        try expect(measured.reportedTokens(resolved + [Message(role: .user, text: "Next")]) == nil)
+        try expect(measured.reportedTokens(resolved + [Message(role: .assistant, text: "Unmeasured reply")]) == nil)
+        try expect(measured.reportedTokens(Array(resolved.dropFirst())) == nil)
+        for status in [Message.Status.interrupted, .failed, .streaming] {
+            var incomplete = resolved
+            incomplete[1].status = status
+            try expect(measured.reportedTokens(incomplete) == nil)
+        }
+        var incompleteResult = resolved
+        incompleteResult[2].status = .interrupted
+        try expect(measured.reportedTokens(incompleteResult) == nil)
+        let unrelated = ToolCall(id: "other", name: "list_files", arguments: "{}")
+        try expect(measured.reportedTokens(history + [Message(role: .tool, text: "", toolResult: ToolResult(call: unrelated, text: ""))]) == nil)
+
+        // A partially answered batch still must not reach the compaction endpoint.
+        let http = HTTPStub.makeSession([])
+        defer { http.invalidateAndCancel() }
+        let provider = try provider(http: http)
+        let partial = history + [results[0]]
+        try provider.restoreConversationState(JSONEncoder().encode(measured), history: partial)
+        do {
+            _ = try await provider.compactIfNeeded(partial, pending: [], model: model, instructions: "", tools: [])
+            throw CheckFailure(description: "Compacted a partially answered tool batch")
+        } catch let error as ExecError { try expect(error.message.contains("unresolved")) }
+        try expect(HTTPStub.state.requests.isEmpty)
+    }
+
+    func compactsDuringMultiRoundToolTurn() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("fixture".utf8).write(to: root.appendingPathComponent("file.swift"))
+        func call(_ id: String) -> [[String: Any]] {
+            [["type": "function_call", "call_id": id, "name": "list_files", "arguments": #"{"path":"."}"#]]
+        }
+        let http = HTTPStub.makeSession([
+            .init(chunks: [try stream(call("first"), tokens: 9_499)]),
+            .init(chunks: [try stream(call("second"), tokens: 9_500)]),
+            .init(chunks: [try stream(compacted)]),
+            .init(chunks: [try stream([["type": "message", "role": "assistant",
+                "content": [["type": "output_text", "text": "Done"]]]], tokens: 200)])
+        ])
+        defer { http.invalidateAndCancel() }
+        let provider = try provider(http: http)
+        let sessions = SessionStore(directory: root.appendingPathComponent("sessions"))
+        let store = ChatStore(provider: provider, sessions: sessions, newConversation: true, workspace: try Workspace.load(root))
+        store.models = [model]
+        store.selectedModel = model.id
+        var checkpointedBeforeContinuation = false
+        store.didCheckpoint = {
+            guard !checkpointedBeforeContinuation,
+                  let saved = try await sessions.load(id: store.currentSessionID),
+                  let prefix = try CodexConversationState.restore(saved.providerState).prefix else { return }
+            try expect(HTTPStub.state.requests.count == 3)
+            try expect(saved.history.last?.id == prefix.throughID)
+            try expect(saved.history.last?.toolResult?.call.id == "second")
+            checkpointedBeforeContinuation = true
+        }
+        store.draft = "Inspect the workspace twice"
+        store.send()
+        await store.waitUntilIdle()
+        try expect(store.error == nil && store.messages.last?.text == "Done")
+        try expect(checkpointedBeforeContinuation)
+        try expect(store.messages.compactMap { $0.toolResult?.call.id } == ["first", "second"])
+        let requests = HTTPStub.state.requests
+        try expect(requests.count == 4)
+        let inputs = try requests.map { request -> [[String: Any]] in
+            let body = try JSONSerialization.jsonObject(with: HTTPStub.body(of: request)) as! [String: Any]
+            return body["input"] as! [[String: Any]]
+        }
+        // Below threshold, the first tool result goes straight into normal inference.
+        try expect(inputs[1].last?["call_id"] as? String == "first")
+        // At threshold, both results are compacted before continuing the same turn.
+        try expect(inputs[2].last?["type"] as? String == "compaction_trigger")
+        let results = inputs[2].filter { $0["type"] as? String == "function_call_output" }
+        try expect(results.compactMap { $0["call_id"] as? String } == ["first", "second"])
+        try expect(results.allSatisfy { ($0["output"] as? String)?.contains("file.swift") == true })
+        try expect(inputs[3].count == 1 && inputs[3][0]["type"] as? String == "compaction")
+        let saved = try await sessions.load(id: store.currentSessionID)!
+        let restored = try CodexConversationState.restore(saved.providerState)
+        try expect(saved.history == store.messages)
+        try expect(restored.requestUsage?.map(\.kind) == [.main, .main, .compaction, .main])
+        // Replaying the saved conversation keeps the compacted prefix and final answer.
+        let replay = try restored.input(saved.history)
+        try expect(replay.count == 2 && replay[0]["type"] as? String == "compaction")
+        try expect(replay[1]["type"] as? String == "message")
     }
 
     func manualCompactionBypassesThresholdAndPreservesTranscript() async throws {

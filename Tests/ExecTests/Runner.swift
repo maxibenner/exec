@@ -138,6 +138,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Compaction threshold and durable continuation", { try await CompactionTests().thresholdAndDurableOpaqueContinuation() }),
             ("Compaction failure and cancellation safety", { try await CompactionTests().failedAndCancelledCompactionKeepsOriginalContext() }),
             ("Compaction estimates and tool boundaries", { try await CompactionTests().reportedCountsLegacyStateAndClosedToolBoundaries() }),
+            ("Tool-result measurements require completed response boundaries", { try await CompactionTests().toolResultMeasurementsStayBoundToCompletedResponse() }),
+            ("Automatic compaction continues a multi-round tool turn", { try await CompactionTests().compactsDuringMultiRoundToolTurn() }),
             ("Compaction checkpoint safety", { try await CompactionTests().checkpointFailurePreventsInferenceAfterCompaction() }),
             ("Refresh and restart", { try await LifecycleTests().refreshIsSharedAndSurvivesRestart() }),
             ("Shared refresh cancellation isolation", { try await LifecycleTests().cancellingOneCallerDoesNotCancelSharedRefresh() }),

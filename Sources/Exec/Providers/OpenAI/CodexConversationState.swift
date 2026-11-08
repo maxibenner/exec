@@ -91,7 +91,7 @@ struct CodexConversationState: Codable {
     }
 
     // Display the last completed measurement even when a new turn has appended input.
-    // Compaction still uses reportedTokens to require an exact history boundary.
+    // Compaction only accepts the measured response and its subsequent tool results.
     func lastReportedTokens(_ messages: [Message]) -> Int? {
         for candidate in [measurement, displayMeasurement].compactMap({ $0 }) {
             guard let index = messages.firstIndex(where: { $0.id == candidate.inputID }),
@@ -104,10 +104,20 @@ struct CodexConversationState: Codable {
     }
 
     func reportedTokens(_ messages: [Message]) -> Int? {
-        guard let measurement, messages.count >= 2,
-              messages[messages.count - 2].id == measurement.inputID,
-              messages.last?.role == .assistant,
-              messages.last?.status != .interrupted else { return nil }
+        guard let measurement,
+              let index = messages.firstIndex(where: { $0.id == measurement.inputID }),
+              index + 1 < messages.count else { return nil }
+        let response = messages[index + 1]
+        guard response.role == .assistant, response.status == .complete else { return nil }
+        // Tool results extend the measured response before the next inference.
+        // Retain its reported count without claiming to have measured those results.
+        // New user input or a later response must not reuse this measurement.
+        let callIDs = Set(response.toolCalls.map(\.id))
+        for message in messages.dropFirst(index + 2) {
+            guard message.role == .tool, message.status == .complete,
+                  let result = message.toolResult, callIDs.contains(result.call.id) else { return nil }
+        }
+        // compact() separately rejects any calls that still lack results.
         return measurement.tokens
     }
 
