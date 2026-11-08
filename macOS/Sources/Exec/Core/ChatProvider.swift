@@ -75,6 +75,7 @@ struct ProviderConnection: Identifiable, Equatable {
     var authentication: Authentication = .browser
     var webSearch: WebSearch = .unavailable
     var supportsImageGeneration = false
+    var balanceIdentity: String? = nil
 }
 
 // Providers own authentication and wire formats. Core orchestration sees only
@@ -113,6 +114,7 @@ struct ProviderConnection: Identifiable, Equatable {
     func disconnect() async throws
     func models() async throws -> [ChatModel]
     func accountUsage() async throws -> AccountUsage?
+    func accountBalance(providerID: String) async throws -> [AccountBalance]
     var supportsImageGeneration: Bool { get }
     func generateImage(_ request: ImageGenerationTool.Request) async throws -> ImageAttachment
     var supportsWebSearch: Bool { get }
@@ -166,6 +168,7 @@ extension ChatProvider {
     }
 
     func accountUsage() async throws -> AccountUsage? { nil }
+    func accountBalance(providerID: String) async throws -> [AccountBalance] { [] }
     var conversationIdentity: String? { account }
     var supportsImageGeneration: Bool { false }
     func generateImage(_ request: ImageGenerationTool.Request) async throws -> ImageAttachment {

@@ -30,7 +30,8 @@ import Foundation
             ProviderConnection(id: entry.id, name: entry.provider.displayName, account: entry.provider.account,
                                authentication: entry.provider.connections[0].authentication,
                                webSearch: entry.provider.webSearchConfiguration,
-                               supportsImageGeneration: entry.provider.supportsImageGeneration)
+                               supportsImageGeneration: entry.provider.supportsImageGeneration,
+                               balanceIdentity: entry.provider.connections[0].balanceIdentity)
         }
     }
     var usageProviderName: String { "OpenAI" }
@@ -125,6 +126,10 @@ import Foundation
         // This reports the explicitly labeled Codex subscription, not DeepSeek credits.
         guard let entry = registry.entries.first(where: { $0.id == "openai" }), entry.provider.account != nil else { return nil }
         return try await entry.provider.accountUsage()
+    }
+    func accountBalance(providerID: String) async throws -> [AccountBalance] {
+        guard let entry = registry.entries.first(where: { $0.id == providerID }), entry.provider.account != nil else { return [] }
+        return try await entry.provider.accountBalance(providerID: entry.provider.connections[0].id)
     }
     func contextUsage(_ messages: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) -> ContextUsage? {
         guard let target = try? destination(model.id) else { return nil }

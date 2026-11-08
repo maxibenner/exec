@@ -43,6 +43,7 @@ import Observation
     private var modelsAreCached = false
     private let metadataCache: AccountMetadataCache?
     private var cachedUsage: CachedAccountUsage?
+    private var cachedBalances: [String: [AccountBalance]] = [:]
     var accountUsage: AccountUsage? { cachedUsage?.current() }
     // Keep the last report visible until a new one arrives, even after its reset time.
     var displayedAccountUsage: AccountUsage? { cachedUsage?.usage }
@@ -263,6 +264,26 @@ import Observation
         _ = authenticating
         return provider.usageConnection
     }
+    private var balanceKeys: [String: String] {
+        Dictionary(uniqueKeysWithValues: connectedProviders.compactMap { connection in
+            connection.balanceIdentity.map { (connection.id, "account-balance:\(connection.id):\($0)") }
+        })
+    }
+    func accountBalance(for providerID: String) -> [AccountBalance] {
+        balanceKeys[providerID].flatMap { cachedBalances[$0] } ?? []
+    }
+    func refreshAccountBalance(for providerID: String) async {
+        guard !authenticating, !isPresentingStartup, let key = balanceKeys[providerID] else { return }
+        let generation = metadataGeneration
+        if cachedBalances[key] == nil, let saved = await metadataCache?.load(key: key) {
+            guard !Task.isCancelled, generation == metadataGeneration, balanceKeys[providerID] == key else { return }
+            cachedBalances[key] = saved.balances
+        }
+        guard let balance = try? await provider.accountBalance(providerID: providerID), !balance.isEmpty,
+              !Task.isCancelled, generation == metadataGeneration, balanceKeys[providerID] == key else { return }
+        cachedBalances[key] = balance
+        await metadataCache?.saveBalances(balance, key: key)
+    }
     var connectedProviders: [ProviderConnection] { connections.filter { $0.account != nil } }
     var connections: [ProviderConnection] {
         _ = authenticating // Refresh account presentation after account operations.
@@ -407,6 +428,7 @@ import Observation
         if reportConnectionError { connectionError = nil }
         let identity = provider.conversationIdentity
         let oldKey = metadataKey
+        let oldBalanceKeys = Set(balanceKeys.values)
         for conversation in conversations { conversation.suspendAutoApproval() }
         authenticating = true
         modelTask?.cancel()
@@ -429,6 +451,10 @@ import Observation
             // Run even after cancellation: removed credentials must immediately
             // invalidate choices and send eligibility in every resident window.
             synchronizeConnections()
+            for key in oldBalanceKeys.subtracting(balanceKeys.values) {
+                cachedBalances[key] = nil
+                await metadataCache?.remove(key: key)
+            }
             if reportConnectionError { connectionError = current.error }
             // Eviction follows successful sign-out, even if cancellation arrived
             // after the provider removed the credentials.

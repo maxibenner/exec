@@ -10,6 +10,7 @@ actor AccountMetadataCache {
         var models: [ChatModel] = []
         var modelsFetchedAt: Date?
         var usage: CachedAccountUsage?
+        var balances: [AccountBalance]?
 
         func usableModels(at date: Date = .now) -> [ChatModel] {
             guard let modelsFetchedAt, (0...604_800).contains(date.timeIntervalSince(modelsFetchedAt)) else { return [] }
@@ -62,6 +63,12 @@ actor AccountMetadataCache {
     func saveUsage(_ usage: CachedAccountUsage?, key: String) {
         var saved = load(key: key)
         saved.usage = usage
+        write(saved, name: name(for: key))
+    }
+
+    func saveBalances(_ balances: [AccountBalance], key: String) {
+        var saved = load(key: key)
+        saved.balances = balances
         write(saved, name: name(for: key))
     }
 

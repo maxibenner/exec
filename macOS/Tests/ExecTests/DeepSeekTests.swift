@@ -131,6 +131,50 @@ import Foundation
         try expect(HTTPStub.state.requests.count == 2)
     }
 
+    func balanceRequestAndValidation() async throws {
+        let data = Data(#"{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"12.3456","granted_balance":"2","topped_up_balance":"10.3456"},{"currency":"CNY","total_balance":"0.00"}]}"#.utf8)
+        let http = HTTPStub.makeSession([.init(chunks: [catalog]), .init(chunks: [data]),
+                                        .init(status: 401, chunks: [Data("test-deepseek-key".utf8)])])
+        defer { http.invalidateAndCancel() }
+        let provider = try await connected(http)
+        let registry = ProviderRegistry(entries: [.init(id: "deepseek", provider: provider)], libraryIdentity: "test")
+        let multi = MultiProvider(registry: registry)
+        try expect(multi.connections.first?.balanceIdentity == provider.conversationIdentity)
+        let balances = try await multi.accountBalance(providerID: "deepseek")
+        try expect(balances == [.init(amount: Decimal(string: "12.3456")!, currency: "USD"), .init(amount: 0, currency: "CNY")])
+        let request = HTTPStub.state.requests[1]
+        try expect(request.url?.absoluteString == "https://api.deepseek.com/user/balance" && request.httpMethod == "GET")
+        try expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-deepseek-key")
+        try expect(request.value(forHTTPHeaderField: "ChatGPT-Account-ID") == nil && request.httpBody == nil)
+        do {
+            _ = try await multi.accountBalance(providerID: "deepseek")
+            throw CheckFailure(description: "Expected balance rejection")
+        } catch let error as ExecError { try expect(!error.message.contains("test-deepseek-key")) }
+        try expect(HTTPStub.state.requests.count == 3)
+        for invalid in ["{}", #"{"balance_infos":[]}"#,
+                        #"{"balance_infos":[{"currency":"USD","total_balance":"12oops"}]}"#,
+                        #"{"balance_infos":[{"currency":"USD","total_balance":"NaN"}]}"#] {
+            do { _ = try DeepSeekBalance.decode(Data(invalid.utf8)); throw CheckFailure(description: "Expected invalid balance") }
+            catch is ExecError {}
+        }
+        try await provider.disconnect()
+        let disconnected = try await multi.accountBalance(providerID: "deepseek")
+        try expect(disconnected.isEmpty && HTTPStub.state.requests.count == 3)
+    }
+
+    func balanceDiscardsRemovedAccountResponse() async throws {
+        let data = Data(#"{"balance_infos":[{"currency":"USD","total_balance":"10.00"}]}"#.utf8)
+        let http = HTTPStub.makeSession([.init(chunks: [catalog]), .init(chunks: [data], holdOpen: true)])
+        defer { http.invalidateAndCancel() }
+        let provider = try await connected(http)
+        let pending = Task { try await provider.accountBalance(providerID: "DeepSeek") }
+        try await wait { HTTPStub.state.heldCount == 1 }
+        try await provider.disconnect()
+        HTTPStub.state.finishHeld()
+        do { _ = try await pending.value; throw CheckFailure(description: "Expected stale balance cancellation") }
+        catch is CancellationError {}
+    }
+
     private func wait(_ condition: () -> Bool) async throws {
         for _ in 0..<400 {
             if condition() { return }
