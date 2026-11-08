@@ -36,6 +36,7 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
         .padding(.horizontal, 10)
         // Selection is drawn above, not by the native list, so responder changes
         // cannot flash an accent-colored selection. Shortcuts still navigate sessions.
@@ -55,8 +56,10 @@ struct SessionSidebar: View {
             if store.account != nil {
                 ProviderUsageFooter(providerName: store.providerName, usage: store.displayedAccountUsage,
                                     fetchedAt: store.accountUsageFetchedAt)
+                    .background(Color(nsColor: .windowBackgroundColor))
             }
         }
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
