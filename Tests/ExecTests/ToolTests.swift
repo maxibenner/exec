@@ -37,8 +37,16 @@ import Foundation
         try expect(environment == "Exit code: 0\nunset")
         let output = try await ShellRunner.run("printf hello; printf problem >&2; exit 7", in: root)
         try expect(output.contains("Exit code: 7") && output.contains("helloproblem"))
-        let large = try await ShellRunner.run("/usr/bin/yes x | /usr/bin/head -c 100000", in: root)
-        try expect(large.contains("Output truncated") && large.utf8.count < 33_000)
+        let large = try await ShellRunner.run("printf 'BUILD START\\n'; /usr/bin/yes x | /usr/bin/head -c 100000; printf 'FINAL FAILURE\\n' >&2; exit 9", in: root)
+        let logURL = try ShellOutputTests.logURL(in: large)
+        defer { try? FileManager.default.removeItem(at: logURL.deletingLastPathComponent()) }
+        try expect(large.contains("Exit code: 9") && large.contains("Output truncated") && large.utf8.count < 34_000)
+        try expect(large.contains("BUILD START\n") && large.contains("FINAL FAILURE\n"))
+        let expected = Data(("BUILD START\n" + String(repeating: "x\n", count: 50_000) + "FINAL FAILURE\n").utf8)
+        try expect(Data(contentsOf: logURL) == expected)
+        // Recovery is a separate approved operation, not a replay of the failed build.
+        let recovered = try await ShellRunner.run("/usr/bin/tail -n 1 '\(logURL.path)'", in: root)
+        try expect(recovered == "Exit code: 0\nFINAL FAILURE\n")
         let timedOut = try await ShellRunner.run("(sleep 0.4; touch timeout-leak) & wait", in: root, timeout: .milliseconds(50))
         try expect(timedOut.contains("timed out"))
         let running = Task { try await ShellRunner.run("(sleep 0.4; touch cancellation-leak) & echo started > started; wait", in: root) }

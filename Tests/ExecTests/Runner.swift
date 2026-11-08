@@ -20,6 +20,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Storage rename preserves conversations and rejects conflicts", { try await StorageMigrationTests().migratesAndProtectsExistingData() }),
             ("Optimistic startup renders before credentials and reconciles in place", { try await OptimisticStartupTests().rendersBeforeCredentialsAndReconcilesInPlace() }),
             ("Optimistic startup rejects account mismatches and clears sign-out", { try await OptimisticStartupTests().rejectsMismatchesAndClearsSignout() }),
             ("Startup credential failures, explicit retry and cancellation", { try await OptimisticStartupTests().credentialFailureRetryAndCancellation() }),
@@ -130,6 +131,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Workspace selection during active conversations", { try await ChatLibraryTests().workspaceSelectionDoesNotInterruptRunningConversations() }),
             ("Background approval isolation", { try await ChatLibraryTests().backgroundApprovalsStayWithTheirConversation() }),
             ("Read-only tool boundaries", { try ToolTests().readToolsStayWithinWorkspace() }),
+            ("Shell output preview boundaries and recoverable private logs", { try ShellOutputTests().boundariesAndFullLog() }),
+            ("Shell log failure and unpublished cleanup", { try ShellOutputTests().logFailureAndUnpublishedCleanup() }),
+            ("Shell timeout preserves head, tail and captured log", { try await ShellOutputTests().timeoutPreservesDiagnostics() }),
             ("Shell output, timeout and cancellation", { try await ToolTests().shellOutputTimeoutAndCancellation() }),
             ("Shell approval", { try await ToolTests().everyShellCommandRequiresApproval() }),
             ("Scoped and revocable auto-approval", { try await ToolTests().autoApprovalIsScopedAndRevocable() }),
