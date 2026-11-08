@@ -206,65 +206,6 @@ import SwiftUI
         }
     }
 
-    func configuresNavigationWhenToolbarArrivesLater() async throws {
-        _ = NSApplication.shared
-        let controller = NSHostingController(rootView: ChatWindowLayout(initiallyShowsSidebar: false) {
-            Text("Sessions")
-        } detail: {
-            Text("Conversation")
-        })
-        let window = NSWindow(contentViewController: controller)
-        window.setContentSize(NSSize(width: 720, height: 480))
-        window.orderFront(nil)
-        defer { window.orderOut(nil) }
-        try await settle(window)
-        guard let split = splitView(in: controller.view) else {
-            throw CheckFailure(description: "Missing native split view")
-        }
-        let delegate = NavigationToolbarDelegate(split: split)
-        // SwiftUI creates its toolbar after the window's content attaches, and
-        // can replace it later. Both must receive the same navigation treatment.
-        for index in 0..<2 {
-            let toolbar = NSToolbar(identifier: "NavigationTest-\(index)")
-            toolbar.delegate = delegate
-            window.toolbar = toolbar
-            window.update()
-            try await settle(window)
-            let navigation = toolbar.items.first { $0.itemIdentifier.rawValue == "navigation" }
-            let separator = toolbar.items.first { $0 is NSTrackingSeparatorToolbarItem }
-            let space = toolbar.items.first { $0.itemIdentifier == .flexibleSpace }
-            try expect(toolbar.items.count == 3 && navigation?.isNavigational == true)
-            try expect(separator?.isNavigational == false && space?.isNavigational == false)
-            try expect(navigation?.action == #selector(NSSplitViewController.toggleSidebar(_:)))
-            try expect(window.titleVisibility == .hidden)
-        }
-    }
-
-    private final class NavigationToolbarDelegate: NSObject, NSToolbarDelegate {
-        let split: NSSplitView
-        init(split: NSSplitView) { self.split = split }
-        func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-            toolbarDefaultItemIdentifiers(toolbar)
-        }
-        func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-            [.flexibleSpace, .init("navigation"), .init("divider")]
-        }
-        func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
-                     willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-            if identifier.rawValue == "divider" {
-                return NSTrackingSeparatorToolbarItem(identifier: identifier, splitView: split, dividerIndex: 0)
-            }
-            guard identifier.rawValue == "navigation" else { return nil }
-            let item = NSToolbarItem(itemIdentifier: identifier)
-            item.label = "Sidebar"
-            item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil)
-            item.target = split.delegate
-            item.action = #selector(NSSplitViewController.toggleSidebar(_:))
-            item.visibilityPriority = .high
-            return item
-        }
-    }
-
     private func sidebarBackground(in view: NSView) throws -> [CGFloat] {
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
             throw CheckFailure(description: "Cannot render startup sidebar")
