@@ -79,20 +79,32 @@ struct ProviderSettingsView: View {
         .accessibilityLabel("Connected providers")
     }
 
+    private var addProviderLabel: some View {
+        Image(systemName: "plus").frame(width: 16, height: 18)
+    }
+
     private var providerControls: some View {
         HStack {
             Spacer(minLength: 0)
             ControlGroup {
-                Menu {
-                    ForEach(available) { connection in
-                        Button(connection.name) {
-                            if connection.authentication == .apiKey { adding = connection }
-                            else { store.connect(providerID: connection.id) }
-                        }
+                Group {
+                    if available.isEmpty {
+                        // A disabled Menu in a ControlGroup keeps its enabled appearance.
+                        // Use the same native button state as the remove segment instead.
+                        Button {} label: { addProviderLabel }
+                            .disabled(true)
+                    } else {
+                        Menu {
+                            ForEach(available) { connection in
+                                Button(connection.name) {
+                                    if connection.authentication == .apiKey { adding = connection }
+                                    else { store.connect(providerID: connection.id) }
+                                }
+                            }
+                        } label: { addProviderLabel }
+                        .menuIndicator(.hidden)
                     }
-                } label: { Image(systemName: "plus").frame(width: 16, height: 18) }
-                .menuIndicator(.hidden)
-                .disabled(available.isEmpty)
+                }
                 .help("Add Provider")
                 .accessibilityLabel("Add Provider")
                 Button {
