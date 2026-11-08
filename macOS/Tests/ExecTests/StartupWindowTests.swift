@@ -97,7 +97,18 @@ import SwiftUI
             for collapsed in [true, false, true, false] {
                 if split.isSubviewCollapsed(sidebar) != collapsed {
                     splitController.toggleSidebar(nil)
-                    try await Task.sleep(for: .milliseconds(350))
+                    // Check intermediate geometry too: AppKit can temporarily
+                    // enlarge the split view and only snap back at completion.
+                    for _ in 0..<25 {
+                        try await Task.sleep(for: .milliseconds(16))
+                        let splitFrame = split.convert(split.bounds, to: controller.view)
+                        let transcriptFrame = transcript.convert(transcript.bounds, to: controller.view)
+                        let composerFrame = composer.convert(composer.bounds, to: controller.view)
+                        try expect(abs(splitFrame.maxX - controller.view.bounds.maxX) < 2)
+                        try expect(abs(transcriptFrame.maxX - controller.view.bounds.maxX) < 2)
+                        try expect(composerFrame.maxX <= transcriptFrame.maxX + 1)
+                        try expect(window.frame == frame)
+                    }
                 }
                 try await settle(window)
                 try expect(split.isSubviewCollapsed(sidebar) == collapsed)
@@ -163,6 +174,10 @@ import SwiftUI
             }
             try expect(split.isSubviewCollapsed(sidebar) == !hasSessions)
             try expect(window.frame == frame)
+            guard let splitController = split.delegate as? NSSplitViewController else {
+                throw CheckFailure(description: "Missing sidebar controller")
+            }
+            try expect(splitController.splitViewItems.first?.collapseBehavior == .useConstraints)
             // Adding/deleting chats after startup must not override visibility.
             presentation.hasSessions = !hasSessions
             try await settle(window)
@@ -188,6 +203,65 @@ import SwiftUI
             try expect(SessionStore.hasSavedSessions(in: root))
             try FileManager.default.removeItem(at: file)
             try expect(!SessionStore.hasSavedSessions(in: root))
+        }
+    }
+
+    func configuresNavigationWhenToolbarArrivesLater() async throws {
+        _ = NSApplication.shared
+        let controller = NSHostingController(rootView: ChatWindowLayout(initiallyShowsSidebar: false) {
+            Text("Sessions")
+        } detail: {
+            Text("Conversation")
+        })
+        let window = NSWindow(contentViewController: controller)
+        window.setContentSize(NSSize(width: 720, height: 480))
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        try await settle(window)
+        guard let split = splitView(in: controller.view) else {
+            throw CheckFailure(description: "Missing native split view")
+        }
+        let delegate = NavigationToolbarDelegate(split: split)
+        // SwiftUI creates its toolbar after the window's content attaches, and
+        // can replace it later. Both must receive the same navigation treatment.
+        for index in 0..<2 {
+            let toolbar = NSToolbar(identifier: "NavigationTest-\(index)")
+            toolbar.delegate = delegate
+            window.toolbar = toolbar
+            window.update()
+            try await settle(window)
+            let navigation = toolbar.items.first { $0.itemIdentifier.rawValue == "navigation" }
+            let separator = toolbar.items.first { $0 is NSTrackingSeparatorToolbarItem }
+            let space = toolbar.items.first { $0.itemIdentifier == .flexibleSpace }
+            try expect(toolbar.items.count == 3 && navigation?.isNavigational == true)
+            try expect(separator?.isNavigational == false && space?.isNavigational == false)
+            try expect(navigation?.action == #selector(NSSplitViewController.toggleSidebar(_:)))
+            try expect(window.titleVisibility == .hidden)
+        }
+    }
+
+    private final class NavigationToolbarDelegate: NSObject, NSToolbarDelegate {
+        let split: NSSplitView
+        init(split: NSSplitView) { self.split = split }
+        func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+            toolbarDefaultItemIdentifiers(toolbar)
+        }
+        func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+            [.flexibleSpace, .init("navigation"), .init("divider")]
+        }
+        func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
+                     willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+            if identifier.rawValue == "divider" {
+                return NSTrackingSeparatorToolbarItem(identifier: identifier, splitView: split, dividerIndex: 0)
+            }
+            guard identifier.rawValue == "navigation" else { return nil }
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            item.label = "Sidebar"
+            item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil)
+            item.target = split.delegate
+            item.action = #selector(NSSplitViewController.toggleSidebar(_:))
+            item.visibilityPriority = .high
+            return item
         }
     }
 
