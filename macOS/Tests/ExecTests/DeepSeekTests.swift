@@ -69,7 +69,7 @@ import Foundation
         let initial = try body(requests[1])
         try expect(initial["model"] as? String == "deepseek-flash" && initial["reasoning_effort"] as? String == "high")
         let definitions = (initial["tools"] as! [[String: Any]]).map { $0["function"] as! [String: Any] }
-        try expect(definitions.compactMap { $0["name"] as? String } == ["web_search", "fetch_content", "take_screenshot", "computer_use"])
+        try expect(definitions.compactMap { $0["name"] as? String } == ["web_search", "fetch_content", "open_app", "inspect_ui", "ui_action", "take_screenshot", "computer_use"])
         try expect(requests[2].url?.path == "/v1/tools/search")
         try expect(!String(decoding: HTTPStub.body(of: requests[2]), as: UTF8.self).contains("Private conversation marker"))
         let followup = try body(requests[3])["messages"] as! [[String: Any]]

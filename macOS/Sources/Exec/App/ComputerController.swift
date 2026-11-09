@@ -46,9 +46,9 @@ import ImageIO
         var busy = false
         var generation: UInt64 = 0
     }
-    private static let sharedAccess = Access()
+    static let sharedAccess = Access()
     private let input: any ComputerInput
-    private let access: Access
+    let access: Access
     private let now: () -> ContinuousClock.Instant
     private(set) var capture: Capture?
     private var revision: UInt64 = 0
@@ -68,7 +68,7 @@ import ImageIO
     func approvalSummary(_ request: ComputerUseTool.Request) throws -> String {
         guard request.process_id != input.ownProcessID else { throw ExecError("Computer control cannot target Exec itself.") }
         let name = try input.applicationName(request.process_id)
-        return "Application: \(name) (\(request.process_id))\n\(request.summary)\nThis controls real applications outside the workspace. Input text is saved in this conversation. Stop revokes session control."
+        return "Application: \(name) (\(request.process_id))\n\(request.summary)"
     }
 
     func observe(_ request: ScreenshotTool.Request,

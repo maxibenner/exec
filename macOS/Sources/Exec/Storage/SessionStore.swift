@@ -41,6 +41,8 @@ struct SessionSnapshot: Codable, Sendable {
                     text = ImageGenerationTool.interrupted
                 } else if call.name == WebSearchTool.definition.name {
                     text = WebSearchTool.interrupted
+                } else if AccessibilityTool.handles(call.name) {
+                    text = AccessibilityTool.interrupted
                 } else if call.name == ComputerUseTool.definition.name {
                     text = ComputerUseTool.interrupted
                 } else if call.name == ScreenshotTool.definition.name {

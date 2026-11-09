@@ -71,6 +71,11 @@ struct ToolPresentation {
             title = "Generate image"; icon = "photo"
             summary = arguments?.prompt
             outputTitle = nil
+        case "open_app", "inspect_ui", "ui_action":
+            title = call.name == "open_app" ? "Open app" : call.name == "inspect_ui" ? "Inspect UI" : "UI action"
+            icon = "accessibility"
+            summary = (try? AccessibilityTool.request(call))?.summary
+            outputTitle = "UI state"
         case "computer_use":
             title = "Computer use"; icon = "cursorarrow"
             summary = (try? ComputerUseTool.request(call))?.summary

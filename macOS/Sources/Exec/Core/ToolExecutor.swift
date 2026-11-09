@@ -105,7 +105,9 @@ struct ToolApprovalDenied: ContextSafeError {
     }
 
     func approveComputer(summary: String) async throws -> Bool {
-        try await requestApproval(Approval(kind: .computer, content: summary, directory: URL(fileURLWithPath: "/")))
+        try await requestApproval(Approval(kind: .computer,
+            content: summary + "\nComputer control affects real applications outside the workspace. Accessibility text and input arguments are shared with the model and saved in this conversation; they may contain sensitive information. Session permission covers input and accessibility inspection. Stop revokes control.",
+            directory: URL(fileURLWithPath: "/")))
     }
 
     private func requestApproval(_ approval: Approval) async throws -> Bool {
