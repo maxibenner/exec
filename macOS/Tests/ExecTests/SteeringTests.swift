@@ -181,8 +181,15 @@ import Foundation
                 release = true
             }
             try await wait { !store.busy }
-            try expect(executions == 1 && provider.inputs.count == 1)
-            try expect(store.pendingInput.map(\.text) == ["Preserve this"])
+            try expect(executions == 1)
+            if outcome == "failure" {
+                try expect(provider.inputs.count == 2 && store.pendingInput.isEmpty && store.error == nil)
+                try expect(provider.inputs.last?.last?.text == "Preserve this")
+                try expect(provider.inputs.last?.compactMap(\.toolResult).last?.text.hasPrefix("Tool error: Fetch failed") == true)
+            } else {
+                try expect(provider.inputs.count == 1)
+                try expect(store.pendingInput.map(\.text) == ["Preserve this"])
+            }
             try expect(store.messages.filter { $0.text == "Preserve this" }.count == 1)
             if outcome == "save failure" { try expect(store.hasUnsavedChanges) }
         }

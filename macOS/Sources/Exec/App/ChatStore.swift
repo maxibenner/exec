@@ -430,6 +430,17 @@ import Observation
                                 result = try await self.executeTool(call)
                             } catch is ToolExecutor.InputArrived {
                                 result = ToolResult(call: call, text: ToolExecutor.supersededByInput)
+                            } catch {
+                                guard !Task.isCancelled, !(error is CancellationError),
+                                      (error as? URLError)?.code != .cancelled,
+                                      !(error is ToolApprovalDenied) else { throw error }
+                                // Return ordinary failures as outcomes so the model can continue.
+                                // Never expose system metadata (URLs, credentials, raw responses).
+                                let systemError = error as NSError
+                                let detail = (error as? any ContextSafeError)?.errorDescription ?? NSError(
+                                    domain: systemError.domain, code: systemError.code, userInfo: nil
+                                ).localizedDescription
+                                result = ToolResult(call: call, text: "Tool error: \(detail)\nThe operation failed and may have had effects or consumed quota. Do not retry without a new user request. Continue the task using this error as the tool outcome; do not claim the operation succeeded.")
                             }
                         }
                     } catch {
@@ -441,7 +452,7 @@ import Observation
                         case FetchContentTool.definition.name: interrupted = FetchContentTool.interrupted
                         default: interrupted = "Interrupted. An operation may have changed files; inspect before retrying. No automatic retry was performed."
                         }
-                        let cancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
+                        let cancelled = Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
                         var outcome = interrupted
                         if !cancelled {
                             // App errors are user-facing. Strip system error metadata, which
@@ -493,7 +504,7 @@ import Observation
             }
             let request = try ScreenshotTool.request(call)
             guard try await tools.approveScreenshot(request) else {
-                throw ExecError("Screenshot denied. Do not retry without a new user request.")
+                throw ToolApprovalDenied(errorDescription: "Screenshot denied. Do not retry without a new user request.")
             }
             let output = try await captureScreenshot(request)
             try Task.checkCancellation()

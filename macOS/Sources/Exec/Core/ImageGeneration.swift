@@ -1,7 +1,7 @@
 import Foundation
 
 enum ImageGenerationTool {
-    static let definition = ToolDefinition(name: "generate_image", description: "Generate one image using the connected subscription. The prompt is sent to the provider. The image is stored in an app-managed file referenced by this conversation, not the workspace; the result includes its absolute path when persistent storage is available. Use shell to copy it when needed; do not modify the managed source. Uses image-generation quota. Only call when the user requests an image. Failures stop the turn; never retry failed or interrupted generation without a new user request.", parameters: [
+    static let definition = ToolDefinition(name: "generate_image", description: "Generate one image using the connected subscription. The prompt is sent to the provider. The image is stored in an app-managed file referenced by this conversation, not the workspace; the result includes its absolute path when persistent storage is available. Use shell to copy it when needed; do not modify the managed source. Uses image-generation quota. Only call when the user requests an image. Failures are returned as tool errors so you can continue the task; never retry failed or interrupted generation without a new user request.", parameters: [
         .init(name: "prompt", type: "string", description: "Describe the image to generate; at most 16 KiB. Do not include credentials or secrets."),
         .init(name: "transparent_background", type: "boolean", description: "Whether to request a transparent background; otherwise false")
     ])

@@ -181,12 +181,19 @@ import Foundation
                 store.stop()
             }
             await store.waitUntilIdle()
-            try expect(provider.inputs.count == 1 && HTTPStub.state.requests.count == 1)
-            try expect((store.error == nil) == cancel)
-            let expected = FetchContentTool.interrupted + (cancel ? "" : "\nTool error: Content fetch failed (HTTP 403).\nThe turn was stopped. Do not retry without a new user request.")
-            try expect(store.messages.last?.text == expected)
+            try expect(provider.inputs.count == (cancel ? 1 : 2) && HTTPStub.state.requests.count == 1)
+            try expect(store.error == nil)
+            let result = store.messages.compactMap(\.toolResult).last!
+            if cancel {
+                try expect(result.text == FetchContentTool.interrupted)
+            } else {
+                try expect(result.text.hasPrefix("Tool error: Content fetch failed (HTTP 403)."))
+                try expect(provider.inputs.last?.compactMap(\.toolResult).last == result)
+                try expect(store.messages.last?.role == .assistant)
+            }
             let saved = try await sessions.load(id: store.currentSessionID)!
-            try expect(!saved.activeTurn && saved.activeCallID == nil && saved.history.last?.text == expected)
+            try expect(!saved.activeTurn && saved.activeCallID == nil)
+            try expect(saved.history.compactMap(\.toolResult).last == result)
             if cancel { try await wait { HTTPStub.state.heldCount == 0 } }
         }
     }

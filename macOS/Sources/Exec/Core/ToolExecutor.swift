@@ -1,6 +1,10 @@
 import Foundation
 import Observation
 
+struct ToolApprovalDenied: ContextSafeError {
+    let errorDescription: String?
+}
+
 @MainActor @Observable final class ToolExecutor {
     struct Approval: Identifiable {
         let id = UUID()

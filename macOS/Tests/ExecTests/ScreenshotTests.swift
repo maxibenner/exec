@@ -84,7 +84,7 @@ import Foundation
         try expect(restored.messages.compactMap(\.toolResult).first?.screenshot == image)
     }
 
-    func failuresAndCancellationStop() async throws {
+    func failuresContinueButDenialAndCancellationStop() async throws {
         for mode in ["deny", "fail", "cancel"] {
             let provider = FakeProvider()
             provider.scripted = [[.toolCall(call), .completed]]
@@ -104,11 +104,19 @@ import Foundation
                 store.stop()
             }
             await store.waitUntilIdle()
-            try expect(captures == (mode == "deny" ? 0 : 1) && provider.inputs.count == 1)
-            let detail = mode == "deny" ? "Screenshot denied. Do not retry without a new user request." : "Capture unavailable"
-            let expected = ScreenshotTool.interrupted + (mode == "cancel" ? "" : "\nTool error: \(detail)\nThe turn was stopped. Do not retry without a new user request.")
-            try expect(store.messages.last?.text == expected)
-            try expect((store.error == nil) == (mode == "cancel"))
+            try expect(captures == (mode == "deny" ? 0 : 1))
+            try expect(provider.inputs.count == (mode == "fail" ? 2 : 1))
+            let result = store.messages.compactMap(\.toolResult).last!
+            if mode == "fail" {
+                try expect(result.text.hasPrefix("Tool error: Capture unavailable"))
+                try expect(provider.inputs.last?.compactMap(\.toolResult).last == result)
+                try expect(store.messages.last?.role == .assistant)
+            } else {
+                let detail = "Screenshot denied. Do not retry without a new user request."
+                let expected = ScreenshotTool.interrupted + (mode == "cancel" ? "" : "\nTool error: \(detail)\nThe turn was stopped. Do not retry without a new user request.")
+                try expect(store.messages.last?.text == expected)
+            }
+            try expect((store.error != nil) == (mode == "deny"))
             try expect(store.messages.compactMap(\.toolResult).allSatisfy { $0.screenshot == nil })
         }
         for arguments in [#"{"target":"window","window_id":0}"#, #"{"target":"desktop","window_id":9}"#,

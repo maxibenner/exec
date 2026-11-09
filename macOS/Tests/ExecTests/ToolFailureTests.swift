@@ -15,7 +15,7 @@ import Foundation
 
     func preservesHistoryAndSafeFailureDetailsWithoutReplay() async throws {
         let failures: [any Error] = [
-            ExecError("Content fetch failed (HTTP 403)."),
+            ExecError("Content fetch failed (HTTP 404)."),
             URLError(.timedOut, userInfo: [
                 NSLocalizedDescriptionKey: "secret raw response",
                 NSURLErrorFailingURLErrorKey: URL(string: "https://example.com/?token=secret")!
@@ -35,16 +35,22 @@ import Foundation
             await store.waitUntilIdle()
             let previous = store.messages
 
-            let calls = ["success", "failure", "skipped"].map {
+            let calls = ["success", "failure", "later"].map {
                 ToolCall(id: $0, name: "fetch_content", arguments: "{\"url\":\"https://example.com/\($0)\"}")
             }
-            provider.scripted = [[.text("I will inspect the pages.")] + calls.map(ChatEvent.toolCall) + [.completed]]
+            provider.scripted = [
+                [.text("I will inspect the pages.")] + calls.map(ChatEvent.toolCall) + [.completed],
+                [.text("One page failed; here is what the other pages show."), .completed]
+            ]
             store.draft = "Inspect these pages"
             store.send()
             await store.waitUntilIdle()
-            try expect(store.error != nil && provider.inputs.count == 2)
+            try expect(store.error == nil && provider.inputs.count == 3)
             let attempted = await fetch.paths
-            try expect(attempted == ["/success", "/failure"])
+            try expect(attempted == ["/success", "/failure", "/later"])
+            try expect(provider.inputs.last?.compactMap(\.toolResult).map(\.call.id) == calls.map(\.id))
+            try expect(provider.inputs.last?.compactMap(\.toolResult)[1].text.contains("Tool error:") == true)
+            try expect(store.messages.last?.text == "One page failed; here is what the other pages show.")
 
             let saved = try await sessions.load(id: store.currentSessionID)!
             try expect(!saved.activeTurn && saved.activeCallID == nil)
@@ -58,7 +64,7 @@ import Foundation
             try expect(results[1].text.contains("Tool error: \(detail)"))
             try expect(results[1].text.contains("Do not retry without a new user request."))
             try expect(!results[1].text.contains("secret"))
-            try expect(results[2].text == "Not executed: the turn was stopped.")
+            try expect(results[2].text == "Previously fetched evidence")
             try expect(saved.messages.compactMap(\.toolResult) == results)
 
             // Both a live follow-up and a restored session keep every earlier message

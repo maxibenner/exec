@@ -153,7 +153,7 @@ import Foundation
         try expect(restarted.selectedModel == "test")
     }
 
-    func failuresStopWithoutRetriesOrFalseSuccess() async throws {
+    func failuresContinueWithoutRetriesOrFalseSuccess() async throws {
         let failures: [HTTPStub.Reply] = [
             .init(status: 403),
             .init(chunks: [try terminal(answer)]), // A fluent answer without a search is not a search result.
@@ -161,22 +161,25 @@ import Foundation
             .init(chunks: [try terminal([["type": "web_search_call", "status": "failed"]])])
         ]
         for failure in failures {
-            let http = HTTPStub.makeSession([.init(chunks: [try terminal(callOutput)]), failure])
+            let http = HTTPStub.makeSession([.init(chunks: [try terminal(callOutput)]), failure,
+                .init(chunks: [try terminal(answer)])])
             let provider = try provider(http)
             let store = ChatStore(provider: provider, newConversation: true)
             configure(store)
             store.draft = "Search"
             store.send()
             await store.waitUntilIdle()
-            try expect(store.error != nil && HTTPStub.state.requests.count == 2)
+            try expect(store.error == nil && HTTPStub.state.requests.count == 3)
             let records = try CodexConversationState.restore(provider.encodeConversationState()).requestUsage ?? []
-            try expect(records.map(\.kind) == [.main, .search])
-            try expect(records.last?.requestedModel == "gpt-6-luna")
-            if failure.status == 403 { try expect(records.last?.outcome == .failed && records.last?.usage == nil) }
-            let result = store.messages.compactMap(\.toolResult).last
-            try expect(result?.webSearch == nil)
-            try expect(result?.text == WebSearchTool.interrupted + "\nTool error: \(store.error!)\nThe turn was stopped. Do not retry without a new user request.")
-            try expect(store.messages.last?.role == .tool)
+            try expect(records.map(\.kind) == [.main, .search, .main])
+            try expect(records[1].requestedModel == "gpt-6-luna")
+            if failure.status == 403 { try expect(records[1].outcome == .failed && records[1].usage == nil) }
+            let result = store.messages.compactMap(\.toolResult).last!
+            try expect(result.webSearch == nil && result.text.hasPrefix("Tool error:"))
+            try expect(result.text.contains("Do not retry without a new user request."))
+            let followup = String(decoding: HTTPStub.body(of: HTTPStub.state.requests[2]), as: UTF8.self)
+            try expect(followup.contains("Tool error:") && followup.contains("function_call_output"))
+            try expect(store.messages.last?.role == .assistant)
             http.invalidateAndCancel()
         }
     }

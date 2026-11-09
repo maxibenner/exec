@@ -72,14 +72,19 @@ import AppKit
     func failuresAndValidation() async throws {
         for reply in [HTTPStub.Reply(status: 403), .init(status: 429), .init(chunks: [Data(#"{"data":[]}"#.utf8)]),
                       .init(chunks: [Data(#"{"data":[{"b64_json":"bm90IGFuIGltYWdl"}]}"#.utf8)])] {
-            let http = HTTPStub.makeSession([try toolReply(), reply])
+            let http = HTTPStub.makeSession([try toolReply(), reply,
+                .init(chunks: [try terminal([["type": "message", "content": [["type": "output_text", "text": "Generation failed; I can continue without the image."]]]])])])
             let store = ChatStore(provider: try provider(http), newConversation: true)
             configure(store)
             store.send()
             await store.waitUntilIdle()
-            try expect(store.error != nil && HTTPStub.state.requests.count == 2)
-            try expect(store.messages.last?.toolResult?.generatedImage == nil)
-            try expect(store.messages.last?.text == ImageGenerationTool.interrupted + "\nTool error: \(store.error!)\nThe turn was stopped. Do not retry without a new user request.")
+            try expect(store.error == nil && HTTPStub.state.requests.count == 3)
+            let result = store.messages.compactMap(\.toolResult).last!
+            try expect(result.generatedImage == nil && result.text.hasPrefix("Tool error:"))
+            try expect(result.text.contains("Do not retry without a new user request."))
+            let followup = String(decoding: HTTPStub.body(of: HTTPStub.state.requests[2]), as: UTF8.self)
+            try expect(followup.contains("Tool error:") && followup.contains("function_call_output"))
+            try expect(store.messages.last?.text == "Generation failed; I can continue without the image.")
             http.invalidateAndCancel()
         }
         try expectFailure { _ = try ImageGenerationTool.Request(prompt: "  ", transparent_background: false).validated() }
