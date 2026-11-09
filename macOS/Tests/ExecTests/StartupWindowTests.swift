@@ -70,6 +70,11 @@ import SwiftUI
             let frame = window.frame
             let content = window.contentLayoutRect
             let toolbar = window.toolbar
+            let systemSpacing: Set<NSToolbarItem.Identifier> = [.space, .flexibleSpace, .sidebarTrackingSeparator]
+            let controls = toolbar?.items.filter { !systemSpacing.contains($0.itemIdentifier) } ?? []
+            // Newer macOS draws the native toggle outside the toolbar. Either
+            // way, there must not be an additional custom toolbar button.
+            try expect(controls.count <= 1 && controls.allSatisfy { $0.itemIdentifier == .toggleSidebar })
             try expect(window.titleVisibility == .visible)
             try expect(window.titlebarSeparatorStyle == .none)
             let minimum = window.contentMinSize
@@ -99,6 +104,8 @@ import SwiftUI
                 throw CheckFailure(description: "Missing native chat layout views")
             }
             for (index, collapsed) in [true, false, true, false].enumerated() {
+                let startingWidth = transcript.bounds.width
+                var animationWidths: [CGFloat] = []
                 if split.isSubviewCollapsed(sidebar) != collapsed {
                     if index < 2 {
                         // ⌘S must both close and reopen the native sidebar while
@@ -120,6 +127,7 @@ import SwiftUI
                         let splitFrame = split.convert(split.bounds, to: controller.view)
                         let transcriptFrame = transcript.convert(transcript.bounds, to: controller.view)
                         let composerFrame = composer.convert(composer.bounds, to: controller.view)
+                        animationWidths.append(transcriptFrame.width)
                         try expect(abs(splitFrame.maxX - controller.view.bounds.maxX) < 2)
                         try expect(abs(transcriptFrame.maxX - controller.view.bounds.maxX) < 2)
                         try expect(composerFrame.maxX <= transcriptFrame.maxX + 1)
@@ -127,6 +135,13 @@ import SwiftUI
                     }
                 }
                 try await settle(window)
+                if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                    let lower = min(startingWidth, transcript.bounds.width)
+                    let upper = max(startingWidth, transcript.bounds.width)
+                    // Both the shortcut and the native action must animate,
+                    // rather than jumping directly to the final column width.
+                    try expect(animationWidths.contains { $0 > lower + 1 && $0 < upper - 1 })
+                }
                 try expect(split.isSubviewCollapsed(sidebar) == collapsed)
                 try expect(window.frame == frame && window.contentMinSize == minimum)
                 let transcriptFrame = transcript.convert(transcript.bounds, to: controller.view)

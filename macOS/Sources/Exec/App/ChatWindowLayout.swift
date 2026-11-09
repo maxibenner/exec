@@ -29,20 +29,8 @@ struct ChatWindowLayout<Sidebar: View, Detail: View>: View {
                 .frame(minWidth: 400, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
                 .background(.background)
                 .background(SidebarResizeBehavior())
-                .toolbar {
-                    ToolbarItem(placement: .navigation) {
-                        Button {
-                            columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-                        } label: {
-                            Label(columnVisibility == .detailOnly ? "Show Sidebar" : "Hide Sidebar",
-                                  systemImage: "sidebar.left")
-                        }
-                        .keyboardShortcut("s", modifiers: .command)
-                    }
-                }
         }
         .navigationSplitViewStyle(.balanced)
-        .toolbar(removing: .sidebarToggle)
         .onChange(of: sidebarRevealRequest) { _, _ in
             columnVisibility = .all
         }
