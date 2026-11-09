@@ -16,9 +16,14 @@ struct TranscriptLayout {
     private var indices: [UUID: Int] = [:]
     static let spacing: CGFloat = 24
 
+    /// Synchronize identities only when conversation data changes, not on every
+    /// scroll/layout callback. Width-only updates leave the index untouched.
     mutating func update(messages: [Message], width: CGFloat) {
         let ids = messages.map(\.id)
-        guard self.ids != ids || self.width != width else { return }
+        guard self.ids != ids else {
+            resize(to: width, messages: messages)
+            return
+        }
         if self.width != width { measured.removeAll(keepingCapacity: true) }
         self.width = width
         self.ids = ids
@@ -28,15 +33,36 @@ struct TranscriptLayout {
         rebuildOffsets()
     }
 
+    /// Messages must have the same identities/order as the last update.
+    mutating func resize(to width: CGFloat, messages: [Message]) {
+        guard self.width != width else { return }
+        self.width = width
+        measured.removeAll(keepingCapacity: true)
+        heights = messages.map { Self.estimate($0, width: width) }
+        rebuildOffsets()
+    }
+
     @discardableResult
     mutating func measure(_ id: UUID, height: CGFloat) -> Bool {
-        guard let index = indices[id], height.isFinite else { return false }
-        let height = max(1, ceil(height))
-        measured[id] = height
-        guard abs(heights[index] - height) >= 1 else { return false }
-        heights[index] = height
-        rebuildOffsets()
-        return true
+        measure([(id: id, height: height)])
+    }
+
+    /// Commit the visible rows together so each settling pass rebuilds offsets
+    /// at most once, rather than once per corrected row.
+    @discardableResult
+    mutating func measure(_ measurements: [(id: UUID, height: CGFloat)]) -> Bool {
+        var changed = false
+        for (id, height) in measurements {
+            guard let index = indices[id], height.isFinite else { continue }
+            let height = max(1, ceil(height))
+            measured[id] = height
+            if abs(heights[index] - height) >= 1 {
+                heights[index] = height
+                changed = true
+            }
+        }
+        if changed { rebuildOffsets() }
+        return changed
     }
 
     func anchor(at y: CGFloat) -> Anchor? {

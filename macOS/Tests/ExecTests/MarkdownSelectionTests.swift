@@ -28,7 +28,15 @@ import SwiftUI
         """
         let blocks = MarkdownDocument.parse(source)
         let cache = MarkdownCache()
-        cache.insert(blocks, for: source)
+        let placeholder = cache.initialText(for: source)
+        try expect(placeholder === cache.initialText(for: source) && cache.renderedText(for: source) == nil)
+        let rendered = cache.insert(blocks, for: source)
+        try expect(rendered === cache.renderedText(for: source) && rendered === cache.initialText(for: source))
+        try expect(rendered === cache.insert(blocks, for: source))
+        let streamingSource = source + "\n\nMore output."
+        try expect(cache.renderedText(for: streamingSource) == nil)
+        let streamed = cache.insert(MarkdownDocument.parse(streamingSource), for: streamingSource)
+        try expect(streamed !== rendered && rendered === cache.renderedText(for: source))
         let host = NSHostingView(rootView: MarkdownView(source: source, cache: cache).frame(width: 500))
         host.frame.size = host.fittingSize
         host.layoutSubtreeIfNeeded()

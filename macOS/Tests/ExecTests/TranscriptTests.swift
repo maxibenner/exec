@@ -34,6 +34,138 @@ import SwiftUI
         try expect(layout.visibleRange(y: 0, height: 600, overscan: 300).isEmpty && layout.anchor(at: 0) == nil)
     }
 
+    func batchedMeasurementsPreserveGeometryAcrossResizeAndEdits() throws {
+        var messages = (0..<100).map { Message(role: .user, text: "Message \($0)") }
+        var layout = TranscriptLayout()
+        layout.update(messages: messages, width: 700)
+        let anchor = layout.anchor(at: layout.offsets[50] + 8)!
+        let corrections = [(id: messages[2].id, height: CGFloat(200)),
+                           (id: messages[20].id, height: CGFloat(300)),
+                           (id: messages[70].id, height: CGFloat(150))]
+        var individually = layout
+        for (id, height) in corrections { individually.measure(id, height: height) }
+        try expect(layout.measure(corrections))
+        try expect(layout.offsets == individually.offsets && layout.totalHeight == individually.totalHeight)
+        try expect(layout.position(of: anchor) == individually.position(of: anchor))
+        try expect(!layout.measure(corrections + [(UUID(), 100), (messages[0].id, .nan)]))
+
+        layout.resize(to: 700, messages: messages)
+        try expect(layout.heights[2] == 200) // Same-width callbacks retain measurements.
+        layout.resize(to: 400, messages: messages)
+        var fresh = TranscriptLayout()
+        fresh.update(messages: messages, width: 400)
+        try expect(layout.ids == fresh.ids && layout.heights == fresh.heights && layout.offsets == fresh.offsets)
+        try expect(layout.anchor(at: layout.position(of: anchor)!) == anchor)
+        layout.measure(corrections)
+        messages.removeFirst(10)
+        messages.append(Message(role: .assistant, text: "New reply"))
+        layout.update(messages: messages, width: 400)
+        try expect(layout.ids == messages.map(\.id) && layout.heights[10] == 300)
+        try expect(layout.anchor(at: layout.position(of: anchor)!) == anchor)
+        try expect(!layout.measure(corrections[0].id, height: 900)) // Deleted ID has no index.
+    }
+
+    func reusesMeasurementsWithoutLosingStreamingOrSelection() async throws {
+        _ = NSApplication.shared
+        var messages = (0..<30).map { Message(role: .user, text: "Message \($0)") }
+        let source = "A **formatted** reply with [a link](https://example.com)."
+        messages.append(Message(role: .assistant, text: source, status: .streaming))
+        let state = TranscriptState()
+        state.markdown.insert(MarkdownDocument.parse(source), for: source)
+        let view = TranscriptScrollView(state: state)
+        view.frame = NSRect(x: 0, y: 0, width: 980, height: 600)
+        let window = NSWindow(contentRect: view.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = view
+        defer { view.detach(); window.orderOut(nil); window.contentView = nil }
+        window.orderFront(nil)
+        view.update(messages: messages, jumpRequest: 0)
+        try await settle(view)
+        let count = view.rowMeasurementCount
+        try expect(count > 0)
+        for _ in 0..<5 {
+            view.update(messages: messages, jumpRequest: 0)
+            view.layoutSubtreeIfNeeded()
+            view.refresh()
+        }
+        try await settle(view)
+        try expect(view.rowMeasurementCount == count)
+
+        // A wider viewport above the text-width cap only recenters existing rows.
+        window.setContentSize(NSSize(width: 1_020, height: 600))
+        try await settle(view)
+        try expect(view.rowMeasurementCount == count)
+        guard let text = textViews(in: view).first(where: { $0.string.contains("formatted") }) else {
+            throw CheckFailure(description: "Missing formatted reply")
+        }
+        let selection = NSRange(location: 2, length: 9)
+        text.setSelectedRange(selection)
+        window.setContentSize(NSSize(width: 580, height: 600))
+        try await settle(view)
+        try expect(view.rowMeasurementCount > count && text.selectedRange() == selection)
+        let narrowHeight = state.layout.heights.last!
+
+        messages[messages.count - 1].text += String(repeating: "\n\nMore streamed **text** that wraps at this width.", count: 6)
+        view.update(messages: messages, jumpRequest: 0)
+        try await settle(view)
+        try expect(text.string.contains("More streamed text")) // Async Markdown completed, not just its placeholder.
+        guard text.selectedRange() == selection && state.layout.heights.last! > narrowHeight else {
+            throw CheckFailure(description: "Streaming selection=\(text.selectedRange()), height=\(state.layout.heights.last!), previous=\(narrowHeight), measurements=\(view.rowMeasurementCount)")
+        }
+        try expect(abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 1)
+        let settledCount = view.rowMeasurementCount
+        try await settle(view)
+        try expect(view.rowMeasurementCount == settledCount)
+    }
+
+    func localDisclosureChangesInvalidateMeasuredHeight() async throws {
+        _ = NSApplication.shared
+        NSApp.finishLaunching()
+        let output = (0..<12).map { "Output line \($0)" }.joined(separator: "\n")
+        let result = ToolResult(call: ToolCall(id: "shell", name: "shell", arguments: "{}"), text: output)
+        let tool = Message(role: .tool, text: output, toolResult: result)
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        view.frame = NSRect(x: 0, y: 0, width: 800, height: 700)
+        let window = NSWindow(contentRect: view.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = view
+        defer { view.detach(); window.orderOut(nil); window.contentView = nil }
+        window.orderFront(nil)
+        view.update(messages: [tool, Message(role: .user, text: "Neighbor")], jumpRequest: 0)
+        try await settle(view)
+        let collapsed = state.layout.heights[0]
+        let toolHost = view.documentView!.subviews.min { $0.frame.minY < $1.frame.minY }!.subviews[0]
+        for expand in [true, false, true] {
+            let location = toolHost.convert(NSPoint(x: 100, y: 20), to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                window.sendEvent(event)
+            }
+            // No Message update or explicit refresh: the host must detect local
+            // SwiftUI state changes, including shrinkage, on its own.
+            try await settle(view)
+            try expect(state.expanded[tool.id] == expand && !state.followsLatest)
+            try expect(expand ? state.layout.heights[0] > collapsed + 200 : state.layout.heights[0] == collapsed)
+            let rows = view.documentView!.subviews.sorted { $0.frame.minY < $1.frame.minY }
+            try expect(rows.count == 2 && rows[1].frame.minY >= rows[0].frame.maxY)
+            try expect(abs(rows[0].frame.height - rows[0].fittingSize.height) < 1)
+        }
+    }
+
+    private func settle(_ view: NSView) async throws {
+        for _ in 0..<8 {
+            view.layoutSubtreeIfNeeded()
+            view.window?.displayIfNeeded()
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    private func textViews(in view: NSView) -> [LinkedText.TextView] {
+        if let text = view as? LinkedText.TextView { return [text] }
+        return view.subviews.flatMap { textViews(in: $0) }
+    }
+
     func composerInsetMatchesTranscriptViewport() async throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -268,6 +400,11 @@ import SwiftUI
         try expect(!state.followsLatest)
         let anchor = state.layout.anchor(at: view.contentView.bounds.minY)!
         try expect(anchor.id == messages[500].id && abs(anchor.offset - 8) < 1)
+        for width in [CGFloat(420), 800] {
+            view.setFrameSize(NSSize(width: width, height: 600))
+            view.layoutSubtreeIfNeeded(); view.refresh()
+            try expect(state.layout.anchor(at: view.contentView.bounds.minY) == anchor && !state.followsLatest)
+        }
         view.update(messages: messages + [Message(role: .assistant, text: "A new response")], jumpRequest: 0)
         try expect(state.layout.anchor(at: view.contentView.bounds.minY) == anchor)
         view.detach()

@@ -54,9 +54,11 @@ private struct VirtualTranscript: NSViewRepresentable {
     private let content = DocumentView()
     let state: TranscriptState
     private var messages: [Message] = []
+    private var messagesChanged = true
     private var rows: [UUID: MessageHost] = [:]
     private var reuse: [MessageHost] = []
     private var scheduled = false
+    private var refreshNeeded = false
     private var updating = false
     private var initialized = false
     private var detached = false
@@ -69,6 +71,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var renderedBottomInset: CGFloat = 0
     private var selectionClearing: TranscriptSelectionClearing?
     var mountedRowCount: Int { rows.count }
+    private(set) var rowMeasurementCount = 0
 
     init(state: TranscriptState) {
         self.state = state
@@ -99,8 +102,11 @@ private struct VirtualTranscript: NSViewRepresentable {
             requestedScroll = true
         }
         lastMessageID = filtered.last?.id
-        if self.messages != filtered, state.followsLatest { pendingContentFollow = true }
-        self.messages = filtered
+        if self.messages != filtered {
+            if state.followsLatest { pendingContentFollow = true }
+            messagesChanged = true
+            self.messages = filtered
+        }
         if jumpRequest != self.jumpRequest {
             state.followsLatest = true
             self.jumpRequest = jumpRequest
@@ -129,7 +135,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         selectionClearing = nil
         rememberAnchor()
         NotificationCenter.default.removeObserver(self)
-        for row in rows.values { row.didLayout = nil; row.removeFromSuperview() }
+        for row in rows.values { row.didInvalidateSize = nil; row.removeFromSuperview() }
         rows.removeAll()
         reuse.removeAll()
     }
@@ -150,12 +156,15 @@ private struct VirtualTranscript: NSViewRepresentable {
         if initialized { state.anchor = state.layout.anchor(at: contentView.bounds.minY) }
     }
     private func scheduleRefresh() {
-        guard !scheduled, !detached else { return }
+        guard !detached else { return }
+        refreshNeeded = true
+        guard !scheduled else { return }
         scheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.scheduled = false
-            self.refresh()
+            // A synchronous resize/update may already have handled this request.
+            if self.refreshNeeded { self.refresh() }
         }
     }
 
@@ -186,6 +195,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         if initialized, size == lastSize, !requestedScroll,
            bounds.minY < 0 || bounds.maxY > content.bounds.height { return }
         updating = true
+        refreshNeeded = false
         defer { updating = false }
         let width = max(1, min(820, size.width - 40))
         let anchor = initialized ? state.layout.anchor(at: contentView.bounds.minY) : state.anchor
@@ -194,7 +204,12 @@ private struct VirtualTranscript: NSViewRepresentable {
         let pinBottom = state.followsLatest && (needsRestore || pendingContentFollow || abs(content.bounds.height - bounds.maxY) < 1)
         pendingContentFollow = false
         renderedBottomInset = bottomInset
-        state.layout.update(messages: messages, width: width)
+        if messagesChanged {
+            state.layout.update(messages: messages, width: width)
+            messagesChanged = false
+        } else {
+            state.layout.resize(to: width, messages: messages)
+        }
         lastSize = size
         setDocumentSize()
         if needsRestore || oldHeight != state.layout.totalHeight { restore(anchor, pinBottom: pinBottom) }
@@ -208,13 +223,13 @@ private struct VirtualTranscript: NSViewRepresentable {
             let wanted = Set(range.map { messages[$0].id })
             for id in Array(rows.keys) where !wanted.contains(id) {
                 if let row = rows.removeValue(forKey: id) {
-                    row.didLayout = nil
+                    row.didInvalidateSize = nil
                     row.removeFromSuperview()
                     row.rootView = TranscriptRow(message: nil, state: state, width: width)
                     if reuse.count < 4 { reuse.append(row) }
                 }
             }
-            changed = false
+            var measurements: [(id: UUID, height: CGFloat)] = []
             for index in range {
                 let message = messages[index]
                 let row: MessageHost
@@ -223,14 +238,17 @@ private struct VirtualTranscript: NSViewRepresentable {
                     row = reuse.popLast() ?? MessageHost(rootView: TranscriptRow(message: nil, state: state, width: width))
                     rows[message.id] = row
                     content.addSubview(row)
-                    row.didLayout = { [weak self] in self?.scheduleRefresh() }
+                    row.didInvalidateSize = { [weak self] in self?.scheduleRefresh() }
                 }
                 if row.rootView.message != message || row.rootView.width != width {
                     row.rootView = TranscriptRow(message: message, state: state, width: width)
                 }
-                let height = row.fittingSize.height
-                if state.layout.measure(message.id, height: height) { changed = true }
+                if let height = row.measureHeightIfNeeded() {
+                    rowMeasurementCount += 1
+                    measurements.append((message.id, height))
+                }
             }
+            changed = state.layout.measure(measurements)
             if changed {
                 setDocumentSize()
                 restore(anchor, pinBottom: pinBottom)
@@ -264,12 +282,19 @@ private struct TranscriptRow: View {
     let message: Message?
     let state: TranscriptState
     let width: CGFloat
+    var heightDidChange: ((CGFloat) -> Void)?
     var body: some View {
         Group {
             if let message { MessageView(message: message, state: state).id(message.id) }
         }
         .frame(width: width, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
+        // Observe natural content height, before the outer frame accepts the
+        // previously committed height. Local/async SwiftUI state does not always
+        // call NSHostingView.invalidateIntrinsicContentSize().
+        .onGeometryChange(for: CGFloat.self) { max(1, ceil($0.size.height)) } action: {
+            heightDidChange?($0)
+        }
         // Accept even the stale collapsed height while the native row is being
         // remeasured. Without minHeight: 0, SwiftUI keeps the expanded minimum
         // height and the hosting view centers it over the disclosure header.
@@ -283,36 +308,49 @@ private struct TranscriptRow: View {
 // the virtual transcript has measured it and moved subsequent rows. A separate,
 // native clipping boundary must retain the last committed row frame throughout.
 private final class MessageHost: NSView {
-    private let hosted: ContentHost
-    var didLayout: (() -> Void)?
+    private let hosted: NSHostingView<TranscriptRow>
+    private var needsMeasurement = true
+    private var measuredHeight: CGFloat?
+    var didInvalidateSize: (() -> Void)?
     var rootView: TranscriptRow {
         get { hosted.rootView }
-        set { hosted.rootView = newValue }
+        set {
+            needsMeasurement = true
+            var root = newValue
+            root.heightDidChange = { [weak self] height in
+                guard let self, !self.needsMeasurement, height != self.measuredHeight else { return }
+                self.needsMeasurement = true
+                self.didInvalidateSize?()
+            }
+            hosted.rootView = root
+        }
     }
 
     init(rootView: TranscriptRow) {
-        hosted = ContentHost(rootView: rootView)
+        hosted = NSHostingView(rootView: rootView)
         super.init(frame: .zero)
         clipsToBounds = true
         wantsLayer = true
         layer?.masksToBounds = true
         hosted.autoresizingMask = [.width, .height]
         addSubview(hosted)
-        hosted.didLayout = { [weak self] in self?.didLayout?() }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var isFlipped: Bool { true }
     override var fittingSize: NSSize { hosted.fittingSize }
 
+    func measureHeightIfNeeded() -> CGFloat? {
+        guard needsMeasurement else { return nil }
+        let height = hosted.fittingSize.height
+        measuredHeight = max(1, ceil(height))
+        needsMeasurement = false
+        return height
+    }
+
     override func layout() {
         hosted.frame = bounds
         super.layout()
-    }
-
-    private final class ContentHost: NSHostingView<TranscriptRow> {
-        var didLayout: (() -> Void)?
-        override func layout() { super.layout(); didLayout?() }
     }
 }
 
