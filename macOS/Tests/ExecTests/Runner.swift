@@ -26,6 +26,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Tool cards precede approval decisions", { try await PendingToolTests().approvalCardExistsBeforeDecision() }),
             ("Tool request checkpoints recheck cancellation and new input", { try await PendingToolTests().checkpointRechecksCancellationAndNewInput() }),
             ("Pending cards expose inputs without fabricated output", { try PendingToolTests().pendingPresentationHasInputsWithoutOutput() }),
+            ("Update availability restores before checks and clears when obsolete", { try UpdateNoticeTests().availabilityRestoresBeforeCheckingAndClearsWhenObsolete() }),
             ("Update badge dismissal persists per build", { try UpdateNoticeTests().dismissalSurvivesRelaunchAndOnlyHidesThatBuild() }),
             ("Silent update checks throttle failures and respect busy sessions", { try UpdateNoticeTests().silentChecksAreThrottledAndDoNotConsumeBusyAttempts() }),
             ("Update badge fits sidebar widths in light and dark appearances", { try UpdateNoticeTests().badgeFitsSidebarWidths() }),

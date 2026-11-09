@@ -27,9 +27,17 @@ struct UpdateBadge: View {
             .accessibilityLabel("Dismiss update notification")
             .padding(.trailing, 2)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(UpdateBadgeButtonStyle())
         .foregroundStyle(.blue)
         .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// Keep the label steady through mouse-down and Sparkle's temporary disabled state.
+/// Buttons still honor disabled interaction and retain their accessibility semantics.
+private struct UpdateBadgeButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
     }
 }

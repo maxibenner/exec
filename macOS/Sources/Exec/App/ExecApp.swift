@@ -61,20 +61,22 @@ import SwiftUI
         Window("", id: "chat") {
             ChatWindowLayout(initiallyShowsSidebar: initiallyHasSavedSessions,
                              sidebarRevealRequest: startup.windows?.sidebarRevealRequest ?? 0) {
-                if let store = startup.store, let windows = startup.windows {
-                    SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {
-                        guard store.canNavigate, !store.isSessionRunning($0.id) else { return }
-                        store.deleteSession($0.id)
-                    })
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        if updater.notice.isVisible {
-                            UpdateBadge(canCheckForUpdates: updater.canCheckForUpdates,
-                                        update: updater.checkForUpdates, dismiss: updater.notice.dismiss)
-                                .padding(12)
-                        }
+                Group {
+                    if let store = startup.store, let windows = startup.windows {
+                        SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {
+                            guard store.canNavigate, !store.isSessionRunning($0.id) else { return }
+                            store.deleteSession($0.id)
+                        })
+                    } else {
+                        Color.clear
                     }
-                } else {
-                    Color.clear
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if updater.notice.isVisible {
+                        UpdateBadge(canCheckForUpdates: updater.canCheckForUpdates,
+                                    update: updater.checkForUpdates, dismiss: updater.notice.dismiss)
+                            .padding(12)
+                    }
                 }
             } detail: {
                 if let error = startup.error {

@@ -8,11 +8,24 @@ final class UpdateNotice {
     private var dismissedBuild: String?
     private var lastCheck: Date?
     private let preferences: UserDefaults
+    private let installedBuild: String
     private static let dismissalKey = "dismissedUpdateBadgeBuild"
+    private static let availabilityKey = "availableUpdateBadge"
 
-    init(preferences: UserDefaults = .standard) {
+    init(preferences: UserDefaults = .standard,
+         installedBuild: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") {
         self.preferences = preferences
+        self.installedBuild = installedBuild
         dismissedBuild = preferences.string(forKey: Self.dismissalKey)
+        // Restore before the first frame, but never carry a notice across app builds.
+        if !installedBuild.isEmpty,
+           let saved = preferences.dictionary(forKey: Self.availabilityKey) as? [String: String],
+           saved["installedBuild"] == installedBuild,
+           let build = saved["availableBuild"], !build.isEmpty {
+            availableBuild = build
+        } else {
+            preferences.removeObject(forKey: Self.availabilityKey)
+        }
     }
 
     var isVisible: Bool {
@@ -21,11 +34,18 @@ final class UpdateNotice {
     }
 
     func foundUpdate(build: String) {
-        availableBuild = build.isEmpty ? nil : build
+        guard !build.isEmpty else {
+            foundNoUpdate()
+            return
+        }
+        availableBuild = build
+        preferences.set(["installedBuild": installedBuild, "availableBuild": build],
+                        forKey: Self.availabilityKey)
     }
 
     func foundNoUpdate() {
         availableBuild = nil
+        preferences.removeObject(forKey: Self.availabilityKey)
     }
 
     func dismiss() {
