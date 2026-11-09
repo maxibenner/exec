@@ -208,7 +208,7 @@ private struct VirtualTranscript: NSViewRepresentable {
             state.layout.update(messages: messages, width: width)
             messagesChanged = false
         } else {
-            state.layout.resize(to: width, messages: messages)
+            state.layout.resize(to: width)
         }
         lastSize = size
         setDocumentSize()
@@ -285,7 +285,7 @@ private struct TranscriptRow: View {
     var heightDidChange: ((CGFloat) -> Void)?
     var body: some View {
         Group {
-            if let message { MessageView(message: message, state: state).id(message.id) }
+            if let message { MessageView(message: message, state: state).equatable().id(message.id) }
         }
         .frame(width: width, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
@@ -328,6 +328,9 @@ private final class MessageHost: NSView {
 
     init(rootView: TranscriptRow) {
         hosted = NSHostingView(rootView: rootView)
+        // The transcript owns row frames. Keep ideal sizing for fittingSize,
+        // without also probing automatic minimum/maximum sizing constraints.
+        hosted.sizingOptions = [.intrinsicContentSize]
         super.init(frame: .zero)
         clipsToBounds = true
         wantsLayer = true
@@ -354,10 +357,17 @@ private final class MessageHost: NSView {
     }
 }
 
-private struct MessageView: View {
-
+private struct MessageView: View, Equatable {
     let message: Message
     let state: TranscriptState
+
+    // Width belongs to the row's layout, not its content. Reflow existing views
+    // without rebuilding attributed text, tool presentations or decoded images.
+    // Descendant SwiftUI state/environment updates still invalidate normally.
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.message == rhs.message && lhs.state === rhs.state
+    }
+
     var body: some View {
         if let result = message.toolResult {
             ToolMessageView(result: result, state: state, messageID: message.id)

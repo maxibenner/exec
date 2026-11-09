@@ -93,6 +93,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Transcript live resize commits widths before display", { try TranscriptTests().resizingCommitsRowsBeforeDisplay() }),
             ("Batched transcript measurements preserve geometry across resize and edits", { try TranscriptTests().batchedMeasurementsPreserveGeometryAcrossResizeAndEdits() }),
             ("Transcript reuses measurements without losing streaming or selection", { try await TranscriptTests().reusesMeasurementsWithoutLosingStreamingOrSelection() }),
+            ("Formatted transcript resize retains hosts and measures each row once", { try await TranscriptTests().resizingFormattedRowsKeepsHostsAndMeasuresOnce() }),
             ("Local tool disclosures invalidate measured transcript heights", { try await TranscriptTests().localDisclosureChangesInvalidateMeasuredHeight() }),
             ("Near-bottom scrolling does not snap to the edge", { try TranscriptTests().preservesNearBottomScrolling() }),
             ("Virtual transcript geometry and scroll anchors", { try TranscriptTests().geometryPreservesAnchors() }),

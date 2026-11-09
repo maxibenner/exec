@@ -12,6 +12,8 @@ struct TranscriptLayout {
     private(set) var heights: [CGFloat] = []
     private(set) var width: CGFloat = 0
     private(set) var totalHeight: CGFloat = 40
+    // Last measured heights are estimates until a mounted row confirms them
+    // for the current content/width. They also survive conversation switches.
     private var measured: [UUID: CGFloat] = [:]
     private var indices: [UUID: Int] = [:]
     static let spacing: CGFloat = 24
@@ -21,10 +23,9 @@ struct TranscriptLayout {
     mutating func update(messages: [Message], width: CGFloat) {
         let ids = messages.map(\.id)
         guard self.ids != ids else {
-            resize(to: width, messages: messages)
+            resize(to: width)
             return
         }
-        if self.width != width { measured.removeAll(keepingCapacity: true) }
         self.width = width
         self.ids = ids
         indices = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($0.element, $0.offset) })
@@ -33,13 +34,13 @@ struct TranscriptLayout {
         rebuildOffsets()
     }
 
-    /// Messages must have the same identities/order as the last update.
-    mutating func resize(to width: CGFloat, messages: [Message]) {
-        guard self.width != width else { return }
+    /// Retain last-known geometry as estimates instead of replacing it with
+    /// character counts at every animation width. Resetting the entire document
+    /// can temporarily pull unrelated rows into the viewport and recycle selected
+    /// text. Mounted rows must be remeasured at their new width; offscreen rows
+    /// are always measured on mount, before their frames are committed.
+    mutating func resize(to width: CGFloat) {
         self.width = width
-        measured.removeAll(keepingCapacity: true)
-        heights = messages.map { Self.estimate($0, width: width) }
-        rebuildOffsets()
     }
 
     @discardableResult

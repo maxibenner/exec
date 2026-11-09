@@ -49,14 +49,16 @@ import SwiftUI
         try expect(layout.position(of: anchor) == individually.position(of: anchor))
         try expect(!layout.measure(corrections + [(UUID(), 100), (messages[0].id, .nan)]))
 
-        layout.resize(to: 700, messages: messages)
+        layout.resize(to: 700)
         try expect(layout.heights[2] == 200) // Same-width callbacks retain measurements.
-        layout.resize(to: 400, messages: messages)
-        var fresh = TranscriptLayout()
-        fresh.update(messages: messages, width: 400)
-        try expect(layout.ids == fresh.ids && layout.heights == fresh.heights && layout.offsets == fresh.offsets)
+        layout.resize(to: 400)
+        // Last-known heights remain estimates until rows are measured at the new
+        // width. Do not replace good geometry with rough character-count guesses.
+        try expect(layout.width == 400 && layout.offsets == individually.offsets)
+        let oldPosition = layout.position(of: anchor)!
+        try expect(layout.measure(messages[2].id, height: 250))
+        try expect(layout.position(of: anchor) == oldPosition + 50)
         try expect(layout.anchor(at: layout.position(of: anchor)!) == anchor)
-        layout.measure(corrections)
         messages.removeFirst(10)
         messages.append(Message(role: .assistant, text: "New reply"))
         layout.update(messages: messages, width: 400)
@@ -115,6 +117,57 @@ import SwiftUI
         let settledCount = view.rowMeasurementCount
         try await settle(view)
         try expect(view.rowMeasurementCount == settledCount)
+    }
+
+    func resizingFormattedRowsKeepsHostsAndMeasuresOnce() async throws {
+        _ = NSApplication.shared
+        let state = TranscriptState()
+        let messages = (0..<30).map { index -> Message in
+            let source = "```swift\n" + (0..<24).map { "let value\($0) = \(index)" }.joined(separator: "\n") + "\n```"
+            state.markdown.insert(MarkdownDocument.parse(source), for: source)
+            return Message(role: .assistant, text: source)
+        }
+        let view = TranscriptScrollView(state: state)
+        view.frame = NSRect(x: 0, y: 0, width: 850, height: 650)
+        let window = NSWindow(contentRect: view.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = view
+        defer { view.detach(); window.orderOut(nil); window.contentView = nil }
+        window.orderFront(nil)
+        view.update(messages: messages, jumpRequest: 0)
+        try await settle(view)
+        let originalRows = Set(view.documentView!.subviews.map(ObjectIdentifier.init))
+        let text = textViews(in: view).first { $0.string.contains("= 29") }!
+        let selection = NSRange(location: 6, length: 10)
+        text.setSelectedRange(selection)
+        for width in [CGFloat(800), 650, 480, 600, 850] {
+            let before = view.rowMeasurementCount
+            window.setContentSize(NSSize(width: width, height: 650))
+            view.layoutSubtreeIfNeeded()
+            // The short code lines do not wrap at these widths. A geometry reset
+            // must not mount extra rows or repeatedly measure existing ones.
+            try expect(Set(view.documentView!.subviews.map(ObjectIdentifier.init)) == originalRows)
+            try expect(view.rowMeasurementCount - before == originalRows.count)
+            for row in view.documentView!.subviews {
+                try expect(abs(row.frame.height - ceil(row.fittingSize.height)) < 1)
+            }
+            try await settle(view)
+            try expect(view.rowMeasurementCount - before == originalRows.count)
+            try expect(text.selectedRange() == selection)
+            // TextKit can scroll a selection slightly into view during resize
+            // (also on the baseline build); retain normal near-bottom following.
+            try expect(state.followsLatest && abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) <= 40)
+        }
+        // Rows outside the viewport must still be measured when revisited after
+        // a width change, rather than treating retained estimates as final sizes.
+        view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[10] + 8))
+        view.refresh()
+        try await settle(view)
+        try expect(!state.followsLatest)
+        let anchor = state.layout.anchor(at: view.contentView.bounds.minY)!
+        try expect(anchor.id == messages[10].id && abs(anchor.offset - 8) < 1)
+        for row in view.documentView!.subviews {
+            try expect(abs(row.frame.height - ceil(row.fittingSize.height)) < 1)
+        }
     }
 
     func localDisclosureChangesInvalidateMeasuredHeight() async throws {
@@ -242,6 +295,9 @@ import SwiftUI
                     try expect(abs(row.frame.width - expectedWidth) < 1)
                     try expect(abs(row.frame.midX - view.contentSize.width / 2) < 1)
                     try expect(abs(row.subviews[0].frame.width - expectedWidth) < 1)
+                    // Retained geometry is only an estimate: mounted wrapped
+                    // paragraphs must already have their new measured height.
+                    try expect(abs(row.frame.height - ceil(row.fittingSize.height)) < 1)
                 }
                 let maximum = max(0, view.documentView!.bounds.height - view.contentView.bounds.height)
                 try expect(abs(view.contentView.bounds.minY - maximum) < 1)
