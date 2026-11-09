@@ -74,18 +74,18 @@ import Foundation
             reads += 1
             return reads == 1 ? expected : nil
         }
-        var baselineReadBeforeSend = false
-        provider.onSend = { baselineReadBeforeSend = reads == 1 }
+        var sentBeforeUsageRead = false
+        provider.onSend = { sentBeforeUsageRead = reads == 0 }
+        var capturedAllowance: [Bool] = []
+        store.didFinish = { capturedAllowance.append($0) }
         store.draft = "Measure this run"
         store.send()
         await store.waitUntilIdle()
-        try expect(store.error == nil && reads == 2 && baselineReadBeforeSend)
+        try expect(store.error == nil && reads == 1 && sentBeforeUsageRead)
         let saved = try await sessions.load(id: store.currentSessionID)!
         let observations = saved.allowanceObservations ?? []
-        try expect(observations.count == 2 && observations.map(\.phase) == [.before, .after])
-        try expect(observations[0].runID == observations[1].runID)
-        try expect(observations[0].usage == expected && observations[1].usage == nil)
-        // Failed metadata must not fail the run or invent a zero-usage observation.
+        try expect(observations.count == 1 && observations.map(\.phase) == [.after])
+        try expect(observations[0].usage == expected)
         try expect(saved.history.last?.role == .assistant && !saved.activeTurn)
         var old = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved)) as! [String: Any]
         old.removeValue(forKey: "allowanceObservations")
@@ -99,11 +99,38 @@ import Foundation
         await store.waitUntilIdle()
         let stopped = try await sessions.load(id: store.currentSessionID)!
         let stoppedObservations = stopped.allowanceObservations ?? []
-        try expect(reads == 4 && stoppedObservations.count == 4)
-        try expect(stoppedObservations.suffix(2).map(\.phase) == [.before, .after])
-        try expect(stoppedObservations[2].runID == stoppedObservations[3].runID
-                   && stoppedObservations[2].runID != observations[0].runID)
-        try expect(!stopped.activeTurn && store.error == nil)
+        try expect(reads == 2 && stoppedObservations.count == 2)
+        try expect(stoppedObservations.map(\.phase) == [.after, .after])
+        try expect(stoppedObservations[1].runID != observations[0].runID)
+        // Failed metadata must not fail the run or invent a zero-usage observation.
+        try expect(stoppedObservations[1].usage == nil && !stopped.activeTurn && store.error == nil)
+        try expect(capturedAllowance == [true, true]) // No fallback refresh after the existing after-check.
+
+        var compactedBeforeUsageRead = false
+        provider.manualCompactionAction = { _ in compactedBeforeUsageRead = reads == 2 }
+        var pendingUsage: CheckedContinuation<AccountUsage?, Never>?
+        store.readAccountUsage = {
+            reads += 1
+            return await withCheckedContinuation { pendingUsage = $0 }
+        }
+        store.compact()
+        try await wait { pendingUsage != nil }
+        // A slow usage request cannot delay compaction or its transcript component.
+        let completedBeforeUsage = store.messages.last?.compaction == .manual && store.messages.last?.status == .complete
+        pendingUsage?.resume(returning: expected)
+        await store.waitUntilIdle()
+        try expect(compactedBeforeUsageRead && completedBeforeUsage && reads == 3)
+        let compacted = try await sessions.load(id: store.currentSessionID)!
+        try expect(compacted.allowanceObservations?.count == 3 && compacted.allowanceObservations?.last?.phase == .after)
+
+        provider.manualCompactionAction = { _ in throw ExecError("Compaction unavailable") }
+        store.readAccountUsage = { reads += 1; return nil }
+        store.compact()
+        await store.waitUntilIdle()
+        let failed = try await sessions.load(id: store.currentSessionID)!
+        try expect(reads == 4 && failed.allowanceObservations?.count == 4)
+        try expect(failed.allowanceObservations?.last?.phase == .after && failed.allowanceObservations?.last?.usage == nil)
+        try expect(store.error == "Compaction unavailable" && capturedAllowance == [true, true, true, true])
     }
 
     func responseUsageValidation() throws {

@@ -953,13 +953,9 @@ import Observation
                 if restoreSession { try await self.loadSavedSession() }
                 self.isRestoringSession = false
                 try Task.checkCancellation()
-                if (sending || compacting), self.recordsAccountUsage, let readAccountUsage = self.readAccountUsage {
-                    let runID = UUID()
-                    usageRunID = runID
-                    let usage = await readAccountUsage()
-                    self.allowanceObservations.append(.init(runID: runID, phase: .before, observedAt: Date(), usage: usage))
-                    self.checkpointRevision += 1
-                    try Task.checkCancellation()
+                if (sending || compacting), self.recordsAccountUsage, self.readAccountUsage != nil {
+                    // Refresh allowance only after the operation, never on its startup path.
+                    usageRunID = UUID()
                 }
                 try await operation()
                 completed = true
