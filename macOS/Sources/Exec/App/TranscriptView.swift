@@ -94,7 +94,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         // adds row spacing and moves the bottom anchor between every tool result.
         // Keep terminal error labels visible even when no text arrived.
         let filtered = messages.filter {
-            $0.role != .assistant || !$0.text.isEmpty || $0.status == .failed
+            $0.compaction != nil || $0.role != .assistant || !$0.text.isEmpty || $0.status == .failed
         }
         if initialized, let last = filtered.last, last.id != lastMessageID, last.role == .user {
             state.followsLatest = true
@@ -368,7 +368,9 @@ private struct MessageView: View, Equatable {
     }
 
     var body: some View {
-        if let call = message.pendingTool?.call ?? message.toolResult?.call {
+        if let trigger = message.compaction {
+            CompactionMessageView(trigger: trigger, status: message.status)
+        } else if let call = message.pendingTool?.call ?? message.toolResult?.call {
             ToolMessageView(call: call, result: message.toolResult,
                             isAwaitingApproval: message.pendingTool?.isAwaitingApproval == true,
                             state: state, messageID: message.id)

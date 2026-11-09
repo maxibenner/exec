@@ -14,7 +14,7 @@ struct CodexConversationState: Codable {
     var outputs: [UUID: Data] = [:]
     var prefix: Prefix?
     var measurement: Measurement?
-    // Retained for display after compaction, never used for compaction decisions.
+    // Retained between ordinary responses, never across a compaction boundary.
     var displayMeasurement: Measurement?
     // Optional for compatibility with sessions saved before usage recording.
     var requestUsage: [CodexRequestUsage]?
@@ -100,11 +100,15 @@ struct CodexConversationState: Codable {
     // Display the last completed measurement even when a new turn has appended input.
     // Compaction only accepts the measured response and its subsequent tool results.
     func lastReportedTokens(_ messages: [Message]) -> Int? {
+        let boundary = prefix.flatMap { prefix in messages.firstIndex { $0.id == prefix.throughID } }
         for candidate in [measurement, displayMeasurement].compactMap({ $0 }) {
             guard let index = messages.firstIndex(where: { $0.id == candidate.inputID }),
                   index + 1 < messages.count,
                   messages[index + 1].role == .assistant,
                   messages[index + 1].status == .complete else { continue }
+            // Older saves retained the pre-compaction display measurement. It no
+            // longer describes the active context, even if its messages still exist.
+            if let boundary, index < boundary { continue }
             return candidate.tokens
         }
         return nil

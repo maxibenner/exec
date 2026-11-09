@@ -138,12 +138,15 @@ import Foundation
     }
 
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
-                         instructions: String, tools: [ToolDefinition]) async throws -> Bool {
+                         instructions: String, tools: [ToolDefinition],
+                         willCompact: @MainActor () async throws -> Void = {}) async throws -> Bool {
         guard let window = model.contextWindow, window > 0 else {
             throw ExecError("Codex did not provide a context limit for this model. Remove and add OpenAI in Settings → Providers before sending.")
         }
         guard let tokens = context.reportedTokens(history) else { return false }
         guard tokens >= Int(ceil(Double(window) * 0.95)) else { return false }
+        try await willCompact()
+        try Task.checkCancellation()
         try await compact(history, model: model, instructions: instructions, tools: tools)
         return true
     }
@@ -181,8 +184,10 @@ import Foundation
             let compacted = try JSONSerialization.data(withJSONObject: items)
             try CodexConversationState.validateCompaction(compacted)
             try Task.checkCancellation()
+            // This request's usage measures the compaction pass, not the size of
+            // the opaque replacement context. Clear the stale display baseline;
+            // the next normal response will supply a fresh measurement.
             context = CodexConversationState(prefix: .init(throughID: boundary, output: compacted),
-                                             displayMeasurement: context.measurement ?? context.displayMeasurement,
                                              requestUsage: context.requestUsage)
             return
         }

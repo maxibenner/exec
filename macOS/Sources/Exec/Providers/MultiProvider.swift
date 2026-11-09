@@ -145,9 +145,11 @@ import Foundation
         try await target.provider.compact(history, model: nativeModel(model, id: target.model), instructions: instructions, tools: tools)
     }
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
-                         instructions: String, tools: [ToolDefinition]) async throws -> Bool {
+                         instructions: String, tools: [ToolDefinition],
+                         willCompact: @MainActor () async throws -> Void = {}) async throws -> Bool {
         let target = try destination(model.id)
-        return try await target.provider.compactIfNeeded(history, pending: pending, model: nativeModel(model, id: target.model), instructions: instructions, tools: tools)
+        return try await target.provider.compactIfNeeded(history, pending: pending, model: nativeModel(model, id: target.model),
+                                                        instructions: instructions, tools: tools, willCompact: willCompact)
     }
     func send(_ messages: [Message], model: String, effort: String?, instructions: String, tools: [ToolDefinition]) -> AsyncThrowingStream<ChatEvent, Error> {
         do {

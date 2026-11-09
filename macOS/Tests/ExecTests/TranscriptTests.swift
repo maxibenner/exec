@@ -12,6 +12,24 @@ import SwiftUI
         }
     }
 
+    func compactionRowsRemainVisibleWithoutAssistantText() throws {
+        _ = NSApplication.shared
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        view.frame = NSRect(x: 0, y: 0, width: 700, height: 400)
+        defer { view.detach() }
+        var activity = Message(role: .assistant, text: "", status: .streaming, compaction: .automatic)
+        let placeholder = Message(role: .assistant, text: "", status: .streaming)
+        for status in [Message.Status.streaming, .complete, .interrupted, .failed] {
+            activity.status = status
+            view.update(messages: [activity, placeholder], jumpRequest: 0)
+            view.layoutSubtreeIfNeeded()
+            view.refresh()
+            try expect(state.layout.ids == [activity.id])
+            try expect(view.mountedRowCount == 1 && state.layout.heights[0] >= 30)
+        }
+    }
+
     func geometryPreservesAnchors() throws {
         let messages = (0..<1_000).map { Message(role: .user, text: "Message \($0)") }
         var layout = TranscriptLayout()

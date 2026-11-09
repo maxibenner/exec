@@ -636,26 +636,62 @@ import Observation
     func compact() {
         guard canCompact else { return }
         run(compacting: true) {
-            // Persist pending preferences before making a non-retried request.
-            try await self.checkpoint()
             let model = self.model ?? ChatModel(id: self.selectedModel, name: self.selectedModel)
-            try await self.provider.compact(self.history, model: model,
-                instructions: self.requestInstructions, tools: self.toolDefinitions)
-            self.checkpointRevision += 1
-            self.updateContextUsage()
-            try await self.checkpoint()
+            try await self.compactContext(.manual, history: self.history, model: model,
+                                          instructions: self.requestInstructions, tools: self.toolDefinitions)
+        }
+    }
+
+    private func compactContext(_ trigger: Message.Compaction, history: [Message], pending: [Message] = [],
+                                model: ChatModel, instructions: String, tools: [ToolDefinition],
+                                before responseID: UUID? = nil) async throws {
+        var activityID: UUID?
+        func start() async throws {
+            try Task.checkCancellation()
+            let activity = Message(role: .assistant, text: "", status: .streaming, compaction: trigger)
+            activityID = activity.id
+            let index = responseID.flatMap { id in messages.firstIndex { $0.id == id } } ?? messages.count
+            messages.insert(activity, at: index)
+            // This row is deliberately never appended to history or pending input.
+            // Persist it before the non-retried request, including manual preferences.
+            try await checkpoint()
+            try Task.checkCancellation()
+        }
+        do {
+            if trigger == .automatic {
+                guard try await provider.compactIfNeeded(history, pending: pending, model: model,
+                    instructions: instructions, tools: tools, willCompact: start) else { return }
+            } else {
+                try await start()
+                try await provider.compact(history, model: model, instructions: instructions, tools: tools)
+            }
+            if let index = messages.firstIndex(where: { $0.id == activityID }) {
+                messages[index].status = .complete
+            }
+            checkpointRevision += 1
+            updateContextUsage()
+            // Compacted context must be durable before another inference request.
+            try await checkpoint()
+        } catch {
+            if let index = messages.firstIndex(where: { $0.id == activityID }), messages[index].status == .streaming {
+                let interrupted = Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
+                messages[index].status = interrupted ? .interrupted : .failed
+            }
+            throw error
         }
     }
 
     private func receive(_ input: [Message], completedHistory: [Message], model: ChatModel, effort: String?) async throws -> Message {
-        messages.append(Message(role: .assistant, text: "", status: .streaming))
-        let index = messages.count - 1
+        let responseID = UUID()
+        messages.append(Message(id: responseID, role: .assistant, text: "", status: .streaming))
         var fullText = ""
         var calls: [ToolCall] = []
         var lastUpdate = ContinuousClock.now
         var completed = false
         var requestStarted = false
         defer {
+            // Compaction can insert an activity before this placeholder.
+            let index = messages.firstIndex { $0.id == responseID }!
             messages[index].text = fullText
             if messages[index].status == .streaming {
                 messages[index].status = Task.isCancelled ? .interrupted : .failed
@@ -675,12 +711,9 @@ import Observation
         try await checkpoint()
         let instructions = requestInstructions
         let definitions = toolDefinitions
-        if try await provider.compactIfNeeded(completedHistory, pending: Array(input.dropFirst(completedHistory.count)),
-                                              model: model, instructions: instructions, tools: definitions) {
-            updateContextUsage()
-            checkpointRevision += 1
-            try await checkpoint() // Compacted context must be durable before another inference request.
-        }
+        try await compactContext(.automatic, history: completedHistory, pending: Array(input.dropFirst(completedHistory.count)),
+                                 model: model, instructions: instructions, tools: definitions, before: responseID)
+        let index = messages.firstIndex { $0.id == responseID }!
         try Task.checkCancellation()
         for user in input.dropFirst(completedHistory.count) where user.role == .user {
             didSendMessage?(user)

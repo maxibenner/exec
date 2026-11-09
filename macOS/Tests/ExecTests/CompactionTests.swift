@@ -69,9 +69,11 @@ import Foundation
         try expect(updating.lastReportedTokens(streaming) == 2_500)
         try expect(updating.reportedTokens(streaming) == nil)
         try expect(updating.lastReportedTokens([]) == nil)
-        let compactedDisplay = CodexConversationState(displayMeasurement: saved.measurement)
+        let compactedDisplay = CodexConversationState(
+            prefix: .init(throughID: history.last!.id, output: try JSONSerialization.data(withJSONObject: compacted)),
+            displayMeasurement: saved.measurement)
         let restoredDisplay = try CodexConversationState.restore(JSONEncoder().encode(compactedDisplay))
-        try expect(restoredDisplay.lastReportedTokens(history) == 2_500)
+        try expect(restoredDisplay.lastReportedTokens(history) == nil)
         try expect(restoredDisplay.reportedTokens(history) == nil)
         try expect(provider.contextUsage(Array(appended.dropFirst()), model: model, instructions: "", tools: []) == nil)
         var interrupted = history
@@ -94,18 +96,29 @@ import Foundation
     }
 
     func thresholdAndDurableOpaqueContinuation() async throws {
-        let response = try stream(compacted + [["type": "function_call", "call_id": "ignored", "name": "shell", "arguments": "{}"]])
+        let response = try stream(compacted + [["type": "function_call", "call_id": "ignored", "name": "shell", "arguments": "{}"]], tokens: 9_800)
         let final = Data("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Continued\"}]}],\"usage\":{\"input_tokens\":200,\"output_tokens\":10}}}\n\n".utf8)
         let http = HTTPStub.makeSession([.init(chunks: [response]), .init(chunks: [final])])
         defer { http.invalidateAndCancel() }
         let provider = try provider(http: http)
         let history = [Message(role: .user, text: "Remember this"), Message(role: .assistant, text: "old answer")]
         try provider.restoreConversationState(state(history, tokens: 9_499), history: history)
-        let below = try await provider.compactIfNeeded(history, pending: [], model: model, instructions: "Keep instructions", tools: [])
-        try expect(!below && HTTPStub.state.requests.isEmpty)
+        var starts = 0
+        let below = try await provider.compactIfNeeded(history, pending: [], model: model, instructions: "Keep instructions", tools: [],
+                                                       willCompact: { starts += 1 })
+        try expect(!below && HTTPStub.state.requests.isEmpty && starts == 0)
         try provider.restoreConversationState(state(history, tokens: 9_500), history: history)
-        let changed = try await provider.compactIfNeeded(history, pending: [], model: model, instructions: "Keep instructions", tools: [])
-        try expect(changed && HTTPStub.state.requests.count == 1)
+        do {
+            _ = try await provider.compactIfNeeded(history, pending: [], model: model, instructions: "", tools: [],
+                willCompact: { throw ExecError("Activity checkpoint failed") })
+            throw CheckFailure(description: "Ignored a failed activity checkpoint")
+        } catch let error as ExecError { try expect(error.message == "Activity checkpoint failed") }
+        try expect(HTTPStub.state.requests.isEmpty)
+        let changed = try await provider.compactIfNeeded(history, pending: [], model: model, instructions: "Keep instructions", tools: [],
+                                                         willCompact: { starts += 1 })
+        try expect(changed && HTTPStub.state.requests.count == 1 && starts == 1)
+        // Compaction accounting is not the size of the replacement context.
+        try expect(provider.contextUsage(history, model: model, instructions: "", tools: []) == nil)
         let request = HTTPStub.state.requests[0]
         try expect(request.url?.path == "/backend-api/codex/responses")
         try expect(request.httpMethod == "POST")
@@ -127,6 +140,7 @@ import Foundation
         try expect(saved.messages.map(\.text) == history.map(\.text))
         let resumed = try provider.makeConversationProvider()
         try resumed.restoreConversationState(saved.providerState, history: saved.history)
+        try expect(resumed.contextUsage(history, model: model, instructions: "", tools: []) == nil)
         let next = Message(role: .user, text: "New pending question")
         for try await _ in resumed.send(history + [next], model: "test", effort: nil, instructions: "Keep instructions", tools: []) {}
         let nextBody = try JSONSerialization.jsonObject(with: HTTPStub.body(of: HTTPStub.state.requests[1])) as! [String: Any]
@@ -135,6 +149,8 @@ import Foundation
         try expect(nextInput[1]["content"] as? String == next.text)
         let resumedState = try CodexConversationState.restore(resumed.encodeConversationState())
         try expect(resumedState.measurement?.tokens == 210)
+        try expect(resumed.contextUsage(history + [next, Message(role: .assistant, text: "Continued")],
+                                        model: model, instructions: "", tools: [])?.tokens == 210)
         try expect(resumedState.requestUsage?.map(\.kind) == [.compaction, .main])
         try expect(resumedState.requestUsage?.last?.usage?.cachedInputTokens == nil)
         resumed.clearConversationState()
@@ -281,20 +297,35 @@ import Foundation
         store.models = [model]
         store.selectedModel = model.id
         var checkpointedBeforeContinuation = false
+        var checkpointedActivity = false
         store.didCheckpoint = {
+            let activities = store.messages.filter { $0.compaction != nil }
+            if activities.last?.status == .streaming {
+                try expect(activities.count == 1 && activities[0].compaction == .automatic)
+                try expect(HTTPStub.state.requests.count == 2)
+                try expect(store.contextUsage?.percent == 95)
+                let saved = try await sessions.load(id: store.currentSessionID)!
+                try expect(saved.messages.contains { $0.id == activities[0].id })
+                try expect(saved.history.allSatisfy { $0.compaction == nil })
+                checkpointedActivity = true
+            }
             guard !checkpointedBeforeContinuation,
                   let saved = try await sessions.load(id: store.currentSessionID),
                   let prefix = try CodexConversationState.restore(saved.providerState).prefix else { return }
             try expect(HTTPStub.state.requests.count == 3)
             try expect(saved.history.last?.id == prefix.throughID)
             try expect(saved.history.last?.toolResult?.call.id == "second")
+            try expect(activities.last?.status == .complete)
+            try expect(store.contextUsage == nil) // Footer falls back to 0%, never stale 95%.
             checkpointedBeforeContinuation = true
         }
         store.draft = "Inspect the workspace twice"
         store.send()
         await store.waitUntilIdle()
         try expect(store.error == nil && store.messages.last?.text == "Done")
-        try expect(checkpointedBeforeContinuation)
+        try expect(checkpointedBeforeContinuation && checkpointedActivity)
+        try expect(store.contextUsage?.percent == 2)
+        try expect(store.messages[store.messages.count - 2].compaction == .automatic)
         try expect(store.messages.compactMap { $0.toolResult?.call.id } == ["first", "second"])
         let requests = HTTPStub.state.requests
         try expect(requests.count == 4)
@@ -312,7 +343,8 @@ import Foundation
         try expect(inputs[3].count == 1 && inputs[3][0]["type"] as? String == "compaction")
         let saved = try await sessions.load(id: store.currentSessionID)!
         let restored = try CodexConversationState.restore(saved.providerState)
-        try expect(saved.history == store.messages)
+        try expect(saved.messages == store.messages)
+        try expect(saved.history == store.messages.filter { $0.compaction == nil })
         try expect(restored.requestUsage?.map(\.kind) == [.main, .main, .compaction, .main])
         // Replaying the saved conversation keeps the compacted prefix and final answer.
         let replay = try restored.input(saved.history)
@@ -329,6 +361,7 @@ import Foundation
         try provider.restoreConversationState(state(history, tokens: 100), history: history)
         let tools = [ToolDefinition(name: "list_files", description: "List files", parameters: [])]
         try await provider.compact(history, model: model, instructions: "Keep instructions", tools: tools)
+        try expect(provider.contextUsage(history, model: model, instructions: "", tools: []) == nil)
         try expect(HTTPStub.state.requests.count == 1)
         let body = try JSONSerialization.jsonObject(with: HTTPStub.body(of: HTTPStub.state.requests[0])) as! [String: Any]
         try expect((body["tools"] as? [[String: Any]])?.first?["name"] as? String == "list_files")
@@ -348,16 +381,24 @@ import Foundation
         fake.manualCompactionAction = { history in
             requests += 1
             try expect(history == transcript)
+            try expect(store.messages.last?.compaction == .manual && store.messages.last?.status == .streaming)
+            let saved = try await sessions.load(id: store.currentSessionID)!
+            try expect(saved.messages == store.messages && saved.history == transcript)
+            var recovered = saved
+            try expect(recovered.recoverInterruptedTurn())
+            try expect(recovered.messages.last?.compaction == .manual && recovered.messages.last?.status == .interrupted)
+            try expect(recovered.history == transcript)
             try await Task.sleep(for: .milliseconds(20))
         }
         store.compact()
         try expect(store.busy && !store.canCompact && !store.isSending)
         store.compact() // Repeated activation cannot issue a second request.
         await store.waitUntilIdle()
-        try expect(requests == 1 && store.messages == transcript && store.draft == "Keep my draft")
+        try expect(requests == 1 && Array(store.messages.dropLast()) == transcript && store.draft == "Keep my draft")
+        try expect(store.messages.last?.compaction == .manual && store.messages.last?.status == .complete)
         try expect(fake.inputs.count == 1 && store.error == nil)
         let saved = try await sessions.load(id: store.currentSessionID)
-        try expect(saved?.messages == transcript && saved?.history == transcript)
+        try expect(saved?.messages == store.messages && saved?.history == transcript)
         fake.manualCompactionAction = { _ in
             requests += 1
             try await Task.sleep(for: .seconds(60))
@@ -368,7 +409,59 @@ import Foundation
             try await Task.sleep(for: .milliseconds(5))
         }
         store.stop(); await store.waitUntilIdle()
-        try expect(requests == 2 && store.messages == transcript && store.error == nil && !store.busy)
+        try expect(requests == 2 && store.messages.filter { $0.compaction == nil } == transcript && store.error == nil && !store.busy)
+        try expect(store.messages.last?.compaction == .manual && store.messages.last?.status == .interrupted)
+        fake.manualCompactionAction = { _ in throw ExecError("Compaction unavailable") }
+        store.compact(); await store.waitUntilIdle()
+        try expect(store.messages.last?.compaction == .manual && store.messages.last?.status == .failed)
+        try expect(store.error == "Compaction unavailable")
+        store.draft = "Continue"; store.send(); await store.waitUntilIdle()
+        try expect(fake.inputs.count == 2 && fake.inputs.last?.contains { $0.compaction != nil } == false)
+        let finished = try await sessions.load(id: store.currentSessionID)!
+        try expect(finished.messages.filter { $0.compaction != nil }.map(\.status) == [.complete, .interrupted, .failed])
+        try expect(finished.history.allSatisfy { $0.compaction == nil })
+    }
+
+    func automaticCompactionFailuresPreserveInput() async throws {
+        for cancel in [false, true] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let answer: [[String: Any]] = [["type": "message", "role": "assistant",
+                "content": [["type": "output_text", "text": "Answer"]]]]
+            let http = HTTPStub.makeSession([
+                .init(chunks: [try stream(answer, tokens: 9_500)]),
+                cancel ? .init(holdOpen: true) : .init(chunks: [try stream([])])
+            ])
+            defer { http.invalidateAndCancel() }
+            let provider = try provider(http: http)
+            let sessions = SessionStore(directory: root)
+            let store = ChatStore(provider: provider, sessions: sessions, newConversation: true)
+            store.models = [model]; store.selectedModel = model.id
+            store.draft = "First"; store.send(); await store.waitUntilIdle()
+            try expect(store.contextUsage?.percent == 95)
+            try expect(store.messages.allSatisfy { $0.compaction == nil })
+            store.draft = "Keep this question"; store.send()
+            if cancel {
+                for _ in 0..<400 {
+                    if HTTPStub.state.heldCount == 1 { break }
+                    try await Task.sleep(for: .milliseconds(5))
+                }
+                try expect(HTTPStub.state.heldCount == 1)
+                let activity = store.messages.first { $0.compaction == .automatic }
+                try expect(activity?.status == .streaming)
+                store.stop()
+            }
+            await store.waitUntilIdle()
+            let activities = store.messages.filter { $0.compaction != nil }
+            try expect(activities.count == 1 && activities[0].status == (cancel ? .interrupted : .failed))
+            try expect(store.contextUsage?.percent == 95)
+            try expect(store.pendingInput.map(\.text) == ["Keep this question"])
+            try expect(HTTPStub.state.requests.count == 2) // No inference or retry after the failure.
+            let saved = try await sessions.load(id: store.currentSessionID)!
+            try expect(saved.messages == store.messages)
+            try expect(saved.history.allSatisfy { $0.compaction == nil })
+            try expect(try CodexConversationState.restore(saved.providerState).prefix == nil)
+        }
     }
 
     func checkpointFailurePreventsInferenceAfterCompaction() async throws {
@@ -380,10 +473,10 @@ import Foundation
         let store = ChatStore(provider: provider, sessions: SessionStore(directory: directory))
         store.restore()
         await store.waitUntilIdle()
-        provider.compactionAction = {
+        provider.compactionAction = { true }
+        provider.compactionCompletionAction = {
             try FileManager.default.removeItem(at: directory)
             try Data("not a directory".utf8).write(to: directory)
-            return true
         }
         store.draft = "Continue"
         store.send()

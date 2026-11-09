@@ -21,9 +21,14 @@ import Foundation
         try await manualCompactionAction?(history)
     }
     var compactionAction: (() throws -> Bool)?
+    var compactionCompletionAction: (() throws -> Void)?
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
-                         instructions: String, tools: [ToolDefinition]) async throws -> Bool {
-        try compactionAction?() ?? false
+                         instructions: String, tools: [ToolDefinition],
+                         willCompact: @MainActor () async throws -> Void = {}) async throws -> Bool {
+        guard try compactionAction?() == true else { return false }
+        try await willCompact()
+        try compactionCompletionAction?()
+        return true
     }
     init(connection: FakeConnection = FakeConnection()) { self.connection = connection }
     func makeConversationProvider() throws -> any ChatProvider {

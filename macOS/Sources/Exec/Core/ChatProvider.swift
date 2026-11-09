@@ -15,18 +15,22 @@ struct Message: Identifiable, Codable, Sendable, Equatable {
         var isAwaitingApproval = false
     }
     var pendingTool: PendingTool?
+    // App-owned activity, persisted only in the transcript, never model history.
+    enum Compaction: String, Codable, Sendable { case manual, automatic }
+    var compaction: Compaction?
     var images: [ImageAttachment]
 
     init(id: UUID = UUID(), role: Role, text: String, status: Status = .complete,
          toolCalls: [ToolCall] = [], toolResult: ToolResult? = nil, images: [ImageAttachment] = [],
-         pendingTool: PendingTool? = nil) {
+         pendingTool: PendingTool? = nil, compaction: Compaction? = nil) {
         self.id = id; self.role = role; self.text = text; self.status = status
         self.toolCalls = toolCalls; self.toolResult = toolResult; self.images = images
         self.pendingTool = pendingTool
+        self.compaction = compaction
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, text, status, toolCalls, toolResult, images, pendingTool
+        case id, role, text, status, toolCalls, toolResult, images, pendingTool, compaction
     }
 
     init(from decoder: any Decoder) throws {
@@ -38,6 +42,7 @@ struct Message: Identifiable, Codable, Sendable, Equatable {
         toolCalls = try values.decode([ToolCall].self, forKey: .toolCalls)
         toolResult = try values.decodeIfPresent(ToolResult.self, forKey: .toolResult)
         pendingTool = try values.decodeIfPresent(PendingTool.self, forKey: .pendingTool)
+        compaction = try values.decodeIfPresent(Compaction.self, forKey: .compaction)
         images = try values.decodeIfPresent([ImageAttachment].self, forKey: .images) ?? []
         try ImageAttachment.validate(images)
     }
@@ -134,8 +139,11 @@ struct ProviderConnection: Identifiable, Equatable {
     // A true result must be checkpointed before sending another inference request.
     var supportsCompaction: Bool { get }
     func compact(_ history: [Message], model: ChatModel, instructions: String, tools: [ToolDefinition]) async throws
+    // Call willCompact exactly once when compaction is needed, before starting it.
+    // Await it so the transcript can checkpoint the activity; a thrown error aborts.
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
-                         instructions: String, tools: [ToolDefinition]) async throws -> Bool
+                         instructions: String, tools: [ToolDefinition],
+                         willCompact: @MainActor () async throws -> Void) async throws -> Bool
     func send(_ messages: [Message], model: String, effort: String?, instructions: String, tools: [ToolDefinition]) -> AsyncThrowingStream<ChatEvent, Error>
 }
 
@@ -189,7 +197,8 @@ extension ChatProvider {
         throw ExecError("This provider does not support web search.")
     }
     func compactIfNeeded(_ history: [Message], pending: [Message], model: ChatModel,
-                         instructions: String, tools: [ToolDefinition]) async throws -> Bool { false }
+                         instructions: String, tools: [ToolDefinition],
+                         willCompact: @MainActor () async throws -> Void = {}) async throws -> Bool { false }
     func encodeConversationState() throws -> Data? { nil }
     func clearConversationState() {}
     func restoreConversationState(_ data: Data?, history: [Message]) throws {
