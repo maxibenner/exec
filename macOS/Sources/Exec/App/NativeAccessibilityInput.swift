@@ -202,13 +202,30 @@ import Carbon
         }
         defer { clear() }
         var pid: pid_t = 0
-        guard AXUIElementGetPid(saved.reference, &pid) == .success, pid == request.process_id,
-              CFEqual(saved.reference, window) || element(attribute(saved.reference, kAXWindowAttribute)).map({ CFEqual($0, window) }) == true else {
-            throw ExecError("Element no longer belongs to the inspected window. No action was sent.")
+        guard AXUIElementGetPid(saved.reference, &pid) == .success, pid > 0, pid != ownProcessID else {
+            throw ExecError("Element process is unavailable or belongs to Exec. No action was sent.")
+        }
+        // Remote Open/Save panel controls need not report the host app's PID or
+        // AXWindow. Instead, prove the exact reference is still in its current tree.
+        let belongs = try AccessibilityTree.contains(saved.reference, in: window) { parent, remaining in
+            AXUIElementSetMessagingTimeout(parent, 0.1)
+            var count: CFIndex = 0
+            guard AXUIElementGetAttributeValueCount(parent, kAXChildrenAttribute as CFString, &count) == .success,
+                  count > 0 else { return [] }
+            var children: CFArray?
+            guard AXUIElementCopyAttributeValues(parent, kAXChildrenAttribute as CFString, 0, min(count, remaining), &children) == .success else { return [] }
+            return children as? [AXUIElement] ?? []
+        }
+        guard belongs else {
+            throw ExecError("Element is no longer reachable in the inspected window's bounded accessibility tree. No action was sent. Inspect the UI again.")
         }
         let current = try node(saved.reference)
         guard current == saved.node, current.actions.contains(request.action.rawValue), !current.secure else {
             throw ExecError("Element state or supported actions changed. No action was sent. Inspect the UI again.")
+        }
+        try Task.checkCancellation()
+        guard frontProcessID == request.process_id, CFEqual(window, try focusedWindow(request.process_id)), !IsSecureEventInputEnabled() else {
+            throw ExecError("Focus changed or secure input became active during validation. No action was sent.")
         }
         let result: AXError
         switch request.action {

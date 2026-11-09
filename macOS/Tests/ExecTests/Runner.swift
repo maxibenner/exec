@@ -79,6 +79,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Image generation subscription request, persistence and presentation", { try await ImageGenerationTests().roundTrip() }),
             ("Image generation validation, bounds and no retries", { try await ImageGenerationTests().failuresAndValidation() }),
             ("Image generation cancellation and recovery", { try await ImageGenerationTests().cancellationAndRecovery() }),
+            ("Accessibility remote panel membership rejects detached references", { try AccessibilityTreeTests().verifiesRemotePanelMembership() }),
+            ("Accessibility membership traversal bounds and cancellation", { try await AccessibilityTreeTests().boundsTraversalAndHonorsCancellation() }),
             ("Accessibility launch, action and observation round trip", { try await AccessibilityTests().validationAndRoundTrip() }),
             ("Accessibility stale references and shared desktop access", { try await AccessibilityTests().staleReferencesAndSharedAccess() }),
             ("Accessibility failed reads and cancellation never replay actions", { try await AccessibilityTests().failedReadAndCancellationNeverReplay() }),
