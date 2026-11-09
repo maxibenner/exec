@@ -212,7 +212,7 @@ import Observation
         secondProvider.holdOpen = false // Completed conversations now reuse their resident provider.
         library.send()
         try await wait { !library.hasRunningOperations }
-        try expect(provider.children.last?.inputs.last?.map(\.text) == ["Second request", "Hello world — second completed", "Continue second"])
+        try expect(secondProvider.inputs.last?.map(\.text) == ["Second request", "Hello world — second completed", "Continue second"])
     }
 
     func backgroundApprovalsStayWithTheirConversation() async throws {

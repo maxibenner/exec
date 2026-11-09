@@ -12,6 +12,7 @@ import Foundation
     func ignoresLegacyPrompts() async throws {
         let suite = "SessionInstructionsTests.\(UUID())"
         let preferences = UserDefaults(suiteName: suite)!
+        preferences.set(false, forKey: "generatedTitlesEnabled") // Inspect chat instructions, not title prompts.
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let project = root.appendingPathComponent("project")
         defer {

@@ -231,6 +231,8 @@ import SwiftUI
         preferences.set("model", forKey: "defaultSessionModel")
         preferences.set("high", forKey: "defaultSessionEffort")
         preferences.set("model", forKey: "sessionTitleModel")
+        // This test counts chat requests, independently of optional title inference.
+        preferences.set(false, forKey: "generatedTitlesEnabled")
         let openAI = RegistryProbe("OpenAI"), deepSeek = RegistryProbe("DeepSeek")
         openAI.connection.catalog = [.init(id: "model", name: "Codex", efforts: [.init(id: "high", name: "High")])]
         deepSeek.connection.catalog = [.init(id: "model", name: "DeepSeek"),

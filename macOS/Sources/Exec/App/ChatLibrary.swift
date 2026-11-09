@@ -143,7 +143,7 @@ import Observation
         defaultAutoApproveTools = autoApproveTools
         searchModel = preferences.string(forKey: "searchModel") ?? ChatStore.defaultSearchModel
         preferences.removeObject(forKey: "systemPrompt")
-        generatedTitlesEnabled = preferences.bool(forKey: "generatedTitlesEnabled")
+        generatedTitlesEnabled = preferences.object(forKey: "generatedTitlesEnabled") as? Bool ?? true
         titleModel = preferences.string(forKey: "sessionTitleModel") ?? ""
         self.residentLimit = max(1, residentLimit)
         self.provider = provider
@@ -339,6 +339,7 @@ import Observation
                     summary.title = title
                     summary.customTitle = title
                 }
+                summary.isTitleManuallySet = summaries[summary.id]?.isTitleManuallySet
                 summaries[summary.id] = summary
             }
         }
@@ -790,7 +791,8 @@ import Observation
         guard let id = conversation.currentSessionID else { return }
         cancelTitleGeneration(for: id)
         guard generatedTitlesEnabled, let model = titleModel(for: conversation),
-              let summary = sessionList.first(where: { $0.id == id }) else { return }
+              let summary = sessionList.first(where: { $0.id == id }),
+              summary.isTitleManuallySet != true else { return }
         let request = UUID()
         let identity = provider.conversationIdentity
         titleRequests[id] = request
@@ -806,7 +808,7 @@ import Observation
                                                                     title: summary.customTitle ?? "", message: message.text)
                 guard let self, !Task.isCancelled, self.titleRequests[id] == request,
                       identity == provider.conversationIdentity else { return }
-                try await sessions.rename(id: id, title: title, identity: identity)
+                try await sessions.rename(id: id, title: title, identity: identity, automatically: true)
                 try await self.refreshCatalog()
             } catch {
                 // Optional metadata must not fail the chat turn or retry inference.

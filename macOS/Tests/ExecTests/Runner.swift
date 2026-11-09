@@ -69,6 +69,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("First send requires a workspace and preserves cancelled drafts", { try await WorkspacePickerTests().sendRequiresWorkspaceAndPreservesDraft() }),
             ("Legacy custom prompts are ignored while workspace instructions survive", { try await SessionInstructionsTests().ignoresLegacyPrompts() }),
             ("Generated titles persist with isolated context and preferences", { try await SessionTitleTests().updatesPersistWithoutChangingChatContext() }),
+            ("Manual session names survive messages, late title results and restart", { try await SessionTitleTests().manualNamesSurviveMessagesAndRestart() }),
             ("Title generation rejects incomplete and cancelled responses", { try await SessionTitleTests().rejectsFailedAndCancelledGeneration() }),
             ("Image file migration, deduplication and integrity", { try await ImageStorageTests().migrationAndIntegrity() }),
             ("Image generation subscription request, persistence and presentation", { try await ImageGenerationTests().roundTrip() }),

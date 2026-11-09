@@ -35,6 +35,7 @@ import Foundation
         ], defaultEffort: "low"), ChatModel(id: "plain", name: "Plain")]
         let suite = "ExecEffortTests.\(UUID())"
         let preferences = UserDefaults(suiteName: suite)!
+        preferences.set(false, forKey: "generatedTitlesEnabled") // Inspect chat effort independently of title inference.
         defer { preferences.removePersistentDomain(forName: suite) }
         let library = try ChatLibrary(provider: provider, sessions: sessions, preferences: preferences)
         library.restore()

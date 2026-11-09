@@ -13,6 +13,8 @@ struct SessionSnapshot: Codable, Sendable {
     var activeCallID: String?
     var activityDate: Date?
     var title: String?
+    // Missing in older saves, which remain eligible for automatic naming.
+    var isTitleManuallySet: Bool?
     var effort: String?
     // Absent in older saves, which retain the default of Auto on.
     var autoApproveTools: Bool?
@@ -68,6 +70,7 @@ struct SessionSummary: Codable, Identifiable, Sendable {
     let id: UUID
     var title: String
     var customTitle: String?
+    var isTitleManuallySet: Bool?
     let workspace: String?
     let identity: String?
     let updatedAt: Date
@@ -77,6 +80,7 @@ struct SessionSummary: Codable, Identifiable, Sendable {
         self.init(id: id, prompt: snapshot.messages.first { $0.role == .user }?.text ?? "",
                   workspace: snapshot.workspace, identity: snapshot.identity, updatedAt: snapshot.activityDate ?? Date())
         customTitle = snapshot.title
+        isTitleManuallySet = snapshot.isTitleManuallySet
         if let customTitle { title = customTitle }
     }
 
@@ -228,6 +232,7 @@ actor SessionStore {
         let existing = catalog.sessions.first { $0.id == id }
         snapshot.activityDate = snapshot.activityDate ?? existing?.updatedAt ?? Date()
         snapshot.title = snapshot.title ?? existing?.customTitle
+        snapshot.isTitleManuallySet = snapshot.isTitleManuallySet ?? existing?.isTitleManuallySet
         let encoder = JSONEncoder()
         encoder.userInfo[ImageFiles.codingKey] = directory.appendingPathComponent("images", isDirectory: true)
         try write(encoder.encode(snapshot), name: "\(id).json")
@@ -275,7 +280,7 @@ actor SessionStore {
         try write(JSONEncoder().encode(catalog), name: "index.json")
     }
 
-    func rename(id: UUID, title: String, identity: String?) throws {
+    func rename(id: UUID, title: String, identity: String?, automatically: Bool = false) throws {
         try Task.checkCancellation()
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, title.count <= 120, title.utf8.count <= 1_024,
@@ -285,7 +290,11 @@ actor SessionStore {
         guard var snapshot = try readSnapshot(id), snapshot.identity == identity else {
             throw ExecError("This conversation cannot be renamed for the connected account.")
         }
+        // Check the durable metadata too: an in-flight generated title must not
+        // overwrite a manual rename that completed while inference was running.
+        guard !automatically || snapshot.isTitleManuallySet != true else { return }
         snapshot.title = title
+        snapshot.isTitleManuallySet = !automatically
         try save(snapshot, id: id, select: false)
     }
 

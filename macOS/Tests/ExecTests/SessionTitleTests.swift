@@ -15,8 +15,7 @@ import Foundation
         defer { library.stopAll() }
         library.restore()
         try await wait { !library.hasRunningOperations }
-        try expect(!library.generatedTitlesEnabled)
-        library.generatedTitlesEnabled = true
+        try expect(library.generatedTitlesEnabled)
         library.titleModel = "test"
         let firstMessage = String(repeating: "Include vegetables, flowers, and paths with enough space to grow. ", count: 40)
             + "Plan a garden."
@@ -48,6 +47,62 @@ import Foundation
         try expect(provider.children.count == 3)
         let reopened = try ChatLibrary(provider: FakeProvider(), sessions: sessions, preferences: preferences)
         try expect(!reopened.generatedTitlesEnabled && reopened.titleModel == "test")
+    }
+
+    func manualNamesSurviveMessagesAndRestart() async throws {
+        let suite = "ExecTitleTests.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer {
+            preferences.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let provider = FakeProvider()
+        let sessions = SessionStore(directory: root)
+        let library = try ChatLibrary(provider: provider, sessions: sessions, preferences: preferences)
+        defer { library.stopAll() }
+        library.restore()
+        try await wait { !library.hasRunningOperations }
+        library.draft = "Plan a garden"
+        library.send()
+        try await wait { !library.hasRunningOperations }
+        let id = library.currentSessionID!
+        try expect(library.sessionList.first?.title == "Hello world")
+        library.renameSession(id, title: "My garden")
+        try await wait { !library.hasRunningOperations }
+        let requests = provider.children.count
+        library.draft = "Add tomatoes"
+        library.send()
+        try await wait { !library.hasRunningOperations }
+        try expect(provider.children.count == requests)
+        try expect(library.sessionList.first?.title == "My garden")
+        let saved = try await sessions.load(id: id)
+        try expect(saved?.title == "My garden" && saved?.isTitleManuallySet == true)
+
+        // A delayed automatic result cannot replace the name, even at the store boundary.
+        try await sessions.rename(id: id, title: "Late generated title", identity: saved?.identity, automatically: true)
+        let afterLateTitle = try await sessions.load(id: id)
+        try expect(afterLateTitle?.title == "My garden" && afterLateTitle?.isTitleManuallySet == true)
+        // Manual names can still be changed again by the user.
+        library.renameSession(id, title: "Vegetable garden")
+        try await wait { !library.hasRunningOperations }
+
+        // Rebuild the sidebar index from snapshots to verify the flag is durable there too.
+        try FileManager.default.removeItem(at: root.appendingPathComponent("index.json"))
+        let reopenedProvider = FakeProvider()
+        let reopened = try ChatLibrary(provider: reopenedProvider, sessions: SessionStore(directory: root), preferences: preferences)
+        defer { reopened.stopAll() }
+        reopened.restore()
+        try await wait { !reopened.hasRunningOperations }
+        try expect(reopened.currentSessionID == id)
+        try expect(reopened.sessionList.first?.title == "Vegetable garden")
+        try expect(reopened.sessionList.first?.isTitleManuallySet == true)
+        let reopenedRequests = reopenedProvider.children.count
+        reopened.draft = "Add carrots"
+        reopened.send()
+        try await wait { !reopened.hasRunningOperations }
+        try expect(reopenedProvider.children.count == reopenedRequests)
+        try expect(reopened.sessionList.first?.title == "Vegetable garden")
     }
 
     func rejectsFailedAndCancelledGeneration() async throws {
