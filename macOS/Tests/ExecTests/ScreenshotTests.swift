@@ -51,7 +51,7 @@ import Foundation
         provider.scripted = [[.toolCall(call), .completed], [.text("Inspected screenshot"), .completed]]
         let image = ImageAttachment(name: "Screenshot.png", mediaType: "image/png", data: Data([1, 2, 3]))
         var captures = 0
-        let store = ChatStore(provider: provider, sessions: sessions, newConversation: true, captureScreenshot: { request in
+        let store = ChatStore(provider: provider, sessions: sessions, newConversation: true, computer: ComputerController(input: FakeComputerInput(), access: .init()), captureScreenshot: { request in
             captures += 1
             try expect(request.target == .desktop)
             return .init(text: "Captured main display", image: image)
@@ -75,7 +75,7 @@ import Foundation
         try expect(input.contains { $0["type"] as? String == "function_call_output" && $0["call_id"] as? String == call.id })
         let presentation = ToolPresentation(result)
         try expect(presentation.title == "Screenshot" && presentation.summary == "Main display")
-        let restored = ChatStore(provider: FakeProvider(), sessions: sessions, newConversation: true, captureScreenshot: { _ in
+        let restored = ChatStore(provider: FakeProvider(), sessions: sessions, newConversation: true, computer: ComputerController(input: FakeComputerInput(), access: .init()), captureScreenshot: { _ in
             throw CheckFailure(description: "Must not replay a capture")
         })
         restored.openSession(store.currentSessionID!, loadModels: false)
@@ -89,7 +89,7 @@ import Foundation
             let provider = FakeProvider()
             provider.scripted = [[.toolCall(call), .completed]]
             var captures = 0
-            let store = ChatStore(provider: provider, newConversation: true, captureScreenshot: { _ in
+            let store = ChatStore(provider: provider, newConversation: true, computer: ComputerController(input: FakeComputerInput(), access: .init()), captureScreenshot: { _ in
                 captures += 1
                 if mode == "cancel" { try await Task.sleep(for: .seconds(20)) }
                 throw ExecError("Capture unavailable")

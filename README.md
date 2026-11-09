@@ -39,6 +39,16 @@ Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace
 
 ![Exec screenshot](screenshot.png)
 
+## Computer use
+
+With an image-capable model, Exec can activate an application, click/double-click/right-click, scroll, type ordinary text, and send named keys or shortcuts on the main display. Ask for a concrete task; the model uses `take_screenshot` to observe and `computer_use` for one action at a time.
+
+Computer control needs explicit approval independently of workspace Auto mode, plus macOS **Accessibility** permission. Screenshots still require their own approval and macOS **Screen Recording** permission. Grant these in System Settings → Privacy & Security; a denied or interrupted operation is not automatically retried. For an uninterrupted observe/action loop, you can separately allow screenshots and computer control for the session. One-time screenshot approval can bring Exec forward; activation and a fresh target-app capture may then be needed.
+
+**Stop** revokes session computer control, as does **Revoke Computer Control** in the composer. Bring Exec forward to use these controls; the shortcuts are not global. Returning to another application during typing stops further input. Already delivered input cannot be undone. Session control permission is not saved across restarts or conversation replacement.
+
+This is conservative, screenshot-driven control, not a sandbox or a guarantee of UI correctness. Input uses short-lived, single-use desktop captures and rejects changed focus, window geometry, obscured pointer targets, and secure-input mode. Keyboard input requires a verifiable focused window fully on the main display. Exec cannot target itself. Window screenshots are inspection-only; dragging, multi-display control, and accessibility-tree navigation are not supported. Letter shortcuts use US virtual-key positions; Unicode text entry can be unsupported by some apps. Do not use this for passwords or secrets: tool arguments and screenshots are saved in the conversation and shared with the model.
+
 ## Development
 
 Open `macOS/Package.swift` in Xcode, or run from `macOS/`:

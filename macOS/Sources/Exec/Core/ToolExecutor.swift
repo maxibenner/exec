@@ -8,7 +8,7 @@ struct ToolApprovalDenied: ContextSafeError {
 @MainActor @Observable final class ToolExecutor {
     struct Approval: Identifiable {
         let id = UUID()
-        enum Kind { case shell, edit, screenshot }
+        enum Kind { case shell, edit, screenshot, computer }
         let kind: Kind
         let content: String
         let directory: URL
@@ -19,9 +19,18 @@ struct ToolApprovalDenied: ContextSafeError {
     var approvalDidChange: ((Bool) -> Void)?
     private(set) var autoApprovedDirectory: URL?
     private(set) var screenshotsAllowedForSession = false
+    private(set) var computerAllowedForSession = false
+
+    func revokeComputerPermission() {
+        computerAllowedForSession = false
+        if let pending = pendingApproval, pending.kind == .computer {
+            resolveApproval(id: pending.id, approved: false)
+        }
+    }
 
     func resetScreenshotPermission() {
         screenshotsAllowedForSession = false
+        revokeComputerPermission()
     }
     struct InputArrived: Error {}
     static let supersededByInput = "Not executed: new user input arrived. Reconsider this operation using the new instructions."
@@ -39,14 +48,17 @@ struct ToolApprovalDenied: ContextSafeError {
 
     func setAutoApproval(for directory: URL?) {
         autoApprovedDirectory = directory
-        if let directory, let pending = pendingApproval,
+        if let directory, let pending = pendingApproval, pending.kind != .computer,
            pending.kind == .screenshot || pending.directory == directory {
             resolveApproval(id: pending.id, approved: true)
         }
     }
 
-    func resolveApproval(id: UUID, approved: Bool, allowScreenshotsForSession: Bool = false) {
+    func resolveApproval(id: UUID, approved: Bool, allowScreenshotsForSession: Bool = false, allowComputerForSession: Bool = false) {
         guard let pending = pendingApproval, pending.id == id else { return }
+        if approved, allowComputerForSession, pending.kind == .computer {
+            computerAllowedForSession = true
+        }
         if approved, allowScreenshotsForSession, pending.kind == .screenshot {
             screenshotsAllowedForSession = true
         }
@@ -92,11 +104,17 @@ struct ToolApprovalDenied: ContextSafeError {
             directory: URL(fileURLWithPath: "/")))
     }
 
+    func approveComputer(summary: String) async throws -> Bool {
+        try await requestApproval(Approval(kind: .computer, content: summary, directory: URL(fileURLWithPath: "/")))
+    }
+
     private func requestApproval(_ approval: Approval) async throws -> Bool {
         try Task.checkCancellation()
         guard shouldYieldForInput?() != true else { throw InputArrived() }
         guard pendingApproval == nil else { throw ExecError("Another operation is awaiting approval.") }
-        if approval.kind == .screenshot {
+        if approval.kind == .computer {
+            if computerAllowedForSession { return true }
+        } else if approval.kind == .screenshot {
             if autoApprovedDirectory != nil || screenshotsAllowedForSession { return true }
         } else if autoApprovedDirectory == approval.directory { return true }
         let approved = await withTaskCancellationHandler {

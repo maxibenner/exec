@@ -22,7 +22,7 @@ enum ScreenshotTool {
     }
 
     struct Output: Sendable {
-        let text: String
+        var text: String
         var image: ImageAttachment?
     }
 

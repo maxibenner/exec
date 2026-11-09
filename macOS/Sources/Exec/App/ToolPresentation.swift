@@ -71,6 +71,10 @@ struct ToolPresentation {
             title = "Generate image"; icon = "photo"
             summary = arguments?.prompt
             outputTitle = nil
+        case "computer_use":
+            title = "Computer use"; icon = "cursorarrow"
+            summary = (try? ComputerUseTool.request(call))?.summary
+            outputTitle = "Result"
         case "take_screenshot":
             title = "Screenshot"; icon = "camera"
             summary = (try? ScreenshotTool.request(call))?.summary
