@@ -424,20 +424,22 @@ import SwiftUI
             try expect(state.layout.ids == ids + [messages.last!.id])
             try expect(abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 1)
         }
-        // The same placeholder becomes visible as soon as text or a terminal
-        // failure/stop label arrives; filtering must not discard those rows.
+        // Text and failures remain visible; stopping adds no label or empty row.
         messages.append(Message(role: .assistant, text: "", status: .streaming))
         update()
         let count = state.layout.ids.count
         messages[messages.count - 1].text = "Reply"
         update()
         try expect(state.layout.ids.count == count + 1)
-        for status in [Message.Status.interrupted, .failed] {
-            messages[messages.count - 1].text = ""
-            messages[messages.count - 1].status = status
-            update()
-            try expect(state.layout.ids.last == messages.last!.id)
-        }
+        messages[messages.count - 1].status = .interrupted
+        update()
+        try expect(state.layout.ids.last == messages.last!.id)
+        messages[messages.count - 1].text = ""
+        update()
+        try expect(state.layout.ids.count == count)
+        messages[messages.count - 1].status = .failed
+        update()
+        try expect(state.layout.ids.last == messages.last!.id)
     }
 
     func expandedToolContentStaysInsideCommittedRowBounds() throws {

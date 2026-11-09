@@ -92,10 +92,9 @@ private struct VirtualTranscript: NSViewRepresentable {
         self.bottomInset = max(0, bottomInset)
         // Empty inference placeholders have no visible content, but mounting them
         // adds row spacing and moves the bottom anchor between every tool result.
-        // Keep terminal error/stop labels visible even when no text arrived.
+        // Keep terminal error labels visible even when no text arrived.
         let filtered = messages.filter {
-            $0.role != .assistant || !$0.text.isEmpty ||
-                $0.status == .interrupted || $0.status == .failed
+            $0.role != .assistant || !$0.text.isEmpty || $0.status == .failed
         }
         if initialized, let last = filtered.last, last.id != lastMessageID, last.role == .user {
             state.followsLatest = true
@@ -391,10 +390,6 @@ private struct MessageView: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else {
             VStack(alignment: .leading, spacing: 8) {
-                if message.status == .interrupted {
-                    Label("Stopped", systemImage: "stop.circle")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
                 if message.status == .failed {
                     Label("Failed · excluded from context", systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.red)
