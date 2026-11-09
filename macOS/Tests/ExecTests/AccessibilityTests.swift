@@ -9,6 +9,9 @@ import Foundation
     var failAction = false
     var delayRead = false
     var value = ""
+    var running = true
+    var filters: [AccessibilityTool.Filter] = []
+    func isRunning(_ pid: Int32) -> Bool { running }
     var afterAction: (() -> Void)?
     func resolve(_ name: String) throws -> AccessibilityController.App {
         .init(url: URL(fileURLWithPath: "/Test.app"), bundleID: "test.app", name: name)
@@ -17,8 +20,9 @@ import Foundation
     func checkPermission() throws { if !permitted { throw ExecError("Accessibility denied") } }
     func open(_ app: AccessibilityController.App) async throws -> Int32 { events.append("open"); return 42 }
     func activate(_ pid: Int32) throws { events.append("activate"); frontProcessID = pid }
-    func inspect(_ pid: Int32) async throws -> String {
+    func inspect(_ pid: Int32, filter: AccessibilityTool.Filter) async throws -> String {
         events.append("inspect")
+        filters.append(filter)
         if delayRead { try await Task.sleep(for: .seconds(20)) }
         if failRead { throw ExecError("No readable window") }
         return "e1 Text field, actions: focus, set_value; value: \(value)"
@@ -43,8 +47,77 @@ import Foundation
         try expect(UUID(uuidString: id) != nil)
         return id
     }
-    private func action(_ id: String, pid: Int32 = 42) throws -> ToolCall {
-        try call("ui_action", ["process_id": pid, "snapshot_id": id, "element_id": "e1", "action": "set_value", "value": "hi"])
+    private func action(_ id: String, pid: Int32 = 42, kind: String = "set_value", value: String = "hi") throws -> ToolCall {
+        try call("ui_action", ["process_id": pid, "snapshot_id": id, "element_id": "e1", "action": kind, "value": value])
+    }
+
+    func shortcutsObserveAndHandleExit() async throws {
+        let input = FakeAccessibilityInput()
+        let controller = AccessibilityController(input: input, access: .init())
+        let inspect = try controller.prepare(call("inspect_ui", ["process_id": 42]))
+        let initial = try await controller.execute(inspect)
+        let save = try controller.prepare(action(snapshotID(initial), kind: "press_key", value: "command+s"))
+        try expect(save.summary.contains("command+s") && !save.summary.contains("Replace"))
+        input.frontProcessID = input.ownProcessID
+        let saved = try await controller.execute(save)
+        try expect(input.events == ["inspect", "activate", "press_key", "inspect"])
+        try expect(saved.contains("Keyboard input sent") && saved.contains("UI snapshot_id:"))
+        try await fails { _ = try await controller.execute(save) }
+        let quit = try controller.prepare(action(snapshotID(saved), kind: "press_key", value: "command+q"))
+        input.afterAction = { input.running = false }
+        let exited = try await controller.execute(quit)
+        try expect(exited.contains("has exited") && !exited.contains("UI snapshot_id:") && !exited.contains("failed"))
+        try expect(input.events == ["inspect", "activate", "press_key", "inspect", "press_key"])
+        try await fails { _ = try await controller.execute(quit) }
+    }
+
+    func filteredSelectionAndValidation() async throws {
+        let input = FakeAccessibilityInput()
+        let controller = AccessibilityController(input: input, access: .init())
+        let inspect = try controller.prepare(call("inspect_ui", ["process_id": 42, "query": "hi.txt", "role": ""]))
+        let initial = try await controller.execute(inspect)
+        let select = try controller.prepare(action(snapshotID(initial), kind: "select", value: ""))
+        let selected = try await controller.execute(select)
+        try expect(input.events == ["inspect", "select", "inspect"])
+        try expect(input.filters == [.init(query: "hi.txt"), .init(query: "hi.txt")])
+        try expect(try snapshotID(initial) != snapshotID(selected))
+        try await fails { _ = try await controller.execute(select) }
+        for (kind, value) in [("press_key", "command+bogus"), ("press_key", ""), ("press_key", "command+command+s"), ("select", "hi")] {
+            try expectFailure { _ = try controller.prepare(action(snapshotID(selected), kind: kind, value: value)) }
+        }
+        for args: [String: Any] in [
+            ["process_id": 42, "query": String(repeating: "a", count: 201), "role": ""],
+            ["process_id": 42, "query": "hi\n", "role": ""],
+            ["process_id": 42, "query": "", "role": "Button"]
+        ] { try expectFailure { _ = try controller.prepare(call("inspect_ui", args)) } }
+        let filter = AccessibilityTool.Filter(query: "HI.txt", role: "AXStaticText")
+        try expect(filter.matches(role: "AXStaticText", text: ["hi.txt"]))
+        try expect(!filter.matches(role: "AXRow", text: ["hi.txt"]))
+        try expect(!filter.matches(role: "AXStaticText", text: ["other.txt"]))
+    }
+
+    func shortcutFailureNeverReplays() async throws {
+        let input = FakeAccessibilityInput()
+        let controller = AccessibilityController(input: input, access: .init())
+        let inspect = try controller.prepare(call("inspect_ui", ["process_id": 42]))
+        for mode in ["read", "action", "interrupted"] {
+            input.failRead = false; input.failAction = false; input.afterAction = nil
+            let initial = try await controller.execute(inspect)
+            let key = try controller.prepare(action(snapshotID(initial), kind: "press_key", value: "command+s"))
+            var stop = false
+            if mode == "read" { input.failRead = true }
+            if mode == "action" { input.failAction = true }
+            if mode == "interrupted" { input.afterAction = { stop = true } }
+            input.events = []
+            if mode == "read" {
+                let result = try await controller.execute(key)
+                try expect(result.contains("Keyboard input sent") && result.contains("Follow-up observation failed"))
+            } else {
+                try await fails { _ = try await controller.execute(key, shouldStop: { stop }) }
+            }
+            try await fails { _ = try await controller.execute(key) }
+            try expect(input.events.filter { $0 == "press_key" }.count == 1)
+        }
     }
     private func fails(_ body: () async throws -> Void) async throws {
         do { try await body() }
@@ -89,27 +162,29 @@ import Foundation
         var now = ContinuousClock.now
         let controller = AccessibilityController(input: input, access: access, now: { now })
         let inspect = try controller.prepare(call("inspect_ui", ["process_id": 42]))
-        for mode in ["expired", "other-action", "focus", "reset", "permission", "busy", "wrong-app"] {
-            input.permitted = true; input.frontProcessID = 42
-            let text = try await controller.execute(inspect)
-            let request = try controller.prepare(action(snapshotID(text), pid: mode == "wrong-app" ? 43 : 42))
-            input.events = []
-            switch mode {
-            case "expired": now = now.advanced(by: .seconds(121))
-            case "other-action":
-                // Real shared coordinator: a pixel-tool action invalidates semantic references.
-                let pixel = ComputerController(input: FakeComputerInput(), access: access)
-                let call = try ComputerUseTests().call(action: "activate_app", capture: "", x: 0, y: 0, button: "")
-                _ = try await pixel.execute(ComputerUseTool.request(call))
-            case "focus": input.frontProcessID = 43
-            case "reset": controller.reset()
-            case "permission": input.permitted = false
-            case "busy": access.busy = true
-            default: break
+        for kind in ["set_value", "press_key", "select"] {
+            for mode in ["expired", "other-action", "focus", "reset", "permission", "busy", "wrong-app"] {
+                input.permitted = true; input.frontProcessID = 42
+                let text = try await controller.execute(inspect)
+                let request = try controller.prepare(action(snapshotID(text), pid: mode == "wrong-app" ? 43 : 42, kind: kind, value: kind == "select" ? "" : kind == "press_key" ? "command+s" : "hi"))
+                input.events = []
+                switch mode {
+                case "expired": now = now.advanced(by: .seconds(121))
+                case "other-action":
+                    // Real shared coordinator: a pixel-tool action invalidates semantic references.
+                    let pixel = ComputerController(input: FakeComputerInput(), access: access)
+                    let call = try ComputerUseTests().call(action: "activate_app", capture: "", x: 0, y: 0, button: "")
+                    _ = try await pixel.execute(ComputerUseTool.request(call))
+                case "focus": input.frontProcessID = 43
+                case "reset": controller.reset()
+                case "permission": input.permitted = false
+                case "busy": access.busy = true
+                default: break
+                }
+                try await fails { _ = try await controller.execute(request) }
+                try expect(input.events.isEmpty)
+                access.busy = false
             }
-            try await fails { _ = try await controller.execute(request) }
-            try expect(input.events.isEmpty)
-            access.busy = false
         }
     }
 
