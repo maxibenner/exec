@@ -40,11 +40,16 @@ import Security
         try self.init(restoredData: keychain.read(Self.credentialKey), keychain: keychain, http: http)
     }
 
-    /// Keychain may display a system permission prompt. Keep startup responsive while it waits.
-    static func restored() async throws -> OpenAIAuthentication {
-        let data = try await Task.detached(priority: .userInitiated) {
-            try KeychainStore().read(Self.credentialKey)
-        }.value
+    /// Only previously selected providers read Keychain during startup.
+    static func restored(loadCredentials: Bool = true) async throws -> OpenAIAuthentication {
+        let data: Data?
+        if loadCredentials {
+            data = try await Task.detached(priority: .userInitiated) {
+                try KeychainStore().read(Self.credentialKey)
+            }.value
+        } else {
+            data = nil
+        }
         try Task.checkCancellation()
         return try OpenAIAuthentication(restoredData: data, keychain: KeychainStore(), http: OpenAIHTTP.session)
     }

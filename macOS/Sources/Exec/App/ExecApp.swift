@@ -118,9 +118,12 @@ import SwiftUI
     }
 
     private func start() {
-        startup.start(makeSessions: SessionStore.applicationStore, cache: AccountMetadataCache.applicationCache(),
+        let cache = AccountMetadataCache.applicationCache()
+        startup.start(makeSessions: SessionStore.applicationStore, cache: cache,
                       localPresentation: ProviderRegistry.localPresentation()) {
-            try await MultiProvider(registry: ProviderRegistry.restored())
+            let cachedAccount = await cache?.startupAccount()
+            return try await MultiProvider(registry: ProviderRegistry.restored(
+                hasLegacyAccount: initiallyHasSavedSessions || cachedAccount != nil))
         }
     }
 }

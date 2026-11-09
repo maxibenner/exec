@@ -20,10 +20,15 @@ import Foundation
         }
     }
 
-    static func restored() async throws -> DeepSeekAuthentication {
-        let data = try await Task.detached(priority: .userInitiated) {
-            try KeychainStore().read(credentialKey)
-        }.value
+    static func restored(loadCredentials: Bool = true) async throws -> DeepSeekAuthentication {
+        let data: Data?
+        if loadCredentials {
+            data = try await Task.detached(priority: .userInitiated) {
+                try KeychainStore().read(credentialKey)
+            }.value
+        } else {
+            data = nil
+        }
         try Task.checkCancellation()
         return try DeepSeekAuthentication(store: KeychainStore(), restoredData: data)
     }

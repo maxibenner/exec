@@ -88,6 +88,107 @@ import SwiftUI
         ProviderRegistry(entries: [.init(id: "openai", provider: openAI), .init(id: "deepseek", provider: deepSeek)], libraryIdentity: "account")
     }
 
+    func freshLaunchDefersCredentialReadsUntilProviderSelection() async throws {
+        let suite = "ProviderCredentials.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let openAI = RegistryProbe("OpenAI"), deepSeek = RegistryProbe("DeepSeek")
+        openAI.connection.account = nil
+        deepSeek.connection.account = nil
+        var reads: [String] = []
+        let load: @MainActor (String, Bool) async throws -> any ChatProvider = { id, restore in
+            if restore { reads.append(id) }
+            return id == "openai" ? openAI : deepSeek
+        }
+        let first = try await ProviderRegistry.restored(preferences: preferences, loadProvider: load)
+        try expect(reads.isEmpty && first.entries.allSatisfy { $0.provider.account == nil })
+        let second = try await ProviderRegistry.restored(preferences: preferences, loadProvider: load)
+        try expect(reads.isEmpty && second.libraryIdentity == first.libraryIdentity)
+
+        try await second.connect(id: "deepseek", credential: "test-key")
+        let connected = try await ProviderRegistry.restored(preferences: preferences, loadProvider: load)
+        try expect(reads == ["deepseek"])
+        try expect(connected.libraryIdentity == first.libraryIdentity)
+        reads = []
+        deepSeek.connection.disconnectFails = true
+        do {
+            try await connected.disconnect(id: "deepseek")
+            throw CheckFailure(description: "Expected disconnect failure")
+        } catch is ExecError { }
+        _ = try await ProviderRegistry.restored(preferences: preferences, loadProvider: load)
+        try expect(reads == ["deepseek"])
+
+        deepSeek.connection.disconnectFails = false
+        try await connected.disconnect(id: "deepseek")
+        reads = []
+        _ = try await ProviderRegistry.restored(preferences: preferences, loadProvider: load)
+        try expect(reads.isEmpty)
+    }
+
+    func legacyCredentialDiscoveryPreservesAccountsAndDeniedAccess() async throws {
+        let suite = "LegacyProviderCredentials.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        preferences.set("existing-library", forKey: "providerLibraryIdentity")
+        let openAI = RegistryProbe("OpenAI"), deepSeek = RegistryProbe("DeepSeek")
+        deepSeek.connection.account = nil
+        var reads: [String] = []
+        let load: @MainActor (String, Bool) async throws -> any ChatProvider = { id, restore in
+            if restore { reads.append(id) }
+            return id == "openai" ? openAI : deepSeek
+        }
+        do {
+            _ = try await ProviderRegistry.restored(preferences: preferences) { id, restore in
+                let provider = try await load(id, restore)
+                if restore && id == "deepseek" { throw ExecError("Keychain access denied") }
+                return provider
+            }
+            throw CheckFailure(description: "Expected denied access")
+        } catch is ExecError { }
+        try expect(reads == ["openai", "deepseek"])
+        try expect(preferences.stringArray(forKey: "credentialProviderIDs") == nil)
+        // An explicit retry must still discover both legacy providers.
+        reads = []
+        let restored = try await ProviderRegistry.restored(preferences: preferences, loadProvider: load)
+        try expect(reads == ["openai", "deepseek"] && restored.libraryIdentity == "existing-library")
+        reads = []
+        _ = try await ProviderRegistry.restored(preferences: preferences, loadProvider: load)
+        try expect(reads == ["openai"])
+
+        // Older single-provider installs may have only disk metadata, not a library ID.
+        preferences.removePersistentDomain(forName: suite)
+        reads = []
+        _ = try await ProviderRegistry.restored(preferences: preferences, hasLegacyAccount: true, loadProvider: load)
+        try expect(reads == ["openai", "deepseek"])
+    }
+
+    func interruptedProviderConnectionRemainsDiscoverable() async throws {
+        let suite = "InterruptedProviderCredentials.\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let openAI = RegistryProbe("OpenAI"), deepSeek = RegistryProbe("DeepSeek")
+        openAI.connection.account = nil
+        openAI.connection.connectFails = true
+        deepSeek.connection.account = nil
+        var reads: [String] = []
+        let load: @MainActor (String, Bool) async throws -> any ChatProvider = { id, restore in
+            if restore { reads.append(id) }
+            return id == "openai" ? openAI : deepSeek
+        }
+        let registry = try await ProviderRegistry.restored(preferences: preferences, loadProvider: load)
+        do {
+            try await registry.connect(id: "openai", credential: nil)
+            throw CheckFailure(description: "Expected connection failure")
+        } catch is ExecError { }
+        // Conservatively check after a failed/interrupted attempt: a write may have
+        // happened. Once a successful read finds no credential, stop checking.
+        _ = try await ProviderRegistry.restored(preferences: preferences, loadProvider: load)
+        try expect(reads == ["openai"])
+        reads = []
+        _ = try await ProviderRegistry.restored(preferences: preferences, loadProvider: load)
+        try expect(reads.isEmpty)
+    }
+
     func switchesProvidersAndRestoresMixedHistory() async throws {
         let openAI = RegistryProbe("OpenAI"), deepSeek = RegistryProbe("DeepSeek")
         let registry = registry(openAI, deepSeek)
@@ -499,8 +600,10 @@ import SwiftUI
                 }
             }
         }
-        let sheet = NSHostingView(rootView: ProviderKeySheet(providerName: "DeepSeek", connect: { _ in }))
-        try expect(sheet.fittingSize.width <= 410 && sheet.fittingSize.height < 260)
+        for authentication in [ProviderConnection.Authentication.apiKey, .browser] {
+            let sheet = NSHostingView(rootView: ProviderConnectionSheet(providerName: "Provider", authentication: authentication, connect: { _ in }))
+            try expect(sheet.fittingSize.width <= 410 && sheet.fittingSize.height < 420)
+        }
         if let previews {
             library.settingsTab = .modelsAndTools
             try await renderPreview(SettingsView(store: library, canCheckForUpdates: false, checkForUpdates: {}), size: NSSize(width: 500, height: 680),
@@ -508,8 +611,10 @@ import SwiftUI
             library.settingsTab = .usage
             try await renderPreview(SettingsView(store: library, canCheckForUpdates: false, checkForUpdates: {}), size: NSSize(width: 500, height: 420),
                                     to: previews.appendingPathComponent("usage-both.png"))
-            try await renderPreview(ProviderKeySheet(providerName: "DeepSeek", connect: { _ in }),
-                                    size: NSSize(width: 360, height: 166), to: previews.appendingPathComponent("key-sheet.png"))
+            try await renderPreview(ProviderConnectionSheet(providerName: "DeepSeek", connect: { _ in }),
+                                    size: NSSize(width: 360, height: 330), to: previews.appendingPathComponent("key-sheet.png"))
+            try await renderPreview(ProviderConnectionSheet(providerName: "OpenAI", authentication: .browser, connect: { _ in }),
+                                    size: NSSize(width: 360, height: 330), to: previews.appendingPathComponent("browser-sheet.png"))
             library.disconnect(providerID: "openai")
             try await wait { !library.hasRunningOperations && library.models.count == 1 }
             library.settingsTab = .accounts

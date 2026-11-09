@@ -33,8 +33,8 @@ import Foundation
         self.authentication = try authentication ?? OpenAIAuthentication(http: http)
         self.http = http
     }
-    static func restored() async throws -> OpenAIProvider {
-        try await OpenAIProvider(authentication: OpenAIAuthentication.restored())
+    static func restored(loadCredentials: Bool = true) async throws -> OpenAIProvider {
+        try await OpenAIProvider(authentication: OpenAIAuthentication.restored(loadCredentials: loadCredentials))
     }
 
     func makeConversationProvider() throws -> any ChatProvider {

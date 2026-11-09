@@ -32,7 +32,8 @@ struct ProviderSettingsView: View {
             if !ids.contains(selection ?? "") { selection = ids.first }
         }
         .sheet(item: $adding) { connection in
-            ProviderKeySheet(providerName: connection.name, canConnect: !store.accountBusy && store.canNavigate) { key in
+            ProviderConnectionSheet(providerName: connection.name, authentication: connection.authentication,
+                                    canConnect: !store.accountBusy && store.canNavigate) { key in
                 store.connect(providerID: connection.id, credential: key)
             }
         }
@@ -96,10 +97,7 @@ struct ProviderSettingsView: View {
                     } else {
                         Menu {
                             ForEach(available) { connection in
-                                Button(connection.name) {
-                                    if connection.authentication == .apiKey { adding = connection }
-                                    else { store.connect(providerID: connection.id) }
-                                }
+                                Button(connection.name) { adding = connection }
                             }
                         } label: { addProviderLabel }
                         .menuIndicator(.hidden)
@@ -129,10 +127,11 @@ private struct ProviderRowButtonStyle: ButtonStyle {
     }
 }
 
-struct ProviderKeySheet: View {
+struct ProviderConnectionSheet: View {
     let providerName: String
+    var authentication: ProviderConnection.Authentication = .apiKey
     var canConnect = true
-    let connect: (String) -> Void
+    let connect: (String?) -> Void
     @State private var key = ""
     @FocusState private var focused: Bool
     @Environment(\.dismiss) private var dismiss
@@ -140,29 +139,37 @@ struct ProviderKeySheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Connect \(providerName)").font(.headline)
-            SecureField("API key", text: $key)
-                .textFieldStyle(.roundedBorder)
-                .focused($focused)
-                .autocorrectionDisabled()
-                .accessibilityLabel("API key")
+            if authentication == .apiKey {
+                SecureField("API key", text: $key)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focused)
+                    .autocorrectionDisabled()
+                    .accessibilityLabel("API key")
+            } else {
+                Text("Continue in your browser to sign in to \(providerName).")
+            }
+            Text("Exec stores your provider sign-ins and API keys securely in macOS Keychain so you can stay connected. macOS may ask for permission to save or access these credentials. Exec does not request passwords saved by other apps.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { key = ""; dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Connect") {
+                Button(authentication == .apiKey ? "Connect" : "Continue") {
                     guard canConnect else { return }
-                    let credential = key
+                    let credential = authentication == .apiKey ? key : nil
                     key = ""
                     dismiss()
                     connect(credential)
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!canConnect || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!canConnect || (authentication == .apiKey && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
             }
         }
         .padding(24)
         .frame(width: 360)
-        .onAppear { focused = true }
+        .onAppear { focused = authentication == .apiKey }
         .onDisappear { key = "" }
     }
 }

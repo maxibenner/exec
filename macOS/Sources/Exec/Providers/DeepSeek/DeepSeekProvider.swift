@@ -16,8 +16,8 @@ import Foundation
         self.authentication = authentication
         self.http = http
     }
-    static func restored() async throws -> DeepSeekProvider {
-        try await DeepSeekProvider(authentication: DeepSeekAuthentication.restored())
+    static func restored(loadCredentials: Bool = true) async throws -> DeepSeekProvider {
+        try await DeepSeekProvider(authentication: DeepSeekAuthentication.restored(loadCredentials: loadCredentials))
     }
     func makeConversationProvider() throws -> any ChatProvider { DeepSeekProvider(authentication: authentication, http: http) }
     func connect() async throws { throw ExecError("Enter your DeepSeek API key in Settings.") }
