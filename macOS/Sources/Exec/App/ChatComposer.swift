@@ -177,11 +177,6 @@ struct ChatComposer: View {
     private var information: some View {
         HStack(spacing: 0) {
             workingControl
-            if store.current.tools.computerAllowedForSession {
-                Button("Revoke Computer Control") { store.current.stop() }
-                    .buttonStyle(.plain).padding(.leading, 12)
-                    .accessibilityLabel("Revoke computer control and stop the current turn")
-            }
             Spacer(minLength: 0)
             let usage = store.current.contextUsage
             Text(usage.map { "Context \($0.percent)%" } ?? "Context 0%")
