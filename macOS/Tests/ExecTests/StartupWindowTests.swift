@@ -24,6 +24,7 @@ import SwiftUI
                 if let library = presentation.library {
                     ConversationView(library: library, conversation: library.current,
                                      presentation: transcript, focused: $focused)
+                        .onAppear { focused = true }
                 } else if presentation.failed {
                     VStack(spacing: 16) {
                         Text("Local setup failed")
@@ -97,9 +98,21 @@ import SwiftUI
                   let composer = descendant(ComposerCursor.CursorView.self, in: controller.view) else {
                 throw CheckFailure(description: "Missing native chat layout views")
             }
-            for collapsed in [true, false, true, false] {
+            for (index, collapsed) in [true, false, true, false].enumerated() {
                 if split.isSubviewCollapsed(sidebar) != collapsed {
-                    splitController.toggleSidebar(nil)
+                    if index < 2 {
+                        // ⌘S must both close and reopen the native sidebar while
+                        // editing, without inserting text into the draft.
+                        try expect((window.firstResponder as? NSTextView)?.isEditable == true)
+                        let draft = library.draft
+                        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "s",
+                            charactersIgnoringModifiers: "s", isARepeat: false, keyCode: 1)!
+                        try expect(window.performKeyEquivalent(with: event))
+                        try expect(library.draft == draft)
+                    } else {
+                        splitController.toggleSidebar(nil)
+                    }
                     // Check intermediate geometry too: AppKit can temporarily
                     // enlarge the split view and only snap back at completion.
                     for _ in 0..<25 {
