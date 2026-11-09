@@ -12,12 +12,17 @@ import Carbon
         let enabled: Bool
         let secure: Bool
         let value: String?
+        let selected: Bool?
+        let focused: Bool?
         let actions: [String]
     }
     private struct Element {
         let reference: AXUIElement
         let node: Node
+        let path: [AXUIElement]
     }
+    private var keyboardFocus: AXUIElement?
+    private var keyboardFocusState: Node?
     private var elements: [String: Element] = [:]
     private var window: AXUIElement?
     private var processID: Int32?
@@ -26,7 +31,14 @@ import Carbon
     var ownProcessID: Int32 { native.ownProcessID }
     var frontProcessID: Int32 { native.frontProcessID }
 
-    func clear() { elements = [:]; window = nil; processID = nil; launchDate = nil }
+    func clear() {
+        elements = [:]; window = nil; processID = nil; launchDate = nil
+        keyboardFocus = nil; keyboardFocusState = nil
+    }
+    func isRunning(_ pid: Int32) -> Bool {
+        guard let app = NSRunningApplication(processIdentifier: pid) else { return false }
+        return !app.isTerminated
+    }
     func applicationName(_ pid: Int32) throws -> String { try native.applicationName(pid) }
     func activate(_ pid: Int32) throws { try native.activate(pid) }
     func checkPermission() throws {
@@ -126,61 +138,99 @@ import Carbon
             var supported: CFArray?
             if AXUIElementCopyActionNames(reference, &supported) == .success, (supported as? [String])?.contains(kAXPressAction) == true { actions.append("press") }
             if settable(reference, kAXFocusedAttribute) { actions.append("focus") }
+            if settable(reference, kAXSelectedAttribute) { actions.append("select") }
             // Only replace fully visible values. Never silently overwrite omitted text.
             if textField && completeValue && settable(reference, kAXValueAttribute) { actions.append("set_value") }
         }
         return Node(role: role, subrole: subrole, title: string(reference, kAXTitleAttribute),
-                    description: string(reference, kAXDescriptionAttribute), enabled: enabled, secure: secure, value: value, actions: actions)
+                    description: string(reference, kAXDescriptionAttribute), enabled: enabled, secure: secure, value: value,
+                    selected: attribute(reference, kAXSelectedAttribute) as? Bool,
+                    focused: attribute(reference, kAXFocusedAttribute) as? Bool, actions: actions)
     }
 
-    func inspect(_ pid: Int32) async throws -> String {
+    private func protected(_ reference: AXUIElement) -> Bool {
+        string(reference, kAXRoleAttribute) == "AXSecureTextField" ||
+        string(reference, kAXSubroleAttribute) == "AXSecureTextField" ||
+        (attribute(reference, "AXProtectedContent") as? Bool) == true
+    }
+
+    private func children(_ reference: AXUIElement, limit: Int) -> [AXUIElement] {
+        guard !protected(reference) else { return [] }
+        var count: CFIndex = 0
+        guard AXUIElementGetAttributeValueCount(reference, kAXChildrenAttribute as CFString, &count) == .success, count > 0 else { return [] }
+        var children: CFArray?
+        guard AXUIElementCopyAttributeValues(reference, kAXChildrenAttribute as CFString, 0, min(count, limit), &children) == .success else { return [] }
+        return children as? [AXUIElement] ?? []
+    }
+
+    private func focusedElement(_ pid: Int32) -> AXUIElement? {
+        element(attribute(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute))
+    }
+
+    func inspect(_ pid: Int32, filter: AccessibilityTool.Filter) async throws -> String {
         clear()
         let root = try focusedWindow(pid)
         let launch = NSRunningApplication(processIdentifier: pid)?.launchDate
-        var queue: [(AXUIElement, Int)] = [(root, 0)]
-        var visited = Set<AXUIElement>()
+        let focus = focusedElement(pid)
+        let focusState = focus.flatMap { try? node($0) }
+        var readNodes: [AXUIElement: Node] = [:]
+        var partiallyUnavailable = false
+        // Filtering uses only labels, not action discovery on every skipped node.
+        // In a broad view, read each node once and omit unlabelled structural matches.
+        let search = try await AccessibilityTree.search(in: root, matches: { reference in
+            if filter.isEmpty {
+                guard let info = try? self.node(reference) else { partiallyUnavailable = true; return false }
+                readNodes[reference] = info
+                return CFEqual(reference, root) || !info.actions.isEmpty || !info.title.isEmpty ||
+                    !info.description.isEmpty || info.value != nil || info.secure || info.selected == true || info.focused == true
+            }
+            let role = self.string(reference, kAXRoleAttribute)
+            guard !role.isEmpty else { partiallyUnavailable = true; return false }
+            guard !self.protected(reference) else { return false }
+            var text = [self.string(reference, kAXTitleAttribute), self.string(reference, kAXDescriptionAttribute)]
+            if ["AXTextField", "AXTextArea", "AXComboBox", "AXStaticText"].contains(role) {
+                let count = (self.attribute(reference, kAXNumberOfCharactersAttribute) as? NSNumber)?.intValue
+                if count.map({ $0 <= 2000 }) != false { text.append(self.string(reference, kAXValueAttribute)) }
+            }
+            return filter.matches(role: role, text: text)
+        }, children: { self.children($0, limit: $1) })
         var found: [String: Element] = [:]
+        var identifiers: [AXUIElement: String] = [:]
         var lines: [String] = []
         var bytes = 0
-        var index = 0
-        var truncated = false
-        let start = ContinuousClock.now
-        while index < queue.count {
-            try Task.checkCancellation()
-            guard index < 160, start.duration(to: .now) < .seconds(2) else { truncated = true; break }
-            let (reference, depth) = queue[index]
-            index += 1
-            guard visited.insert(reference).inserted else { continue }
-            AXUIElementSetMessagingTimeout(reference, 0.1)
-            guard let info = try? node(reference) else { truncated = true; continue }
-            let id = "e\(index)"
-            if depth == 0 || !info.actions.isEmpty || !info.title.isEmpty || !info.description.isEmpty || info.value != nil || info.secure {
-                var row: [String: Any] = ["id": id, "depth": depth, "role": info.role, "enabled": info.enabled, "actions": info.actions]
+        var truncated = search.truncated || partiallyUnavailable
+        let renderStart = ContinuousClock.now
+        // Always expose the window for shortcuts, even when the search finds nothing.
+        render: for path in [[root]] + search.paths {
+            for index in path.indices {
+                let reference = path[index]
+                if let id = identifiers[reference] {
+                    if found[id]?.node.secure == true { break }
+                    continue
+                }
+                try Task.checkCancellation()
+                guard found.count < 160, renderStart.duration(to: .now) < .seconds(2) else { truncated = true; break render }
+                guard let info = readNodes[reference] ?? (try? node(reference)) else { truncated = true; break }
+                let id = "e\(found.count + 1)"
+                var actions = info.actions
+                if index == 0, let focusState, !focusState.secure { actions.append("press_key") }
+                var row: [String: Any] = ["id": id, "depth": index, "role": info.role, "enabled": info.enabled, "actions": actions]
+                if index > 0, let parent = identifiers[path[index - 1]] { row["parent_id"] = parent }
                 if !info.title.isEmpty { row["title"] = String(info.title.prefix(300)) }
                 if !info.description.isEmpty { row["description"] = String(info.description.prefix(300)) }
+                if let selected = info.selected { row["selected"] = selected }
+                if let focused = info.focused { row["focused"] = focused }
                 if info.secure { row["value"] = "[protected]" }
                 else if let value = info.value { row["value"] = value }
                 let data = try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys])
-                guard bytes + data.count + 1 <= 24_000 else { truncated = true; break }
+                guard bytes + data.count + 1 <= 24_000 else { truncated = true; break render }
                 bytes += data.count + 1
                 lines.append(String(decoding: data, as: UTF8.self))
-                if !info.actions.isEmpty { found[id] = Element(reference: reference, node: info) }
+                identifiers[reference] = id
+                found[id] = Element(reference: reference, node: info, path: Array(path.prefix(index + 1)))
+                if info.secure { break }
+                await Task.yield()
             }
-            if !info.secure {
-                var count: CFIndex = 0
-                if AXUIElementGetAttributeValueCount(reference, kAXChildrenAttribute as CFString, &count) == .success, count > 0 {
-                    let limit = min(count, 160 - queue.count)
-                    if depth >= 8 || limit <= 0 { truncated = true }
-                    else {
-                        var children: CFArray?
-                        if AXUIElementCopyAttributeValues(reference, kAXChildrenAttribute as CFString, 0, limit, &children) == .success,
-                           let children = children as? [AXUIElement] { queue += children.map { ($0, depth + 1) } }
-                        else { truncated = true }
-                        if limit < count { truncated = true }
-                    }
-                }
-            }
-            await Task.yield()
         }
         try Task.checkCancellation()
         guard !lines.isEmpty, CFEqual(root, try focusedWindow(pid)), NSRunningApplication(processIdentifier: pid)?.launchDate == launch else {
@@ -190,7 +240,11 @@ import Carbon
         window = root
         processID = pid
         launchDate = launch
-        return lines.joined(separator: "\n") + (truncated ? "\nAccessibility view truncated or partially unavailable. Missing controls may require a screenshot." : "")
+        keyboardFocus = focus
+        keyboardFocusState = focusState
+        let result = !filter.isEmpty && search.paths.isEmpty ? "\nNo matching controls found in the bounded search." : ""
+        let scope = filter.isEmpty ? "" : "\nFiltered view with ancestors; other selected items may be omitted. Do not assume selection is exclusive."
+        return lines.joined(separator: "\n") + result + scope + (truncated ? "\nAccessibility view truncated or partially unavailable. Narrow query/role or use a screenshot for missing controls." : "")
     }
 
     func act(_ request: AccessibilityTool.ActionRequest) throws {
@@ -207,30 +261,52 @@ import Carbon
         }
         // Remote Open/Save panel controls need not report the host app's PID or
         // AXWindow. Instead, prove the exact reference is still in its current tree.
-        let belongs = try AccessibilityTree.contains(saved.reference, in: window) { parent, remaining in
-            AXUIElementSetMessagingTimeout(parent, 0.1)
-            var count: CFIndex = 0
-            guard AXUIElementGetAttributeValueCount(parent, kAXChildrenAttribute as CFString, &count) == .success,
-                  count > 0 else { return [] }
-            var children: CFArray?
-            guard AXUIElementCopyAttributeValues(parent, kAXChildrenAttribute as CFString, 0, min(count, remaining), &children) == .success else { return [] }
-            return children as? [AXUIElement] ?? []
-        }
+        let belongs = try AccessibilityTree.containsPath(saved.path, in: window) { self.children($0, limit: $1) }
         guard belongs else {
             throw ExecError("Element is no longer reachable in the inspected window's bounded accessibility tree. No action was sent. Inspect the UI again.")
         }
         let current = try node(saved.reference)
-        guard current == saved.node, current.actions.contains(request.action.rawValue), !current.secure else {
+        guard current == saved.node, !current.secure,
+              request.action == .pressKey || current.actions.contains(request.action.rawValue) else {
             throw ExecError("Element state or supported actions changed. No action was sent. Inspect the UI again.")
         }
         try Task.checkCancellation()
         guard frontProcessID == request.process_id, CFEqual(window, try focusedWindow(request.process_id)), !IsSecureEventInputEnabled() else {
             throw ExecError("Focus changed or secure input became active during validation. No action was sent.")
         }
+        if request.action == .pressKey {
+            guard CFEqual(saved.reference, window), let keyboardFocus, let keyboardFocusState,
+                  !keyboardFocusState.secure, let currentFocus = focusedElement(request.process_id),
+                  CFEqual(keyboardFocus, currentFocus), try node(currentFocus) == keyboardFocusState else {
+                throw ExecError("Keyboard focus changed or was unavailable/protected. No input was sent. Inspect the UI again.")
+            }
+            try native.checkPermission()
+            try native.validateTarget(request.process_id, point: nil)
+            try native.press(ComputerUseTool.Key(request.value))
+            return
+        }
+        // A row may have no own label. Recheck its displayed descendants before
+        // selecting it, so recycled row references cannot silently change targets.
+        if request.action == .select {
+            let start = ContinuousClock.now
+            for child in elements.values where child.path.dropLast().contains(saved.reference) {
+                guard start.duration(to: .now) < .seconds(2),
+                      try AccessibilityTree.containsPath(child.path, in: window, children: { self.children($0, limit: $1) }),
+                      try node(child.reference) == child.node else {
+                    throw ExecError("Selection contents changed or could not be verified. No action was sent.")
+                }
+            }
+        }
+        try Task.checkCancellation()
+        guard frontProcessID == request.process_id, CFEqual(window, try focusedWindow(request.process_id)), !IsSecureEventInputEnabled() else {
+            throw ExecError("Focus changed or secure input became active. No action was sent.")
+        }
         let result: AXError
         switch request.action {
         case .press: result = AXUIElementPerformAction(saved.reference, kAXPressAction as CFString)
         case .focus: result = AXUIElementSetAttributeValue(saved.reference, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        case .select: result = AXUIElementSetAttributeValue(saved.reference, kAXSelectedAttribute as CFString, kCFBooleanTrue)
+        case .pressKey: preconditionFailure("Keyboard input is handled above")
         case .setValue: result = AXUIElementSetAttributeValue(saved.reference, kAXValueAttribute as CFString, request.value as CFString)
         }
         guard result == .success else {
