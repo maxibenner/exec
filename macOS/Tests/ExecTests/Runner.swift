@@ -20,6 +20,11 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Tool cards appear sequentially and update in place", { try await PendingToolTests().showsOnlyCurrentCallAndUpdatesInPlace() }),
+            ("Tool cancellation and recovery keep queued calls hidden", { try await PendingToolTests().cancellationAndRecoveryKeepQueuedCallsHidden() }),
+            ("Tool cards precede approval decisions", { try await PendingToolTests().approvalCardExistsBeforeDecision() }),
+            ("Tool request checkpoints recheck cancellation and new input", { try await PendingToolTests().checkpointRechecksCancellationAndNewInput() }),
+            ("Pending cards expose inputs without fabricated output", { try PendingToolTests().pendingPresentationHasInputsWithoutOutput() }),
             ("Update badge dismissal persists per build", { try UpdateNoticeTests().dismissalSurvivesRelaunchAndOnlyHidesThatBuild() }),
             ("Silent update checks throttle failures and respect busy sessions", { try UpdateNoticeTests().silentChecksAreThrottledAndDoNotConsumeBusyAttempts() }),
             ("Update badge fits sidebar widths in light and dark appearances", { try UpdateNoticeTests().badgeFitsSidebarWidths() }),

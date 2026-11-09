@@ -9,16 +9,24 @@ struct Message: Identifiable, Codable, Sendable, Equatable {
     var status: Status = .complete
     var toolCalls: [ToolCall] = []
     var toolResult: ToolResult?
+    // Transcript-only request state. Never added to provider history as an outcome.
+    struct PendingTool: Codable, Sendable, Equatable {
+        let call: ToolCall
+        var isAwaitingApproval = false
+    }
+    var pendingTool: PendingTool?
     var images: [ImageAttachment]
 
     init(id: UUID = UUID(), role: Role, text: String, status: Status = .complete,
-         toolCalls: [ToolCall] = [], toolResult: ToolResult? = nil, images: [ImageAttachment] = []) {
+         toolCalls: [ToolCall] = [], toolResult: ToolResult? = nil, images: [ImageAttachment] = [],
+         pendingTool: PendingTool? = nil) {
         self.id = id; self.role = role; self.text = text; self.status = status
         self.toolCalls = toolCalls; self.toolResult = toolResult; self.images = images
+        self.pendingTool = pendingTool
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, text, status, toolCalls, toolResult, images
+        case id, role, text, status, toolCalls, toolResult, images, pendingTool
     }
 
     init(from decoder: any Decoder) throws {
@@ -29,6 +37,7 @@ struct Message: Identifiable, Codable, Sendable, Equatable {
         status = try values.decode(Status.self, forKey: .status)
         toolCalls = try values.decode([ToolCall].self, forKey: .toolCalls)
         toolResult = try values.decodeIfPresent(ToolResult.self, forKey: .toolResult)
+        pendingTool = try values.decodeIfPresent(PendingTool.self, forKey: .pendingTool)
         images = try values.decodeIfPresent([ImageAttachment].self, forKey: .images) ?? []
         try ImageAttachment.validate(images)
     }

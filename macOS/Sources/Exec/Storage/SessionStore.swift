@@ -46,8 +46,15 @@ struct SessionSnapshot: Codable, Sendable {
                 } else {
                     text = "Interrupted before a durable result was saved. This operation may have changed files; inspect before retrying. It was not resumed."
                 }
-                let message = Message(role: .tool, text: text, toolResult: ToolResult(call: call, text: text))
-                messages.append(message)
+                let row = messages.lastIndex { $0.pendingTool?.call.id == call.id }
+                let message = Message(id: row.map { messages[$0].id } ?? UUID(),
+                                      role: .tool, text: text, toolResult: ToolResult(call: call, text: text))
+                if let row {
+                    messages[row] = message
+                } else if call.id == activeCallID {
+                    // Older saves have no request card to update.
+                    messages.append(message)
+                }
                 history.append(message)
             }
         }

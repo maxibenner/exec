@@ -69,8 +69,9 @@ import Foundation
         try expect(provider.inputs.isEmpty && restored.tools.pendingApproval == nil)
         try expect(restored.error?.contains("interrupted") == true)
         try expect(restored.messages.contains { $0.toolResult?.call.id == active.id && $0.text.contains("may have changed files") })
-        try expect(restored.messages.contains { $0.toolResult?.call.id == waiting.id && $0.text.contains("Not executed") })
+        try expect(!restored.messages.contains { $0.toolResult?.call.id == waiting.id })
         let saved = try await sessions.load()
+        try expect(saved?.history.contains { $0.toolResult?.call.id == waiting.id && $0.text.contains("Not executed") } == true)
         try expect(saved?.activeTurn == false && saved?.activeCallID == nil)
         restored.draft = "What happened?"
         restored.send()

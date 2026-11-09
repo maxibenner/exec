@@ -13,7 +13,10 @@ struct ToolApprovalDenied: ContextSafeError {
         let content: String
         let directory: URL
     }
-    private(set) var pendingApproval: Approval?
+    private(set) var pendingApproval: Approval? {
+        didSet { approvalDidChange?(pendingApproval != nil) }
+    }
+    var approvalDidChange: ((Bool) -> Void)?
     private(set) var autoApprovedDirectory: URL?
     private(set) var screenshotsAllowedForSession = false
 

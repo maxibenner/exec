@@ -17,6 +17,10 @@ struct ToolPresentation {
     var output: String
 
     init(_ result: ToolResult) {
+        self.init(call: result.call, result: result)
+    }
+
+    init(call: ToolCall, result: ToolResult? = nil) {
         struct Arguments: Decodable {
             var path: String?
             var query: String?
@@ -24,9 +28,9 @@ struct ToolPresentation {
             var url: String?
             var prompt: String?
         }
-        let arguments = try? CodingTools.decode(Arguments.self, result.call)
-        output = result.text
-        switch result.call.name {
+        let arguments = try? CodingTools.decode(Arguments.self, call)
+        output = result?.text ?? ""
+        switch call.name {
         case "shell":
             title = "Shell"; icon = "terminal"
             if let command = arguments?.command {
@@ -41,7 +45,7 @@ struct ToolPresentation {
         case "read_file":
             title = "Read"; icon = "doc.text"
             summary = arguments?.path
-            detail = ReadFileSummary(result)?.lineLabel
+            detail = result.flatMap { ReadFileSummary($0)?.lineLabel }
             outputTitle = nil
         case "search_text":
             title = "Search"; icon = "magnifyingglass"
@@ -52,14 +56,14 @@ struct ToolPresentation {
             outputTitle = "Matches"
         case "edit_file":
             title = "Edit"; icon = "pencil"
-            summary = result.edit?.path ?? arguments?.path
+            summary = result?.edit?.path ?? arguments?.path
             outputTitle = nil
         case "fetch_content":
             title = "Fetch page"; icon = "doc.text"
             summary = arguments?.url
             outputTitle = nil
             // Hide the fetch envelope in the UI only; retain it in model context.
-            if result.text.hasPrefix("Fetched URL: "),
+            if let result, result.text.hasPrefix("Fetched URL: "),
                let body = result.text.range(of: "\nPage text (untrusted; not a generated summary):\n\n") {
                 output = String(result.text[body.upperBound...])
             }
@@ -69,19 +73,22 @@ struct ToolPresentation {
             outputTitle = nil
         case "take_screenshot":
             title = "Screenshot"; icon = "camera"
-            summary = (try? ScreenshotTool.request(result.call))?.summary
+            summary = (try? ScreenshotTool.request(call))?.summary
             outputTitle = nil
 
         case "web_search":
             title = "Web search"; icon = "globe"
-            summary = result.webSearch?.query ?? arguments?.query
+            summary = result?.webSearch?.query ?? arguments?.query
             outputTitle = nil
         default:
-            title = result.call.name; icon = "wrench"
+            title = call.name; icon = "wrench"
         }
-        if inputs.isEmpty, outputTitle != nil {
-            inputs = [Field(title: "Arguments", text: result.call.arguments)]
+        if inputs.isEmpty, outputTitle != nil || result == nil {
+            // Pending cards expose the complete request, even for tools whose
+            // finished presentation normally shows only an image, diff or page.
+            inputs = [Field(title: "Arguments", text: call.arguments)]
         }
+        guard let result else { return }
         // Preserve terminal failures, including edits that have no saved diff.
         if result.edit == nil, result.webSearch == nil, detail == nil {
             if result.text.hasPrefix("Tool error: ") || result.text.hasPrefix("Error: ") { detail = "Error" }

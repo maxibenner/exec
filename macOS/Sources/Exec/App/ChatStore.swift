@@ -414,8 +414,6 @@ import Observation
                 self.history = input
                 try await self.checkpoint()
                 for (index, call) in assistant.toolCalls.enumerated() {
-                    self.activeCallID = call.id
-                    try await self.checkpoint() // Must succeed before approval/execution.
                     let duplicate = usedCallIDs.contains(call.id)
                     let result: ToolResult
                     do {
@@ -426,6 +424,10 @@ import Observation
                             result = ToolResult(call: call, text: "Duplicate tool call ID; not executed.")
                         } else {
                             usedCallIDs.insert(call.id)
+                            self.messages.append(Message(role: .tool, text: "", status: .streaming,
+                                                         pendingTool: .init(call: call)))
+                            self.activeCallID = call.id
+                            try await self.checkpoint() // Must succeed before approval/execution.
                             do {
                                 result = try await self.executeTool(call)
                             } catch is ToolExecutor.InputArrived {
@@ -485,8 +487,15 @@ import Observation
     }
 
     private func executeTool(_ call: ToolCall) async throws -> ToolResult {
+        // Saving the request card yields; recheck before any provider/local effects.
+        try Task.checkCancellation()
+        guard pendingInput.isEmpty else { throw ToolExecutor.InputArrived() }
         tools.shouldYieldForInput = { [weak self] in self?.pendingInput.isEmpty == false }
-        defer { tools.shouldYieldForInput = nil }
+        tools.approvalDidChange = { [weak self] awaiting in
+            guard let self, let index = self.messages.lastIndex(where: { $0.pendingTool != nil }) else { return }
+            self.messages[index].pendingTool?.isAwaitingApproval = awaiting
+        }
+        defer { tools.shouldYieldForInput = nil; tools.approvalDidChange = nil }
         if call.name == ImageGenerationTool.definition.name {
             guard provider.supportsImageGeneration(model: toolModel) else { throw ExecError("This provider does not support image generation.") }
             let image = try await provider.generateImage(ImageGenerationTool.request(call), model: toolModel)
@@ -536,8 +545,12 @@ import Observation
     }
 
     private func recordTool(_ result: ToolResult, input: inout [Message]) {
-        let message = Message(role: .tool, text: result.text, toolResult: result)
-        messages.append(message)
+        let index = messages.lastIndex { $0.pendingTool?.call.id == result.call.id }
+        let message = Message(id: index.map { messages[$0].id } ?? UUID(),
+                              role: .tool, text: result.text, toolResult: result)
+        // Only calls whose turn began have transcript cards. Skipped calls still
+        // need explicit outcomes in model context, but must not appear on stop.
+        if let index { messages[index] = message }
         input.append(message)
         history = input
     }

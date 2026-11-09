@@ -114,7 +114,8 @@ import SwiftUI
             let state = TranscriptState()
             let id = UUID()
             state.expanded[id] = true
-            let host = NSHostingView(rootView: ToolMessageView(result: result, state: state, messageID: id).frame(width: width))
+            let host = NSHostingView(rootView: ToolMessageView(call: result.call, result: result,
+                isAwaitingApproval: false, state: state, messageID: id).frame(width: width))
             host.frame.size = host.fittingSize
             let window = NSWindow(contentRect: host.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
             window.contentView = host

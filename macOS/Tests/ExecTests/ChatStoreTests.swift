@@ -114,7 +114,11 @@ import Foundation
         try await settle(store)
         try expect(store.error?.contains("repeated a tool call ID") == true)
         try expect(provider.inputs.count == before + 2)
-        try expect(store.messages.last?.text == "Duplicate tool call ID; not executed.")
+        try expect(store.messages.compactMap(\.toolResult).count == 1)
+        store.draft = "Explain without retrying"
+        store.send()
+        try await settle(store)
+        try expect(provider.inputs.last?.compactMap(\.toolResult).last?.text == "Duplicate tool call ID; not executed.")
     }
 
     func batchedSnapshotsFlushOnFailureAndCancellation() async throws {

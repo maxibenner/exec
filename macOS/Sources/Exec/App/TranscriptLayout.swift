@@ -105,7 +105,7 @@ struct TranscriptLayout {
     }
 
     private static func estimate(_ message: Message, width: CGFloat) -> CGFloat {
-        if message.toolResult != nil { return 80 }
+        if message.toolResult != nil || message.pendingTool != nil { return 80 }
         let charactersPerLine = max(20, Int(max(100, width) / 7))
         let lines = max(1, message.text.utf8.count / charactersPerLine + 1)
         return CGFloat(min(100, lines)) * 20 + (message.role == .user ? 16 : 0)

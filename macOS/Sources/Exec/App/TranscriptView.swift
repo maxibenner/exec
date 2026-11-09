@@ -369,8 +369,10 @@ private struct MessageView: View, Equatable {
     }
 
     var body: some View {
-        if let result = message.toolResult {
-            ToolMessageView(result: result, state: state, messageID: message.id)
+        if let call = message.pendingTool?.call ?? message.toolResult?.call {
+            ToolMessageView(call: call, result: message.toolResult,
+                            isAwaitingApproval: message.pendingTool?.isAwaitingApproval == true,
+                            state: state, messageID: message.id)
         } else if message.role == .user {
             HStack {
                 Spacer(minLength: 40)

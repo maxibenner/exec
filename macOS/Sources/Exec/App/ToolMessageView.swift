@@ -2,52 +2,69 @@ import SwiftUI
 
 // Disclosure state belongs to the conversation, not to a recycled row host.
 struct ToolMessageView: View {
-    let result: ToolResult
+    let call: ToolCall
+    let result: ToolResult?
+    let isAwaitingApproval: Bool
     let state: TranscriptState
     let messageID: UUID
-    @State private var expanded: Bool
+    @State private var expanded: Bool?
 
-    init(result: ToolResult, state: TranscriptState, messageID: UUID) {
+    init(call: ToolCall, result: ToolResult?, isAwaitingApproval: Bool,
+         state: TranscriptState, messageID: UUID) {
+        self.call = call
         self.result = result
+        self.isAwaitingApproval = isAwaitingApproval
         self.state = state
         self.messageID = messageID
-        _expanded = State(initialValue: state.expanded[messageID] ?? (result.edit != nil || result.generatedImage != nil))
+        _expanded = State(initialValue: state.expanded[messageID])
     }
 
     var body: some View {
-        let presentation = ToolPresentation(result)
-        DisclosureGroup(isExpanded: Binding(get: { expanded }, set: { value in
+        let presentation = ToolPresentation(call: call, result: result)
+        DisclosureGroup(isExpanded: Binding(get: { expanded ?? (result?.edit != nil || result?.generatedImage != nil) }, set: { value in
             state.followsLatest = false
             state.expanded[messageID] = value
             expanded = value
         })) {
             VStack(alignment: .leading, spacing: 12) {
-                if let generated = result.generatedImage {
+                if let generated = result?.generatedImage {
                     GeneratedImageView(attachment: generated)
-                } else if let screenshot = result.screenshot, let image = NSImage(data: screenshot.data) {
+                } else if let screenshot = result?.screenshot, let image = NSImage(data: screenshot.data) {
                     Image(nsImage: image).resizable().scaledToFit()
                         .frame(maxHeight: 480)
                         .accessibilityLabel("Captured screenshot")
-                } else if let edit = result.edit {
+                } else if let edit = result?.edit {
                     DiffView(source: edit.diff)
                 } else {
                     ForEach(presentation.inputs.indices, id: \.self) { index in
                         let field = presentation.inputs[index]
                         ToolTextSection(title: field.title, text: field.text)
                     }
-                    if let search = result.webSearch {
+                    if let search = result?.webSearch {
                         WebSearchView(result: search)
-                    } else {
+                    } else if result != nil {
                         ToolTextSection(title: presentation.outputTitle, text: presentation.output, emptyText: "No output")
                             // Match the inner code inset used by edit diffs.
-                            .padding(result.call.name == "read_file" ? 10 : 0)
+                            .padding(call.name == "read_file" ? 10 : 0)
                     }
                 }
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 12)
         } label: {
-            ToolCallHeader(presentation: presentation)
+            HStack(spacing: 8) {
+                ToolCallHeader(presentation: presentation)
+                if result == nil {
+                    if isAwaitingApproval {
+                        Image(systemName: "hand.raised")
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Awaiting approval")
+                    } else {
+                        ProgressView().controlSize(.small)
+                            .accessibilityLabel("Tool active")
+                    }
+                }
+            }
         }
         .disclosureGroupStyle(InstantToolDisclosureStyle())
         .transaction { transaction in
