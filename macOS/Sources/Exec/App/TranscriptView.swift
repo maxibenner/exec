@@ -383,7 +383,7 @@ private struct MessageView: View, Equatable {
                     }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+                .background(Color.blue.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
                 .frame(maxWidth: 600, alignment: .trailing)
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("You: \(message.text)")

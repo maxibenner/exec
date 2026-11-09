@@ -20,6 +20,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Blue user bubbles support text and images in light and dark mode", { try await TranscriptTests().userBubblesSupportTextAndImagesInBothAppearances() }),
             ("Tool cards appear sequentially and update in place", { try await PendingToolTests().showsOnlyCurrentCallAndUpdatesInPlace() }),
             ("Tool cancellation and recovery keep queued calls hidden", { try await PendingToolTests().cancellationAndRecoveryKeepQueuedCallsHidden() }),
             ("Tool cards precede approval decisions", { try await PendingToolTests().approvalCardExistsBeforeDecision() }),
