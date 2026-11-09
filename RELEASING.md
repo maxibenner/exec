@@ -14,7 +14,7 @@ The first updater-enabled release is `0.1.0 (3)`. Do not publish the older, pre-
 
 There are two separate identities:
 
-- **Apple Developer ID Application** signs Exec and all embedded Sparkle helpers. Use the existing `SIGNING_IDENTITY` / `exec.signingIdentity` build setting. The bundle identifier remains unchanged for compatibility with existing installations.
+- **Apple Developer ID Application** signs Exec and all embedded Sparkle helpers. Explicitly set `SIGNING_IDENTITY` to the release certificate's SHA-1 for both build and installer commands. The local `exec.signingIdentity` may be an **Apple Development** certificate: stable development signing is not valid for notarization. Do not change the development setting or select an arbitrary identity. The bundle identifier remains unchanged for compatibility with existing installations.
 - **Sparkle EdDSA** signs update archives. Its private key stays in the login Keychain under account `exec-sparkle`. Only its public key (`SUPublicEDKey`) is committed in `macOS/Resources/Info.plist`.
 
 Sparkle 2.10.1 is pinned in `macOS/Package.swift` and `Package.resolved`. After `swift package resolve`, its tools are in `macOS/.build/artifacts/sparkle/Sparkle/bin/`. `generate_keys --account exec-sparkle -p` prints only the public key. Keep a secure backup of the private key outside this repository; do not regenerate or replace it casually, and never commit or log private keys or Keychain exports. Future release machines need the same signing key. See [Sparkle's documentation](https://sparkle-project.org/documentation/) for secure key backup/transfer and key rotation.
@@ -43,7 +43,32 @@ The app's public key must match the release-signing key. `prepare-update.sh` che
 
    This validates the bundle signature, notarization ticket, updater configuration, increasing build number, and local Sparkle public key. It generates a fresh `dist/update-<version>-<build>.<suffix>/` directory containing a ZIP, SHA-256 checksum, and candidate `appcast.xml`. The feed includes an EdDSA archive signature, version/build, OS/hardware requirements, and a URL under the matching GitHub release tag. Deltas are disabled for simplicity. Nothing is uploaded or published.
 
-6. A DMG can also be offered for first-time installation. Build it from the stapled app, sign and notarize the final DMG, and staple its own ticket. The appcast uses the ZIP, not the DMG.
+6. Build the drag-and-drop installer from the same stapled app:
+
+   ```sh
+   SIGNING_IDENTITY="<Developer ID Application SHA-1>" ./scripts/prepare-installer.sh /absolute/path/to/notarized/Exec.app
+   ```
+
+   The script uses only macOS tools. It creates `dist/installer-<version>-<build>.<suffix>/Exec-macOS-<architecture>.dmg`, with Exec on the left and an Applications shortcut on the right, fixed icon positions/size, and a saved Finder window layout. It validates the input app, signs and verifies the compressed DMG, and never modifies the source app. It needs a logged-in graphical session and permission to automate Finder. Each mount has a unique name to avoid confusing Finder with another mounted installer. Do not recreate the layout manually.
+
+   If preparation fails, its working directory and any mount are preserved for inspection; detach the exact printed mount path before cleanup. There are no automatic retries or forced unmounts.
+
+7. Notarize and staple the **DMG itself** (the app's ticket does not cover it):
+
+   ```sh
+   xcrun notarytool submit "$DMG" --keychain-profile exec-notary --no-wait --output-format json
+   # Save the returned ID, then query that submission; do not resubmit on timeout.
+   xcrun notarytool info "$SUBMISSION_ID" --keychain-profile exec-notary
+   xcrun notarytool log "$SUBMISSION_ID" --keychain-profile exec-notary "$LOG_PATH"
+   # Only after Accepted and inspecting the log:
+   xcrun stapler staple "$DMG"
+   xcrun stapler validate "$DMG"
+   codesign --verify --strict "$DMG"
+   spctl --assess --type open --context context:primary-signature "$DMG"
+   (cd "$(dirname "$DMG")" && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
+   ```
+
+   Set `DMG` to the generated absolute path, and preserve the submission ID and log alongside release artifacts. Mount the final read-only DMG to verify its saved layout, `/Applications` shortcut, app version and stapled app ticket. The appcast uses the Sparkle ZIP, **not** the DMG.
 
 ## Publish in this order
 
