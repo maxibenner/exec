@@ -8,8 +8,8 @@ struct ToolApprovalView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(approval.kind == .computer ? "Control your computer?" : approval.kind == .screenshot ? "Share a screenshot?" : approval.kind == .shell ? "Run shell command?" : "Apply file edit?").font(.headline)
-            if approval.kind != .screenshot && approval.kind != .computer {
+            Text(approval.kind == .screenshot ? "Share a screenshot?" : approval.kind == .shell ? "Run shell command?" : "Apply file edit?").font(.headline)
+            if approval.kind != .screenshot {
                 Text(verbatim: approval.directory.path).font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle).help(approval.directory.path).textSelection(.enabled)
             }
@@ -30,12 +30,10 @@ struct ToolApprovalView: View {
                 Button("Deny") {
                     if canResolve() { executor.resolveApproval(id: approval.id, approved: false) }
                 }
-                if approval.kind == .screenshot || approval.kind == .computer {
+                if approval.kind == .screenshot {
                     Button("Always for This Session") {
                         if canResolve() {
-                            executor.resolveApproval(id: approval.id, approved: true,
-                                                     allowScreenshotsForSession: approval.kind == .screenshot,
-                                                     allowComputerForSession: approval.kind == .computer)
+                            executor.resolveApproval(id: approval.id, approved: true, allowScreenshotsForSession: true)
                         }
                     }
                 }

@@ -66,7 +66,7 @@ import Foundation
         try expect(store.error == nil && HTTPStub.state.requests.count == 3 && store.workspace == nil)
         let requests = HTTPStub.state.requests
         let initial = try body(requests[0])
-        try expect((initial["tools"] as? [[String: Any]])?.compactMap { $0["name"] as? String } == ["web_search", "generate_image", "fetch_content", "open_app", "inspect_ui", "ui_action", "take_screenshot", "computer_use"])
+        try expect((initial["tools"] as? [[String: Any]])?.compactMap { $0["name"] as? String } == ["web_search", "generate_image", "fetch_content", "take_screenshot"])
         let search = try body(requests[1])
         try expect(requests[1].url?.absoluteString == CodexConnection.baseURL + "/responses")
         try expect(requests[1].value(forHTTPHeaderField: "Authorization") == "Bearer test-access")

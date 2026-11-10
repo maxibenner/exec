@@ -21,7 +21,6 @@ import ScreenCaptureKit
             for window in windows.prefix(100) {
                 // JSON quoting keeps titles containing newlines from impersonating rows.
                 let fields = ["id": String(window.windowID),
-                              "process_id": String(window.owningApplication?.processID ?? 0),
                               "app": String((window.owningApplication?.applicationName ?? "").prefix(200)),
                               "title": String((window.title ?? "").prefix(300))]
                 let data = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
