@@ -10,6 +10,7 @@ import Observation
     private(set) var listeningPort: UInt16?
     private(set) var configuration: PangolinConfiguration?
     private(set) var error: String?
+    var connectedToPangolin: Bool { enabled && listening && connector.connected }
     private let bindPort: UInt16
     private let credentials: any CredentialStore
     private let preferences: UserDefaults

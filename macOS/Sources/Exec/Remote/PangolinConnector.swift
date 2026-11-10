@@ -1,7 +1,9 @@
 import Darwin
 import Foundation
+import Observation
 
 @MainActor protocol PangolinChild: AnyObject {
+    var isHealthy: Bool { get }
     func stop()
 }
 
@@ -16,10 +18,12 @@ extension PangolinLaunching {
 }
 
 /// Owns exactly one launch attempt/child. No automatic respawn after failure.
-@MainActor final class PangolinConnector {
+@MainActor @Observable final class PangolinConnector {
+    private(set) var connected = false
     private let launcher: any PangolinLaunching
     private var child: (any PangolinChild)?
     private var startup: Task<Void, Never>?
+    private var healthMonitor: Task<Void, Never>?
     private var generation = UUID()
     private var attempted = false
     var failed: (@MainActor (String) -> Void)?
@@ -38,9 +42,16 @@ extension PangolinLaunching {
                 child = try launcher.launch(configuration: configuration) { [weak self] in
                     guard let self, self.generation == generation else { return }
                     self.child = nil
+                    self.clearHealth()
                     self.failed?("Pangolin stopped. Check the site in Pangolin, then disable and re-enable Remote Access to reconnect.")
                 }
                 startup = nil
+                healthMonitor = Task { [weak self] in
+                    while !Task.isCancelled, self?.generation == generation {
+                        self?.connected = self?.child?.isHealthy ?? false
+                        do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    }
+                }
             } catch {
                 guard self.generation == generation, !Task.isCancelled else { return }
                 startup = nil
@@ -49,9 +60,15 @@ extension PangolinLaunching {
         }
     }
 
+    private func clearHealth() {
+        healthMonitor?.cancel(); healthMonitor = nil
+        connected = false
+    }
+
     func stop() {
         generation = UUID()
         attempted = false
+        clearHealth()
         startup?.cancel(); startup = nil
         launcher.cancelValidation()
         child?.stop(); child = nil
@@ -119,6 +136,7 @@ enum PangolinSubprocess {
             environment["PANGOLIN_ENDPOINT"] = configuration.endpoint
             environment["SITE_ID"] = configuration.siteID
             environment["SITE_SECRET"] = configuration.siteSecret
+            environment["HEALTH_FILE"] = home.appendingPathComponent("healthy").path
         }
         return environment
     }
@@ -174,6 +192,16 @@ enum PangolinSubprocess {
 @MainActor private final class PangolinProcess: PangolinChild {
     private let process = Process()
     private let home: URL
+
+    var isHealthy: Bool {
+        // Newt creates/removes this marker after tunnel health checks; it is
+        // not a periodic heartbeat, so its modification time is not an expiry.
+        // A fresh private home per launch prevents a previous child's marker
+        // from making a new connection appear healthy.
+        guard process.isRunning,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: home.appendingPathComponent("healthy").path) else { return false }
+        return attributes[.type] as? FileAttributeType == .typeRegular
+    }
 
     init(configuration: PangolinConfiguration, exited: @escaping @MainActor () -> Void) throws {
         home = try PangolinSubprocess.home()

@@ -228,9 +228,17 @@ import WebKit
         let previews = ProcessInfo.processInfo.environment["EXEC_SETTINGS_PREVIEWS"].map { URL(fileURLWithPath: $0) }
         if let previews { try FileManager.default.createDirectory(at: previews, withIntermediateDirectories: true) }
         for configured in [false, true] {
+            let launcher = PangolinConnectorTests.Launcher()
             let access = RemoteAccess(credentials: Credentials(), preferences: fixture.preferences,
-                                      connector: PangolinConnector(launcher: PangolinConnectorTests.Launcher()))
-            if configured { try expect(access.apply(siteConfiguration)) }
+                                      assetDirectory: assets, port: 0, connector: PangolinConnector(launcher: launcher))
+            defer { access.setEnabled(false) }
+            if configured {
+                try expect(access.apply(siteConfiguration))
+                access.attach(fixture.library); access.setEnabled(true)
+                try await wait { launcher.children.count == 1 }
+                launcher.children[0].isHealthy = true
+                try await wait { access.connectedToPangolin }
+            }
             else { try expect(!access.apply(PangolinConfiguration())) }
             for dark in [false, true] {
                 let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 500, height: 680),
@@ -311,16 +319,25 @@ import WebKit
         launcher.beforeLaunch = { try expect(access.listening && access.listeningPort != nil) }
         access.setEnabled(true); access.setEnabled(true)
         try await wait { launcher.children.count == 1 }
-        try expect(access.error == nil)
+        try expect(access.error == nil && !access.connectedToPangolin)
+        launcher.children[0].isHealthy = true
+        try await wait { access.connectedToPangolin }
+        launcher.children[0].isHealthy = false
+        try await wait { !access.connectedToPangolin }
+        launcher.children[0].isHealthy = true
+        try await wait { access.connectedToPangolin }
         configuration.siteSecret = "replacement-fake-secret"
         credentials.failWrites = true
         try expect(!access.apply(configuration) && launcher.children[0].stops == 0)
         credentials.failWrites = false
         try expect(access.apply(configuration))
+        try expect(!access.connectedToPangolin)
         try await wait { launcher.children.count == 2 }
         try expect(launcher.children[0].stops == 1 && launcher.configurations[1] == configuration)
+        launcher.children[1].isHealthy = true
+        try await wait { access.connectedToPangolin }
         access.suspend()
-        try expect(launcher.children[1].stops == 1 && access.enabled)
+        try expect(launcher.children[1].stops == 1 && access.enabled && !access.connectedToPangolin)
         let restored = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets,
                                     port: 0, connector: PangolinConnector(launcher: launcher))
         defer { restored.suspend() }

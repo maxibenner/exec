@@ -40,9 +40,17 @@ Credentials are supplied only in the child's environment. The following limitati
 - **Unrelated configuration:** each probe/connector has a private, temporary `HOME` and working directory. The child receives a small allowlisted environment, not inherited `SUDO_USER`, config paths, account state, scripts, or proxy settings. Exec never reads or overwrites the user's Pangolin configuration. Temporary directories are removed on exit; an app/system crash may leave an empty/non-secret directory for the OS to clean up.
 - **Self-update:** the site runner starts an internal auto-update loop that can replace the selected executable and re-exec. There is no public site no-update flag in this release. Exec uses the reviewed internal `NEWT_SYSTEM_SUBSTRATE=CONTAINER` switch to suppress it, along with `PANGOLIN_CLI_DISABLE_UPDATE_CHECK=true` and `PANGOLIN_CLI_DISABLE_COMPANION_MODE=true`. This is a compatibility workaround, **not a claim that Exec runs a container**; reported substrate may therefore be “container.” Automatic CLI upgrades are not supported. Install updates yourself after Exec has reviewed/supports them.
 - **Version policy:** only **0.21.0** is accepted, rather than assuming future versions preserve the above behavior. The `version` probe has a timeout and bounded output. The CLI's version command may itself check GitHub for updates; it is run without site credentials and is never automatically retried. Missing, older, newer, and standalone Newt executables produce an actionable error.
-- **Foreground supervision:** `up site` runs the tunnel in-process, not through a daemon. macOS re-exec uses the same PID. SSH integration is disabled, and no up/down scripts, provisioning, Docker integration, or native interfaces are configured. Connector output is discarded directly to `/dev/null`, so it cannot accumulate or leak secrets into Exec logs. A running subprocess is not proof that Pangolin has accepted its credentials; verify the site's online state in the dashboard.
+- **Foreground supervision:** `up site` runs the tunnel in-process, not through a daemon. macOS re-exec uses the same PID. SSH integration is disabled, and no up/down scripts, provisioning, Docker integration, or native interfaces are configured. Connector output is discarded directly to `/dev/null`, so it cannot accumulate or leak secrets into Exec logs. A running subprocess alone is not proof of a connection; Exec uses the connector’s tunnel-health marker for the Settings indicator.
 
 Source review: [CLI site entrypoint at 0.21.0](https://github.com/fosrl/cli/blob/0.21.0/cmd/up/site/site.go), [Newt credential persistence at 1.20.0](https://github.com/fosrl/newt/blob/1.20.0/websocket/config.go), and [self-update switch at 1.20.0](https://github.com/fosrl/newt/blob/1.20.0/updates/selfupdate.go).
+
+## Connection indicator
+
+Settings shows **Connected to Pangolin** in green or **Not connected** in yellow, inline with the Remote Access description. Exec supplies the documented `HEALTH_FILE` in the connector’s private temporary directory and checks it once per second while its owned process is running. A fresh directory for every launch prevents stale state from a previous connector. Disable, quit, configuration replacement, and unexpected process exit clear the indicator.
+
+This reports **the connector’s Pangolin/WireGuard tunnel health**, not end-to-end browser reachability, Resource URL correctness, certificates, or resource access policies. It does not request a resource URL, inspect CLI logs, or replay any application command. The marker contains no credentials and is removed with the private temporary directory.
+
+The reviewed Newt 1.20.0 implementation creates the marker after a successful tunnel ping and removes it after its failure threshold/reconnection logic declares the tunnel unhealthy. It does **not** rewrite the file on every successful ping, so file age is not treated as an expiration. Consequently a network loss or sleep/wake transition can take tens of seconds or longer to appear; this is not an instantaneous connectivity guarantee. See [site health configuration](https://docs.pangolin.net/manage/sites/configure-site) and [reviewed ping behavior](https://github.com/fosrl/newt/blob/1.20.0/newt/ping.go).
 
 ## Lifecycle and troubleshooting
 
@@ -53,7 +61,7 @@ Repeated toggles/view updates cannot create duplicate connectors. Applying confi
 There is **no automatic process respawn** after a failed launch or unexpected exit. Correct the configuration or check the site/dashboard, then explicitly toggle Remote Access off and on. The connector's own network reconnection remains enabled and does not replay application commands. Enabling Remote Access alone does not keep an idle Mac awake, and it does not run while the app is closed.
 
 - **CLI missing/unsupported:** install the reviewed release and select the actual executable, not a Newt binary or service wrapper. Check executable permissions and macOS download/Gatekeeper approval outside Exec.
-- **Site offline while Exec has no launch error:** check the endpoint, ID/secret and network in Pangolin. Exec intentionally does not surface raw CLI logs or claim a verified connection based on the process staying alive.
+- **Not connected while Exec has no launch error:** check the endpoint, ID/secret and network in Pangolin. Exec intentionally does not surface raw CLI logs or mark a running process connected without the tunnel-health marker.
 - **403 / origin rejection:** check Resource URL, exact browser hostname/port, root-path routing, and preserved Host/Origin/request headers. Do not work around it with CORS or forwarded identity headers.
 - **Cannot listen:** another app may occupy port 9417. Stop that conflicting listener; Exec never takes over another process.
 - **Keychain failure:** previous saved credentials remain usable after a failed Apply. Resolve access/signing permissions and Apply again; no silent Keychain ACL relaxation is performed.
@@ -88,7 +96,7 @@ Manual deployment checks still required:
 - Private resource: authenticated allowed client succeeds; disconnected/unauthorized clients fail.
 - Correct credentials make the site online; invalid credentials fail without exposing credentials in logs/files.
 - Quit/relaunch with the real connector, rapid toggles, and configuration changes leave only the intended owned connector and leave independently started processes untouched.
-- Sleep/wake and network changes reconnect without command replay. Verify site state in Pangolin, not just process liveness.
+- Sleep/wake and network changes reconnect without command replay. Verify site state in Pangolin and both indicator transitions, allowing for the connector’s failure-detection delay.
 - Expire a real Pangolin browser session, reload/sign in, then reconcile any uncertain command without resending it.
 - Native Settings and iPhone Safari in light/dark mode, keyboard layout, folder selection, tool approvals, and stopping a harmless turn.
 - Stable-signing Keychain permissions on the installed app. Fake-store tests do not validate live Keychain prompts or Pangolin service behavior.

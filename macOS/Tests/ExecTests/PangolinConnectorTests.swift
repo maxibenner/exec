@@ -4,6 +4,7 @@ import Foundation
 @MainActor struct PangolinConnectorTests {
     final class Child: PangolinChild {
         var stops = 0
+        var isHealthy = false
         let exited: @MainActor () -> Void
         init(exited: @escaping @MainActor () -> Void) { self.exited = exited }
         func stop() { stops += 1 }
@@ -51,6 +52,8 @@ import Foundation
         try expect(environment["SITE_SECRET"] == "test-secret" && environment["SITE_ID"] == "test-site")
         try expect(environment["CONFIG_FILE"] == "/dev/null" && environment["HOME"] == home.path)
         try expect(environment["NEWT_SYSTEM_SUBSTRATE"] == "CONTAINER" && environment["SUDO_USER"] == nil)
+        try expect(environment["HEALTH_FILE"] == home.appendingPathComponent("healthy").path)
+        try expect(PangolinSubprocess.environment(home: home)["HEALTH_FILE"] == nil)
         try expect(environment["UPDOWN_SCRIPT"] == nil && environment["SITE_PROVISIONING_KEY"] == nil)
         for invalid in ["https://user:secret@example.com", "https://example.com/path", "https://example.com?secret=test", "https://example.com#test", "https://example.com:0"] {
             var config = configuration; config.resourceURL = invalid
@@ -66,17 +69,23 @@ import Foundation
         let configuration = PangolinConfiguration()
         managed.start(configuration); managed.start(configuration)
         try await wait { launcher.children.count == 1 }
-        try expect(launcher.validations == 1)
+        try expect(launcher.validations == 1 && !managed.connected)
+        launcher.children[0].isHealthy = true
+        try await wait { managed.connected }
         launcher.children[0].exited()
+        try expect(!managed.connected)
         managed.start(configuration)
         try await Task.sleep(for: .milliseconds(30))
         try expect(launcher.children.count == 1 && errors.count == 1)
         managed.stop(); managed.start(configuration)
         try await wait { launcher.children.count == 2 }
+        try expect(!managed.connected) // The previous child's healthy state is not reused.
+        launcher.children[1].isHealthy = true
+        try await wait { managed.connected }
         launcher.children[0].exited() // Old exit cannot kill/relabel the new child.
-        try expect(errors.count == 1)
+        try expect(errors.count == 1 && managed.connected)
         managed.stop(); managed.stop()
-        try expect(launcher.children[1].stops == 1)
+        try expect(launcher.children[1].stops == 1 && !managed.connected)
         launcher.failure = true
         managed.start(configuration)
         try await wait { errors.count == 2 }
@@ -138,7 +147,7 @@ import Foundation
         let stubborn = try executable("stubborn", """
         trap '' TERM
         echo $$ > '\(pidFile.path)'
-        printf '%s\\n' "$HOME" "$CONFIG_FILE" "$SITE_SECRET" "$@" > '\(envFile.path)'
+        printf '%s\\n' "$HOME" "$CONFIG_FILE" "$SITE_SECRET" "$HEALTH_FILE" "$@" > '\(envFile.path)'
         while :; do printf 'discarded connector output\\n'; done
         """)
         let independent = Process()
@@ -153,9 +162,20 @@ import Foundation
         try expect(getpgid(pid) == pid)
         let environment = try String(contentsOf: envFile, encoding: .utf8).split(separator: "\n").map(String.init)
         try expect(environment[1] == "/dev/null" && environment[2] == "test-secret")
-        try expect(Array(environment.dropFirst(3)) == ["up", "site", "--disable-ssh", "--log-level", "ERROR"])
+        try expect(Array(environment.dropFirst(4)) == ["up", "site", "--disable-ssh", "--log-level", "ERROR"])
+        let health = URL(fileURLWithPath: environment[3])
+        try expect(health.deletingLastPathComponent().path == environment[0] && !child.isHealthy)
+        try FileManager.default.createDirectory(at: health, withIntermediateDirectories: false)
+        try expect(!child.isHealthy)
+        try FileManager.default.removeItem(at: health)
+        try Data("ok".utf8).write(to: health)
+        try expect(child.isHealthy)
+        try FileManager.default.removeItem(at: health)
+        try expect(!child.isHealthy)
+        try Data("ok".utf8).write(to: health)
         let start = Date()
         child.stop()
+        try expect(!child.isHealthy)
         try expect(Date().timeIntervalSince(start) < 3.5)
         try await wait { exited }
         try expect(kill(pid, 0) == -1 && errno == ESRCH)

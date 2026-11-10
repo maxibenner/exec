@@ -9,7 +9,7 @@ struct RemoteAccessSettingsView: View {
             Section {
                 Toggle("Enable Remote Access", isOn: Binding(get: { access.enabled }, set: access.setEnabled))
             } footer: {
-                Text("Pangolin controls who can access Exec. Local connections on this Mac are trusted. No additional Exec login is required.")
+                Text("Pangolin controls who can access Exec. Local connections on this Mac are trusted. No additional Exec login is required. \(Text(access.connectedToPangolin ? "Connected to Pangolin" : "Not connected").foregroundColor(access.connectedToPangolin ? .green : .yellow))")
             }
 
             Section {
