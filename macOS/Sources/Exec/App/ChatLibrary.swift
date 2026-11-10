@@ -10,7 +10,7 @@ import Observation
         _ = authenticating
         return isPresentingStartup ? discoveredModels : discoveredModels.filter { provider.isModelAvailable($0.id) }
     }
-    enum SettingsTab { case modelsAndTools, accounts, usage, updates }
+    enum SettingsTab { case modelsAndTools, accounts, usage, updates, remoteAccess }
     var settingsTab = SettingsTab.modelsAndTools
     var connectionError: String?
     private var rememberedModels: [String: String]
@@ -612,6 +612,27 @@ import Observation
             self.activate(next)
             onOpened()
         }
+    }
+
+    /// Resolve existing conversations without changing desktop/window selection.
+    /// Cold loads share the navigation lock, preventing a second runner or deletion
+    /// while restoration is suspended. The operation executes before eviction.
+    func withRemoteConversation<T>(_ id: UUID, _ operation: (ChatStore) throws -> T) async throws -> T {
+        guard canModify, !isPresentingStartup else { throw ExecError("Exec is restoring or changing conversations. Try again shortly.") }
+        guard sessionList.contains(where: { $0.id == id && !$0.unreadable }) else {
+            throw ExecError("Conversation is unavailable.")
+        }
+        if let resident = conversation(id) { return try operation(resident) }
+        let generation = metadataGeneration
+        navigating = true
+        defer { loading = nil; navigating = false; trimConversations() }
+        let next = try makeConversation()
+        loading = next
+        try await next.loadSession(id)
+        try Task.checkCancellation()
+        guard generation == metadataGeneration else { throw CancellationError() }
+        remember(next)
+        return try operation(next)
     }
 
     func newConversation() {

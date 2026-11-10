@@ -72,6 +72,8 @@ import Observation
     private(set) var isSending = false
     private(set) var isCompacting = false
     private(set) var isStopping = false
+    // A delayed remote stop must never cancel a newer operation.
+    private(set) var operationID: UUID?
     var canEditDraft: Bool { !busy || isSending || isCompacting }
     private(set) var workspace: Workspace? { didSet { checkpointRevision += 1 } }
     private(set) var sessionList: [SessionSummary] = []
@@ -356,11 +358,28 @@ import Observation
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !draftImages.isEmpty, canEditDraft, !isImportingImages,
               hasUsableModel else { return }
-        let user = Message(role: .user, text: text, images: draftImages)
+        acceptInput(Message(role: .user, text: text, images: draftImages))
+        draft = ""; draftImages = []
+    }
+
+    var canSendRemoteMessage: Bool {
+        currentSessionID != nil && loadedSession && !restorationBlocked && !isStartupPresentation &&
+            !isStopping && canEditDraft && hasUsableModel && workspace != nil
+    }
+
+    /// Remote input has its own draft and ID; never borrow the desktop composer.
+    func sendRemoteMessage(_ text: String, id: UUID) throws {
+        guard canSendRemoteMessage else { throw ExecError("This conversation cannot accept messages right now. Check it on the Mac.") }
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.utf8.count <= 32_768 else { throw ExecError("Messages must contain text and be at most 32 KiB.") }
+        guard !messages.contains(where: { $0.id == id }) else { throw ExecError("This message ID is already in the conversation.") }
+        acceptInput(Message(id: id, role: .user, text: text))
+    }
+
+    private func acceptInput(_ user: Message) {
         pendingInput.append(user)
         messages.append(user)
         sessionActivityDate = Date()
-        draft = ""; draftImages = []
         tools.withdrawApprovalForInput()
         if !busy { sendPendingInput() }
     }
@@ -885,6 +904,7 @@ import Observation
                      _ operation: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }
         busy = true
+        operationID = UUID()
         isSending = sending
         isCompacting = compacting
         error = nil
@@ -898,6 +918,7 @@ import Observation
                 self.isSending = false
                 self.isCompacting = false
                 self.isStopping = false
+                self.operationID = nil
                 self.openingSessionID = nil
                 self.task = nil
                 if (sending || compacting) && completed && !Task.isCancelled {

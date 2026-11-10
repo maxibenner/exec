@@ -39,6 +39,14 @@ Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace
 
 ![Exec screenshot](screenshot.png)
 
+## Remote Access
+
+Follow existing conversations, send text and stop turns from a mobile browser. Enable **Settings → Remote Access**, then point a Pangolin HTTP/HTTPS resource through Newt on the Mac at `http://127.0.0.1:9417`. Exec serves both the frontend and API; no separate website or relay is needed.
+
+Remote Access is off by default and opens no port while disabled. It uses a separate Keychain-backed access key. Tool approvals stay on the Mac, and existing auto-approval settings still apply.
+
+See the [setup and security guide](docs/remote-access.md) for private/public Pangolin resources, HTTPS, key revocation and interrupted connections.
+
 ## Development
 
 Open `macOS/Package.swift` in Xcode, or run from `macOS/`:

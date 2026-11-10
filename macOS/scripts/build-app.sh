@@ -38,6 +38,8 @@ built="$staging/Exec.app"
 mkdir -p "$built/Contents/MacOS" "$built/Contents/Resources"
 cp "$bin/Exec" "$built/Contents/MacOS/Exec"
 cp Resources/Info.plist "$built/Contents/Info.plist"
+# Ship the same-origin frontend with its matching API, inside the signed bundle.
+ditto Resources/RemoteUI "$built/Contents/Resources/RemoteUI"
 # Compile the layered glass icon and the compatibility ICNS for older macOS.
 # Use an absolute input path: the asset compiler service can outlive a worktree.
 xcrun actool "$PWD/Design/Icons/Glass_Icon.icon" \

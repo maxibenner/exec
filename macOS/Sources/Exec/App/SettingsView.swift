@@ -4,6 +4,7 @@ struct SettingsView: View {
     let store: ChatLibrary
     let canCheckForUpdates: Bool
     let checkForUpdates: () -> Void
+    var remoteAccess: RemoteAccess? = nil
 
     var body: some View {
         @Bindable var settings = store
@@ -17,6 +18,11 @@ struct SettingsView: View {
             UsageSettingsView(store: store)
                 .tabItem { Label("Usage", systemImage: "chart.bar") }
                 .tag(ChatLibrary.SettingsTab.usage)
+            if let remoteAccess {
+                RemoteAccessSettingsView(access: remoteAccess)
+                    .tabItem { Label("Remote Access", systemImage: "iphone") }
+                    .tag(ChatLibrary.SettingsTab.remoteAccess)
+            }
             UpdatesSettingsView(canCheckForUpdates: canCheckForUpdates, checkForUpdates: checkForUpdates)
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
                 .tag(ChatLibrary.SettingsTab.updates)

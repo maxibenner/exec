@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Exec</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <section id="login" class="login">
+    <form id="login-form" class="login-card">
+      <div class="wordmark">Exec<span class="accent">.</span></div>
+      <h1>Your conversations, wherever you are.</h1>
+      <label for="access-key">Access key</label>
+      <input id="access-key" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" required>
+      <p class="context">Copy the key from Exec → Settings → Remote Access on your Mac. This key allows messages that can run tools.</p>
+      <button id="connect" class="primary" type="submit">Open Exec</button>
+      <p id="login-error" class="error" role="alert" hidden></p>
+    </form>
+  </section>
+  <main id="app" hidden>
+    <aside id="sidebar">
+      <header><div class="wordmark">Exec<span class="accent">.</span></div><button id="logout" class="quiet">Lock</button></header>
+      <div id="list-error" class="banner error" role="alert" hidden></div>
+      <h1 class="section-title">Conversations</h1>
+      <nav id="conversations" aria-label="Conversations"></nav>
+      <p id="empty-list" class="context" hidden>No conversations.</p>
+    </aside>
+    <section id="chat" aria-label="Conversation">
+      <header class="chat-header">
+        <button id="back" class="quiet" aria-label="Back to conversations">‹</button>
+        <h1 id="title">Conversations</h1>
+        <button id="refresh" class="quiet" aria-label="Refresh">↻</button>
+      </header>
+      <div id="connection-error" class="banner error" role="alert" hidden></div>
+      <div id="approval" class="banner" hidden>Approval required on the Mac. You can send a message to change direction.</div>
+      <div id="conversation-error" class="banner error" role="alert" hidden></div>
+      <div id="transcript" tabindex="0" aria-label="Messages"></div>
+      <div id="uncertain" class="banner" hidden>
+        <p>Delivery is unconfirmed. The command may already have run. Check its receipt and the conversation before sending again.</p>
+        <div class="actions"><button id="check-delivery">Check Receipt</button><button id="dismiss-delivery">Dismiss</button></div>
+        <p id="receipt-error" class="error" role="alert" hidden></p>
+      </div>
+      <form id="composer" hidden>
+        <label class="visually-hidden" for="message">Message</label>
+        <textarea id="message" rows="2" placeholder="Message" maxlength="32768"></textarea>
+        <div class="composer-actions"><button id="stop" type="button" hidden>Stop</button><button id="send" type="submit" class="primary">Send</button></div>
+      </form>
+    </section>
+  </main>
+  <noscript>Enable JavaScript to use Exec’s mobile frontend.</noscript>
+</body>
+</html>

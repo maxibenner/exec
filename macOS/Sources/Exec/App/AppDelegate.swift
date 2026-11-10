@@ -2,6 +2,7 @@ import AppKit
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var store: ChatLibrary?
+    var stopRemoteAccess: (() -> Void)?
     private var waitingToQuit = false
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -18,6 +19,7 @@ import AppKit
         guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
         guard store.hasRunningOperations else { return .terminateNow }
         waitingToQuit = true
+        stopRemoteAccess?() // No new commands while cancellation checkpoints finish.
         store.stopAll()
         // Let cancellation reap shell children and checkpoint outcomes before exiting.
         Task {
