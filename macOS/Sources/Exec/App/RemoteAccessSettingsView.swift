@@ -31,6 +31,8 @@ struct RemoteAccessSettingsView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .font(.body)
+                // Grouped-form footers inherit a 10-point content inset.
+                .padding(.leading, -10)
             }
             if let error = access.error {
                 Text(error).foregroundStyle(.red).textSelection(.enabled)
