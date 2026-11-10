@@ -65,8 +65,10 @@ enum CodexConnection {
         if !tools.isEmpty {
             body["parallel_tool_calls"] = false
             body["tools"] = tools.map { tool -> [String: Any] in
-                let properties = Dictionary(uniqueKeysWithValues: tool.parameters.map {
-                    ($0.name, ["type": $0.type, "description": $0.description])
+                // Strict schemas require every property; null represents an omitted optional argument.
+                let properties = Dictionary(uniqueKeysWithValues: tool.parameters.map { parameter in
+                    (parameter.name, ["type": parameter.isOptional ? [parameter.type, "null"] : parameter.type,
+                                      "description": parameter.description] as [String: Any])
                 })
                 return ["type": "function", "name": tool.name, "description": tool.description, "strict": true,
                         "parameters": ["type": "object", "properties": properties,

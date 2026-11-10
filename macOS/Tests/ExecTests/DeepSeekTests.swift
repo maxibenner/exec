@@ -85,6 +85,23 @@ import Foundation
         try expect(restored.filter { $0["role"] as? String == "assistant" }.compactMap { $0["reasoning_content"] as? String } == ["search-reasoning", "private-reasoning"])
     }
 
+    func shellTimeoutSchemaIsOptional() async throws {
+        let http = HTTPStub.makeSession([.init(chunks: [catalog]), .init(chunks: [try answer()])])
+        defer { http.invalidateAndCancel() }
+        let provider = try await connected(http)
+        for try await _ in provider.send([Message(role: .user, text: "Build")], model: "deepseek-flash",
+                                          effort: nil, instructions: "", tools: CodingTools.definitions) {}
+        let request = try body(HTTPStub.state.requests[1])
+        let tools = (request["tools"] as! [[String: Any]]).map { $0["function"] as! [String: Any] }
+        let shell = tools.first { $0["name"] as? String == "shell" }!
+        let parameters = shell["parameters"] as! [String: Any]
+        try expect(parameters["required"] as? [String] == ["command", "description"])
+        let properties = parameters["properties"] as! [String: [String: Any]]
+        try expect(properties["timeout_seconds"]?["type"] as? String == "integer")
+        let read = tools.first { $0["name"] as? String == "read_file" }!["parameters"] as! [String: Any]
+        try expect(read["required"] as? [String] == ["path", "start_line", "end_line"])
+    }
+
     func incompleteStreamsNeverCommitToolsOrReasoning() async throws {
         for finish in [String?.none, "length", "content_filter"] {
             let response = try chunk(["reasoning_content": "unfinished"]) + chunk(["tool_calls": [["index": 0, "id": "call", "type": "function", "function": ["name": "shell", "arguments": "{}"]]]], finish: finish)

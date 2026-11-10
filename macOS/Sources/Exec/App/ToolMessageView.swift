@@ -7,6 +7,7 @@ struct ToolMessageView: View {
     let isAwaitingApproval: Bool
     let state: TranscriptState
     let messageID: UUID
+    @AppStorage(ToolDisplayPreferences.descriptiveShellTitlesKey) private var descriptiveShellTitles = false
     @State private var expanded: Bool?
 
     init(call: ToolCall, result: ToolResult?, isAwaitingApproval: Bool,
@@ -20,7 +21,7 @@ struct ToolMessageView: View {
     }
 
     var body: some View {
-        let presentation = ToolPresentation(call: call, result: result)
+        let presentation = ToolPresentation(call: call, result: result, descriptiveShellTitles: descriptiveShellTitles)
         DisclosureGroup(isExpanded: Binding(get: { expanded ?? (result?.edit != nil || result?.generatedImage != nil) }, set: { value in
             state.followsLatest = false
             state.expanded[messageID] = value

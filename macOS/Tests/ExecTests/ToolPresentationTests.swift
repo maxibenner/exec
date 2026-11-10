@@ -6,6 +6,37 @@ import SwiftUI
         ToolResult(call: ToolCall(id: name, name: name, arguments: arguments), text: output)
     }
 
+    func descriptiveShellTitlesPreserveCommandAndResults() throws {
+        let suite = "exec-shell-titles-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preference = AppStorage(wrappedValue: false, ToolDisplayPreferences.descriptiveShellTitlesKey, store: defaults)
+        try expect(!preference.wrappedValue)
+        let call = ToolCall(id: "shell", name: "shell", arguments: #"{"command":"swift test","description":"Run the Swift tests"}"#)
+        let result = ToolResult(call: call, text: "Exit code: 1\nTest failed")
+        for enabled in [true, false] {
+            preference.wrappedValue = enabled
+            let restored = AppStorage(wrappedValue: false, ToolDisplayPreferences.descriptiveShellTitlesKey,
+                                      store: UserDefaults(suiteName: suite)!)
+            try expect(restored.wrappedValue == enabled)
+            for output in [ToolResult?.none, result] {
+                let presentation = ToolPresentation(call: call, result: output, descriptiveShellTitles: restored.wrappedValue)
+                try expect(presentation.summary == (enabled ? "Run the Swift tests" : "swift test"))
+                try expect(presentation.inputs == [.init(title: "Command", text: "swift test")])
+                try expect(presentation.output == (output?.text ?? ""))
+            }
+        }
+        for metadata in ["", #", "description": "  ""#, #", "description": null"#, #", "description": 42"#] {
+            let legacy = ToolCall(id: "legacy", name: "shell", arguments: "{\"command\":\"swift test\"\(metadata)}")
+            try expect(ToolPresentation(call: legacy, descriptiveShellTitles: true).summary == "swift test")
+        }
+        let read = ToolCall(id: "read", name: "read_file", arguments: #"{"path":"README.md","description":"Ignored"}"#)
+        try expect(ToolPresentation(call: read, descriptiveShellTitles: true).summary == "README.md")
+        let failed = ToolResult(call: call, text: "Tool error: Cannot run command")
+        let failure = ToolPresentation(call: call, result: failed, descriptiveShellTitles: true)
+        try expect(failure.detail == nil && failure.outputTitle == "Result" && failure.output == failed.text)
+    }
+
     func describesInputsAndPreservesResults() throws {
         let command = "printf 'hello'\nprintf 'world'"
         let arguments = String(decoding: try JSONEncoder().encode(["command": command]), as: UTF8.self)

@@ -13,6 +13,9 @@ struct ToolApprovalView: View {
                 Text(verbatim: approval.directory.path).font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle).help(approval.directory.path).textSelection(.enabled)
             }
+            if let timeout = approval.timeoutSeconds {
+                Text("Timeout: \(timeout) seconds").font(.caption).foregroundStyle(.secondary)
+            }
             ScrollView([.horizontal, .vertical]) {
                 Text(preview).font(.system(.body, design: .monospaced))
                     .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)

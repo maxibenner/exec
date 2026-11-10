@@ -72,7 +72,7 @@ enum ShellRunner {
             drain()
             try Task.checkCancellation()
             if ContinuousClock.now >= deadline {
-                return "Command timed out; termination requested for its process group. It may have changed files.\n" + output.finish()
+                return "Command timed out; termination requested for its process group. It may have changed files. Do not retry without a new user request.\n" + output.finish()
             }
             var status: Int32 = 0
             let waited = waitpid(pid, &status, WNOHANG)

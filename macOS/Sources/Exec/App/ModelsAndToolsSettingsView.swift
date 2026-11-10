@@ -1,12 +1,23 @@
 import SwiftUI
 
 struct ModelsAndToolsSettingsView: View {
+    @AppStorage(ToolDisplayPreferences.descriptiveShellTitlesKey) private var descriptiveShellTitles = false
     let store: ChatLibrary
     private var connected: [ProviderConnection] { store.connectedProviders }
 
     var body: some View {
+        Form {
+            Section("Tool Titles") {
+                Toggle("Descriptive shell titles", isOn: $descriptiveShellTitles)
+            }
+            providerSettings
+        }
+        .formStyle(.grouped)
+    }
+
+    private var providerSettings: some View {
         @Bindable var settings = store
-        return Form {
+        return Group {
             if connected.isEmpty {
                 Section { Text("No providers connected").foregroundStyle(.secondary) }
             }
@@ -69,7 +80,6 @@ struct ModelsAndToolsSettingsView: View {
                 }
             }
         }
-        .formStyle(.grouped)
         .disabled(store.authenticating || connected.isEmpty)
     }
 

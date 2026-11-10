@@ -20,7 +20,7 @@ struct ToolPresentation {
         self.init(call: result.call, result: result)
     }
 
-    init(call: ToolCall, result: ToolResult? = nil) {
+    init(call: ToolCall, result: ToolResult? = nil, descriptiveShellTitles: Bool = false) {
         struct Arguments: Decodable {
             var path: String?
             var query: String?
@@ -34,7 +34,7 @@ struct ToolPresentation {
         case "shell":
             title = "Shell"; icon = "terminal"
             if let command = arguments?.command {
-                summary = command
+                summary = descriptiveShellTitles ? (CodingTools.shellDescription(call) ?? command) : command
                 inputs = [Field(title: "Command", text: command)]
             }
             outputTitle = "Output"

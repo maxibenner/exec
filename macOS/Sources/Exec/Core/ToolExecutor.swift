@@ -12,6 +12,7 @@ struct ToolApprovalDenied: ContextSafeError {
         let kind: Kind
         let content: String
         let directory: URL
+        var timeoutSeconds: Int? = nil
     }
     private(set) var pendingApproval: Approval? {
         didSet { approvalDidChange?(pendingApproval != nil) }
@@ -61,13 +62,15 @@ struct ToolApprovalDenied: ContextSafeError {
         guard let workspace else { return ToolResult(call: call, text: "Error: select a workspace before using tools.") }
         do {
             if call.name == "shell" {
-                let command = try CodingTools.command(call)
-                let approval = Approval(kind: .shell, content: command, directory: workspace.root)
+                let arguments = try CodingTools.shellArguments(call)
+                let approval = Approval(kind: .shell, content: arguments.command, directory: workspace.root,
+                                        timeoutSeconds: arguments.timeoutSeconds)
                 guard try await requestApproval(approval) else {
                     return ToolResult(call: call, text: "User denied this command. It was not executed. Do not retry it without a new user request.")
                 }
                 return ToolResult(call: call, text: try await background {
-                    try await ShellRunner.run(command, in: workspace.root, logDirectory: shellLogDirectory)
+                    try await ShellRunner.run(arguments.command, in: workspace.root,
+                                              timeout: .seconds(arguments.timeoutSeconds), logDirectory: shellLogDirectory)
                 })
             }
             if call.name == "edit_file" {
