@@ -113,22 +113,53 @@ import Observation
         panel.canCreateDirectories = false
         panel.directoryURL = directory
         panel.prompt = "Choose Workspace"
-        // Keep the disclosure out of the panel message, whose intrinsic width
-        // can stretch the native folder picker.
-        let notice = NSTextField(wrappingLabelWithString: "The model can read, write, and edit files in this directory.")
-        notice.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        notice.textColor = .secondaryLabelColor
-        notice.preferredMaxLayoutWidth = 420
-        notice.translatesAutoresizingMaskIntoConstraints = false
-        notice.widthAnchor.constraint(equalToConstant: 420).isActive = true
-        notice.setContentCompressionResistancePriority(.required, for: .vertical)
-        panel.accessoryView = notice
+        panel.accessoryView = makeWorkspacePickerExplanation()
         panel.isAccessoryViewDisclosed = true
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         panel.beginSheetModal(for: window) { response in
             completion(response == .OK ? panel.url : nil)
         }
+    }
+
+    private static func makeWorkspacePickerExplanation() -> NSView {
+        let heading = NSTextField(wrappingLabelWithString: "Choose a workspace folder")
+        heading.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+
+        let explanation = NSTextField(wrappingLabelWithString:
+            "A workspace is the folder Exec uses for this conversation. Choose your project folder, or a folder containing the files you want help with.")
+        explanation.font = .systemFont(ofSize: NSFont.systemFontSize)
+
+        let disclosure = NSTextField(wrappingLabelWithString:
+            "Exec can read, create, and edit files in the folder you choose.")
+        disclosure.font = .systemFont(ofSize: NSFont.systemFontSize)
+        disclosure.textColor = .secondaryLabelColor
+
+        // Bound the wrapping width rather than using the panel message, which
+        // can stretch the native folder picker to fit its text.
+        let content = NSStackView(views: [heading, explanation, disclosure])
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 8
+        content.setCustomSpacing(12, after: explanation)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        for label in [heading, explanation, disclosure] {
+            label.preferredMaxLayoutWidth = 420
+            label.widthAnchor.constraint(equalToConstant: 420).isActive = true
+            label.setContentCompressionResistancePriority(.required, for: .vertical)
+        }
+
+        let container = NSView()
+        container.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            content.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -16)
+        ])
+        container.layoutSubtreeIfNeeded()
+        container.setFrameSize(container.fittingSize)
+        return container
     }
 
     func send() {
