@@ -228,7 +228,8 @@ import WebKit
         fixture.library.settingsTab = .remoteAccess
         let previews = ProcessInfo.processInfo.environment["EXEC_SETTINGS_PREVIEWS"].map { URL(fileURLWithPath: $0) }
         if let previews { try FileManager.default.createDirectory(at: previews, withIntermediateDirectories: true) }
-        for configured in [false, true] {
+        for state in [RemoteAccess.ConnectionState.notConnected, .connecting, .connected] {
+            let configured = state != .notConnected
             let launcher = PangolinConnectorTests.Launcher()
             let access = RemoteAccess(credentials: Credentials(), preferences: fixture.preferences,
                                       assetDirectory: assets, port: 0, connector: PangolinConnector(launcher: launcher))
@@ -237,9 +238,12 @@ import WebKit
                 try expect(access.apply(siteConfiguration))
                 access.attach(fixture.library); access.setEnabled(true)
                 try await wait { launcher.children.count == 1 }
-                launcher.children[0].isHealthy = true
-                try await wait { access.connectedToPangolin }
+                if state == .connected {
+                    launcher.children[0].isHealthy = true
+                    try await wait { access.connectedToPangolin }
+                }
             }
+            try expect(access.connectionState == state)
             for dark in [false, true] {
                 let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 500, height: 680),
                                       styleMask: [.titled], backing: .buffered, defer: false)
@@ -268,7 +272,7 @@ import WebKit
                 if let previews, let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
                     host.cacheDisplay(in: host.bounds, to: bitmap)
                     try bitmap.representation(using: .png, properties: [:])?.write(to:
-                        previews.appendingPathComponent("remote-\(configured ? "configured" : "setup")-\(dark ? "dark" : "light").png"))
+                        previews.appendingPathComponent("remote-\(state)-\(dark ? "dark" : "light").png"))
                 }
             }
         }
@@ -276,8 +280,8 @@ import WebKit
 
     func oldConfigurationCannotBypassConnectorSetup() async throws {
         let fixture = try await Fixture.make(); defer { fixture.cleanup() }
-        fixture.preferences.set(true, forKey: "mobileAccessEnabled")
         for complete in [false, true] {
+            fixture.preferences.set(true, forKey: "mobileAccessEnabled")
             var configuration = siteConfiguration
             if !complete { configuration.siteSecret = "" }
             var record = try JSONSerialization.jsonObject(with: JSONEncoder().encode(configuration)) as! [String: Any]
@@ -294,8 +298,10 @@ import WebKit
                 try await wait { launcher.children.count == 1 || access.error != nil }
                 try expect(access.error == nil && access.listening && launcher.children.count == 1)
             } else {
-                try expect(access.error != nil && !access.listening && launcher.validations == 0)
+                try expect(access.error != nil && !access.listening && !access.enabled && launcher.validations == 0)
+                try expect(access.connectionState == .notConnected)
                 try expect(access.apply(siteConfiguration))
+                access.setEnabled(true)
                 try await wait { launcher.children.count == 1 || access.error != nil }
                 try expect(access.error == nil && launcher.children.count == 1)
                 let saved = try JSONSerialization.jsonObject(with: credentials.data!) as! [String: Any]
@@ -304,6 +310,80 @@ import WebKit
             access.suspend()
             try expect(launcher.children[0].stops == 1)
         }
+    }
+
+    func connectionFailureDisablesWithoutStoppingAcceptedWork() async throws {
+        let fixture = try await Fixture.make(); defer { fixture.cleanup() }
+        let credentials = Credentials(), launcher = PangolinConnectorTests.Launcher()
+        let access = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets,
+                                  port: 0, connector: PangolinConnector(launcher: launcher))
+        defer { access.suspend() }
+        access.attach(fixture.library)
+        try expect(access.apply(siteConfiguration))
+        let running = fixture.library.current
+        fixture.provider.children.first!.holdOpen = true
+        try running.sendRemoteMessage("Keep this accepted work running", id: UUID())
+        try await wait { fixture.provider.children.first!.pending != nil }
+        access.setEnabled(true)
+        try expect(access.connectionState == .connecting)
+        try await wait { launcher.children.count == 1 }
+        try expect(access.listening && access.connectionState == .connecting)
+        launcher.children[0].exited()
+        try expect(!access.enabled)
+        try expect(access.connectionState == .notConnected && !access.listening && access.listeningPort == nil)
+        try expect(!fixture.preferences.bool(forKey: "mobileAccessEnabled"))
+        try expect(access.error != nil && running.busy && !running.isStopping)
+        let error = access.error
+        launcher.children[0].isHealthy = true
+        launcher.children[0].exited()
+        try expect(access.error == error && access.connectionState == .notConnected)
+        let restartedLauncher = PangolinConnectorTests.Launcher()
+        let restarted = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets,
+                                     port: 0, connector: PangolinConnector(launcher: restartedLauncher))
+        restarted.attach(fixture.library)
+        try expect(!restarted.enabled && !restarted.listening && restartedLauncher.validations == 0)
+        running.stop(); await running.waitUntilIdle()
+    }
+
+    func connectionStatesIgnoreLateAttemptsAndTrackRecovery() async throws {
+        let fixture = try await Fixture.make(); defer { fixture.cleanup() }
+        let launcher = PangolinConnectorTests.Launcher()
+        let connector = PangolinConnector(launcher: launcher)
+        let access = RemoteAccess(credentials: Credentials(), preferences: fixture.preferences, assetDirectory: assets,
+                                  port: 0, connector: connector)
+        defer { access.suspend() }
+        access.attach(fixture.library)
+        try expect(access.apply(siteConfiguration))
+        launcher.held = true
+        access.setEnabled(true)
+        try await wait { launcher.continuation != nil }
+        try expect(access.connectionState == .connecting && launcher.children.isEmpty)
+        access.setEnabled(false)
+        try expect(access.connectionState == .notConnected)
+        launcher.held = false; launcher.initiallyHealthy = true
+        access.setEnabled(true)
+        try expect(access.connectionState == .connecting)
+        try await wait { access.connectedToPangolin }
+        launcher.continuation?.resume(); launcher.continuation = nil
+        try await Task.sleep(for: .milliseconds(30))
+        try expect(access.enabled && access.error == nil && launcher.children.count == 1)
+        var replacement = siteConfiguration; replacement.siteSecret = "replacement-fake-secret"
+        try expect(access.apply(replacement))
+        try expect(access.connectionState == .connecting)
+        try await wait { launcher.children.count == 2 && access.connectedToPangolin }
+        launcher.children[0].exited()
+        try await Task.sleep(for: .milliseconds(30))
+        try expect(access.enabled && access.error == nil && launcher.children[0].stops == 1)
+        launcher.children[1].isHealthy = false; connector.refreshHealth()
+        try expect(access.connectionState == .notConnected && access.enabled)
+        launcher.children[1].isHealthy = true; connector.refreshHealth()
+        try expect(access.connectionState == .connected)
+        access.setEnabled(false)
+        try expect(access.connectionState == .notConnected && launcher.children[1].stops == 1)
+        launcher.failure = true
+        access.setEnabled(true)
+        try await wait { !access.enabled }
+        try expect(access.connectionState == .notConnected && access.error != nil && launcher.children.count == 2)
     }
 
     func connectorFollowsListenerConfigurationAndRelaunch() async throws {

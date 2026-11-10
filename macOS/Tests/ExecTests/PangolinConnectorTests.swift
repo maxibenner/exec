@@ -14,6 +14,7 @@ import Foundation
         var children: [Child] = []
         var configurations: [PangolinConfiguration] = []
         var failure = false
+        var initiallyHealthy = false
         var held = false
         var continuation: CheckedContinuation<Void, Never>?
         var beforeLaunch: (() throws -> Void)?
@@ -25,7 +26,9 @@ import Foundation
         func launch(configuration: PangolinConfiguration, exited: @escaping @MainActor () -> Void) throws -> any PangolinChild {
             try beforeLaunch?()
             configurations.append(configuration)
-            let child = Child(exited: exited); children.append(child)
+            let child = Child(exited: exited)
+            child.isHealthy = initiallyHealthy
+            children.append(child)
             return child
         }
     }

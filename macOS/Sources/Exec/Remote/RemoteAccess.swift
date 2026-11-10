@@ -3,6 +3,12 @@ import Observation
 
 /// Application-owned lifecycle, independent of SwiftUI updates and chat windows.
 @MainActor @Observable final class RemoteAccess {
+    enum ConnectionState: String {
+        case notConnected = "Not connected"
+        case connecting = "Connecting"
+        case connected = "Connected"
+    }
+
     static let port: UInt16 = 9417
     static let address = "http://127.0.0.1:9417"
     private(set) var enabled: Bool
@@ -10,7 +16,8 @@ import Observation
     private(set) var listeningPort: UInt16?
     private(set) var configuration: PangolinConfiguration?
     private(set) var error: String?
-    var connectedToPangolin: Bool { enabled && listening && connector.connected }
+    private(set) var connectionState: ConnectionState = .notConnected
+    var connectedToPangolin: Bool { connectionState == .connected }
     private let bindPort: UInt16
     private let credentials: any CredentialStore
     private let preferences: UserDefaults
@@ -32,7 +39,8 @@ import Observation
         self.homeDirectory = homeDirectory; self.connector = connector
         bindPort = port
         enabled = preferences.bool(forKey: "mobileAccessEnabled")
-        connector.failed = { [weak self] error in self?.error = error }
+        connector.failed = { [weak self] error in self?.fail(error) }
+        connector.connectionChanged = { [weak self] connected in self?.connectionChanged(connected) }
     }
 
     func loadConfiguration() {
@@ -79,10 +87,12 @@ import Observation
     }
 
     private func start() {
-        guard server == nil, let library else { return }
+        guard enabled, server == nil, let library else { return }
+        connectionState = .connecting
+        let generation = self.generation
         loadConfiguration()
-        guard loaded else { return }
-        guard let configuration else { error = "Set up Pangolin below and apply the configuration."; return }
+        guard loaded else { fail(error ?? "Could not load the Pangolin configuration."); return }
+        guard let configuration else { fail("Set up Pangolin below and apply the configuration."); return }
         do {
             let configuration = try configuration.validated()
             guard let assetDirectory else { throw ExecError("The remote frontend is missing. Rebuild Exec with scripts/build-app.sh.") }
@@ -94,7 +104,6 @@ import Observation
             let api = RemoteAPI(library: library, assets: assets, homeDirectory: homeDirectory,
                                 allowedOrigins: Set([PangolinConfiguration.origin(configuration.resourceURL)].compactMap { $0 }))
             self.api = api
-            let generation = self.generation
             let server = RemoteHTTPServer(handle: { [weak api] request in
                 guard let api else { return .error(503, "Remote access is disabled.") }
                 return await api.handle(request)
@@ -104,11 +113,27 @@ import Observation
                 if let port {
                     api?.allowLoopback(port: port)
                     self.connector.start(configuration)
-                } else { self.connector.stop() }
+                } else { self.fail(error ?? "Could not start the remote access listener.") }
             })
             self.server = server
             try server.start(port: bindPort)
-        } catch { stop(); self.error = error.localizedDescription }
+        } catch { fail(error.localizedDescription) }
+    }
+
+    private func connectionChanged(_ connected: Bool) {
+        guard enabled, listening else { return }
+        if connected {
+            connectionState = .connected
+        } else if connectionState == .connected {
+            // Leave normal network recovery to Pangolin without replaying
+            // application commands or claiming an unhealthy tunnel is connected.
+            connectionState = .notConnected
+        }
+    }
+
+    private func fail(_ message: String) {
+        setEnabled(false)
+        error = message
     }
 
     /// Stop and reap the owned connector on quit without changing the preference.
@@ -116,9 +141,10 @@ import Observation
 
     private func stop() {
         generation = UUID()
+        connectionState = .notConnected
+        listening = false; listeningPort = nil
         api?.invalidate(); api = nil
         server?.stop(); server = nil
         connector.stop()
-        listening = false; listeningPort = nil
     }
 }

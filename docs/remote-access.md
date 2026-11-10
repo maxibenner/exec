@@ -46,7 +46,11 @@ Source review: [CLI site entrypoint at 0.21.0](https://github.com/fosrl/cli/blob
 
 ## Connection indicator
 
-Settings shows **Connected** in green or **Not connected** in yellow, inline with the Remote Access description. Exec supplies the documented `HEALTH_FILE` in the connector’s private temporary directory and checks it once per second while its owned process is running. A fresh directory for every launch prevents stale state from a previous connector. Disable, quit, configuration replacement, and unexpected process exit clear the indicator.
+Settings shows **Not connected** in red, **Connecting** in yellow, or **Connected** in green, inline with the Remote Access description. Exec supplies the documented `HEALTH_FILE` in the connector’s private temporary directory and checks it once per second while its owned process is running. A fresh directory for every launch prevents stale state from a previous connector. Disable, quit, configuration replacement, and unexpected process exit clear the indicator.
+
+Enabling Remote Access shows **Connecting** during listener/CLI startup and until the first healthy tunnel signal. There is **no connection timeout**: if the CLI keeps running and retrying without establishing a tunnel, the switch stays enabled and the status remains **Connecting**. You can disable it at any time. Missing/invalid local configuration, listener failures, and failed or unexpectedly exited connectors turn the switch off, persist that disabled state, and show **Not connected** with a standard error alert. Already accepted chat turns continue independently.
+
+After a successful connection, a reported network loss shows **Not connected** while the connector performs its normal recovery; a healthy signal restores **Connected**. Applying configuration while enabled or restoring enabled access after app launch starts a fresh connection attempt. Late callbacks from an older attempt cannot disable or revive a newer one. Exec uses the CLI’s health marker and process lifecycle rather than parsing raw log messages, which are not a stable status API and may contain sensitive details.
 
 This reports **the connector’s Pangolin/WireGuard tunnel health**, not end-to-end browser reachability, Resource URL correctness, certificates, or resource access policies. It does not request a resource URL, inspect CLI logs, or replay any application command. The marker contains no credentials and is removed with the private temporary directory.
 
@@ -58,10 +62,10 @@ Remote Access is off by default. Disabled startup does not read the remote Keych
 
 Repeated toggles/view updates cannot create duplicate connectors. Applying configuration stops the old connector and server before starting the replacement, rotating the command epoch. Disabling closes HTTP connections and stops/reaps only the owned child; accepted chat turns continue independently. Normal app quit—including an idle quit—also stops it. Shutdown gives the owned process group two seconds for SIGTERM, then escalates to SIGKILL and reaps the child. Independently started connectors are untouched. Force-killing Exec or an OS crash is not a clean-quit path.
 
-There is **no automatic process respawn** after a failed launch or unexpected exit. Correct the configuration or check the site/dashboard, then explicitly toggle Remote Access off and on. The connector's own network reconnection remains enabled and does not replay application commands. Enabling Remote Access alone does not keep an idle Mac awake, and it does not run while the app is closed.
+There is **no automatic process respawn** after a failed launch or unexpected exit. Correct the configuration or check the site/dashboard, then explicitly enable Remote Access again. The connector's own network reconnection remains enabled and does not replay application commands. Enabling Remote Access alone does not keep an idle Mac awake, and it does not run while the app is closed.
 
 - **CLI missing/unsupported:** install the reviewed release and select the actual executable, not a Newt binary or service wrapper. Check executable permissions and macOS download/Gatekeeper approval outside Exec.
-- **Not connected while Exec has no launch error:** check the endpoint, ID/secret and network in Pangolin. Exec intentionally does not surface raw CLI logs or mark a running process connected without the tunnel-health marker.
+- **Connecting or Not connected while Exec has no launch error:** check the endpoint, ID/secret and network in Pangolin. Exec intentionally does not surface raw CLI logs or mark a running process connected without the tunnel-health marker.
 - **403 / origin rejection:** check Resource URL, exact browser hostname/port, root-path routing, and preserved Host/Origin/request headers. Do not work around it with CORS or forwarded identity headers.
 - **Cannot listen:** another app may occupy port 9417. Stop that conflicting listener; Exec never takes over another process.
 - **Keychain failure:** previous saved credentials remain usable after a failed Apply. Resolve access/signing permissions and Apply again; no silent Keychain ACL relaxation is performed.

@@ -27,6 +27,7 @@ extension PangolinLaunching {
     private var generation = UUID()
     private var attempted = false
     var failed: (@MainActor (String) -> Void)?
+    var connectionChanged: (@MainActor (Bool) -> Void)?
 
     init(launcher: any PangolinLaunching = PangolinProcessLauncher()) { self.launcher = launcher }
 
@@ -48,7 +49,7 @@ extension PangolinLaunching {
                 startup = nil
                 healthMonitor = Task { [weak self] in
                     while !Task.isCancelled, self?.generation == generation {
-                        self?.connected = self?.child?.isHealthy ?? false
+                        self?.refreshHealth()
                         do { try await Task.sleep(for: .seconds(1)) } catch { return }
                     }
                 }
@@ -60,9 +61,17 @@ extension PangolinLaunching {
         }
     }
 
+    func refreshHealth() { setConnected(child?.isHealthy ?? false) }
+
+    private func setConnected(_ connected: Bool) {
+        guard self.connected != connected else { return }
+        self.connected = connected
+        connectionChanged?(connected)
+    }
+
     private func clearHealth() {
         healthMonitor?.cancel(); healthMonitor = nil
-        connected = false
+        setConnected(false)
     }
 
     func stop() {
