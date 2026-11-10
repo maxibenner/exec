@@ -26,7 +26,7 @@ Pangolin controls authorization; Exec does not treat its request/response marker
 
 ## Credentials and reviewed CLI limitations
 
-Exec saves the entire applied configuration as one value in the existing Keychain credential-store abstraction. A failed save leaves the previous usable configuration and running connector unchanged. Draft edits do not restart anything. No site secrets are stored in preferences, command arguments, URLs, shell history, or logs. The old Exec browser key is no longer read or validated; its Keychain item is deleted best-effort when configuration is loaded. The frontend removes stale `exec.key` browser storage without discarding drafts or uncertain-delivery records.
+Exec saves the entire applied configuration as one value in the existing Keychain credential-store abstraction. A failed save leaves the previous usable configuration and running connector unchanged. Draft edits do not restart anything. Validation, credential-store, and connection failures are presented in a standard Remote Access alert rather than in the setup footer. No site secrets are stored in preferences, command arguments, URLs, shell history, or logs. The old Exec browser key is no longer read or validated; its Keychain item is deleted best-effort when configuration is loaded. The frontend removes stale `exec.key` browser storage without discarding drafts or uncertain-delivery records.
 
 The [official configuration reference](https://docs.pangolin.net/manage/sites/configure-site) documents `PANGOLIN_ENDPOINT`, `SITE_ID`, `SITE_SECRET`, and `CONFIG_FILE`. Exec launches Foundation `Process` directly, never through a shell:
 
@@ -46,7 +46,7 @@ Source review: [CLI site entrypoint at 0.21.0](https://github.com/fosrl/cli/blob
 
 ## Connection indicator
 
-Settings shows **Connected to Pangolin** in green or **Not connected** in yellow, inline with the Remote Access description. Exec supplies the documented `HEALTH_FILE` in the connector’s private temporary directory and checks it once per second while its owned process is running. A fresh directory for every launch prevents stale state from a previous connector. Disable, quit, configuration replacement, and unexpected process exit clear the indicator.
+Settings shows **Connected** in green or **Not connected** in yellow, inline with the Remote Access description. Exec supplies the documented `HEALTH_FILE` in the connector’s private temporary directory and checks it once per second while its owned process is running. A fresh directory for every launch prevents stale state from a previous connector. Disable, quit, configuration replacement, and unexpected process exit clear the indicator.
 
 This reports **the connector’s Pangolin/WireGuard tunnel health**, not end-to-end browser reachability, Resource URL correctness, certificates, or resource access policies. It does not request a resource URL, inspect CLI logs, or replay any application command. The marker contains no credentials and is removed with the private temporary directory.
 

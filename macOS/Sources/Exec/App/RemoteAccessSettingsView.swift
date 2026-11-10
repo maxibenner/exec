@@ -9,7 +9,9 @@ struct RemoteAccessSettingsView: View {
             Section {
                 Toggle("Enable Remote Access", isOn: Binding(get: { access.enabled }, set: access.setEnabled))
             } footer: {
-                Text("Pangolin controls who can access Exec. Local connections on this Mac are trusted. No additional Exec login is required. \(Text(access.connectedToPangolin ? "Connected to Pangolin" : "Not connected").foregroundColor(access.connectedToPangolin ? .green : .yellow))")
+                Text("Pangolin controls who can access Exec. Local connections on this Mac are trusted. No additional Exec login is required. \(Text(access.connectedToPangolin ? "Connected" : "Not connected").foregroundColor(access.connectedToPangolin ? .green : .yellow))")
+                    .font(.caption)
+                    .multilineTextAlignment(.leading)
             }
 
             Section {
@@ -55,26 +57,39 @@ struct RemoteAccessSettingsView: View {
                     .controlSize(.regular)
                     .font(.body)
 
-                    if let error = access.error {
-                        Text(error).foregroundStyle(.red).textSelection(.enabled)
-                    }
                     if access.configuration == nil {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Setup").fontWeight(.medium)
-                            Text("• Create a site in Pangolin and enter its connection details above.")
-                            Text("• Create an authenticated public HTTPS resource, or a private resource with restricted access, targeting HTTP → 127.0.0.1:9417 on that site.")
-                            Text("• Enter the resource’s browser URL, apply, and enable Remote Access. Open that URL to use Exec.")
+                            Text("Setup").bold()
+                            setupStep("Create a site in Pangolin and enter its connection details above.")
+                            setupStep("Create an authenticated public HTTPS resource, or a private resource with restricted access, targeting HTTP → 127.0.0.1:9417 on that site.")
+                            setupStep("Enter the resource’s browser URL, apply, and enable Remote Access. Open that URL to use Exec.")
                         }
+                        .padding(.top, 24)
                     }
                 }
             }
         }
         .formStyle(.grouped)
         .controlSize(.regular)
+        .alert("Remote Access", isPresented: Binding(
+            get: { access.error != nil },
+            set: { if !$0 { access.dismissError() } }
+        )) {
+            Button("OK", role: .cancel, action: access.dismissError)
+        } message: {
+            Text(access.error ?? "")
+        }
         .onAppear {
             access.loadConfiguration()
             draft = access.configuration ?? PangolinConfiguration()
             if draft.executable.isEmpty { draft.executable = PangolinConfiguration.discover() ?? "" }
+        }
+    }
+
+    private func setupStep(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("•").accessibilityHidden(true)
+            Text(text).fixedSize(horizontal: false, vertical: true)
         }
     }
 

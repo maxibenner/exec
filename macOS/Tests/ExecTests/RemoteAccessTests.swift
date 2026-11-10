@@ -213,8 +213,9 @@ import WebKit
         let saved = credentials.data
         credentials.failWrites = true
         var next = first; next.resourceURL = "https://new.example.com"
-        try expect(!access.apply(next))
-        try expect(access.configuration == first && credentials.data == saved)
+        try expect(!access.apply(next) && access.error != nil)
+        access.dismissError()
+        try expect(access.error == nil && access.configuration == first && credentials.data == saved)
         let restored = RemoteAccess(credentials: credentials, preferences: preferences)
         restored.loadConfiguration()
         try expect(restored.configuration == first)
@@ -239,7 +240,6 @@ import WebKit
                 launcher.children[0].isHealthy = true
                 try await wait { access.connectedToPangolin }
             }
-            else { try expect(!access.apply(PangolinConfiguration())) }
             for dark in [false, true] {
                 let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 500, height: 680),
                                       styleMask: [.titled], backing: .buffered, defer: false)
@@ -268,7 +268,7 @@ import WebKit
                 if let previews, let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
                     host.cacheDisplay(in: host.bounds, to: bitmap)
                     try bitmap.representation(using: .png, properties: [:])?.write(to:
-                        previews.appendingPathComponent("remote-\(configured ? "configured" : "setup-error")-\(dark ? "dark" : "light").png"))
+                        previews.appendingPathComponent("remote-\(configured ? "configured" : "setup")-\(dark ? "dark" : "light").png"))
                 }
             }
         }

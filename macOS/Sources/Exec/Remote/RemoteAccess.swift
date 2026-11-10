@@ -62,6 +62,8 @@ import Observation
         }
     }
 
+    func dismissError() { error = nil }
+
     func attach(_ library: ChatLibrary?) {
         guard self.library !== library else { return }
         stop(); self.library = library
