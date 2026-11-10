@@ -178,7 +178,7 @@ import Observation
     private var activeCallID: String? { didSet { checkpointRevision += 1 } }
 
     init(provider: any ChatProvider, sessions: SessionStore? = nil, selectOnCheckpoint: Bool = true,
-         newConversation: Bool = false, workspace: Workspace? = nil,
+         newConversation: Bool = false, workspace: Workspace? = nil, newConversationID: UUID = UUID(),
          defaultAutoApproveTools: Bool = true,
          fetchContent: @escaping @Sendable (URL) async throws -> String = { try await ContentFetcher().fetch($0) },
          captureScreenshot: @escaping @MainActor (ScreenshotTool.Request) async throws -> ScreenshotTool.Output = { try await ScreenshotCapture.capture($0) }) {
@@ -195,7 +195,7 @@ import Observation
         account = provider.account
         if newConversation {
             loadedSession = true
-            currentSessionID = UUID()
+            currentSessionID = newConversationID
         }
     }
 

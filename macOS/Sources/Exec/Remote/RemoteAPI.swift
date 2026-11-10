@@ -65,7 +65,9 @@ struct RemoteTranscript: Encodable {
         let requestID: UUID
         var text: String?
         var operationID: UUID?
+        var workspacePath: String?
     }
+    private struct FolderRequest: Decodable { let path: String? }
     struct Receipt: Codable {
         let serverID: UUID
         let requestID: UUID
@@ -84,10 +86,14 @@ struct RemoteTranscript: Encodable {
     private let key: String
     private let assets: [String: RemoteHTTPResponse]
     private var accepted: [UUID: Accepted] = [:]
+    private var creating: Set<UUID> = []
+    private let homeDirectory: URL
     private(set) var active = true
 
-    init(library: ChatLibrary, key: String, assets: [String: RemoteHTTPResponse] = [:]) {
+    init(library: ChatLibrary, key: String, assets: [String: RemoteHTTPResponse] = [:],
+         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.library = library; self.key = key; self.assets = assets
+        self.homeDirectory = homeDirectory
     }
 
     func invalidate() { active = false }
@@ -109,20 +115,37 @@ struct RemoteTranscript: Encodable {
                 }
                 return try conditional(Catalog(serverID: serverID, conversations: rows), request: request)
             }
+            // A read-only POST keeps local filesystem paths out of proxy URLs/logs.
+            if request.method == "POST", request.path == "/api/folders" {
+                guard request.headers["content-type"]?.lowercased().split(separator: ";").first == "application/json",
+                      let query = try? JSONDecoder().decode(FolderRequest.self, from: request.body) else {
+                    return .error(400, "Expected a folder request.")
+                }
+                let path = query.path ?? homeDirectory.path
+                do {
+                    let listing = try await Task.detached { try RemoteFolders.list(path) }.value
+                    guard active, !Task.isCancelled else { throw CancellationError() }
+                    return try .json(listing)
+                } catch is CancellationError { throw CancellationError() }
+                catch { return .error(409, "Cannot open this folder. Check its path and permissions on the Mac.") }
+            }
             let parts = request.path.split(separator: "/", omittingEmptySubsequences: false)
             if request.method == "GET", parts.count == 4, parts[2] == "commands", let id = UUID(uuidString: String(parts[3])) {
                 return try .json(Receipt(serverID: serverID, requestID: id, accepted: accepted[id] != nil))
             }
-            guard parts.count == 4 || parts.count == 5, parts[1] == "api", parts[2] == "conversations",
-                  let id = UUID(uuidString: String(parts[3])) else { return .error(404, "Not found.") }
-            if request.method == "GET", parts.count == 4 {
+            let isCreation = request.path == "/api/conversations" && request.method == "POST"
+            let id = parts.count >= 4 ? UUID(uuidString: String(parts[3])) : nil
+            guard isCreation || ((parts.count == 4 || parts.count == 5) && parts[1] == "api" && parts[2] == "conversations" && id != nil) else {
+                return .error(404, "Not found.")
+            }
+            if request.method == "GET", parts.count == 4, let id {
                 let title = library.sessionList.first(where: { $0.id == id })?.title ?? "Conversation"
                 return try await library.withRemoteConversation(id) { conversation in
                     guard active, !Task.isCancelled else { throw CancellationError() }
                     return try conditional(RemoteTranscript(conversation, id: id, title: title), request: request)
                 }
             }
-            guard request.method == "POST", parts.count == 5, ["messages", "stop"].contains(parts[4]) else {
+            guard request.method == "POST", isCreation || (parts.count == 5 && ["messages", "stop"].contains(parts[4])) else {
                 return .error(404, "Not found.")
             }
             guard request.headers["content-type"]?.lowercased().split(separator: ";").first == "application/json",
@@ -136,7 +159,23 @@ struct RemoteTranscript: Encodable {
             }
             // Never evict deduplication records within an epoch. Rotate the epoch
             // on restart; old commands are rejected, not silently executed twice.
-            guard accepted.count < 10_000 else { return .error(503, "Disable and re-enable mobile access on the Mac before sending more commands.") }
+            guard !creating.contains(command.requestID) else { return .error(409, "Creation is still pending. Check its receipt.") }
+            guard accepted.count + creating.count < 10_000 else { return .error(503, "Disable and re-enable mobile access on the Mac before sending more commands.") }
+            if isCreation {
+                guard let path = command.workspacePath, command.text == nil, command.operationID == nil else {
+                    return .error(400, "Choose a workspace folder on the Mac.")
+                }
+                creating.insert(command.requestID)
+                defer { creating.remove(command.requestID) }
+                let workspace = try await Task.detached {
+                    try Workspace.load(RemoteFolders.directory(path))
+                }.value
+                guard active, !Task.isCancelled else { throw CancellationError() }
+                try await library.createRemoteConversation(id: command.requestID, workspace: workspace)
+                accepted[command.requestID] = Accepted(path: request.path, command: command)
+                return try .json(Receipt(serverID: serverID, requestID: command.requestID, accepted: true), status: 202)
+            }
+            guard let id, command.workspacePath == nil else { return .error(400, "Unexpected workspace.") }
             return try await library.withRemoteConversation(id) { conversation in
                 guard active, !Task.isCancelled else { throw CancellationError() }
                 if parts[4] == "messages" {

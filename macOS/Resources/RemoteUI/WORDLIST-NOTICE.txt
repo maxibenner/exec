@@ -1,0 +1,12 @@
+Access-key word list
+
+Adapted from EFF's Short Wordlist #1 by the Electronic Frontier Foundation:
+https://www.eff.org/files/2016/09/08/eff_short_wordlist_1.txt
+
+Licensed under Creative Commons Attribution 4.0 International:
+https://creativecommons.org/licenses/by/4.0/
+https://www.eff.org/copyright
+
+Changes: dice labels removed; the hyphenated entry "yo-yo" omitted so that
+keys always have exactly four hyphen-separated words. No EFF endorsement
+of Exec is implied.

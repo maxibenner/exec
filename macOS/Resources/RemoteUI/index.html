@@ -11,46 +11,60 @@
 </head>
 <body>
   <section id="login" class="login">
-    <form id="login-form" class="login-card">
-      <div class="wordmark">Exec<span class="accent">.</span></div>
-      <h1>Your conversations, wherever you are.</h1>
+    <form id="login-form">
+      <h1>Exec</h1>
       <label for="access-key">Access key</label>
       <input id="access-key" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" required>
-      <p class="context">Copy the key from Exec → Settings → Remote Access on your Mac. This key allows messages that can run tools.</p>
-      <button id="connect" class="primary" type="submit">Open Exec</button>
+      <p class="context">Exec → Settings → Remote Access on your Mac. This key allows messages that can run tools.</p>
+      <button id="connect" type="submit">Open Exec</button>
       <p id="login-error" class="error" role="alert" hidden></p>
     </form>
   </section>
   <main id="app" hidden>
-    <aside id="sidebar">
-      <header><div class="wordmark">Exec<span class="accent">.</span></div><button id="logout" class="quiet">Lock</button></header>
-      <div id="list-error" class="banner error" role="alert" hidden></div>
-      <h1 class="section-title">Conversations</h1>
-      <nav id="conversations" aria-label="Conversations"></nav>
-      <p id="empty-list" class="context" hidden>No conversations.</p>
-    </aside>
-    <section id="chat" aria-label="Conversation">
-      <header class="chat-header">
-        <button id="back" class="quiet" aria-label="Back to conversations">‹</button>
-        <h1 id="title">Conversations</h1>
-        <button id="refresh" class="quiet" aria-label="Refresh">↻</button>
-      </header>
-      <div id="connection-error" class="banner error" role="alert" hidden></div>
-      <div id="approval" class="banner" hidden>Approval required on the Mac. You can send a message to change direction.</div>
-      <div id="conversation-error" class="banner error" role="alert" hidden></div>
-      <div id="transcript" tabindex="0" aria-label="Messages"></div>
-      <div id="uncertain" class="banner" hidden>
-        <p>Delivery is unconfirmed. The command may already have run. Check its receipt and the conversation before sending again.</p>
-        <div class="actions"><button id="check-delivery">Check Receipt</button><button id="dismiss-delivery">Dismiss</button></div>
-        <p id="receipt-error" class="error" role="alert" hidden></p>
-      </div>
-      <form id="composer" hidden>
-        <label class="visually-hidden" for="message">Message</label>
-        <textarea id="message" rows="2" placeholder="Message" maxlength="32768"></textarea>
-        <div class="composer-actions"><button id="stop" type="button" hidden>Stop</button><button id="send" type="submit" class="primary">Send</button></div>
-      </form>
-    </section>
+    <div id="uncertain" class="banner" hidden>
+      <p>Delivery is unconfirmed. The command may already have run. Check its receipt and the conversation before sending again.</p>
+      <div class="actions"><button id="check-delivery">Check Receipt</button><button id="dismiss-delivery">Dismiss</button></div>
+      <p id="receipt-error" class="error" role="alert" hidden></p>
+    </div>
+    <div class="workspace-layout">
+      <aside id="sidebar">
+        <header><strong>Exec</strong><button id="logout">Lock</button></header>
+        <div id="list-error" class="banner error" role="alert" hidden></div>
+        <div class="list-heading"><h1>Conversations</h1><button id="new-conversation">New Conversation</button></div>
+        <nav id="conversations" aria-label="Conversations"></nav>
+        <p id="empty-list" class="context" hidden>No conversations.</p>
+      </aside>
+      <section id="chat" aria-label="Conversation">
+        <header class="chat-header">
+          <button id="back" aria-label="Back to conversations">Back</button>
+          <h1 id="title">Conversations</h1>
+          <button id="refresh">Refresh</button>
+        </header>
+        <div id="connection-error" class="banner error" role="alert" hidden></div>
+        <div id="approval" class="banner" hidden>Approval required on the Mac. You can send a message to change direction.</div>
+        <div id="conversation-error" class="banner error" role="alert" hidden></div>
+        <div id="transcript" tabindex="0" aria-label="Messages"></div>
+        <form id="composer" hidden>
+          <label class="visually-hidden" for="message">Message</label>
+          <textarea id="message" rows="2" placeholder="Message" maxlength="32768"></textarea>
+          <div class="composer-actions"><button id="stop" type="button" hidden>Stop</button><button id="send" type="submit">Send</button></div>
+        </form>
+      </section>
+    </div>
   </main>
+  <dialog id="folder-picker" aria-labelledby="folder-title">
+    <h1 id="folder-title">New Conversation</h1>
+    <form id="folder-form">
+      <label for="folder-path">Workspace folder on the Mac</label>
+      <div class="path-entry"><input id="folder-path" autocomplete="off" autocapitalize="none" spellcheck="false" required><button id="folder-go" type="submit">Go</button></div>
+    </form>
+    <div class="actions"><button id="folder-home">Home</button><button id="folder-up">Up</button></div>
+    <p id="folder-error" class="error" role="alert" hidden></p>
+    <p id="folder-limit" class="context" hidden>Only part of this folder is listed. Enter a full path to open another folder.</p>
+    <nav id="folders" aria-label="Mac folders"></nav>
+    <p id="folder-empty" hidden>No subfolders.</p>
+    <div class="actions"><button id="folder-cancel">Cancel</button><button id="folder-select">Use This Folder</button></div>
+  </dialog>
   <noscript>Enable JavaScript to use Exec’s mobile frontend.</noscript>
 </body>
 </html>

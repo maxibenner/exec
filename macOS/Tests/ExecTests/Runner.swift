@@ -22,7 +22,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let checks: [(String, @MainActor () async throws -> Void)] = [
             ("Remote access rejects unauthorized, cross-origin and ambiguous requests", { try await RemoteAccessTests().rejectsUnauthenticatedCrossOriginAndAmbiguousRequests() }),
             ("Remote commands preserve runners, drafts, approvals and identity", { try await RemoteAccessTests().preservesRunnersDraftsApprovalsAndCommandIdentity() }),
+            ("Remote keys use short words and preserve credentials until reset", { try RemoteAccessTests().shortKeysPreserveSavedCredentialsUntilReset() }),
             ("Remote listener is opt-in, closes when disabled and revokes keys", { try await RemoteAccessTests().listenerLifecycleAndKeyRevocation() }),
+            ("Remote folder selection creates once without changing desktop state", { try await RemoteAccessTests().browsesFoldersAndCreatesWithoutChangingDesktop() }),
             ("Mobile frontend loads and sends through loopback HTTP in WebKit", { try await RemoteAccessTests().webFrontendLoadsAndSendsThroughRealHTTP() }),
             ("Blue user bubbles support text and images in light and dark mode", { try await TranscriptTests().userBubblesSupportTextAndImagesInBothAppearances() }),
             ("Compaction and all tool headers keep stable activity geometry", { try TranscriptTests().activityIndicatorsKeepRowGeometry() }),

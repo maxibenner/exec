@@ -635,6 +635,25 @@ import Observation
         return try operation(next)
     }
 
+    /// Save a remotely created workspace without changing desktop selection or drafts.
+    /// The command ID is also the conversation ID, so an interrupted request can be
+    /// found in the catalog and can never overwrite or duplicate an existing session.
+    func createRemoteConversation(id: UUID, workspace: Workspace) async throws {
+        guard canModify, !isPresentingStartup, !sessionList.contains(where: { $0.id == id }) else {
+            throw ExecError("Cannot create this conversation right now.")
+        }
+        navigating = true
+        defer { loading = nil; navigating = false; trimConversations() }
+        // Check disk as well as the current account's catalog. A partial earlier
+        // save or a session belonging to another account must never be replaced.
+        guard try await sessions.load(id: id) == nil else { throw ExecError("Conversation already exists.") }
+        let next = try makeConversation(workspace: workspace, id: id)
+        loading = next
+        try Task.checkCancellation()
+        try await next.saveIfIdle(force: true)
+        remember(next)
+    }
+
     func newConversation() {
         guard canNavigate else { return }
         cancelOpening()
@@ -789,10 +808,10 @@ import Observation
         }
     }
 
-    private func makeConversation(workspace: Workspace? = nil) throws -> ChatStore {
+    private func makeConversation(workspace: Workspace? = nil, id: UUID = UUID()) throws -> ChatStore {
         let conversation = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions,
                                      selectOnCheckpoint: false, newConversation: true, workspace: workspace,
-                                     defaultAutoApproveTools: defaultAutoApproveTools)
+                                     newConversationID: id, defaultAutoApproveTools: defaultAutoApproveTools)
         conversation.installModels(models, cached: modelsAreCached)
         conversation.selectedModel = defaultSessionModel?.id ?? ""
         conversation.selectedEffort = effectiveDefaultEffort

@@ -11,6 +11,7 @@ struct RemoteAccessSettingsView: View {
                 LabeledContent("Newt target") {
                     Text(RemoteAccess.address).textSelection(.enabled).font(.system(.body, design: .monospaced))
                 }
+            } footer: {
                 HStack {
                     Button("Open Local Frontend") {
                         NSWorkspace.shared.open(URL(string: RemoteAccess.address)!)
@@ -27,12 +28,9 @@ struct RemoteAccessSettingsView: View {
                     Button("Reset Key…") { confirmingReset = true }
                         .disabled(!access.enabled)
                 }
-            } footer: {
-                Text("Run Newt directly on this Mac and point a Pangolin HTTP/HTTPS resource at the target above. Use HTTPS on the phone. Exec only listens on this Mac’s loopback interface.")
-            }
-            Section {
-                Text("The access key grants access to all existing conversations and allows messages that can run tools. Keep it private. Resetting it revokes every connected browser.")
-                Text("Tool approvals remain on the Mac. Existing auto-approval settings still apply. The Mac must be awake with Exec running.")
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .font(.body)
             }
             if let error = access.error {
                 Text(error).foregroundStyle(.red).textSelection(.enabled)

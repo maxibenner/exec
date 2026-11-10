@@ -172,6 +172,42 @@ import WebKit
         try expect(preferred == fixture.ids[0])
     }
 
+    func shortKeysPreserveSavedCredentialsUntilReset() throws {
+        let words = RemoteAccessKey.words
+        try expect(words.count == 1295 && Set(words).count == words.count)
+        try expect(words.allSatisfy { (3...5).contains($0.count) && $0.utf8.allSatisfy { (97...122).contains($0) } })
+        for _ in 0..<32 {
+            let key = RemoteAccessKey.generate()
+            try expect(key.split(separator: "-").count == 4 && RemoteAccessKey.isValid(key))
+        }
+        try expect(RemoteAccessKey.isValid("apple-apple-apple-apple"))
+        for invalid in ["", "apple-boat", "apple-boat-cloud", "apple-boat-cloud-drift-extra",
+                        "apple--cloud-drift", "Apple-boat-cloud-drift", "apple-boat-cloud-drift-",
+                        "apple boat cloud drift", "unknown-boat-cloud-drift", String(repeating: "z", count: 64)] {
+            try expect(!RemoteAccessKey.isValid(invalid))
+        }
+        let suite = "ExecRemoteKeyTests-" + UUID().uuidString
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        preferences.set(true, forKey: "mobileAccessEnabled")
+        let credentials = Credentials()
+        let legacy = String(repeating: "a1", count: 32)
+        credentials.data = Data(legacy.utf8)
+        // No library is attached: these checks never start a listener.
+        let access = RemoteAccess(credentials: credentials, preferences: preferences)
+        try expect(try access.accessKey() == legacy && credentials.writes == 0)
+        access.resetKey()
+        let key = try access.accessKey()
+        try expect(key != legacy && key.split(separator: "-").count == 4 && credentials.writes == 1)
+        let restored = RemoteAccess(credentials: credentials, preferences: preferences)
+        try expect(try restored.accessKey() == key && credentials.writes == 1)
+        credentials.data = Data("broken-key".utf8)
+        try expectFailure { _ = try restored.accessKey() }
+        try expect(credentials.writes == 1)
+        restored.resetKey()
+        try expect(restored.error == nil && RemoteAccessKey.isValid(try restored.accessKey()) && credentials.writes == 2)
+    }
+
     func listenerLifecycleAndKeyRevocation() async throws {
         let fixture = try await Fixture.make(); defer { fixture.cleanup() }
         let credentials = Credentials()
@@ -185,7 +221,8 @@ import WebKit
         try expect(access.error == nil)
         let port = access.listeningPort!
         let key = try access.accessKey()
-        try expect(key.count == 64 && credentials.writes == 1)
+        try expect(key.split(separator: "-").count == 4 && RemoteAccessKey.isValid(key) && credentials.writes == 1)
+        try expect(try access.accessKey() == key && credentials.writes == 1)
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
         func get(_ path: String, key: String? = nil, port: UInt16) async throws -> (Data, HTTPURLResponse) {
@@ -226,10 +263,71 @@ import WebKit
         await running.waitUntilIdle()
     }
 
+    func browsesFoldersAndCreatesWithoutChangingDesktop() async throws {
+        let fixture = try await Fixture.make(); defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("Projects")
+        let project = root.appendingPathComponent("Phone project")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".hidden"), withIntermediateDirectories: true)
+        try Data("instructions".utf8).write(to: project.appendingPathComponent("AGENTS.md"))
+        try Data("not a folder".utf8).write(to: root.appendingPathComponent("file.txt"))
+        let api = RemoteAPI(library: fixture.library, key: "test-key", homeDirectory: root)
+        var folders = RemoteHTTPRequest(method: "POST", path: "/api/folders",
+            headers: ["host": "exec.example.com", "origin": "https://exec.example.com", "x-exec-key": "wrong", "content-type": "application/json"], body: Data("{}".utf8))
+        var response = await api.handle(folders); try expect(response.status == 401)
+        folders.headers["x-exec-key"] = "test-key"
+        folders.headers["origin"] = "https://other.example.com"
+        response = await api.handle(folders); try expect(response.status == 403)
+        folders.headers["origin"] = "https://exec.example.com"
+        response = await api.handle(folders); try expect(response.status == 200)
+        let listing = try object(response)
+        let entries = listing["folders"] as! [[String: Any]]
+        try expect(entries.count == 1 && entries[0]["name"] as? String == "Phone project")
+        try expect(listing["parent"] as? String == root.deletingLastPathComponent().resolvingSymlinksInPath().path)
+        for path in ["relative", root.appendingPathComponent("missing").path, root.appendingPathComponent("file.txt").path] {
+            folders.body = try JSONEncoder().encode(["path": path])
+            response = await api.handle(folders); try expect(response.status == 409)
+        }
+        let desktop = fixture.library.current
+        desktop.draft = "Keep this draft"
+        fixture.library.defaultAutoApproveTools = false
+        let command = RemoteAPI.Command(serverID: api.serverID, requestID: UUID(), workspacePath: project.path)
+        response = await api.handle(try request("/api/conversations", command: command, key: "wrong"))
+        try expect(response.status == 401 && fixture.library.sessionList.count == 2)
+        var noOrigin = try request("/api/conversations", command: command)
+        noOrigin.headers.removeValue(forKey: "origin")
+        response = await api.handle(noOrigin); try expect(response.status == 403)
+        response = await api.handle(try request("/api/conversations", command: command))
+        try expect(response.status == 202)
+        try expect(fixture.library.current === desktop && desktop.draft == "Keep this draft")
+        let created = fixture.library.openConversations.first { $0.currentSessionID == command.requestID }!
+        try expect(created.workspace?.root == Workspace.load(project).root)
+        try expect(created.workspace?.instructions == "instructions" && created.messages.isEmpty && !created.autoApproveTools)
+        try expect(created.selectedModel == fixture.library.defaultSessionModel?.id)
+        let preferred = try await fixture.sessions.preferredID(identity: fixture.provider.conversationIdentity)
+        try expect(preferred == fixture.ids[0])
+        response = await api.handle(try request("/api/conversations", command: command)); try expect(response.status == 202)
+        try expect(fixture.library.sessionList.count == 3)
+        response = await api.handle(try request("/api/commands/\(command.requestID)"))
+        try expect(try object(response)["accepted"] as? Bool == true)
+        var changed = command; changed.workspacePath = root.path
+        response = await api.handle(try request("/api/conversations", command: changed)); try expect(response.status == 409)
+        let restarted = RemoteAPI(library: fixture.library, key: "test-key")
+        response = await restarted.handle(try request("/api/conversations", command: command)); try expect(response.status == 409)
+        let replay = RemoteAPI.Command(serverID: restarted.serverID, requestID: command.requestID, workspacePath: project.path)
+        response = await restarted.handle(try request("/api/conversations", command: replay)); try expect(response.status == 409)
+        let invalid = RemoteAPI.Command(serverID: api.serverID, requestID: UUID(), workspacePath: root.appendingPathComponent("file.txt").path)
+        response = await api.handle(try request("/api/conversations", command: invalid)); try expect(response.status == 409)
+        try expect(fixture.library.sessionList.count == 3 && fixture.provider.children.allSatisfy { $0.inputs.isEmpty })
+        api.invalidate()
+        response = await api.handle(folders); try expect(response.status == 503)
+    }
+
     func webFrontendLoadsAndSendsThroughRealHTTP() async throws {
         let fixture = try await Fixture.make(); defer { fixture.cleanup() }
         let credentials = Credentials()
-        let access = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets, port: 0)
+        let access = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets, port: 0,
+                                  homeDirectory: fixture.root)
         defer { access.setEnabled(false) }
         access.attach(fixture.library); access.setEnabled(true)
         try await wait { access.listening || access.error != nil }
@@ -269,7 +367,7 @@ import WebKit
             window.testPostCount = 0;
             window.fetch = async (url, options) => {
               const response = await realFetch(url, options);
-              if (options?.method === 'POST') { window.testPostCount++; throw new TypeError('Lost response'); }
+              if (options?.method === 'POST' && url !== '/api/folders') { window.testPostCount++; throw new TypeError('Lost response'); }
               return response;
             };
             document.getElementById('message').value = 'Delivery test';
@@ -284,7 +382,36 @@ import WebKit
         try await waitJS("pending === null && document.getElementById('message').value === ''")
         let phone = fixture.library.openConversations.first { $0.currentSessionID == fixture.ids[1] }!
         try expect(phone.messages.filter { $0.text == "Delivery test" }.count == 1)
-        _ = try await web.evaluateJavaScript("document.getElementById('logout').click()")
+        // The same lost-response protection applies to creation. Browsing/cancelling
+        // makes no session; selecting a Mac folder makes exactly one durable session.
+        _ = try await web.evaluateJavaScript("document.getElementById('back').click(); document.getElementById('new-conversation').click();")
+        try await waitJS("document.getElementById('folder-picker').open && folderListing !== null")
+        try expect(fixture.library.sessionList.count == 2)
+        let pickerFits = try await web.evaluateJavaScript("document.getElementById('folder-picker').scrollWidth <= 390") as? Bool
+        try expect(pickerFits == true)
+        _ = try await web.evaluateJavaScript("document.getElementById('folder-cancel').click()")
+        try await waitJS("!document.getElementById('folder-picker').open")
+        try expect(fixture.library.sessionList.count == 2)
+        _ = try await web.evaluateJavaScript("document.getElementById('new-conversation').click()")
+        try await waitJS("folderListing !== null")
+        _ = try await web.evaluateJavaScript("document.querySelector('#folders .folder').click()")
+        try await waitJS("folderListing !== null && folderListing.path.endsWith('/sessions')")
+        _ = try await web.evaluateJavaScript("document.getElementById('folder-up').click()")
+        try await waitJS("folderListing !== null && !folderListing.path.endsWith('/sessions')")
+        _ = try await web.evaluateJavaScript("document.getElementById('folder-select').click()")
+        try await waitJS("pending?.kind === 'create' && !sending && !document.getElementById('uncertain').hidden")
+        try expect(fixture.library.sessionList.count == 3)
+        let creationPosts = try await web.evaluateJavaScript("window.testPostCount") as? Int
+        // The test transport drops only mutating commands, not read-only folder POSTs.
+        try expect(creationPosts == 2)
+        _ = try await web.evaluateJavaScript("document.getElementById('check-delivery').click()")
+        try await waitJS("pending === null && selected && snapshot?.id === selected && snapshot.messages.length === 0")
+        let newID = (try await web.evaluateJavaScript("selected")) as! String
+        let created = fixture.library.openConversations.first { $0.currentSessionID?.uuidString == newID }!
+        try expect(created.workspace?.root == Workspace.load(fixture.root).root)
+        try expect(fixture.library.current.draft == "Keep desktop draft" && fixture.library.currentSessionID == fixture.ids[0])
+        try expect(fixture.library.sessionList.count == 3)
+        _ = try await web.evaluateJavaScript("document.getElementById('back').click(); document.getElementById('logout').click()")
         try await waitJS("!document.getElementById('login').hidden && document.getElementById('transcript').children.length === 0")
     }
 }

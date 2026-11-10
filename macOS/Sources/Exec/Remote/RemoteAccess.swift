@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-import Security
 
 /// Opt-in lifecycle owned by the application, independent of any chat window.
 /// No Keychain access or listening sockets are created until explicitly enabled.
@@ -16,14 +15,17 @@ import Security
     private let credentials: any CredentialStore
     private let preferences: UserDefaults
     private let assetDirectory: URL?
+    private let homeDirectory: URL
     private weak var library: ChatLibrary?
     private var server: RemoteHTTPServer?
     private var api: RemoteAPI?
 
     init(credentials: any CredentialStore = KeychainStore(), preferences: UserDefaults = .standard,
          assetDirectory: URL? = Bundle.main.resourceURL?.appendingPathComponent("RemoteUI"),
-         port: UInt16 = RemoteAccess.port) {
+         port: UInt16 = RemoteAccess.port,
+         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.credentials = credentials; self.preferences = preferences; self.assetDirectory = assetDirectory
+        self.homeDirectory = homeDirectory
         bindPort = port
         enabled = preferences.bool(forKey: "mobileAccessEnabled")
     }
@@ -45,20 +47,19 @@ import Security
     func accessKey() throws -> String {
         guard enabled else { throw ExecError("Enable mobile access first.") }
         if let data = try credentials.read(Self.keyAccount) {
-            guard let key = String(data: data, encoding: .utf8), key.count == 64,
-                  key.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            guard let key = String(data: data, encoding: .utf8), RemoteAccessKey.isValid(key) else {
                 throw ExecError("The saved mobile access key is invalid. Reset it in Settings.")
             }
             return key
         }
-        let key = try Self.newKey()
+        let key = RemoteAccessKey.generate()
         try credentials.write(Data(key.utf8), account: Self.keyAccount)
         return key
     }
 
     func resetKey() {
         do {
-            let key = try Self.newKey()
+            let key = RemoteAccessKey.generate()
             try credentials.write(Data(key.utf8), account: Self.keyAccount)
             error = nil
             stop()
@@ -67,14 +68,6 @@ import Security
     }
 
     func report(_ error: Error) { self.error = error.localizedDescription }
-
-    private static func newKey() throws -> String {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-            throw ExecError("Could not generate an access key.")
-        }
-        return bytes.map { String(format: "%02x", $0) }.joined()
-    }
 
     private func start() {
         stop()
@@ -86,7 +79,7 @@ import Security
                 let body = try Data(contentsOf: assetDirectory.appendingPathComponent(name))
                 assets[name == "index.html" ? "/" : "/" + name] = RemoteHTTPResponse(contentType: type + "; charset=utf-8", body: body)
             }
-            let api = RemoteAPI(library: library, key: try accessKey(), assets: assets)
+            let api = RemoteAPI(library: library, key: try accessKey(), assets: assets, homeDirectory: homeDirectory)
             self.api = api
             let server = RemoteHTTPServer(handle: { [weak api] request in
                 guard let api else { return .error(503, "Mobile access is disabled.") }

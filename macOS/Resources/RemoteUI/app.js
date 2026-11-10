@@ -19,6 +19,10 @@ let sending = false;
 let timer;
 let authVersion = 0;
 let rows = [];
+let folderListing = null;
+let folderLoading = false;
+let folderVersion = 0;
+let openingCreatedID = null;
 const cache = new Map();
 
 class APIError extends Error {
@@ -40,12 +44,18 @@ function updateControls() {
   $("stop").hidden = !snapshot?.operationID;
   $("stop").disabled = !online || sending || !!pending;
   $("uncertain").hidden = !pending || sending;
+  $("new-conversation").disabled = !online || !serverID || sending || !!pending;
+  $("folder-select").disabled = !online || !folderListing || folderLoading || sending || !!pending || $("folder-path").value !== folderListing?.path;
+  $("folder-up").disabled = folderLoading || !folderListing?.parent;
+  $("folder-home").disabled = folderLoading;
+  $("folder-go").disabled = folderLoading;
 }
 function lock() {
   authVersion++;
   key = ""; storage.set("key", "");
   clearTimeout(timer);
   cache.clear(); snapshot = null; rows = []; serverID = null; online = false;
+  openingCreatedID = null; closeFolders();
   $("transcript").replaceChildren(); $("conversations").replaceChildren();
   $("app").hidden = true; $("login").hidden = false;
   $("access-key").value = "";
@@ -197,6 +207,10 @@ async function refresh() {
     serverID = catalog.serverID;
     const listChanged = JSON.stringify(rows) !== JSON.stringify(catalog.conversations);
     rows = catalog.conversations;
+    if (openingCreatedID && rows.some(row => row.id === openingCreatedID)) {
+      const id = openingCreatedID; openingCreatedID = null;
+      selectConversation(id);
+    }
     if (selected && !rows.some(row => row.id === selected && !row.unreadable)) {
       rememberDraft(); selected = ""; snapshot = null; storage.set("selected", "");
       $("transcript").replaceChildren(); $("title").textContent = "Conversations";
@@ -222,7 +236,55 @@ async function refresh() {
   }
 }
 
+function closeFolders() {
+  folderVersion++; folderListing = null; folderLoading = false;
+  if ($("folder-picker").open) $("folder-picker").close();
+  $("folders").replaceChildren(); $("folder-path").value = "";
+  $("folder-empty").hidden = true; $("folder-limit").hidden = true;
+  showError("folder-error", ""); updateControls();
+}
+async function browseFolders(path = null) {
+  const version = ++folderVersion;
+  const authentication = authVersion;
+  folderLoading = true; folderListing = null;
+  $("folders").replaceChildren(); $("folder-empty").hidden = true; $("folder-limit").hidden = true;
+  showError("folder-error", ""); updateControls();
+  try {
+    const listing = await request("/api/folders", { path });
+    if (version !== folderVersion || authentication !== authVersion || !$("folder-picker").open) return;
+    folderListing = listing; $("folder-path").value = listing.path;
+    for (const folder of listing.folders) {
+      const button = element("button", folder.name, "folder");
+      button.addEventListener("click", () => void browseFolders(folder.path));
+      $("folders").append(button);
+    }
+    $("folder-empty").hidden = listing.folders.length !== 0;
+    $("folder-limit").hidden = !listing.truncated;
+  } catch (error) {
+    if (version === folderVersion && authentication === authVersion) showError("folder-error", error.message);
+  } finally {
+    if (version === folderVersion) { folderLoading = false; updateControls(); }
+  }
+}
+async function createConversation() {
+  if ($("folder-select").disabled || !folderListing) return;
+  const command = { kind: "create", body: { serverID, requestID: crypto.randomUUID(), workspacePath: folderListing.path } };
+  closeFolders();
+  sending = true; savePending(command); showError("receipt-error", "");
+  try {
+    const receipt = await request("/api/conversations", command.body);
+    if (receipt.accepted) finishAccepted(command);
+  } catch (error) {
+    // A failed response may follow a successful disk write. Never create again
+    // automatically, even if saving the catalog or returning the receipt failed.
+    showError("receipt-error", error instanceof APIError ? error.message : "Could not confirm creation. Check its receipt or the conversation list before trying again.");
+  } finally {
+    sending = false; updateControls(); void refresh();
+  }
+}
+
 function finishAccepted(command) {
+  if (command.kind === "create") openingCreatedID = command.body.requestID.toUpperCase();
   if (command.kind === "messages" && drafts[command.conversationID] === command.body.text) {
     drafts[command.conversationID] = ""; storage.set("drafts", drafts);
     if (selected === command.conversationID) $("message").value = "";
@@ -280,6 +342,17 @@ $("login-form").addEventListener("submit", async event => {
   } catch (error) { showError("login-error", error.message); }
   finally { $("connect").disabled = false; }
 });
+$("new-conversation").addEventListener("click", () => {
+  if ($("new-conversation").disabled) return;
+  $("folder-picker").showModal(); void browseFolders();
+});
+$("folder-form").addEventListener("submit", event => { event.preventDefault(); void browseFolders($("folder-path").value); });
+$("folder-path").addEventListener("input", updateControls);
+$("folder-home").addEventListener("click", () => void browseFolders());
+$("folder-up").addEventListener("click", () => { if (folderListing?.parent) void browseFolders(folderListing.parent); });
+$("folder-cancel").addEventListener("click", closeFolders);
+$("folder-picker").addEventListener("cancel", event => { event.preventDefault(); closeFolders(); });
+$("folder-select").addEventListener("click", () => void createConversation());
 $("logout").addEventListener("click", lock);
 $("back").addEventListener("click", () => $("app").classList.remove("view-chat"));
 $("refresh").addEventListener("click", () => { cache.clear(); void refresh(); });
