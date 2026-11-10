@@ -41,11 +41,11 @@ Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace
 
 ## Remote Access
 
-Follow existing conversations, send text and stop turns from a mobile browser. Enable **Settings → Remote Access**, then point a Pangolin HTTP/HTTPS resource through Newt on the Mac at `http://127.0.0.1:9417`. Exec serves both the frontend and API; no separate website or relay is needed.
+Follow conversations, create conversations in Mac folders, send text and stop turns from a browser. Install Pangolin CLI 0.21.0 once, then configure **Settings → Remote Access** with your site's connection details and resource URL. Exec manages the foreground connector and serves both the frontend and API at `http://127.0.0.1:9417`; no separate website, relay, or system service is needed. Existing externally managed connectors remain supported.
 
-Remote Access is off by default and opens no port while disabled. It uses a separate Keychain-backed access key. Tool approvals stay on the Mac, and existing auto-approval settings still apply.
+Remote Access is off by default. Pangolin—not an additional Exec login—controls remote access. Public resources must require authentication across the frontend and all API routes; private resources require Pangolin client authentication and restricted permissions. Local processes on the Mac are trusted. Site credentials stay in Keychain. Tool approvals stay on the Mac, and existing auto-approval settings still apply.
 
-See the [setup and security guide](docs/remote-access.md) for private/public Pangolin resources, HTTPS, key revocation and interrupted connections.
+See the [setup and security guide](docs/remote-access.md) for resource policies, the reviewed CLI limitations, lifecycle behavior, and interrupted connections.
 
 ## Development
 

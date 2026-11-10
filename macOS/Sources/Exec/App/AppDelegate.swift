@@ -5,6 +5,11 @@ import AppKit
     var stopRemoteAccess: (() -> Void)?
     private var waitingToQuit = false
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Also covers idle quits, which do not take the cancellation path below.
+        stopRemoteAccess?()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if waitingToQuit { return .terminateLater }
         guard let store, store.hasRunningOperations || store.hasUnsentDrafts || store.hasUnsavedChanges else { return .terminateNow }

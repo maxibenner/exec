@@ -20,10 +20,14 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
-            ("Remote access rejects unauthorized, cross-origin and ambiguous requests", { try await RemoteAccessTests().rejectsUnauthenticatedCrossOriginAndAmbiguousRequests() }),
+            ("Remote access rejects cross-origin, rebinding and ambiguous requests", { try await RemoteAccessTests().rejectsCrossOriginRebindingAndAmbiguousRequests() }),
+            ("Pangolin discovery, version checks and isolated environment", { try PangolinConnectorTests().discoveryVersionsAndEnvironment() }),
+            ("Pangolin lifecycle prevents duplicates, stale callbacks and respawns", { try await PangolinConnectorTests().lifecycleRejectsDuplicatesLateCallbacksAndRespawns() }),
+            ("Pangolin subprocess shutdown is bounded, reaped and isolated", { try await PangolinConnectorTests().realProcessesAreBoundedReapedAndIsolated() }),
+            ("Managed connector follows listener, explicit apply and app relaunch", { try await RemoteAccessTests().connectorFollowsListenerConfigurationAndRelaunch() }),
             ("Remote commands preserve runners, drafts, approvals and identity", { try await RemoteAccessTests().preservesRunnersDraftsApprovalsAndCommandIdentity() }),
-            ("Remote keys use short words and preserve credentials until reset", { try RemoteAccessTests().shortKeysPreserveSavedCredentialsUntilReset() }),
-            ("Remote listener is opt-in, closes when disabled and revokes keys", { try await RemoteAccessTests().listenerLifecycleAndKeyRevocation() }),
+            ("Pangolin configuration save failure preserves previous credentials", { try RemoteAccessTests().configurationSaveFailurePreservesPreviousValue() }),
+            ("Remote listener is opt-in and works without browser login", { try await RemoteAccessTests().listenerLifecycleWithoutBrowserLogin() }),
             ("Remote folder selection creates once without changing desktop state", { try await RemoteAccessTests().browsesFoldersAndCreatesWithoutChangingDesktop() }),
             ("Mobile frontend loads and sends through loopback HTTP in WebKit", { try await RemoteAccessTests().webFrontendLoadsAndSendsThroughRealHTTP() }),
             ("Blue user bubbles support text and images in light and dark mode", { try await TranscriptTests().userBubblesSupportTextAndImagesInBothAppearances() }),

@@ -10,17 +10,7 @@
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <section id="login" class="login">
-    <form id="login-form">
-      <h1>Exec</h1>
-      <label for="access-key">Access key</label>
-      <input id="access-key" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" required>
-      <p class="context">Exec → Settings → Remote Access on your Mac. This key allows messages that can run tools.</p>
-      <button id="connect" type="submit">Open Exec</button>
-      <p id="login-error" class="error" role="alert" hidden></p>
-    </form>
-  </section>
-  <main id="app" hidden>
+  <main id="app">
     <div id="uncertain" class="banner" hidden>
       <p>Delivery is unconfirmed. The command may already have run. Check its receipt and the conversation before sending again.</p>
       <div class="actions"><button id="check-delivery">Check Receipt</button><button id="dismiss-delivery">Dismiss</button></div>
@@ -28,7 +18,7 @@
     </div>
     <div class="workspace-layout">
       <aside id="sidebar">
-        <header><strong>Exec</strong><button id="logout">Lock</button></header>
+        <header><strong>Exec</strong></header>
         <div id="list-error" class="banner error" role="alert" hidden></div>
         <div class="list-heading"><h1>Conversations</h1><button id="new-conversation">New Conversation</button></div>
         <nav id="conversations" aria-label="Conversations"></nav>

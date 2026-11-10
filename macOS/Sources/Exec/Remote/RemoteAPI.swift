@@ -83,28 +83,31 @@ struct RemoteTranscript: Encodable {
     }
     let serverID = UUID()
     private let library: ChatLibrary
-    private let key: String
+    private var allowedOrigins: Set<String>
     private let assets: [String: RemoteHTTPResponse]
     private var accepted: [UUID: Accepted] = [:]
     private var creating: Set<UUID> = []
     private let homeDirectory: URL
     private(set) var active = true
 
-    init(library: ChatLibrary, key: String, assets: [String: RemoteHTTPResponse] = [:],
-         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
-        self.library = library; self.key = key; self.assets = assets
+    init(library: ChatLibrary, assets: [String: RemoteHTTPResponse] = [:],
+         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+         allowedOrigins: Set<String> = [RemoteAccess.address]) {
+        self.library = library; self.allowedOrigins = allowedOrigins; self.assets = assets
         self.homeDirectory = homeDirectory
+    }
+
+    func allowLoopback(port: UInt16) {
+        allowedOrigins.formUnion(["http://127.0.0.1:\(port)", "http://localhost:\(port)"])
     }
 
     func invalidate() { active = false }
 
     func handle(_ request: RemoteHTTPRequest) async -> RemoteHTTPResponse {
         guard active, !Task.isCancelled else { return .error(503, "Mobile access is disabled.") }
-        guard Self.allowsOrigin(request) else { return .error(403, "Cross-origin requests are not allowed.") }
+        guard allowsOrigin(request) else { return .error(403, "Cross-origin requests are not allowed.") }
         if request.method == "GET", let asset = assets[request.path] { return asset }
         guard request.path.hasPrefix("/api/") else { return .error(404, "Not found.") }
-        // A separate header avoids colliding with Pangolin's authentication.
-        guard Self.matches(request.headers["x-exec-key"] ?? "", key) else { return .error(401, "Invalid access key.") }
         guard !library.isPresentingStartup else { return .error(503, "Exec has not finished restoring on the Mac.") }
         do {
             if request.method == "GET", request.path == "/api/conversations" {
@@ -211,21 +214,23 @@ struct RemoteTranscript: Encodable {
         return response
     }
 
-    static func matches(_ supplied: String, _ expected: String) -> Bool {
-        let lhs = SHA256.hash(data: Data(supplied.utf8))
-        let rhs = SHA256.hash(data: Data(expected.utf8))
-        return zip(lhs, rhs).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
-    }
-
-    static func allowsOrigin(_ request: RemoteHTTPRequest) -> Bool {
-        guard request.headers["sec-fetch-site"] != "cross-site" else { return false }
+    private func allowsOrigin(_ request: RemoteHTTPRequest) -> Bool {
+        // Host is an explicit allowlist, not a reflection of an attacker-controlled
+        // Origin. This applies to assets too, preventing DNS-rebinding bootstrap.
+        guard let host = request.headers["host"]?.lowercased(),
+              allowedOrigins.contains(where: { $0.components(separatedBy: "://").last == host }) else { return false }
+        // Pangolin sign-in may redirect from a different origin. Only a top-level
+        // GET navigation to the static shell may cross origins; no API data or
+        // mutation is exposed here. Frames remain prohibited by CSP/X-Frame-Options.
+        if request.method == "GET", request.path == "/",
+           request.headers["sec-fetch-mode"] == "navigate",
+           request.headers["sec-fetch-dest"] == "document" { return true }
+        guard !["cross-site", "same-site"].contains(request.headers["sec-fetch-site"] ?? "") else { return false }
         guard let origin = request.headers["origin"] else { return request.method == "GET" }
-        guard let url = URLComponents(string: origin), ["http", "https"].contains(url.scheme),
-              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil, url.path.isEmpty,
-              let host = request.headers["host"] else { return false }
-        // Newt/Pangolin must preserve Host. Never trust arbitrary forwarded headers
-        // to bypass origin checks. API keys in custom headers plus no CORS keep
-        // unauthenticated websites from submitting commands or reading history.
-        return origin.lowercased() == "\(url.scheme!)://\(host.lowercased())"
+        guard let normalized = PangolinConfiguration.origin(origin),
+              origin.lowercased() == normalized, allowedOrigins.contains(normalized),
+              normalized.components(separatedBy: "://").last == host else { return false }
+        // No CORS, forwarded identity headers, or proxy-supplied authentication.
+        return request.method == "GET" || request.headers["x-exec-request"] == "1"
     }
 }

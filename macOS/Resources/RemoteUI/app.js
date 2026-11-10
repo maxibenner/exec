@@ -7,7 +7,10 @@ const storage = {
   get(name, fallback = null) { try { return JSON.parse(sessionStorage.getItem(`exec.${name}`)) ?? fallback; } catch { return fallback; } },
   set(name, value) { try { sessionStorage.setItem(`exec.${name}`, JSON.stringify(value)); } catch { /* Private browsing may disable storage. */ } }
 };
-let key = storage.get("key", "");
+// Remove the obsolete browser credential without disturbing drafts or receipts.
+for (const store of ["sessionStorage", "localStorage"]) {
+  try { window[store].removeItem("exec.key"); } catch { /* Storage may be disabled. */ }
+}
 let selected = storage.get("selected", "");
 let drafts = storage.get("drafts", {});
 let pending = storage.get("pending");
@@ -17,7 +20,6 @@ let online = false;
 let refreshing = false;
 let sending = false;
 let timer;
-let authVersion = 0;
 let rows = [];
 let folderListing = null;
 let folderLoading = false;
@@ -27,6 +29,13 @@ const cache = new Map();
 
 class APIError extends Error {
   constructor(message, status) { super(message); this.status = status; }
+}
+// getRandomValues also works on authenticated private-resource HTTP origins.
+function commandID() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 function showError(id, text) { $(id).textContent = text || ""; $(id).hidden = !text; }
 function setConnectionError(text) {
@@ -50,20 +59,8 @@ function updateControls() {
   $("folder-home").disabled = folderLoading;
   $("folder-go").disabled = folderLoading;
 }
-function lock() {
-  authVersion++;
-  key = ""; storage.set("key", "");
-  clearTimeout(timer);
-  cache.clear(); snapshot = null; rows = []; serverID = null; online = false;
-  openingCreatedID = null; closeFolders();
-  $("transcript").replaceChildren(); $("conversations").replaceChildren();
-  $("app").hidden = true; $("login").hidden = false;
-  $("access-key").value = "";
-  updateControls();
-}
 async function request(path, body) {
-  const version = authVersion;
-  const headers = { "X-Exec-Key": key };
+  const headers = { "X-Exec-Request": "1" };
   if (body) headers["Content-Type"] = "application/json";
   else if (cache.has(path)) headers["If-None-Match"] = cache.get(path).etag;
   const controller = new AbortController();
@@ -72,14 +69,15 @@ async function request(path, body) {
     const response = await fetch(path, { method: body ? "POST" : "GET", headers,
       body: body ? JSON.stringify(body) : undefined, signal: controller.signal,
       cache: "no-store", credentials: "same-origin", redirect: "error" });
-    if (version !== authVersion) throw new Error("Access changed. Check delivery after unlocking.");
+    if (response.headers.get("X-Exec-Response") !== "1") {
+      throw new Error("Reload this page to check Pangolin sign-in. No command was resent.");
+    }
     if (response.status === 304 && cache.has(path)) return cache.get(path).data;
     if (!(response.headers.get("Content-Type") || "").includes("application/json")) {
       throw new Error("Unexpected response. Reload the page to check Pangolin sign-in.");
     }
     const data = await response.json();
     if (!response.ok) {
-      if (response.status === 401) { lock(); showError("login-error", "Access key rejected. Copy the current key from the Mac."); }
       throw new APIError(data.error || "Request rejected.", response.status);
     }
     const etag = response.headers.get("ETag");
@@ -197,13 +195,11 @@ function renderTranscript(data) {
 
 async function refresh() {
   clearTimeout(timer);
-  if (!key || refreshing || document.hidden) return;
+  if (refreshing || document.hidden) return;
   refreshing = true;
-  const version = authVersion;
   const destination = selected;
   try {
     const catalog = await request("/api/conversations");
-    if (version !== authVersion) return;
     serverID = catalog.serverID;
     const listChanged = JSON.stringify(rows) !== JSON.stringify(catalog.conversations);
     rows = catalog.conversations;
@@ -219,20 +215,18 @@ async function refresh() {
     if (listChanged) renderList();
     if (destination && destination === selected) {
       const data = await request(`/api/conversations/${destination}`);
-      if (version !== authVersion || selected !== destination) return;
+      if (selected !== destination) return;
       if (snapshot !== data) renderTranscript(data);
       snapshot = data;
     }
     online = true; setConnectionError("");
   } catch (error) {
-    if (version === authVersion) {
-      online = false;
-      setConnectionError(error instanceof APIError ? error.message : "Cannot reach Exec. Sending is disabled. Check the Mac and Pangolin connection.");
-    }
+    online = false;
+    setConnectionError(error instanceof APIError ? error.message : "Cannot reach Exec. Check the Mac and connection, or reload this page to sign in to Pangolin. No command was resent.");
   } finally {
     refreshing = false;
     updateControls();
-    if (key && !document.hidden) timer = setTimeout(refresh, 1000);
+    if (!document.hidden) timer = setTimeout(refresh, 1000);
   }
 }
 
@@ -245,13 +239,12 @@ function closeFolders() {
 }
 async function browseFolders(path = null) {
   const version = ++folderVersion;
-  const authentication = authVersion;
   folderLoading = true; folderListing = null;
   $("folders").replaceChildren(); $("folder-empty").hidden = true; $("folder-limit").hidden = true;
   showError("folder-error", ""); updateControls();
   try {
     const listing = await request("/api/folders", { path });
-    if (version !== folderVersion || authentication !== authVersion || !$("folder-picker").open) return;
+    if (version !== folderVersion || !$("folder-picker").open) return;
     folderListing = listing; $("folder-path").value = listing.path;
     for (const folder of listing.folders) {
       const button = element("button", folder.name, "folder");
@@ -261,14 +254,14 @@ async function browseFolders(path = null) {
     $("folder-empty").hidden = listing.folders.length !== 0;
     $("folder-limit").hidden = !listing.truncated;
   } catch (error) {
-    if (version === folderVersion && authentication === authVersion) showError("folder-error", error.message);
+    if (version === folderVersion) showError("folder-error", error.message);
   } finally {
     if (version === folderVersion) { folderLoading = false; updateControls(); }
   }
 }
 async function createConversation() {
   if ($("folder-select").disabled || !folderListing) return;
-  const command = { kind: "create", body: { serverID, requestID: crypto.randomUUID(), workspacePath: folderListing.path } };
+  const command = { kind: "create", body: { serverID, requestID: commandID(), workspacePath: folderListing.path } };
   closeFolders();
   sending = true; savePending(command); showError("receipt-error", "");
   try {
@@ -296,7 +289,7 @@ async function submit(kind) {
   if (kind === "messages" && (!snapshot?.canSend || !$("message").value.trim())) return;
   if (kind === "stop" && !snapshot?.operationID) return;
   rememberDraft();
-  const command = { kind, conversationID: selected, body: { serverID, requestID: crypto.randomUUID() } };
+  const command = { kind, conversationID: selected, body: { serverID, requestID: commandID() } };
   if (kind === "messages") {
     command.body.text = $("message").value;
     if (new TextEncoder().encode(command.body.text).length > 32768) {
@@ -308,7 +301,7 @@ async function submit(kind) {
     const receipt = await request(`/api/conversations/${command.conversationID}/${kind}`, command.body);
     if (receipt.accepted) finishAccepted(command);
   } catch (error) {
-    if (error instanceof APIError && error.status !== 401) {
+    if (error instanceof APIError && error.status !== 401 && error.status !== 403) {
       savePending(null); showError("conversation-error", error.message);
     } else { online = false; }
   } finally {
@@ -316,7 +309,7 @@ async function submit(kind) {
   }
 }
 async function checkDelivery() {
-  if (!pending || !key) return;
+  if (!pending) return;
   const command = pending;
   $("check-delivery").disabled = true;
   try {
@@ -328,20 +321,6 @@ async function checkDelivery() {
   finally { $("check-delivery").disabled = false; void refresh(); }
 }
 
-$("login-form").addEventListener("submit", async event => {
-  event.preventDefault();
-  if (!window.isSecureContext) { showError("login-error", "Open Exec through HTTPS before entering an access key."); return; }
-  key = $("access-key").value.trim(); authVersion++; cache.clear();
-  $("connect").disabled = true; showError("login-error", "");
-  try {
-    await request("/api/conversations");
-    storage.set("key", key); $("access-key").value = "";
-    $("login").hidden = true; $("app").hidden = false;
-    $("message").value = drafts[selected] || "";
-    await refresh();
-  } catch (error) { showError("login-error", error.message); }
-  finally { $("connect").disabled = false; }
-});
 $("new-conversation").addEventListener("click", () => {
   if ($("new-conversation").disabled) return;
   $("folder-picker").showModal(); void browseFolders();
@@ -353,7 +332,6 @@ $("folder-up").addEventListener("click", () => { if (folderListing?.parent) void
 $("folder-cancel").addEventListener("click", closeFolders);
 $("folder-picker").addEventListener("cancel", event => { event.preventDefault(); closeFolders(); });
 $("folder-select").addEventListener("click", () => void createConversation());
-$("logout").addEventListener("click", lock);
 $("back").addEventListener("click", () => $("app").classList.remove("view-chat"));
 $("refresh").addEventListener("click", () => { cache.clear(); void refresh(); });
 $("message").addEventListener("input", rememberDraft);
@@ -377,15 +355,6 @@ if (window.visualViewport) {
   const fit = () => { document.body.style.height = `${window.visualViewport.height}px`; };
   window.visualViewport.addEventListener("resize", fit); fit();
 }
-if (key && window.isSecureContext) {
-  $("login").hidden = true; $("app").hidden = false;
-  $("message").value = drafts[selected] || "";
-  void refresh();
-} else {
-  key = ""; storage.set("key", "");
-  if (!window.isSecureContext) {
-    $("access-key").disabled = true; $("connect").disabled = true;
-    showError("login-error", "Open Exec through HTTPS before entering an access key.");
-  }
-}
+$("message").value = drafts[selected] || "";
+void refresh();
 updateControls();

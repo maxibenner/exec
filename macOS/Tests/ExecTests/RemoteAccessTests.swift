@@ -7,9 +7,10 @@ import WebKit
         var data: Data?
         var reads = 0
         var writes = 0
+        var failWrites = false
         func read(_ account: String) throws -> Data? { reads += 1; return data }
-        func write(_ data: Data, account: String) throws { writes += 1; self.data = data }
-        func delete(_ account: String) throws { data = nil }
+        func write(_ data: Data, account: String) throws { if failWrites { throw ExecError("Test save failure") }; writes += 1; self.data = data }
+        func delete(_ account: String) throws { if account == PangolinConfiguration.account { data = nil } }
     }
     @MainActor private struct Fixture {
         let root: URL
@@ -60,21 +61,21 @@ import WebKit
         }
         throw CheckFailure(description: "Remote operation did not settle")
     }
-    private func request(_ path: String, command: RemoteAPI.Command? = nil, key: String = "test-key") throws -> RemoteHTTPRequest {
+    private func request(_ path: String, command: RemoteAPI.Command? = nil) throws -> RemoteHTTPRequest {
         RemoteHTTPRequest(method: command == nil ? "GET" : "POST", path: path,
                           headers: ["host": "exec.example.com", "origin": "https://exec.example.com",
-                                    "x-exec-key": key, "content-type": "application/json"],
+                                    "x-exec-request": "1", "content-type": "application/json"],
                           body: try command.map { try JSONEncoder().encode($0) } ?? Data())
     }
     private func object(_ response: RemoteHTTPResponse) throws -> [String: Any] {
         try JSONSerialization.jsonObject(with: response.body) as! [String: Any]
     }
 
-    func rejectsUnauthenticatedCrossOriginAndAmbiguousRequests() async throws {
+    func rejectsCrossOriginRebindingAndAmbiguousRequests() async throws {
         let fixture = try await Fixture.make(); defer { fixture.cleanup() }
-        let api = RemoteAPI(library: fixture.library, key: "test-key")
-        var response = await api.handle(try request("/api/conversations", key: "wrong"))
-        try expect(response.status == 401)
+        let api = RemoteAPI(library: fixture.library, assets: ["/": RemoteHTTPResponse(contentType: "text/html", body: Data("Static shell".utf8))], allowedOrigins: ["https://exec.example.com"])
+        var response = await api.handle(try request("/api/conversations"))
+        try expect(response.status == 200)
         var cross = try request("/api/conversations")
         cross.headers["origin"] = "https://attacker.example"
         response = await api.handle(cross); try expect(response.status == 403)
@@ -83,6 +84,16 @@ import WebKit
         cross.headers["origin"] = "https://exec.example.com"
         cross.headers["sec-fetch-site"] = "cross-site"
         response = await api.handle(cross); try expect(response.status == 403)
+        let navigationHeaders = ["host": "exec.example.com", "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document"]
+        response = await api.handle(RemoteHTTPRequest(method: "GET", path: "/", headers: navigationHeaders))
+        try expect(response.status == 200)
+        response = await api.handle(RemoteHTTPRequest(method: "GET", path: "/api/conversations", headers: navigationHeaders))
+        try expect(response.status == 403)
+        response = await api.handle(RemoteHTTPRequest(method: "POST", path: "/", headers: navigationHeaders))
+        try expect(response.status == 403)
+        var invalidNavigation = navigationHeaders; invalidNavigation["host"] = "attacker.example"
+        response = await api.handle(RemoteHTTPRequest(method: "GET", path: "/", headers: invalidNavigation))
+        try expect(response.status == 403)
         let command = RemoteAPI.Command(serverID: api.serverID, requestID: UUID(), text: "Never submit")
         var noOrigin = try request("/api/conversations/\(fixture.ids[0])/messages", command: command)
         noOrigin.headers.removeValue(forKey: "origin")
@@ -95,6 +106,19 @@ import WebKit
         response = await api.handle(conditional); try expect(response.status == 304 && response.body.isEmpty)
         response = await api.handle(try request("/api/conversations/new", command: command)); try expect(response.status == 404)
         response = await api.handle(try request("/api/conversations/\(UUID())")); try expect(response.status != 200)
+        for host in ["evil.example", "exec.example.com.attacker.test", "exec.example.com:80", "exec.example.com.", "exec.example.com@evil.example", "127.0.0.2:9417"] {
+            var rebound = try request("/api/conversations")
+            rebound.headers["host"] = host
+            rebound.headers["origin"] = "https://" + host
+            rebound.headers["x-forwarded-host"] = "exec.example.com"
+            rebound.headers["remote-user"] = "trusted-user"
+            response = await api.handle(rebound); try expect(response.status == 403)
+            rebound = RemoteHTTPRequest(method: "GET", path: "/", headers: ["host": host])
+            response = await api.handle(rebound); try expect(response.status == 403)
+        }
+        var simple = try request("/api/conversations", command: command)
+        simple.headers.removeValue(forKey: "x-exec-request")
+        response = await api.handle(simple); try expect(response.status == 403)
         api.invalidate()
         response = await api.handle(try request("/api/conversations")); try expect(response.status == 503)
         try expect(fixture.provider.children.allSatisfy { $0.inputs.isEmpty })
@@ -119,7 +143,7 @@ import WebKit
         let library = fixture.library
         library.current.draft = "Desktop draft"
         let desktop = library.current
-        let api = RemoteAPI(library: library, key: "test-key")
+        let api = RemoteAPI(library: library, allowedOrigins: ["https://exec.example.com"])
         let path = "/api/conversations/\(fixture.ids[1])"
         var response = await api.handle(try request(path))
         try expect(response.status == 200 && library.current === desktop)
@@ -147,7 +171,7 @@ import WebKit
         response = await api.handle(try request(path + "/stop", command: stop)); try expect(response.status == 202)
         await phone.waitUntilIdle()
         try expect(phone.messages.contains { $0.status == .interrupted })
-        let restarted = RemoteAPI(library: library, key: "test-key")
+        let restarted = RemoteAPI(library: library, allowedOrigins: ["https://exec.example.com"])
         response = await restarted.handle(try request(path + "/messages", command: command)); try expect(response.status == 409)
         response = await restarted.handle(try request("/api/commands/\(command.requestID)"))
         try expect(try object(response)["accepted"] as? Bool == false)
@@ -172,86 +196,106 @@ import WebKit
         try expect(preferred == fixture.ids[0])
     }
 
-    func shortKeysPreserveSavedCredentialsUntilReset() throws {
-        let words = RemoteAccessKey.words
-        try expect(words.count == 1295 && Set(words).count == words.count)
-        try expect(words.allSatisfy { (3...5).contains($0.count) && $0.utf8.allSatisfy { (97...122).contains($0) } })
-        for _ in 0..<32 {
-            let key = RemoteAccessKey.generate()
-            try expect(key.split(separator: "-").count == 4 && RemoteAccessKey.isValid(key))
-        }
-        try expect(RemoteAccessKey.isValid("apple-apple-apple-apple"))
-        for invalid in ["", "apple-boat", "apple-boat-cloud", "apple-boat-cloud-drift-extra",
-                        "apple--cloud-drift", "Apple-boat-cloud-drift", "apple-boat-cloud-drift-",
-                        "apple boat cloud drift", "unknown-boat-cloud-drift", String(repeating: "z", count: 64)] {
-            try expect(!RemoteAccessKey.isValid(invalid))
-        }
-        let suite = "ExecRemoteKeyTests-" + UUID().uuidString
+    func configurationSaveFailurePreservesPreviousValue() throws {
+        let suite = "ExecPangolinSave-" + UUID().uuidString
         let preferences = UserDefaults(suiteName: suite)!
         defer { preferences.removePersistentDomain(forName: suite) }
-        preferences.set(true, forKey: "mobileAccessEnabled")
         let credentials = Credentials()
-        let legacy = String(repeating: "a1", count: 32)
-        credentials.data = Data(legacy.utf8)
-        // No library is attached: these checks never start a listener.
         let access = RemoteAccess(credentials: credentials, preferences: preferences)
-        try expect(try access.accessKey() == legacy && credentials.writes == 0)
-        access.resetKey()
-        let key = try access.accessKey()
-        try expect(key != legacy && key.split(separator: "-").count == 4 && credentials.writes == 1)
+        let first = PangolinConfiguration(managed: false, resourceURL: "https://exec.example.com")
+        try expect(access.apply(first))
+        let saved = credentials.data
+        credentials.failWrites = true
+        var next = first; next.resourceURL = "https://new.example.com"
+        try expect(!access.apply(next))
+        try expect(access.configuration == first && credentials.data == saved)
         let restored = RemoteAccess(credentials: credentials, preferences: preferences)
-        try expect(try restored.accessKey() == key && credentials.writes == 1)
-        credentials.data = Data("broken-key".utf8)
-        try expectFailure { _ = try restored.accessKey() }
-        try expect(credentials.writes == 1)
-        restored.resetKey()
-        try expect(restored.error == nil && RemoteAccessKey.isValid(try restored.accessKey()) && credentials.writes == 2)
+        restored.loadConfiguration()
+        try expect(restored.configuration == first)
+        try expect(!preferences.dictionaryRepresentation().values.contains { String(describing: $0).contains("exec.example.com") })
     }
 
-    func listenerLifecycleAndKeyRevocation() async throws {
+    func connectorFollowsListenerConfigurationAndRelaunch() async throws {
+        let fixture = try await Fixture.make(); defer { fixture.cleanup() }
+        let credentials = Credentials(), launcher = PangolinConnectorTests.Launcher()
+        let access = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets,
+                                  port: 0, connector: PangolinConnector(launcher: launcher))
+        defer { access.suspend() }
+        access.attach(fixture.library)
+        var configuration = PangolinConfiguration(executable: "/bin/echo", endpoint: "https://pangolin.example", siteID: "fake-site", siteSecret: "fake-secret")
+        try expect(access.apply(configuration))
+        try expect(launcher.validations == 0 && launcher.children.isEmpty)
+        launcher.beforeLaunch = { try expect(access.listening && access.listeningPort != nil) }
+        access.setEnabled(true); access.setEnabled(true)
+        try await wait { launcher.children.count == 1 }
+        try expect(access.error == nil)
+        configuration.siteSecret = "replacement-fake-secret"
+        credentials.failWrites = true
+        try expect(!access.apply(configuration) && launcher.children[0].stops == 0)
+        credentials.failWrites = false
+        try expect(access.apply(configuration))
+        try await wait { launcher.children.count == 2 }
+        try expect(launcher.children[0].stops == 1 && launcher.configurations[1] == configuration)
+        access.suspend()
+        try expect(launcher.children[1].stops == 1 && access.enabled)
+        let restored = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets,
+                                    port: 0, connector: PangolinConnector(launcher: launcher))
+        defer { restored.suspend() }
+        launcher.beforeLaunch = { try expect(restored.listening) }
+        restored.attach(fixture.library)
+        try await wait { launcher.children.count == 3 }
+        try expect(launcher.configurations[2] == configuration)
+        configuration.managed = false
+        try expect(restored.apply(configuration))
+        try await wait { restored.listening }
+        try expect(launcher.children[2].stops == 1 && launcher.children.count == 3)
+        restored.setEnabled(false)
+        try expect(!restored.listening)
+    }
+
+    func listenerLifecycleWithoutBrowserLogin() async throws {
         let fixture = try await Fixture.make(); defer { fixture.cleanup() }
         let credentials = Credentials()
         let access = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets, port: 0)
         defer { access.setEnabled(false) }
         access.attach(fixture.library)
-        try expect(!access.enabled && !access.listening && access.listeningPort == nil)
-        try expect(credentials.reads == 0 && credentials.writes == 0)
+        try expect(!access.enabled && !access.listening && credentials.reads == 0)
+        try expect(access.apply(PangolinConfiguration(managed: false)))
         access.setEnabled(true)
         try await wait { access.listening || access.error != nil }
         try expect(access.error == nil)
         let port = access.listeningPort!
-        let key = try access.accessKey()
-        try expect(key.split(separator: "-").count == 4 && RemoteAccessKey.isValid(key) && credentials.writes == 1)
-        try expect(try access.accessKey() == key && credentials.writes == 1)
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
-        func get(_ path: String, key: String? = nil, port: UInt16) async throws -> (Data, HTTPURLResponse) {
+        func get(_ path: String, port: UInt16) async throws -> (Data, HTTPURLResponse) {
             var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
             request.timeoutInterval = 2
-            request.setValue(key, forHTTPHeaderField: "X-Exec-Key")
             let (body, response) = try await session.data(for: request)
             return (body, response as! HTTPURLResponse)
         }
         let (page, response) = try await get("/", port: port)
-        try expect(response.statusCode == 200 && String(decoding: page, as: UTF8.self).contains("Remote Access"))
+        try expect(response.statusCode == 200 && !String(decoding: page, as: UTF8.self).contains("access-key"))
         try expect(response.value(forHTTPHeaderField: "Content-Security-Policy")?.contains("frame-ancestors 'none'") == true)
-        let (_, unauthorized) = try await get("/api/conversations", port: port); try expect(unauthorized.statusCode == 401)
-        let (_, authorized) = try await get("/api/conversations", key: key, port: port); try expect(authorized.statusCode == 200)
+        let (_, catalog) = try await get("/api/conversations", port: port)
+        try expect(catalog.statusCode == 200)
         let running = fixture.library.current
         fixture.provider.children.first!.holdOpen = true
         try running.sendRemoteMessage("Keep running when remote access stops", id: UUID())
         try await wait { fixture.provider.children.first!.pending != nil }
-        access.resetKey()
-        try await wait { access.listening || access.error != nil }
-        try expect(access.error == nil && credentials.writes == 2)
-        let rotatedPort = access.listeningPort!
-        let (_, revoked) = try await get("/api/conversations", key: key, port: rotatedPort); try expect(revoked.statusCode == 401)
-        let (_, newKey) = try await get("/api/conversations", key: access.accessKey(), port: rotatedPort); try expect(newKey.statusCode == 200)
+        access.setEnabled(true)
+        try expect(access.listeningPort == port)
+        access.suspend()
+        try expect(!access.listening && access.enabled)
+        let restored = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets, port: 0)
+        defer { restored.suspend() }
+        restored.attach(fixture.library)
+        try await wait { restored.listening || restored.error != nil }
+        try expect(restored.error == nil && restored.listening)
+        restored.setEnabled(false)
         access.setEnabled(false)
-        try expect(!access.listening && access.listeningPort == nil)
         try await Task.sleep(for: .milliseconds(50))
         do {
-            _ = try await get("/", port: rotatedPort)
+            _ = try await get("/", port: port)
             throw CheckFailure(description: "Disabled remote access still accepted a connection")
         } catch is URLError { }
         let reads = credentials.reads
@@ -271,11 +315,10 @@ import WebKit
         try FileManager.default.createDirectory(at: root.appendingPathComponent(".hidden"), withIntermediateDirectories: true)
         try Data("instructions".utf8).write(to: project.appendingPathComponent("AGENTS.md"))
         try Data("not a folder".utf8).write(to: root.appendingPathComponent("file.txt"))
-        let api = RemoteAPI(library: fixture.library, key: "test-key", homeDirectory: root)
+        let api = RemoteAPI(library: fixture.library, homeDirectory: root, allowedOrigins: ["https://exec.example.com"])
         var folders = RemoteHTTPRequest(method: "POST", path: "/api/folders",
-            headers: ["host": "exec.example.com", "origin": "https://exec.example.com", "x-exec-key": "wrong", "content-type": "application/json"], body: Data("{}".utf8))
-        var response = await api.handle(folders); try expect(response.status == 401)
-        folders.headers["x-exec-key"] = "test-key"
+            headers: ["host": "exec.example.com", "origin": "https://exec.example.com", "x-exec-request": "1", "content-type": "application/json"], body: Data("{}".utf8))
+        var response = await api.handle(folders); try expect(response.status == 200)
         folders.headers["origin"] = "https://other.example.com"
         response = await api.handle(folders); try expect(response.status == 403)
         folders.headers["origin"] = "https://exec.example.com"
@@ -292,8 +335,6 @@ import WebKit
         desktop.draft = "Keep this draft"
         fixture.library.defaultAutoApproveTools = false
         let command = RemoteAPI.Command(serverID: api.serverID, requestID: UUID(), workspacePath: project.path)
-        response = await api.handle(try request("/api/conversations", command: command, key: "wrong"))
-        try expect(response.status == 401 && fixture.library.sessionList.count == 2)
         var noOrigin = try request("/api/conversations", command: command)
         noOrigin.headers.removeValue(forKey: "origin")
         response = await api.handle(noOrigin); try expect(response.status == 403)
@@ -312,7 +353,7 @@ import WebKit
         try expect(try object(response)["accepted"] as? Bool == true)
         var changed = command; changed.workspacePath = root.path
         response = await api.handle(try request("/api/conversations", command: changed)); try expect(response.status == 409)
-        let restarted = RemoteAPI(library: fixture.library, key: "test-key")
+        let restarted = RemoteAPI(library: fixture.library, allowedOrigins: ["https://exec.example.com"])
         response = await restarted.handle(try request("/api/conversations", command: command)); try expect(response.status == 409)
         let replay = RemoteAPI.Command(serverID: restarted.serverID, requestID: command.requestID, workspacePath: project.path)
         response = await restarted.handle(try request("/api/conversations", command: replay)); try expect(response.status == 409)
@@ -329,11 +370,13 @@ import WebKit
         let access = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets, port: 0,
                                   homeDirectory: fixture.root)
         defer { access.setEnabled(false) }
+        try expect(access.apply(PangolinConfiguration(managed: false)))
         access.attach(fixture.library); access.setEnabled(true)
         try await wait { access.listening || access.error != nil }
         try expect(access.error == nil)
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.addUserScript(WKUserScript(source: "sessionStorage.setItem('exec.key', 'obsolete'); localStorage.setItem('exec.key', 'obsolete');", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 390, height: 844), configuration: configuration)
         defer { web.stopLoading(); web.loadHTMLString("", baseURL: nil) }
         web.load(URLRequest(url: URL(string: "http://127.0.0.1:\(access.listeningPort!)/")!))
@@ -346,9 +389,10 @@ import WebKit
             throw CheckFailure(description: "Browser check timed out: \(expression)\n\(detail)")
         }
         try await waitJS("typeof selectConversation === 'function'")
+        try await waitJS("sessionStorage.getItem('exec.key') === null && localStorage.getItem('exec.key') === null")
         // A test WKWebView has no foreground window. Polling normally pauses in
         // background Safari; override visibility only in this isolated test page.
-        _ = try await web.evaluateJavaScript("Object.defineProperty(document, 'hidden', { get: () => false }); document.getElementById('access-key').value = '\(try access.accessKey())'; document.getElementById('login-form').requestSubmit();")
+        _ = try await web.evaluateJavaScript("Object.defineProperty(document, 'hidden', { get: () => false }); void refresh();")
         try await waitJS("document.querySelectorAll('.conversation').length === 2")
         _ = try await web.evaluateJavaScript("selectConversation('\(fixture.ids[1])')")
         try await waitJS("snapshot !== null && snapshot.canSend")
@@ -411,7 +455,29 @@ import WebKit
         try expect(created.workspace?.root == Workspace.load(fixture.root).root)
         try expect(fixture.library.current.draft == "Keep desktop draft" && fixture.library.currentSessionID == fixture.ids[0])
         try expect(fixture.library.sessionList.count == 3)
-        _ = try await web.evaluateJavaScript("document.getElementById('back').click(); document.getElementById('logout').click()")
-        try await waitJS("!document.getElementById('login').hidden && document.getElementById('transcript').children.length === 0")
+        try await waitJS("document.getElementById('login') === null && document.getElementById('logout') === null")
+        // A proxy's expired-session response is not an Exec rejection/receipt.
+        // Keep delivery uncertain, disable sending, and never replay the POST.
+        try await waitJS("online && snapshot?.canSend")
+        _ = try await web.evaluateJavaScript("""
+            window.expiredPosts = 0;
+            window.fetch = async (url, options) => {
+              if (options?.method === 'POST') window.expiredPosts++;
+              return new Response('<html>Pangolin sign-in</html>', { status: 401, headers: { 'Content-Type': 'text/html' } });
+            };
+            document.getElementById('message').value = 'Expired session test';
+            document.getElementById('message').dispatchEvent(new Event('input'));
+            document.getElementById('composer').requestSubmit();
+            """)
+        try await waitJS("pending !== null && !sending && !online && document.getElementById('send').disabled")
+        try await waitJS("document.getElementById('connection-error').textContent.includes('Pangolin')")
+        try await Task.sleep(for: .milliseconds(1200))
+        let expiredPosts = try await web.evaluateJavaScript("window.expiredPosts") as? Int
+        try expect(expiredPosts == 1)
+        try expect(created.messages.isEmpty)
+        _ = try await web.evaluateJavaScript("window.fetch = realFetch; void refresh();")
+        try await waitJS("online")
+        _ = try await web.evaluateJavaScript("document.getElementById('check-delivery').click()")
+        try await waitJS("pending !== null && document.getElementById('receipt-error').textContent.includes('No matching receipt')")
     }
 }
