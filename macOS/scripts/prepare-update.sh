@@ -2,11 +2,17 @@
 # Prepare (but do not publish) a Sparkle archive and feed from a notarized app.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-if [[ $# != 1 ]]; then
-    printf 'Usage: %s /path/to/notarized/Exec.app\n' "$0" >&2
+if [[ $# != 2 ]]; then
+    printf 'Usage: %s /path/to/notarized/Exec.app /path/to/release-notes.md\n' "$0" >&2
     exit 1
 fi
 app="$1"
+notes="$2"
+# Require notes before signing or archiving; use this same Markdown for GitHub.
+if [[ "$notes" != *.md || ! -f "$notes" || ! -r "$notes" ]] || ! grep -q '[^[:space:]]' "$notes"; then
+    printf 'Release notes must be a readable, nonempty Markdown (.md) file.\n' >&2
+    exit 1
+fi
 plist="$app/Contents/Info.plist"
 read_key() { /usr/libexec/PlistBuddy -c "Print :$1" "$plist"; }
 version="$(read_key CFBundleShortVersionString)"
@@ -50,7 +56,10 @@ output="$(mktemp -d "$PWD/dist/update-$version-$build.XXXXXX")"
 archive="Exec-$version-macOS-$architecture.zip"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$output/$archive"
 cp ../docs/appcast.xml "$output/appcast.xml"
+# Sparkle discovers notes by archive basename and safely embeds their Markdown.
+cp "$notes" "$output/${archive%.zip}.md"
 "$tools/generate_appcast" --account exec-sparkle --maximum-deltas 0 --maximum-versions 0 \
+    --embed-release-notes \
     --versions "$build" --download-url-prefix "https://github.com/maxibenner/exec/releases/download/v$version/" \
     --link https://github.com/maxibenner/exec "$output"
 xmllint --noout "$output/appcast.xml"

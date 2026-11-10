@@ -35,13 +35,13 @@ The app's public key must match the release-signing key. `prepare-update.sh` che
 
 3. Preserve a copy of `dist/Exec.app` in a release-specific directory and record the source commit. Submit an archive of that copy using `xcrun notarytool submit --keychain-profile exec-notary`. Do not automatically retry an interrupted submission: query its existing ID/history first.
 4. Wait for **Accepted**, inspect the notarization log, then staple the ticket to the preserved app with `xcrun stapler staple`. Do not rebuild or modify the signed app afterward.
-5. Prepare the Sparkle ZIP and candidate feed from that preserved app:
+5. Write the GitHub release description in a nonempty UTF-8 Markdown (`.md`) file. Prepare the Sparkle ZIP and candidate feed from the preserved app and that notes file:
 
    ```sh
-   ./scripts/prepare-update.sh /absolute/path/to/notarized/Exec.app
+   ./scripts/prepare-update.sh /absolute/path/to/notarized/Exec.app /absolute/path/to/release-notes.md
    ```
 
-   This validates the bundle signature, notarization ticket, updater configuration, increasing build number, and local Sparkle public key. It generates a fresh `dist/update-<version>-<build>.<suffix>/` directory containing a ZIP, SHA-256 checksum, and candidate `appcast.xml`. The feed includes an EdDSA archive signature, version/build, OS/hardware requirements, and a URL under the matching GitHub release tag. Deltas are disabled for simplicity. Nothing is uploaded or published.
+   This validates the notes file, bundle signature, notarization ticket, updater configuration, increasing build number, and local Sparkle public key. It generates a fresh `dist/update-<version>-<build>.<suffix>/` directory containing a ZIP, SHA-256 checksum, a copy of the Markdown notes, and candidate `appcast.xml`. The feed includes an EdDSA archive signature, version/build, OS/hardware requirements, and a URL under the matching GitHub release tag. Sparkle embeds the Markdown in the new item's `<description sparkle:format="markdown">`, so the changelog appears inside the update window without a separate hosted notes file. Previous feed entries and their notes are preserved. Deltas are disabled for simplicity. Nothing is uploaded or published.
 
 6. Build the drag-and-drop installer from the same stapled app:
 
@@ -72,7 +72,7 @@ The app's public key must match the release-signing key. `prepare-update.sh` che
 
 ## Publish in this order
 
-1. Review the candidate feed and verify its version, signature, architecture, and asset URL. Keep previous entries/URLs intact. Record release notes in the GitHub release.
+1. Review the candidate feed and verify its version, signature, architecture, asset URL, and embedded release notes. Keep previous entries/URLs intact. Use the same Markdown file for the GitHub release description (for example, `gh release create ... --notes-file /absolute/path/to/release-notes.md`); the script does not fetch notes from GitHub or require the release to exist yet.
 2. Create the matching `v<version>` release at the **source commit used for the build**. Upload the versioned ZIP, its checksum, and the DMG with its checksum. Always name the uploaded DMG **`Exec-macOS-arm64.dmg`** for Apple Silicon releases so the README's `/releases/latest/download/Exec-macOS-arm64.dmg` link continues to work. Renaming the finished DMG does not change its signature or notarization ticket; generate its checksum file using the uploaded filename. Publish the release before publishing the feed.
 3. Confirm the public ZIP URL works and matches the generated checksum. Do not alter or replace a ZIP after its signature has been generated.
 4. Copy the candidate `appcast.xml` to `docs/appcast.xml`, commit it, and push `main`. GitHub Pages deploys the feed. Confirm the live feed matches the reviewed file.

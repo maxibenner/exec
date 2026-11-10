@@ -7,6 +7,22 @@
         <language>en</language>
         <item>
             <title>0.1.2</title>
+            <description sparkle:format="markdown"><![CDATA[## Changes
+
+- Updated the app icon with a solid dark background.
+- Deferred Keychain access on fresh installs until a provider is selected.
+- Fixed update-badge restoration and click flicker.
+- Added compaction activity to the transcript and reset stale context usage after compaction.
+- Kept tool rows stable as activity indicators change.
+- Added a stopping state while cancellation completes and removed stopped labels from replies.
+- Reduced account-allowance refreshes to after runs.
+
+## Install
+
+[Download the DMG installer](https://github.com/maxibenner/exec/releases/download/v0.1.2/Exec-macOS-arm64.dmg), open it, and drag **Exec** into **Applications**.
+
+Requires **macOS 14 or later on Apple Silicon**. Existing installations can update through **Settings → Updates → Check for Updates…**. The ZIP is for Sparkle in-app updates; use the DMG for manual installation. SHA-256 checksums are included for both downloads.
+]]></description>
             <pubDate>Mon, 09 Nov 2026 20:12:53 -0500</pubDate>
             <link>https://github.com/maxibenner/exec</link>
             <sparkle:version>5</sparkle:version>
@@ -17,6 +33,21 @@
         </item>
         <item>
             <title>0.1.1</title>
+            <description sparkle:format="markdown"><![CDATA[## Changes
+
+- Added ⌘S to toggle the sidebar.
+- Improved chat resizing performance.
+- Tool cards now appear as execution starts.
+- Chats continue after recoverable tool failures.
+- User messages now have blue backgrounds.
+- Manually chosen session names are preserved.
+
+## Install
+
+[Download the DMG installer](https://github.com/maxibenner/exec/releases/download/v0.1.1/Exec-macOS-arm64.dmg), open it, and drag **Exec** into **Applications**.
+
+Requires **macOS 14 or later on Apple Silicon**. Existing installations can update through **Settings → Updates → Check for Updates…**. The ZIP is for Sparkle in-app updates; use the DMG for manual installation. SHA-256 checksums are included for both downloads.
+]]></description>
             <pubDate>Mon, 09 Nov 2026 12:40:03 -0500</pubDate>
             <link>https://github.com/maxibenner/exec</link>
             <sparkle:version>4</sparkle:version>
