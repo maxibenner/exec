@@ -12,7 +12,7 @@ Exec serves a minimal browser interface for conversations, messaging, stopping o
 4. Enter that browser address in **Resource URL**, for example `https://exec.example.com`. This is separate from the Pangolin dashboard URL and is used for Host/origin validation. Include a non-default port if the browser uses one. Leave it blank only for loopback-only access. One resource origin is supported in this version.
 5. Choose **Apply**, then enable Remote Access. Open the resource URL in the browser, signing in through Pangolin if requested. **There is no additional Exec login.** For a local check, manually open `http://127.0.0.1:9417` on the Mac.
 
-For an existing deployment, choose **Externally managed**, enter its Resource URL, and Apply. Exec then manages only its listener. It never searches for, adopts, stops, or modifies an independently started Pangolin/Newt process. Keep that connector running directly on the Mac; another machine or a container with a separate loopback interface cannot reach Exec. Older Exec installations need this explicit configuration after upgrading; the old enabled preference alone is not enough to establish the new Host allowlist.
+Exec always manages its own Pangolin connector; there is no listener-only or external-connector mode. Older saved configurations keep their connection details, but the former connector-mode setting is ignored. If any required site details or executable are missing, complete the setup and Apply before Remote Access can start. When moving a site from a manually started connector, stop that connector yourself before enabling it in Exec. Exec never adopts or terminates independently started Pangolin/Newt processes.
 
 ## Security boundary
 
@@ -87,7 +87,7 @@ Manual deployment checks still required:
 - Public HTTPS over cellular and Wi-Fi: authorized user succeeds; anonymous and disallowed users cannot load frontend **or any API route**.
 - Private resource: authenticated allowed client succeeds; disconnected/unauthorized clients fail.
 - Correct credentials make the site online; invalid credentials fail without exposing credentials in logs/files.
-- Quit/relaunch with the real connector, rapid toggles, and configuration changes leave only the intended owned connector and preserve an externally managed connector.
+- Quit/relaunch with the real connector, rapid toggles, and configuration changes leave only the intended owned connector and leave independently started processes untouched.
 - Sleep/wake and network changes reconnect without command replay. Verify site state in Pangolin, not just process liveness.
 - Expire a real Pangolin browser session, reload/sign in, then reconcile any uncertain command without resending it.
 - Native Settings and iPhone Safari in light/dark mode, keyboard layout, folder selection, tool approvals, and stopping a harmless turn.

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import WebKit
 
 @MainActor struct RemoteAccessTests {
@@ -50,6 +51,11 @@ import WebKit
             try? FileManager.default.removeItem(at: root)
         }
     }
+    private var siteConfiguration: PangolinConfiguration {
+        PangolinConfiguration(executable: "/bin/echo", endpoint: "https://pangolin.example",
+                              siteID: "fake-site", siteSecret: "fake-secret", resourceURL: "https://exec.example.com")
+    }
+
     private var assets: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Resources/RemoteUI")
@@ -202,7 +208,7 @@ import WebKit
         defer { preferences.removePersistentDomain(forName: suite) }
         let credentials = Credentials()
         let access = RemoteAccess(credentials: credentials, preferences: preferences)
-        let first = PangolinConfiguration(managed: false, resourceURL: "https://exec.example.com")
+        let first = siteConfiguration
         try expect(access.apply(first))
         let saved = credentials.data
         credentials.failWrites = true
@@ -213,6 +219,77 @@ import WebKit
         restored.loadConfiguration()
         try expect(restored.configuration == first)
         try expect(!preferences.dictionaryRepresentation().values.contains { String(describing: $0).contains("exec.example.com") })
+    }
+
+    func settingsRenderEditableFieldsAndSetup() async throws {
+        _ = NSApplication.shared
+        let fixture = try await Fixture.make(); defer { fixture.cleanup() }
+        fixture.library.settingsTab = .remoteAccess
+        let previews = ProcessInfo.processInfo.environment["EXEC_SETTINGS_PREVIEWS"].map { URL(fileURLWithPath: $0) }
+        if let previews { try FileManager.default.createDirectory(at: previews, withIntermediateDirectories: true) }
+        for configured in [false, true] {
+            let access = RemoteAccess(credentials: Credentials(), preferences: fixture.preferences,
+                                      connector: PangolinConnector(launcher: PangolinConnectorTests.Launcher()))
+            if configured { try expect(access.apply(siteConfiguration)) }
+            else { try expect(!access.apply(PangolinConfiguration())) }
+            for dark in [false, true] {
+                let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 500, height: 680),
+                                      styleMask: [.titled], backing: .buffered, defer: false)
+                window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                defer { window.orderOut(nil); window.contentView = nil }
+                let host = NSHostingView(rootView: SettingsView(store: fixture.library, canCheckForUpdates: false,
+                    checkForUpdates: {}, remoteAccess: access).frame(width: 500, height: 680)
+                    .environment(\.colorScheme, dark ? .dark : .light))
+                window.contentView = host
+                window.orderFront(nil)
+                try await Task.sleep(for: .milliseconds(150))
+                host.layoutSubtreeIfNeeded()
+                try expect(abs(host.fittingSize.width - 500) < 1 && host.fittingSize.height <= 681)
+                func editableFields(_ view: NSView) -> [NSTextField] {
+                    let own = (view as? NSTextField).map { $0.isEditable ? [$0] : [] } ?? []
+                    return own + view.subviews.flatMap(editableFields)
+                }
+                let fields = editableFields(host)
+                try expect(fields.count == 4 && fields.allSatisfy { $0.alignment == .right })
+                if let previews, let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                    host.cacheDisplay(in: host.bounds, to: bitmap)
+                    try bitmap.representation(using: .png, properties: [:])?.write(to:
+                        previews.appendingPathComponent("remote-\(configured ? "configured" : "setup-error")-\(dark ? "dark" : "light").png"))
+                }
+            }
+        }
+    }
+
+    func oldConfigurationCannotBypassConnectorSetup() async throws {
+        let fixture = try await Fixture.make(); defer { fixture.cleanup() }
+        fixture.preferences.set(true, forKey: "mobileAccessEnabled")
+        for complete in [false, true] {
+            var configuration = siteConfiguration
+            if !complete { configuration.siteSecret = "" }
+            var record = try JSONSerialization.jsonObject(with: JSONEncoder().encode(configuration)) as! [String: Any]
+            record["managed"] = false // An older saved listener-only configuration.
+            let credentials = Credentials()
+            credentials.data = try JSONSerialization.data(withJSONObject: record)
+            let launcher = PangolinConnectorTests.Launcher()
+            let access = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets,
+                                      port: 0, connector: PangolinConnector(launcher: launcher))
+            defer { access.suspend() }
+            access.attach(fixture.library)
+            try expect(access.configuration == configuration)
+            if complete {
+                try await wait { launcher.children.count == 1 || access.error != nil }
+                try expect(access.error == nil && access.listening && launcher.children.count == 1)
+            } else {
+                try expect(access.error != nil && !access.listening && launcher.validations == 0)
+                try expect(access.apply(siteConfiguration))
+                try await wait { launcher.children.count == 1 || access.error != nil }
+                try expect(access.error == nil && launcher.children.count == 1)
+                let saved = try JSONSerialization.jsonObject(with: credentials.data!) as! [String: Any]
+                try expect(saved["managed"] == nil)
+            }
+            access.suspend()
+            try expect(launcher.children[0].stops == 1)
+        }
     }
 
     func connectorFollowsListenerConfigurationAndRelaunch() async throws {
@@ -245,22 +322,19 @@ import WebKit
         restored.attach(fixture.library)
         try await wait { launcher.children.count == 3 }
         try expect(launcher.configurations[2] == configuration)
-        configuration.managed = false
-        try expect(restored.apply(configuration))
-        try await wait { restored.listening }
-        try expect(launcher.children[2].stops == 1 && launcher.children.count == 3)
         restored.setEnabled(false)
-        try expect(!restored.listening)
+        try expect(!restored.listening && launcher.children[2].stops == 1)
     }
 
     func listenerLifecycleWithoutBrowserLogin() async throws {
         let fixture = try await Fixture.make(); defer { fixture.cleanup() }
         let credentials = Credentials()
-        let access = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets, port: 0)
+        let access = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets, port: 0,
+                                  connector: PangolinConnector(launcher: PangolinConnectorTests.Launcher()))
         defer { access.setEnabled(false) }
         access.attach(fixture.library)
         try expect(!access.enabled && !access.listening && credentials.reads == 0)
-        try expect(access.apply(PangolinConfiguration(managed: false)))
+        try expect(access.apply(siteConfiguration))
         access.setEnabled(true)
         try await wait { access.listening || access.error != nil }
         try expect(access.error == nil)
@@ -286,7 +360,8 @@ import WebKit
         try expect(access.listeningPort == port)
         access.suspend()
         try expect(!access.listening && access.enabled)
-        let restored = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets, port: 0)
+        let restored = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets, port: 0,
+                                  connector: PangolinConnector(launcher: PangolinConnectorTests.Launcher()))
         defer { restored.suspend() }
         restored.attach(fixture.library)
         try await wait { restored.listening || restored.error != nil }
@@ -299,7 +374,8 @@ import WebKit
             throw CheckFailure(description: "Disabled remote access still accepted a connection")
         } catch is URLError { }
         let reads = credentials.reads
-        let disabled = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets, port: 0)
+        let disabled = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets, port: 0,
+                                  connector: PangolinConnector(launcher: PangolinConnectorTests.Launcher()))
         disabled.attach(fixture.library)
         try expect(!disabled.enabled && !disabled.listening && credentials.reads == reads)
         try expect(running.busy && !running.isStopping)
@@ -368,9 +444,10 @@ import WebKit
         let fixture = try await Fixture.make(); defer { fixture.cleanup() }
         let credentials = Credentials()
         let access = RemoteAccess(credentials: credentials, preferences: fixture.preferences, assetDirectory: assets, port: 0,
-                                  homeDirectory: fixture.root)
+                                  homeDirectory: fixture.root,
+                                  connector: PangolinConnector(launcher: PangolinConnectorTests.Launcher()))
         defer { access.setEnabled(false) }
-        try expect(access.apply(PangolinConfiguration(managed: false)))
+        try expect(access.apply(siteConfiguration))
         access.attach(fixture.library); access.setEnabled(true)
         try await wait { access.listening || access.error != nil }
         try expect(access.error == nil)

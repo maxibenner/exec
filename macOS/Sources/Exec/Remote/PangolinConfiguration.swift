@@ -2,7 +2,6 @@ import Foundation
 
 /// One atomic Keychain value: a failed save cannot mix old and new credentials.
 struct PangolinConfiguration: Codable, Equatable, Sendable {
-    var managed = true
     var executable = ""
     var endpoint = ""
     var siteID = ""
@@ -21,18 +20,16 @@ struct PangolinConfiguration: Codable, Equatable, Sendable {
                 throw ExecError("Enter the resource’s HTTP or HTTPS URL without a path, credentials, or query.")
             }
         }
-        if managed {
-            guard let origin = Self.origin(value.endpoint), origin.hasPrefix("https://") else {
-                throw ExecError("Enter the Pangolin dashboard’s HTTPS URL without a path, credentials, or query.")
-            }
-            guard !value.siteID.isEmpty, !siteSecret.isEmpty,
-                  !value.siteID.contains(where: \.isWhitespace), !value.siteID.contains("\0"),
-                  !siteSecret.contains(where: \.isWhitespace), !siteSecret.contains("\0") else {
-                throw ExecError("Enter the Site ID and Site Secret from Pangolin.")
-            }
-            guard executable.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: executable) else {
-                throw ExecError("Install Pangolin CLI 0.21.0, then select its executable.")
-            }
+        guard let origin = Self.origin(value.endpoint), origin.hasPrefix("https://") else {
+            throw ExecError("Enter the Pangolin dashboard’s HTTPS URL without a path, credentials, or query.")
+        }
+        guard !value.siteID.isEmpty, !siteSecret.isEmpty,
+              !value.siteID.contains(where: \.isWhitespace), !value.siteID.contains("\0"),
+              !siteSecret.contains(where: \.isWhitespace), !siteSecret.contains("\0") else {
+            throw ExecError("Enter the Site ID and Site Secret from Pangolin.")
+        }
+        guard executable.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: executable) else {
+            throw ExecError("Install Pangolin CLI 0.21.0, then select its executable.")
         }
         return value
     }

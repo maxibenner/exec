@@ -23,6 +23,7 @@ struct ProviderSettingsView: View {
             .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             providerControls
+                .padding(.horizontal, 12)
             Spacer(minLength: 0)
         }
         .padding(20)

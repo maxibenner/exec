@@ -46,14 +46,14 @@ import Foundation
         for output in ["", "1.20.0\n", "0.20.0\n", "0.22.0\n", "0.21.0-beta\n", "newt 0.21.0\n"] {
             try expect(!PangolinSubprocess.supportedVersion(output))
         }
-        let configuration = PangolinConfiguration(endpoint: "https://pangolin.example", siteID: "test-site", siteSecret: "test-secret")
+        let configuration = PangolinConfiguration(executable: "/bin/echo", endpoint: "https://pangolin.example", siteID: "test-site", siteSecret: "test-secret")
         let environment = PangolinSubprocess.environment(home: home, configuration: configuration)
         try expect(environment["SITE_SECRET"] == "test-secret" && environment["SITE_ID"] == "test-site")
         try expect(environment["CONFIG_FILE"] == "/dev/null" && environment["HOME"] == home.path)
         try expect(environment["NEWT_SYSTEM_SUBSTRATE"] == "CONTAINER" && environment["SUDO_USER"] == nil)
         try expect(environment["UPDOWN_SCRIPT"] == nil && environment["SITE_PROVISIONING_KEY"] == nil)
         for invalid in ["https://user:secret@example.com", "https://example.com/path", "https://example.com?secret=test", "https://example.com#test", "https://example.com:0"] {
-            var config = PangolinConfiguration(managed: false); config.resourceURL = invalid
+            var config = configuration; config.resourceURL = invalid
             try expectFailure { _ = try config.validated() }
         }
     }

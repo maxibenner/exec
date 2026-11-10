@@ -27,6 +27,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Pangolin discovery, version checks and isolated environment", { try PangolinConnectorTests().discoveryVersionsAndEnvironment() }),
             ("Pangolin lifecycle prevents duplicates, stale callbacks and respawns", { try await PangolinConnectorTests().lifecycleRejectsDuplicatesLateCallbacksAndRespawns() }),
             ("Pangolin subprocess shutdown is bounded, reaped and isolated", { try await PangolinConnectorTests().realProcessesAreBoundedReapedAndIsolated() }),
+            ("Remote Settings retain editable right-aligned fields in both appearances", { try await RemoteAccessTests().settingsRenderEditableFieldsAndSetup() }),
+            ("Legacy remote configuration cannot bypass managed connector setup", { try await RemoteAccessTests().oldConfigurationCannotBypassConnectorSetup() }),
             ("Managed connector follows listener, explicit apply and app relaunch", { try await RemoteAccessTests().connectorFollowsListenerConfigurationAndRelaunch() }),
             ("Remote commands preserve runners, drafts, approvals and identity", { try await RemoteAccessTests().preservesRunnersDraftsApprovalsAndCommandIdentity() }),
             ("Pangolin configuration save failure preserves previous credentials", { try RemoteAccessTests().configurationSaveFailurePreservesPreviousValue() }),

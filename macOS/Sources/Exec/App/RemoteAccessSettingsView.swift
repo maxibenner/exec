@@ -13,53 +13,60 @@ struct RemoteAccessSettingsView: View {
             }
 
             Section {
-                Picker("Connector", selection: $draft.managed) {
-                    Text("Managed by Exec").tag(true)
-                    Text("Externally managed").tag(false)
-                }
-                if draft.managed {
-                    LabeledContent("Pangolin CLI") {
-                        HStack {
-                            if !draft.executable.isEmpty {
-                                Text(draft.executable).lineLimit(1).truncationMode(.middle)
-                                    .foregroundStyle(.secondary).help(draft.executable)
-                            }
-                            Button("Select…", action: selectExecutable)
+                LabeledContent("Pangolin CLI") {
+                    HStack(alignment: .center, spacing: 8) {
+                        if !draft.executable.isEmpty {
+                            Text(draft.executable).lineLimit(1).truncationMode(.middle)
+                                .foregroundStyle(.secondary).help(draft.executable)
                         }
+                        Button("Select…", action: selectExecutable)
+                            .buttonStyle(.bordered)
                     }
-                    if !FileManager.default.isExecutableFile(atPath: draft.executable) {
-                        Link("Install Pangolin CLI 0.21.0…", destination: URL(string: "https://github.com/fosrl/cli/releases/tag/0.21.0")!)
-                        Text("Install the Pangolin CLI, not the standalone Newt connector. Exec does not install a system service.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    TextField("Pangolin URL", text: $draft.endpoint, prompt: Text("https://app.pangolin.net"))
+                }
+                .frame(minHeight: 24, alignment: .center)
+                if !FileManager.default.isExecutableFile(atPath: draft.executable) {
+                    Link("Install Pangolin CLI 0.21.0…", destination: URL(string: "https://github.com/fosrl/cli/releases/tag/0.21.0")!)
+                    Text("Install the Pangolin CLI, not the standalone Newt connector. Exec does not install a system service.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Group {
+                    TextField("Pangolin URL", text: $draft.endpoint, prompt: Text(verbatim: "https://app.pangolin.net"))
                     TextField("Site ID", text: $draft.siteID)
                     SecureField("Site Secret", text: $draft.siteSecret)
+                    TextField("Resource URL", text: $draft.resourceURL, prompt: Text(verbatim: "https://exec.example.com"))
                 }
-                TextField("Resource URL", text: $draft.resourceURL, prompt: Text("https://exec.example.com"))
-                HStack {
-                    Spacer()
-                    Button("Apply") { access.apply(draft) }
-                        .disabled(draft == access.configuration)
-                }
+                .frame(minHeight: 24, alignment: .center)
+                .multilineTextAlignment(.trailing)
+                .foregroundStyle(.primary)
             } header: {
                 Text("Pangolin")
             } footer: {
-                Text("Resource URL is the browser address, not the dashboard. Leave it blank for loopback-only access.")
-            }
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Spacer()
+                        Button("Apply") { access.apply(draft) }
+                            .disabled(draft == access.configuration)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .font(.body)
 
-            if access.configuration == nil {
-                Section("Setup") {
-                    Text("1. Create a site in Pangolin and enter its connection details above.")
-                    Text("2. Create an authenticated public HTTPS resource, or a private resource with restricted access, targeting HTTP → 127.0.0.1:9417 on that site.")
-                    Text("3. Enter the resource’s browser URL, apply, and enable Remote Access. Open that URL to use Exec.")
+                    if let error = access.error {
+                        Text(error).foregroundStyle(.red).textSelection(.enabled)
+                    }
+                    Text("Resource URL is the browser address, not the dashboard. Leave it blank for loopback-only access.")
+                    if access.configuration == nil {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("• Create a site in Pangolin and enter its connection details above.")
+                            Text("• Create an authenticated public HTTPS resource, or a private resource with restricted access, targeting HTTP → 127.0.0.1:9417 on that site.")
+                            Text("• Enter the resource’s browser URL, apply, and enable Remote Access. Open that URL to use Exec.")
+                        }
+                    }
                 }
-            }
-            if let error = access.error {
-                Section { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             }
         }
         .formStyle(.grouped)
+        .controlSize(.regular)
         .onAppear {
             access.loadConfiguration()
             draft = access.configuration ?? PangolinConfiguration()

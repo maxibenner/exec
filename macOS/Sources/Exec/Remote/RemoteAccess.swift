@@ -100,7 +100,7 @@ import Observation
                 self.listening = port != nil; self.listeningPort = port; self.error = error
                 if let port {
                     api?.allowLoopback(port: port)
-                    if configuration.managed { self.connector.start(configuration) }
+                    self.connector.start(configuration)
                 } else { self.connector.stop() }
             })
             self.server = server
