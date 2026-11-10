@@ -4,12 +4,20 @@ struct RemoteAccessSettingsView: View {
     let access: RemoteAccess
     @State private var draft = PangolinConfiguration()
 
+    private var connectionColor: Color {
+        switch access.connectionState {
+        case .notConnected: .red
+        case .connecting: .yellow
+        case .connected: .green
+        }
+    }
+
     var body: some View {
         Form {
             Section {
                 Toggle("Enable Remote Access", isOn: Binding(get: { access.enabled }, set: access.setEnabled))
             } footer: {
-                Text("Pangolin controls who can access Exec. Local connections on this Mac are trusted. No additional Exec login is required. \(Text(access.connectedToPangolin ? "Connected" : "Not connected").foregroundColor(access.connectedToPangolin ? .green : .yellow))")
+                Text("Pangolin controls who can access Exec. Local connections on this Mac are trusted. No additional Exec login is required. \(Text(access.connectionState.rawValue).foregroundColor(connectionColor))")
                     .font(.caption)
                     .multilineTextAlignment(.leading)
             }
