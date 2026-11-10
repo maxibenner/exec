@@ -177,11 +177,15 @@ import Observation
     private var activeTurn = false { didSet { checkpointRevision += 1 } }
     private var activeCallID: String? { didSet { checkpointRevision += 1 } }
 
+    private let sleepPrevention: SessionSleepPrevention
+
     init(provider: any ChatProvider, sessions: SessionStore? = nil, selectOnCheckpoint: Bool = true,
          newConversation: Bool = false, workspace: Workspace? = nil, newConversationID: UUID = UUID(),
          defaultAutoApproveTools: Bool = true,
+         sleepPrevention: SessionSleepPrevention = .system,
          fetchContent: @escaping @Sendable (URL) async throws -> String = { try await ContentFetcher().fetch($0) },
          captureScreenshot: @escaping @MainActor (ScreenshotTool.Request) async throws -> ScreenshotTool.Output = { try await ScreenshotCapture.capture($0) }) {
+        self.sleepPrevention = sleepPrevention
         self.captureScreenshot = captureScreenshot
         self.provider = provider
         self.fetchContent = fetchContent
@@ -908,7 +912,13 @@ import Observation
         isSending = sending
         isCompacting = compacting
         error = nil
+        // Acquire before scheduling, and retain through tools, approvals and final
+        // checkpoints. Loading sessions or refreshing accounts does not need this.
+        let sleepActivity = (sending || compacting) ? sleepPrevention.begin() : nil
         task = Task {
+            defer {
+                if let sleepActivity { self.sleepPrevention.end(sleepActivity) }
+            }
             var completed = false
             var usageRunID: UUID?
             defer {

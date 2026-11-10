@@ -20,6 +20,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Overlapping sessions release sleep prevention independently", { try await SessionSleepPreventionTests().overlappingRunsReleaseIndependently() }),
+            ("Sleep prevention excludes idle work and cleans up failure and compaction", { try await SessionSleepPreventionTests().idleFailureAndCompactionLifecycle() }),
+            ("Approval waits retain sleep prevention until cancellation completes", { try await SessionSleepPreventionTests().approvalWaitKeepsActivityUntilStopped() }),
             ("Remote access rejects unauthorized, cross-origin and ambiguous requests", { try await RemoteAccessTests().rejectsUnauthenticatedCrossOriginAndAmbiguousRequests() }),
             ("Remote commands preserve runners, drafts, approvals and identity", { try await RemoteAccessTests().preservesRunnersDraftsApprovalsAndCommandIdentity() }),
             ("Remote keys use short words and preserve credentials until reset", { try RemoteAccessTests().shortKeysPreserveSavedCredentialsUntilReset() }),
