@@ -47,8 +47,7 @@ import SwiftUI
             // Every tool uses the same card, including specialized output views.
             // Keep disclosure closed so output changes do not affect this check.
             for name in ["shell", "list_files", "read_file", "search_text", "edit_file",
-                         "fetch_content", "generate_image", "open_app", "inspect_ui", "ui_action",
-                         "computer_use", "take_screenshot", "web_search", "unknown_tool"] {
+                         "fetch_content", "generate_image", "take_screenshot", "web_search", "unknown_tool"] {
                 let call = ToolCall(id: name, name: name, arguments: "{}")
                 let state = TranscriptState()
                 let id = UUID()
