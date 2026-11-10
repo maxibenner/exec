@@ -72,7 +72,7 @@ import Foundation
                                 "name": definition.name, "description": definition.description,
                                 "parameters": ["type": "object", "properties": Dictionary(uniqueKeysWithValues: definition.parameters.map {
                                     ($0.name, ["type": $0.type, "description": $0.description])
-                                }), "required": definition.parameters.map(\.name), "additionalProperties": false]
+                                }), "required": definition.parameters.filter { !$0.isOptional }.map(\.name), "additionalProperties": false]
                             ]] as [String: Any]
                         }
                     }

@@ -7,6 +7,24 @@ import Foundation
         return try Workspace.load(root).root
     }
 
+    func shellDescriptionIsDisplayMetadata() throws {
+        let definition = CodingTools.definitions.first { $0.name == "shell" }
+        try expect(definition?.parameters.contains { $0.name == "description" && $0.type == "string" } == true)
+        let call = ToolCall(id: "description", name: "shell", arguments: #"{"command":"printf hello","description":"  Print a greeting  "}"#)
+        try expect(CodingTools.shellDescription(call) == "Print a greeting")
+        try expect(try CodingTools.shellArguments(call).command == "printf hello")
+        let restored = try JSONDecoder().decode(ToolCall.self, from: JSONEncoder().encode(call))
+        try expect(CodingTools.shellDescription(restored) == "Print a greeting")
+        for metadata in ["", #", "description": "  ""#, #", "description": null"#, #", "description": 42"#] {
+            let legacy = ToolCall(id: "legacy", name: "shell", arguments: "{\"command\":\"printf hello\"\(metadata)}")
+            try expect(CodingTools.shellDescription(legacy) == nil)
+            try expect(try CodingTools.shellArguments(legacy).command == "printf hello")
+        }
+        try expect(CodingTools.shellDescription(ToolCall(id: "other", name: "read_file", arguments: call.arguments)) == nil)
+        let invalid = ToolCall(id: "invalid", name: "shell", arguments: #"{"command":"","description":"Print a greeting"}"#)
+        try expectFailure { _ = try CodingTools.shellArguments(invalid).command }
+    }
+
     func readToolsStayWithinWorkspace() throws {
         let parent = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -58,14 +76,67 @@ import Foundation
         try expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("cancellation-leak").path))
     }
 
+    func shellTimeoutArgumentsAndExecution() async throws {
+        func call(_ timeout: String?) -> ToolCall {
+            let field = timeout.map { ",\"timeout_seconds\":\($0)" } ?? ""
+            return ToolCall(id: UUID().uuidString, name: "shell", arguments: "{\"command\":\"printf x >> effect\"\(field)}")
+        }
+        for value in [nil, "null", "120"] as [String?] {
+            try expect(CodingTools.shellArguments(call(value)).timeoutSeconds == 120)
+        }
+        for value in [1, 900] {
+            try expect(CodingTools.shellArguments(call(String(value))).timeoutSeconds == value)
+        }
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = try Workspace.load(root)
+        let executor = ToolExecutor()
+        executor.setAutoApproval(for: workspace.root)
+        for value in ["0", "-1", "901", "1.5", "true", "\"900\"", "{}", "[]", "999999999999999999999999"] {
+            let result = try await executor.execute(call(value), workspace: workspace)
+            try expect(result.text.hasPrefix("Tool error:"))
+            try expect(executor.pendingApproval == nil)
+        }
+        try expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("effect").path))
+        executor.setAutoApproval(for: nil)
+        let extended = Task { try await executor.execute(call("900"), workspace: workspace) }
+        try await waitUntil { executor.pendingApproval != nil }
+        try expect(executor.pendingApproval?.timeoutSeconds == 900)
+        try expect(executor.pendingApproval?.content == "printf x >> effect")
+        executor.resolveApproval(id: executor.pendingApproval!.id, approved: true)
+        let extendedResult = try await extended.value
+        try expect(extendedResult.text.contains("Exit code: 0"))
+
+        executor.setAutoApproval(for: workspace.root)
+        let timed = ToolCall(id: "timeout", name: "shell",
+            arguments: #"{"command":"printf x >> effect; (sleep 2; touch timeout-leak) & wait","timeout_seconds":1}"#)
+        let result = try await executor.execute(timed, workspace: workspace)
+        try expect(result.text.contains("timed out") && result.text.contains("Do not retry"))
+        // An extended timeout must not delay Stop or leave ordinary children running.
+        let cancelled = Task {
+            try await executor.execute(ToolCall(id: "cancel", name: "shell",
+                arguments: #"{"command":"(sleep 2; touch cancellation-leak) & echo started > started; wait","timeout_seconds":900}"#), workspace: workspace)
+        }
+        try await waitUntil { FileManager.default.fileExists(atPath: root.appendingPathComponent("started").path) }
+        cancelled.cancel()
+        do { _ = try await cancelled.value; throw CheckFailure(description: "Extended command ignored Stop") }
+        catch is CancellationError {}
+        try await Task.sleep(for: .milliseconds(2200))
+        try expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("timeout-leak").path))
+        try expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("cancellation-leak").path))
+        try expect(try String(contentsOf: root.appendingPathComponent("effect"), encoding: .utf8) == "xx")
+    }
+
     func everyShellCommandRequiresApproval() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let workspace = try Workspace.load(root)
         let executor = ToolExecutor()
-        let call = ToolCall(id: "shell-1", name: "shell", arguments: #"{"command":"printf x >> effect"}"#)
+        let call = ToolCall(id: "shell-1", name: "shell", arguments: #"{"command":"printf x >> effect","description":"Append a marker"}"#)
         let denied = Task { try await executor.execute(call, workspace: workspace) }
         try await waitUntil { executor.pendingApproval != nil }
+        try expect(executor.pendingApproval?.timeoutSeconds == 120)
+        try expect(executor.pendingApproval?.content == "printf x >> effect")
         try expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("effect").path))
         executor.resolveApproval(id: UUID(), approved: true)
         try expect(executor.pendingApproval != nil)

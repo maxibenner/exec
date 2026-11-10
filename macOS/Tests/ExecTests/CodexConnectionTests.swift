@@ -112,6 +112,13 @@ struct CodexConnectionTests {
         try expect(tools.compactMap { $0["name"] as? String } == CodingTools.definitions.map(\.name))
         let parameters = tools[3]["parameters"] as! [String: Any]
         try expect(parameters["required"] as? [String] == CodingTools.definitions[3].parameters.map(\.name))
+        let shell = tools.first { $0["name"] as? String == "shell" }!
+        try expect(shell["strict"] as? Bool == true)
+        let shellParameters = shell["parameters"] as! [String: Any]
+        try expect(shellParameters["required"] as? [String] == ["command", "description", "timeout_seconds"])
+        let properties = shellParameters["properties"] as! [String: [String: Any]]
+        try expect(properties["command"]?["type"] as? String == "string")
+        try expect(properties["timeout_seconds"]?["type"] as? [String] == ["integer", "null"])
     }
 
     func readsAccountRoutingMetadata() throws {
