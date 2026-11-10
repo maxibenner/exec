@@ -251,6 +251,12 @@ import WebKit
                 }
                 let fields = editableFields(host)
                 try expect(fields.count == 4 && fields.allSatisfy { $0.alignment == .right })
+                let secret = fields.compactMap { $0 as? NSSecureTextField }.first
+                try expect(secret != nil)
+                guard secret!.bounds.width > 0 && secret!.bounds.width <= 144 else {
+                    throw CheckFailure(description: "Secure input width: \(secret!.bounds.width)")
+                }
+                try expect(secret!.stringValue == (configured ? siteConfiguration.siteSecret : ""))
                 if let previews, let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
                     host.cacheDisplay(in: host.bounds, to: bitmap)
                     try bitmap.representation(using: .png, properties: [:])?.write(to:

@@ -32,7 +32,11 @@ struct RemoteAccessSettingsView: View {
                 Group {
                     TextField("Pangolin URL", text: $draft.endpoint, prompt: Text(verbatim: "https://app.pangolin.net"))
                     TextField("Site ID", text: $draft.siteID)
-                    SecureField("Site Secret", text: $draft.siteSecret)
+                    LabeledContent("Site Secret") {
+                        SecureField("Site Secret", text: $draft.siteSecret)
+                            .labelsHidden()
+                            .frame(width: 140)
+                    }
                     TextField("Resource URL", text: $draft.resourceURL, prompt: Text(verbatim: "https://exec.example.com"))
                 }
                 .frame(minHeight: 24, alignment: .center)
