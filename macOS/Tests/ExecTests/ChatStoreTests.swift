@@ -147,11 +147,25 @@ import Foundation
         try expect(provider.pending != nil)
         provider.pending?.yield(.textSnapshot("Snapshot before stop"))
         try await Task.sleep(for: .milliseconds(10))
+        try expect(store.isWorking && !store.isStopping)
         store.stop()
+        try expect(store.isWorking && store.isStopping)
+        store.stop() // Repeated cancellation must not clear the pending state.
+        try expect(store.isStopping)
         try await settle(store)
+        try expect(!store.isWorking && !store.isStopping)
         try expect(store.messages.last?.text == "Snapshot before stop")
         try expect(store.messages.last?.status == .interrupted)
         provider.pending?.finish()
+        store.stop()
+        try expect(!store.isStopping)
+
+        provider.holdOpen = false
+        store.draft = "After stopping"
+        store.send()
+        try expect(store.isWorking && !store.isStopping)
+        try await settle(store)
+        try expect(!store.isWorking && !store.isStopping)
     }
 
     func finalTextReplacesDeltasAndEmptyResponsesFail() async throws {

@@ -196,8 +196,11 @@ struct ChatComposer: View {
                     WorkingIndicator()
                 }
                 .buttonStyle(.plain).keyboardShortcut(".", modifiers: .command)
-                .help("Stop (Esc or ⌘.)").accessibilityLabel("Stop")
-                Text("esc").font(.system(.caption, design: .monospaced))
+                .help(store.current.isStopping ? "Stopping" : "Stop (Esc or ⌘.)")
+                .accessibilityLabel(store.current.isStopping ? "Stopping" : "Stop")
+                .disabled(store.current.isStopping)
+                Text(store.current.isStopping ? "stopping" : "esc")
+                    .font(.system(.caption, design: .monospaced))
                     .allowsHitTesting(false)
             }
             .fixedSize()

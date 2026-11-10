@@ -71,6 +71,7 @@ import Observation
     private(set) var isRestoringSession = false
     private(set) var isSending = false
     private(set) var isCompacting = false
+    private(set) var isStopping = false
     var canEditDraft: Bool { !busy || isSending || isCompacting }
     private(set) var workspace: Workspace? { didSet { checkpointRevision += 1 } }
     private(set) var sessionList: [SessionSummary] = []
@@ -754,6 +755,7 @@ import Observation
     }
 
     func stop() {
+        if task != nil { isStopping = true }
         computer.reset()
         accessibility.reset()
         tools.revokeComputerPermission()
@@ -939,6 +941,7 @@ import Observation
                 self.isRestoringSession = false
                 self.isSending = false
                 self.isCompacting = false
+                self.isStopping = false
                 self.openingSessionID = nil
                 self.task = nil
                 if (sending || compacting) && completed && !Task.isCancelled {
