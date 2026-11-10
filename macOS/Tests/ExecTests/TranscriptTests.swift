@@ -30,6 +30,53 @@ import SwiftUI
         }
     }
 
+    func activityIndicatorsKeepRowGeometry() throws {
+        _ = NSApplication.shared
+        func size<V: View>(_ view: V, width: CGFloat) -> NSSize {
+            let host = NSHostingView(rootView: view.frame(width: width).fixedSize(horizontal: false, vertical: true))
+            host.layoutSubtreeIfNeeded()
+            return host.fittingSize
+        }
+        for width: CGFloat in [320, 700] {
+            for trigger in [Message.Compaction.manual, .automatic] {
+                let resting = size(CompactionMessageView(trigger: trigger, status: .complete), width: width)
+                for status in [Message.Status.streaming, .interrupted, .failed] {
+                    try expect(size(CompactionMessageView(trigger: trigger, status: status), width: width) == resting)
+                }
+            }
+            // Every tool uses the same card, including specialized output views.
+            // Keep disclosure closed so output changes do not affect this check.
+            for name in ["shell", "list_files", "read_file", "search_text", "edit_file",
+                         "fetch_content", "generate_image", "open_app", "inspect_ui", "ui_action",
+                         "computer_use", "take_screenshot", "web_search", "unknown_tool"] {
+                let call = ToolCall(id: name, name: name, arguments: "{}")
+                let state = TranscriptState()
+                let id = UUID()
+                state.expanded[id] = false
+                func card(_ result: ToolResult?, awaiting: Bool = false) -> some View {
+                    ToolMessageView(call: call, result: result, isAwaitingApproval: awaiting,
+                                    state: state, messageID: id)
+                }
+                let resting = size(card(ToolResult(call: call, text: "Done")), width: width)
+                let variants = [size(card(nil), width: width), size(card(nil, awaiting: true), width: width),
+                                size(card(ToolResult(call: call, text: "Tool error: Failed")), width: width),
+                                size(card(ToolResult(call: call, text: "Interrupted.")), width: width)]
+                for measured in variants {
+                    guard measured == resting else {
+                        throw CheckFailure(description: "\(name) at \(width): activity changed card size from \(resting) to \(measured)")
+                    }
+                }
+            }
+        }
+        // Reserving width as well as height keeps adjacent summary text from
+        // gaining or losing space when the spinner or approval icon disappears.
+        for (running, awaiting) in [(true, false), (false, true), (false, false)] {
+            let host = NSHostingView(rootView: ToolActivityIndicator(isRunning: running,
+                isAwaitingApproval: awaiting, label: "Tool active"))
+            try expect(host.fittingSize == NSSize(width: 16, height: 16))
+        }
+    }
+
     func geometryPreservesAnchors() throws {
         let messages = (0..<1_000).map { Message(role: .user, text: "Message \($0)") }
         var layout = TranscriptLayout()

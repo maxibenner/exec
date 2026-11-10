@@ -12,10 +12,7 @@ struct CompactionMessageView: View {
             Text(trigger == .automatic ? "Automatic" : "User-triggered")
                 .foregroundStyle(.secondary)
             Spacer(minLength: 0)
-            if status == .streaming {
-                ProgressView().controlSize(.small)
-                    .accessibilityLabel("Compaction active")
-            }
+            ToolActivityIndicator(isRunning: status == .streaming, label: "Compaction active")
         }
         .font(.callout)
         .padding(12)
