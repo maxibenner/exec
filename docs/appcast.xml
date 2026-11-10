@@ -6,6 +6,16 @@
         <description>Stable updates for Exec on macOS.</description>
         <language>en</language>
         <item>
+            <title>0.1.2</title>
+            <pubDate>Mon, 09 Nov 2026 20:12:53 -0500</pubDate>
+            <link>https://github.com/maxibenner/exec</link>
+            <sparkle:version>5</sparkle:version>
+            <sparkle:shortVersionString>0.1.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/maxibenner/exec/releases/download/v0.1.2/Exec-0.1.2-macOS-arm64.zip" length="4475354" type="application/octet-stream" sparkle:edSignature="SILIP9JS5Es0EjbJErqKaH2/ntIVU7AJee0WDeBV2urEaQIGJ0Fg+dXOFvnSvP4rT6KMnTRjt2ySD3mF1T/gBA=="/>
+        </item>
+        <item>
             <title>0.1.1</title>
             <pubDate>Mon, 09 Nov 2026 12:40:03 -0500</pubDate>
             <link>https://github.com/maxibenner/exec</link>
