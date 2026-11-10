@@ -20,6 +20,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Overlapping sessions release sleep prevention independently", { try await SessionSleepPreventionTests().overlappingRunsReleaseIndependently() }),
+            ("Sleep prevention excludes idle work and cleans up failure and compaction", { try await SessionSleepPreventionTests().idleFailureAndCompactionLifecycle() }),
+            ("Approval waits retain sleep prevention until cancellation completes", { try await SessionSleepPreventionTests().approvalWaitKeepsActivityUntilStopped() }),
             ("Remote access rejects cross-origin, rebinding and ambiguous requests", { try await RemoteAccessTests().rejectsCrossOriginRebindingAndAmbiguousRequests() }),
             ("Pangolin discovery, version checks and isolated environment", { try PangolinConnectorTests().discoveryVersionsAndEnvironment() }),
             ("Pangolin lifecycle prevents duplicates, stale callbacks and respawns", { try await PangolinConnectorTests().lifecycleRejectsDuplicatesLateCallbacksAndRespawns() }),
