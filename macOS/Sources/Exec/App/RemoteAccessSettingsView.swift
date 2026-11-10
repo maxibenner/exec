@@ -54,9 +54,9 @@ struct RemoteAccessSettingsView: View {
                     if let error = access.error {
                         Text(error).foregroundStyle(.red).textSelection(.enabled)
                     }
-                    Text("Resource URL is the browser address, not the dashboard. Leave it blank for loopback-only access.")
                     if access.configuration == nil {
                         VStack(alignment: .leading, spacing: 4) {
+                            Text("Setup").fontWeight(.medium)
                             Text("• Create a site in Pangolin and enter its connection details above.")
                             Text("• Create an authenticated public HTTPS resource, or a private resource with restricted access, targeting HTTP → 127.0.0.1:9417 on that site.")
                             Text("• Enter the resource’s browser URL, apply, and enable Remote Access. Open that URL to use Exec.")
