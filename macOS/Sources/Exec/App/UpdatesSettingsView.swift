@@ -8,8 +8,12 @@ struct UpdatesSettingsView: View {
         Form {
             Section {
                 LabeledContent("Version", value: version)
+            } footer: {
                 Button("Check for Updates…", action: checkForUpdates)
+                    .buttonStyle(.bordered)
                     .disabled(!canCheckForUpdates)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(.top, 8)
             }
         }
         .formStyle(.grouped)
