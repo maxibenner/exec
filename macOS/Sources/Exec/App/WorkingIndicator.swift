@@ -50,6 +50,7 @@ struct WorkingIndicator: NSViewRepresentable {
         }
 
         @objc private func tick() {
+            WorkingIndicatorProbe.tick()
             guard window?.occlusionState.contains(.visible) == true else {
                 lastTick = nil
                 return
@@ -61,7 +62,9 @@ struct WorkingIndicator: NSViewRepresentable {
         }
 
         override func draw(_ dirtyRect: NSRect) {
-            let time = reduceMotion ? 0.8 : elapsed * 1.3
+            let probeStart = WorkingIndicatorProbe.beginDraw()
+            defer { WorkingIndicatorProbe.endDraw(probeStart) }
+            let time = reduceMotion ? 0.8 : elapsed * 1.495
             for row in 0..<3 {
                 for column in 0..<7 {
                     let index = Double(row * 7 + column)
@@ -70,7 +73,8 @@ struct WorkingIndicator: NSViewRepresentable {
                     let wave = sin(time * 2.3 - Double(column) * 0.85 + Double(row) * 1.2)
                     let pulse = sin(time * (1.7 + index.truncatingRemainder(dividingBy: 5) * 0.19)
                                     + index * 2.399)
-                    let activation = pow(max(0, (wave + pulse) / 2), 2)
+                    // A small positive bias recruits a few more dots into each cluster.
+                    let activation = pow(max(0, (wave + pulse) / 2 + 0.1), 2)
                     let center = NSPoint(x: 2 + Double(column) * 6, y: 2 + Double(row) * 6)
                     // Match the tool cards' quaternary background at 25% opacity.
                     let base = NSColor.quaternaryLabelColor
