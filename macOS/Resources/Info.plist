@@ -8,8 +8,8 @@
     <key>CFBundleIconFile</key><string>Glass_Icon</string>
     <key>CFBundleIconName</key><string>Glass_Icon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.3</string>
-    <key>CFBundleVersion</key><string>6</string>
+    <key>CFBundleShortVersionString</key><string>0.1.4</string>
+    <key>CFBundleVersion</key><string>7</string>
     <key>SUFeedURL</key><string>https://maxibenner.github.io/exec/appcast.xml</string>
     <key>SUPublicEDKey</key><string>2BVvY5oGpDWary0HgMaMNArY/pYJ1+2DeVAksydZp3A=</string>
     <key>SUEnableAutomaticChecks</key><false/>
