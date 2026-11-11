@@ -117,6 +117,26 @@ struct LinkedText: NSViewRepresentable {
             return super.scrollToVisible(rect)
         }
 
+        struct ReadingPosition {
+            let character: Int
+            let lineOffset: CGFloat
+        }
+
+        func readingPosition(at y: CGFloat) -> ReadingPosition? {
+            guard let layout = layoutManager, let container = textContainer,
+                  y >= 0, y < layout.usedRect(for: container).maxY, layout.numberOfGlyphs > 0 else { return nil }
+            let glyph = layout.glyphIndex(for: NSPoint(x: 0, y: y), in: container)
+            var range = NSRange()
+            let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &range)
+            return ReadingPosition(character: layout.characterIndexForGlyph(at: range.location), lineOffset: y - line.minY)
+        }
+
+        func position(of reading: ReadingPosition) -> CGFloat? {
+            guard let layout = layoutManager, reading.character < (textStorage?.length ?? 0) else { return nil }
+            let glyph = layout.glyphIndexForCharacter(at: reading.character)
+            return layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY + reading.lineOffset
+        }
+
         // Full-height selectable text is not a scroll surface. Preserve the
         // original event (including phases/momentum) through normal delivery.
         override func scrollWheel(with event: NSEvent) {

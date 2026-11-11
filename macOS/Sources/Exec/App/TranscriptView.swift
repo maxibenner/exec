@@ -60,6 +60,9 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var jumpRequest = 0
     private var lastMessageID: UUID?
     private var navigationAnchor: TranscriptLayout.Anchor?
+    // Keep the original character across every frame of a width animation;
+    // recapturing the start of each newly wrapped line would accumulate drift.
+    private var readingAnchor: (id: UUID, position: LinkedText.TextView.ReadingPosition)?
     private static let navigationPadding: CGFloat = 20
     private var requestedScroll = false
     private var pendingContentFollow = false
@@ -99,6 +102,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         }
         lastMessageID = filtered.last?.id
         if self.messages != filtered {
+            readingAnchor = nil
             if state.followsLatest { pendingContentFollow = true }
             messagesChanged = true
             self.messages = filtered
@@ -174,6 +178,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         // include keyboard, wheel and scrollbar navigation; resizing isn't a scroll.
         if initialized, contentSize == lastSize {
             navigationAnchor = nil
+            readingAnchor = nil
             let maximum = max(0, content.bounds.height - contentView.bounds.height)
             let position = min(maximum, max(0, contentView.bounds.minY))
             let nearBottom = maximum - position <= 40
@@ -183,7 +188,13 @@ private struct VirtualTranscript: NSViewRepresentable {
         scheduleRefresh()
     }
     private func rememberAnchor() {
-        if initialized { state.anchor = state.layout.anchor(at: contentView.bounds.minY) }
+        guard initialized else { return }
+        state.anchor = state.layout.anchor(at: contentView.bounds.minY)
+        guard !state.followsLatest, navigationAnchor == nil else { readingAnchor = nil; return }
+        guard readingAnchor == nil, contentSize == lastSize,
+              let anchor = state.anchor, let text = rows[anchor.id]?.readingText else { return }
+        let y = text.convert(NSPoint(x: 0, y: contentView.bounds.minY), from: content).y
+        if let position = text.readingPosition(at: y) { readingAnchor = (anchor.id, position) }
     }
     private func scheduleRefresh() {
         guard !detached else { return }
@@ -232,7 +243,8 @@ private struct VirtualTranscript: NSViewRepresentable {
         if let navigationAnchor, !messages.contains(where: { $0.id == navigationAnchor.id }) {
             self.navigationAnchor = nil
         }
-        let anchor = navigationAnchor ?? (initialized ? state.layout.anchor(at: contentView.bounds.minY) : state.anchor)
+        var anchor = navigationAnchor ?? (initialized ? state.layout.anchor(at: contentView.bounds.minY) : state.anchor)
+        let reading = !state.followsLatest && navigationAnchor == nil && width != state.layout.width ? readingAnchor : nil
         let oldHeight = state.layout.totalHeight
         let needsRestore = !initialized || requestedScroll || size != lastSize || bottomInset != renderedBottomInset
         let pinBottom = state.followsLatest && (needsRestore || pendingContentFollow || abs(content.bounds.height - bounds.maxY) < 1)
@@ -291,6 +303,14 @@ private struct VirtualTranscript: NSViewRepresentable {
                 let frame = CGRect(x: (size.width - width) / 2, y: state.layout.offsets[index],
                                    width: width, height: state.layout.heights[index])
                 if rows[messages[index].id]?.frame != frame { rows[messages[index].id]?.frame = frame }
+            }
+            if let reading, let row = rows[reading.id] {
+                row.layoutSubtreeIfNeeded()
+                if let text = row.readingText, let y = text.position(of: reading.position) {
+                    let offset = text.convert(NSPoint(x: 0, y: y), to: row).y
+                    anchor = TranscriptLayout.Anchor(id: reading.id, offset: offset)
+                    restore(anchor, pinBottom: false)
+                }
             }
             if !changed { break }
         }
@@ -383,6 +403,17 @@ private final class MessageHost: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var isFlipped: Bool { true }
     override var fittingSize: NSSize { hosted.fittingSize }
+
+    // Tool cards can contain multiple independently scrolling text surfaces;
+    // retain their pixel anchor instead of guessing which content is being read.
+    var readingText: LinkedText.TextView? {
+        guard let message = rootView.message, message.toolResult == nil,
+              message.pendingTool == nil, message.compaction == nil else { return nil }
+        func find(in view: NSView) -> LinkedText.TextView? {
+            (view as? LinkedText.TextView) ?? view.subviews.lazy.compactMap { find(in: $0) }.first
+        }
+        return find(in: hosted)
+    }
 
     func measureHeightIfNeeded() -> CGFloat? {
         guard needsMeasurement else { return nil }

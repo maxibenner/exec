@@ -51,6 +51,54 @@ import AppKit
         }
     }
 
+    func widthReflowPreservesReadingCharacter() async throws {
+        _ = NSApplication.shared
+        for role in [Message.Role.user, .assistant] {
+            let message = Message(role: role, text: String(repeating: "Reading position with Unicode 👩🏽‍💻 and long wrapped prose. ", count: 600))
+            let state = TranscriptState()
+            let view = TranscriptScrollView(state: state)
+            view.frame = NSRect(x: 0, y: 0, width: 900, height: 650)
+            let window = NSWindow(contentRect: view.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.contentView = view
+            window.orderFront(nil)
+            defer { view.detach(); window.orderOut(nil); window.contentView = nil }
+            view.update(messages: [message], jumpRequest: 0, bottomInset: 140)
+            try await settle(view)
+            view.contentView.scroll(to: NSPoint(x: 0, y: 2000))
+            try await settle(view)
+            let text = try onlyText(in: view)
+            let layout = text.layoutManager!
+            let container = text.textContainer!
+            let top = text.convert(NSPoint(x: 0, y: view.contentView.bounds.minY), from: view.documentView).y
+            let glyph = layout.glyphIndex(for: NSPoint(x: 0, y: top), in: container)
+            var lineRange = NSRange()
+            let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &lineRange)
+            let character = layout.characterIndexForGlyph(at: lineRange.location)
+            let delta = top - line.minY
+            let selection = NSRange(location: character + 10, length: 30)
+            text.setSelectedRange(selection)
+            for width: CGFloat in [740, 620, 500, 420, 620, 740, 900, 420, 900] {
+                window.setContentSize(NSSize(width: width, height: 650))
+                try await settle(view)
+                let reflowedGlyph = layout.glyphIndexForCharacter(at: character)
+                let reflowedLine = layout.lineFragmentRect(forGlyphAt: reflowedGlyph, effectiveRange: nil)
+                let y = text.convert(NSPoint(x: 0, y: reflowedLine.minY + delta), to: view.documentView).y
+                try expect(abs(view.contentView.bounds.minY - y) < 1)
+                try expect(!state.followsLatest && text.selectedRange() == selection)
+            }
+            try expect(abs(view.contentView.bounds.minY - 2000) < 1)
+            if role == .user {
+                view.navigateSentMessage(.previous)
+                try await settle(view)
+                try expect(abs(view.contentView.bounds.minY) < 1)
+            }
+            state.jumpToLatest()
+            view.update(messages: [message], jumpRequest: state.jumpRequest, bottomInset: 140)
+            try await settle(view)
+            try expect(state.followsLatest && abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 1)
+        }
+    }
+
     private func onlyText(in view: NSView) throws -> LinkedText.TextView {
         if let text = view as? LinkedText.TextView { return text }
         for child in view.subviews {
