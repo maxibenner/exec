@@ -20,6 +20,10 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Native quit confirmation sheets cancel cleanly", { try await QuitConfirmationTests().nativeConfirmationSheetCancelsCleanly() }),
+            ("Quit ignores unsent drafts across conversations", { try await QuitConfirmationTests().draftsDoNotPrompt() }),
+            ("Quit confirmation coalesces requests, cancels once and waits for task checkpoints", { try await QuitConfirmationTests().cancelCoalescesRequestsAndConfirmedQuitWaitsForTasks() }),
+            ("Quit still warns about failed saves without claiming tasks are running", { try await QuitConfirmationTests().failedSavesStillPromptWithoutClaimingTasksAreRunning() }),
             ("Indicator gray bases stay visible under zero, partial and full blue pulses", { try WorkingIndicatorTests().grayBasesRemainVisibleUnderBluePulses() }),
             ("Indicator layers animate, freeze and stop when hidden or detached", { try WorkingIndicatorTests().layerAnimationLifecycle() }),
             ("Fork copies transcript, settings and opaque context independently", { try await ForkTests().copiesContextAndSettingsIndependently() }),
