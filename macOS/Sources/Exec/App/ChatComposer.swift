@@ -136,7 +136,6 @@ struct ChatComposer: View {
                     Text(reason).foregroundStyle(AppColors.unavailableRed)
                 } else {
                     Text(modelName).accessibilityLabel("Model: \(modelName)")
-                    Text("·")
                     Text(effortName).accessibilityLabel("Reasoning: \(effortName)")
                 }
                 Spacer(minLength: 8)
@@ -160,7 +159,7 @@ struct ChatComposer: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(imageDropTargeted || focused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: imageDropTargeted ? 4 : 2)
+                .strokeBorder(imageDropTargeted || focused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: imageDropTargeted ? 4 : 1)
                 .allowsHitTesting(false)
         }
         .overlay {
