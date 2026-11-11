@@ -61,7 +61,7 @@ struct WorkingIndicator: NSViewRepresentable {
         }
 
         override func draw(_ dirtyRect: NSRect) {
-            let time = reduceMotion ? 0.8 : elapsed
+            let time = reduceMotion ? 0.8 : elapsed * 1.3
             for row in 0..<3 {
                 for column in 0..<7 {
                     let index = Double(row * 7 + column)
@@ -72,16 +72,14 @@ struct WorkingIndicator: NSViewRepresentable {
                                     + index * 2.399)
                     let activation = pow(max(0, (wave + pulse) / 2), 2)
                     let center = NSPoint(x: 2 + Double(column) * 6, y: 2 + Double(row) * 6)
-                    if activation > 0.1 {
-                        NSColor.controlAccentColor.withAlphaComponent(activation * 0.13).setFill()
-                        NSBezierPath(ovalIn: NSRect(x: center.x - 2.4, y: center.y - 2.4,
-                                                   width: 4.8, height: 4.8)).fill()
-                    }
-                    NSColor.tertiaryLabelColor.withAlphaComponent(0.35).setFill()
+                    // Match the tool cards' quaternary background at 25% opacity.
+                    let base = NSColor.quaternaryLabelColor
+                    base.withAlphaComponent(base.alphaComponent * 0.25).setFill()
                     let dot = NSBezierPath(ovalIn: NSRect(x: center.x - 1.25, y: center.y - 1.25,
                                                         width: 2.5, height: 2.5))
                     dot.fill()
-                    NSColor.controlAccentColor.withAlphaComponent(0.15 + activation * 0.85).setFill()
+                    // Reach the original scanner's full accent color, with no blue tint at rest.
+                    NSColor.controlAccentColor.withAlphaComponent(min(1, activation * 2.5)).setFill()
                     dot.fill()
                 }
             }
