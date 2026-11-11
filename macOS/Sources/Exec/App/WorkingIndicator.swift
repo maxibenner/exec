@@ -64,18 +64,19 @@ struct WorkingIndicator: NSViewRepresentable {
         override func draw(_ dirtyRect: NSRect) {
             let probeStart = WorkingIndicatorProbe.beginDraw()
             defer { WorkingIndicatorProbe.endDraw(probeStart) }
-            let time = reduceMotion ? 0.8 : elapsed * 1.495
+            let time = (reduceMotion ? 0.8 : elapsed) * 1.5
             for row in 0..<3 {
                 for column in 0..<5 {
                     // Retain the original seven-column phases for the remaining dots.
                     let index = Double(row * 7 + column)
-                    // Two drifting waves interfere with individually phased node pulses.
-                    // No per-frame randomness: brightness rises and falls continuously.
-                    let wave = sin(time * 2.3 - Double(column) * 0.85 + Double(row) * 1.2)
+                    // Independently phased pulses, without a travelling spatial wave.
+                    // Match variation 5 in the preview; brightness changes continuously.
+                    let phase = index * 2.399
                     let pulse = sin(time * (1.7 + index.truncatingRemainder(dividingBy: 5) * 0.19)
-                                    + index * 2.399)
+                                    + phase)
+                    let value = pulse * 0.75 + sin(time * 0.7 + phase * 1.3) * 0.25
                     // A small positive bias recruits a few more dots into each cluster.
-                    let activation = pow(max(0, (wave + pulse) / 2 + 0.1), 2)
+                    let activation = pow(max(0, value + 0.1), 2)
                     let center = NSPoint(x: 2 + Double(column) * 6, y: 2 + Double(row) * 6)
                     // Match the tool cards' quaternary background at 25% opacity.
                     let base = NSColor.quaternaryLabelColor
