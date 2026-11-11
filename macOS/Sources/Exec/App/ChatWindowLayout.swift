@@ -20,8 +20,6 @@ struct ChatWindowLayout<Sidebar: View, Detail: View>: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Keep the same surface before and after the session list mounts.
-                .background(.background.secondary)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
         } detail: {
             detail

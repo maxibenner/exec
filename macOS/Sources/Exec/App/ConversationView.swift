@@ -45,14 +45,6 @@ struct ConversationView: View {
         .background(WindowReference { panel.window = $0 })
         .background(ChatWindowTitle(title: panel.title))
         .navigationTitle(panel.title)
-        // Automatic toolbar edges depend on the mounted scroll view. Own this
-        // boundary with the standard divider so it follows the session instead.
-        .toolbarBackground(.hidden, for: .windowToolbar)
-        .overlay(alignment: .top) {
-            if !panel.title.isEmpty {
-                Divider().allowsHitTesting(false).accessibilityHidden(true)
-            }
-        }
         .task(id: panel.shouldChooseInitialWorkspace) {
             // Wait for the owning window and leave the SwiftUI update before
             // presenting a native sheet. A remount must not reopen a cancelled picker.
