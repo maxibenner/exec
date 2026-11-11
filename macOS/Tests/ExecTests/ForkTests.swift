@@ -1,4 +1,5 @@
-import Foundation
+import AppKit
+import SwiftUI
 
 @MainActor struct ForkTests {
     func copiesContextAndSettingsIndependently() async throws {
@@ -143,6 +144,100 @@ import Foundation
         }
     }
 
+    private struct RenderedFork: View {
+        let library: ChatLibrary
+        let windows: SessionWindows
+        @FocusState private var focused: Bool
+        var body: some View {
+            ChatWindowLayout(initiallyShowsSidebar: true) { Text("Synthetic sessions") } detail: {
+                ConversationView(library: library, conversation: library.current,
+                    presentation: windows.presentation(for: library.current), focused: $focused)
+                    .id(ObjectIdentifier(library.current))
+            }
+        }
+    }
+
+    func coldForkAndJumpsHaveLaidOutText() async throws {
+        _ = NSApplication.shared
+        let sourceText = String(repeating: "A paragraph of normal **formatted** text.\n\n", count: 60)
+        let messages = (0..<120).map { Message(role: $0.isMultiple(of: 2) ? .user : .assistant, text: sourceText) }
+        let fixture = try await Fixture(messages: messages)
+        defer { fixture.cleanUp() }
+        let library = fixture.library
+        let windows = SessionWindows(library: library)
+        let source = library.current
+        let sourceState = windows.presentation(for: source)
+        let controller = NSHostingController(rootView: RenderedFork(library: library, windows: windows))
+        let window = NSWindow(contentViewController: controller)
+        window.setContentSize(NSSize(width: 980, height: 700))
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        func settleWindow() async throws {
+            for _ in 0..<12 {
+                controller.view.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .milliseconds(25))
+            }
+        }
+        func texts(in view: NSView) -> [LinkedText.TextView] {
+            if let text = view as? LinkedText.TextView { return [text] }
+            return view.subviews.flatMap { texts(in: $0) }
+        }
+        func checkRows(_ view: TranscriptScrollView) throws {
+            for row in view.documentView!.subviews {
+                for text in texts(in: row) {
+                    try expect(text.textLayoutManager == nil)
+                    let used = text.layoutManager!.usedRect(for: text.textContainer!)
+                    let frame = text.convert(text.bounds, to: row)
+                    try expect(abs(ceil(used.height) - frame.height) < 1)
+                    try expect(frame.minY >= 0 && frame.maxY <= row.bounds.height)
+                }
+            }
+        }
+        try await settleWindow()
+        sourceState.scrollView!.contentView.scroll(to: NSPoint(x: 0, y: 200))
+        sourceState.expanded[messages[0].id] = true
+        windows.forkConversation(source)
+        try await settle(library)
+        try await settleWindow()
+        let state = windows.presentation(for: library.current)
+        let view = state.scrollView!
+        try expect(state !== sourceState && state.expanded.isEmpty && state.followsLatest)
+        try expect(library.current.messages == messages && source.messages == messages)
+        try expect(fixture.provider.children.allSatisfy { $0.runner.inputs.isEmpty })
+        for width: CGFloat in [980, 720] {
+            window.setContentSize(NSSize(width: width, height: 700))
+            try await settleWindow()
+            try checkRows(view)
+            let doc = view.documentView!
+            let lastRow = doc.subviews.max { $0.frame.maxY < $1.frame.maxY }!
+            let text = texts(in: lastRow).last!
+            let used = text.layoutManager!.usedRect(for: text.textContainer!)
+            let end = text.convert(NSPoint(x: 0, y: used.maxY), to: doc).y
+            let inset = doc.bounds.height - state.layout.totalHeight
+            try expect(state.followsLatest && abs(view.contentView.bounds.maxY - doc.bounds.height) < 1)
+            try expect(end > view.contentView.bounds.minY && end <= view.contentView.bounds.maxY - inset)
+            let bottom = view.contentView.bounds.minY
+            for y in stride(from: lastRow.frame.minY, through: bottom, by: CGFloat(150)) {
+                view.contentView.scroll(to: NSPoint(x: 0, y: y))
+                view.refresh(); controller.view.layoutSubtreeIfNeeded()
+            }
+            state.jumpToLatest()
+            view.update(messages: messages, jumpRequest: state.jumpRequest, bottomInset: inset)
+            try await settleWindow()
+            try expect(text.layoutManager!.usedRect(for: text.textContainer!) == used)
+            for _ in 0..<3 {
+                view.navigateSentMessage(.previous)
+                try await settleWindow()
+                try checkRows(view)
+                let target = state.layout.offsets.firstIndex { abs($0 - view.contentView.bounds.minY - 20) < 1 }
+                try expect(target.map { messages[$0].role == .user } == true)
+            }
+            state.jumpToLatest()
+            view.update(messages: messages, jumpRequest: state.jumpRequest, bottomInset: inset)
+            try await settleWindow()
+        }
+    }
+
     private func settle(_ library: ChatLibrary) async throws {
         for _ in 0..<500 {
             if !library.hasRunningOperations { return }
@@ -161,7 +256,7 @@ import Foundation
         let image = ImageAttachment(name: "attachment.png", mediaType: "image/png", data: Data([1, 2, 3]))
         let generatedImage = ImageAttachment(name: "generated.png", mediaType: "image/png", data: Data([4, 5, 6]))
 
-        init() async throws {
+        init(messages: [Message]? = nil) async throws {
             preferences = UserDefaults(suiteName: preferenceID)!
             preferences.set(false, forKey: "generatedTitlesEnabled")
             preferences.set("Shared instructions", forKey: "systemPrompt")
@@ -173,9 +268,9 @@ import Foundation
             let assistant = Message(role: .assistant, text: "", toolCalls: [call])
             let tool = Message(role: .tool, text: "Old result",
                                toolResult: ToolResult(call: call, text: "Old result", generatedImage: generatedImage))
-            let history = [user, assistant, tool, Message(role: .assistant, text: "Completed answer")]
-            let transcript = history + [Message(role: .assistant, text: "Compacted", compaction: .manual),
-                                        Message(role: .assistant, text: "Interrupted answer", status: .interrupted)]
+            let history = messages ?? [user, assistant, tool, Message(role: .assistant, text: "Completed answer")]
+            let transcript = messages ?? (history + [Message(role: .assistant, text: "Compacted", compaction: .manual),
+                                         Message(role: .assistant, text: "Interrupted answer", status: .interrupted)])
             try await sessions.save(SessionSnapshot(identity: provider.conversationIdentity,
                 workspace: Workspace(root: try Workspace.load(root).root, instructions: "Original workspace instructions"),
                 selectedModel: "test", messages: transcript, history: history,

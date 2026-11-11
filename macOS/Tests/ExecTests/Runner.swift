@@ -183,6 +183,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Transcript scroll routing and gesture isolation", { try TranscriptScrollTests().routesVerticalGesturesWithoutStealingOtherScrolling() }),
             ("Empty tool steps do not move the transcript", { try TranscriptTests().emptyToolStepsDoNotMoveTranscript() }),
             ("Expanded tool content stays within native row bounds", { try TranscriptTests().expandedToolContentStaysInsideCommittedRowBounds() }),
+            ("Cold forks and direct message jumps have laid-out text", { try await ForkTests().coldForkAndJumpsHaveLaidOutText() }),
             ("Transcript estimates and first Markdown layout stay bounded", { try await TranscriptConsistencyTests().estimatesAndFirstMarkdownLayoutStayBounded() }),
             ("Transcript reflow preserves the reading character", { try await TranscriptConsistencyTests().widthReflowPreservesReadingCharacter() }),
             ("Cold transcript rows have complete native text layout", { try await TranscriptConsistencyTests().coldRowsHaveCompleteTextLayout() }),
