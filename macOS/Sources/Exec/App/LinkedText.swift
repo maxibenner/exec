@@ -15,7 +15,14 @@ struct LinkedText: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> TextView {
-        let view = TextView()
+        // Use the same complete-document engine as measurement. Viewport-driven
+        // TextKit 2 can leave an unvisited tail estimated even in a full-height row.
+        let storage = NSTextStorage()
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        storage.addLayoutManager(layout)
+        layout.addTextContainer(container)
+        let view = TextView(frame: .zero, textContainer: container)
         view.isEditable = false
         view.isSelectable = true
         view.drawsBackground = false
@@ -23,7 +30,10 @@ struct LinkedText: NSViewRepresentable {
         view.textContainer?.lineFragmentPadding = 0
         view.textContainer?.widthTracksTextView = true
         view.isHorizontallyResizable = false
-        view.isVerticallyResizable = true
+        // SwiftUI owns the frame; native self-sizing would displace text inside
+        // its unflipped representable host when the two heights disagree.
+        view.isVerticallyResizable = false
+        view.textContainer?.heightTracksTextView = false
         view.isAutomaticLinkDetectionEnabled = false
         view.linkTextAttributes = [.foregroundColor: NSColor.linkColor, .cursor: NSCursor.pointingHand]
         view.delegate = context.coordinator
@@ -66,6 +76,37 @@ struct LinkedText: NSViewRepresentable {
     }
 
     final class TextView: NSTextView {
+        private var changingLayout = false
+
+        override func setFrameSize(_ newSize: NSSize) {
+            let wasChanging = changingLayout
+            changingLayout = true
+            defer { changingLayout = wasChanging }
+            super.setFrameSize(newSize)
+            completeLayout()
+        }
+
+        private func completeLayout() {
+            guard let container = textContainer, let layout = layoutManager else { return }
+            if container.widthTracksTextView {
+                container.containerSize = NSSize(width: max(1, bounds.width), height: .greatestFiniteMagnitude)
+            }
+            layout.ensureLayout(for: container)
+        }
+
+        override func scrollRangeToVisible(_ range: NSRange) {
+            guard !changingLayout else { return }
+            super.scrollRangeToVisible(range)
+        }
+
+        override func scrollToVisible(_ rect: NSRect) -> Bool {
+            // TextKit's frame/selection maintenance is not reader intent. Keep
+            // genuine selection, accessibility and keyboard scrolling outside
+            // these synchronous layout operations working normally.
+            guard !changingLayout else { return false }
+            return super.scrollToVisible(rect)
+        }
+
         // Full-height selectable text is not a scroll surface. Preserve the
         // original event (including phases/momentum) through normal delivery.
         override func scrollWheel(with event: NSEvent) {
@@ -81,8 +122,12 @@ struct LinkedText: NSViewRepresentable {
 
         func update(_ text: NSAttributedString) {
             guard attributedString() != text else { return }
+            let wasChanging = changingLayout
+            changingLayout = true
+            defer { changingLayout = wasChanging }
             let selection = selectedRange()
             textStorage?.setAttributedString(text)
+            completeLayout()
             // Streaming updates must not clear an in-progress selection.
             let start = min(selection.location, text.length)
             setSelectedRange(NSRange(location: start, length: min(selection.length, text.length - start)))
