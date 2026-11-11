@@ -60,7 +60,6 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var jumpRequest = 0
     private var lastMessageID: UUID?
     private var navigationAnchor: TranscriptLayout.Anchor?
-    private var navigationExtendsContent = false
     private static let navigationPadding: CGFloat = 20
     private var requestedScroll = false
     private var pendingContentFollow = false
@@ -145,13 +144,14 @@ private struct VirtualTranscript: NSViewRepresentable {
             let top = contentView.bounds.minY + Self.navigationPadding
             switch direction {
             case .previous:
-                target = state.followsLatest ? sent.last : sent.last(where: { state.layout.offsets[$0] < top - 1 }) ?? first
+                // From the bottom, skip recent messages already below the padded
+                // top edge rather than inventing room to lift them above it.
+                target = sent.last(where: { state.layout.offsets[$0] < top - 1 }) ?? first
             case .next:
                 target = state.followsLatest ? nil : sent.first(where: { state.layout.offsets[$0] > top + 1 })
             }
         }
         navigationAnchor = target.map { TranscriptLayout.Anchor(id: messages[$0].id, offset: -Self.navigationPadding) }
-        navigationExtendsContent = direction == .previous
         state.followsLatest = target == nil
         requestedScroll = true
         refresh()
@@ -294,10 +294,9 @@ private struct VirtualTranscript: NSViewRepresentable {
             }
             if !changed { break }
         }
-        // Downward navigation stops at the natural bottom after visible rows have
-        // been measured. Repeated Down commands must not introduce trailing space.
-        if navigationAnchor != nil, !navigationExtendsContent,
-           contentView.bounds.maxY >= content.bounds.height - 1 {
+        // Navigation never extends the document. Resume following at the natural
+        // bottom after visible rows have been measured, including in short chats.
+        if navigationAnchor != nil, contentView.bounds.maxY >= content.bounds.height - 1 {
             navigationAnchor = nil
             state.followsLatest = true
         }
@@ -305,12 +304,8 @@ private struct VirtualTranscript: NSViewRepresentable {
         if changed { scheduleRefresh() }
     }
     private func setDocumentSize() {
-        // Only upward navigation may add room to align a short final turn.
-        let navigationHeight = (navigationExtendsContent ? navigationAnchor : nil)
-            .flatMap { state.layout.position(of: $0) }
-            .map { max(0, $0) + contentSize.height } ?? 0
         let size = CGSize(width: contentSize.width,
-                          height: max(contentSize.height, state.layout.totalHeight + bottomInset, navigationHeight))
+                          height: max(contentSize.height, state.layout.totalHeight + bottomInset))
         if content.frame.size != size { content.setFrameSize(size) }
     }
     private func restore(_ anchor: TranscriptLayout.Anchor?, pinBottom: Bool) {
