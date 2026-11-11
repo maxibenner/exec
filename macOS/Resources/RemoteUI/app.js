@@ -172,6 +172,19 @@ function markdown(parent, text) {
     }
   });
 }
+// Match the native unified DiffDocument classification. Keep markers, whitespace
+// and trailing newlines intact; file contents never pass through HTML/Markdown.
+function diffView(source) {
+  const pre = element("pre", undefined, "diff");
+  source.split("\n").forEach((text, index) => {
+    if (index) pre.append(document.createTextNode("\n"));
+    const header = (index < 2 && (text.startsWith("--- ") || text.startsWith("+++ "))) ||
+      text.startsWith("@@ ") || text.startsWith("\\");
+    const kind = header ? "header" : text.startsWith("+") ? "added" : text.startsWith("-") ? "removed" : "context";
+    pre.append(element("span", text, `diff-${kind}`));
+  });
+  return pre;
+}
 function renderList() {
   const fragment = document.createDocumentFragment();
   for (const row of rows) {
@@ -288,7 +301,9 @@ function renderTranscript(data) {
         details.append(toolHeader(row.tool));
         const content = element("div", undefined, "tool-content");
         content.append(element("pre", row.tool.arguments));
-        if (row.tool.output) content.append(element("pre", row.tool.output));
+        if (row.tool.output) {
+          content.append(row.tool.isDiff ? diffView(row.tool.output) : element("pre", row.tool.output));
+        }
         details.append(content); node.append(details);
       } else {
         const body = element("div", undefined, "message-body");

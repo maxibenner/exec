@@ -593,6 +593,34 @@ import WebKit
         try await waitJS("snapshot !== null && snapshot.canSend")
         let fits = try await web.evaluateJavaScript("document.documentElement.scrollWidth <= 390") as? Bool
         try expect(fits == true)
+        // Exercise the actual transcript path, not just the diff helper. Error
+        // output and other tools must remain plain text even with +/- prefixes.
+        let diffChecks = try await web.evaluateJavaScript(#"""
+            (() => {
+              const source = '--- a/file\n+++ b/file\n@@ -1,3 +1,3 @@\n-old\n+<img src=x onerror=alert(1)>\n context\n--- literal\n+++ literal\n-\n+\n\\ No newline at end of file\n+' + 'x'.repeat(500) + '\n';
+              const message = (id, isDiff) => ({ id, role: 'tool', status: 'completed',
+                tool: { title: 'Edit', arguments: '{}', output: source, isDiff } });
+              renderTranscript({ ...snapshot, messages: [message('diff-test', true), message('error-test', false)] });
+              const pre = document.querySelector('pre.diff');
+              pre.closest('details').open = true;
+              const kinds = Array.from(pre.children, node => node.className).join(',');
+              const valid = pre.textContent === source && !pre.querySelector('img') &&
+                kinds === 'diff-header,diff-header,diff-header,diff-removed,diff-added,diff-context,diff-removed,diff-added,diff-removed,diff-added,diff-header,diff-added,diff-context' &&
+                document.querySelectorAll('pre.diff').length === 1 &&
+                document.querySelector('[data-id="error-test"] .tool-content pre:last-child').textContent === source &&
+                getComputedStyle(pre).whiteSpace === 'pre' && pre.scrollWidth > pre.clientWidth &&
+                document.documentElement.scrollWidth <= 390;
+              const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+              const added = getComputedStyle(pre.querySelector('.diff-added')).backgroundColor;
+              const removed = getComputedStyle(pre.querySelector('.diff-removed')).backgroundColor;
+              const colors = added === (dark ? 'rgba(48, 209, 88, 0.24)' : 'rgba(52, 199, 89, 0.24)') &&
+                removed === (dark ? 'rgba(255, 66, 69, 0.22)' : 'rgba(255, 56, 60, 0.22)') &&
+                getComputedStyle(pre.querySelector('.diff-header')).backgroundColor === 'rgba(0, 0, 0, 0)';
+              renderTranscript(snapshot);
+              return valid && colors;
+            })()
+            """#) as? Bool
+        try expect(diffChecks == true)
         fixture.library.current.draft = "Keep desktop draft"
         _ = try await web.evaluateJavaScript("document.getElementById('message').value = '<img src=x onerror=alert(1)> **Hello**'; document.getElementById('message').dispatchEvent(new Event('input')); document.getElementById('composer').requestSubmit();")
         try await waitJS("document.getElementById('message').value === '' && document.getElementById('transcript').textContent.includes('Hello world')")

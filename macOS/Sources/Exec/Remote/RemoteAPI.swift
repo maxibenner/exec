@@ -18,6 +18,7 @@ struct RemoteTranscript: Encodable {
             let title: String
             let arguments: String
             let output: String
+            let isDiff: Bool
         }
         let id: UUID
         let role: String
@@ -36,7 +37,8 @@ struct RemoteTranscript: Encodable {
             if let call = message.pendingTool?.call ?? message.toolResult?.call {
                 let presentation = ToolPresentation(call: call, result: message.toolResult)
                 tool = Tool(title: presentation.title, arguments: call.arguments,
-                            output: message.toolResult?.edit?.diff ?? presentation.output)
+                            output: message.toolResult?.edit?.diff ?? presentation.output,
+                            isDiff: message.toolResult?.edit != nil)
             } else { tool = nil }
         }
     }
