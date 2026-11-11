@@ -27,6 +27,16 @@ import Observation
         showMainWindow()
     }
 
+    func forkConversation(_ source: ChatStore) {
+        let hadOneSession = library.sessionList.count == 1
+        library.forkConversation(source) { [weak self] in
+            guard let self else { return }
+            if hadOneSession { self.sidebarRevealRequest += 1 }
+            self.composerFocusRequest += 1
+            self.showMainWindow()
+        }
+    }
+
     func openSession(_ id: UUID) {
         library.openSession(id) { [weak self] in
             self?.composerFocusRequest += 1

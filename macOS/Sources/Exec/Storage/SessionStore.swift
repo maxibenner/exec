@@ -22,6 +22,8 @@ struct SessionSnapshot: Codable, Sendable {
     // Accepted transcript messages not yet incorporated at a safe model boundary.
     // Restoring these never starts inference automatically.
     var pendingInputIDs: [UUID]?
+    // Forks retain the original log paths embedded in transcript/provider context.
+    var inheritedShellLogIDs: [UUID]?
 
     /// Only the last completed model step can have unanswered tool calls.
     /// Missing outcomes are never inferred to be successful or re-executed.
@@ -303,7 +305,15 @@ actor SessionStore {
         guard catalog.sessions.contains(where: { $0.id == id }) else { return }
         // Cleanup must succeed before removing the snapshot. A failure leaves the
         // session available for explicit recovery, not orphaned logs after deletion.
-        try SessionShellLogs(directory: directory).remove(id: id)
+        var logIDs = try shellLogIDs(id: id) ?? [id]
+        for other in catalog.sessions where other.id != id {
+            guard let retained = try shellLogIDs(id: other.id) else {
+                logIDs.removeAll() // Unknown references must not destroy a fork's context.
+                break
+            }
+            logIDs.subtract(retained)
+        }
+        for logID in logIDs { try SessionShellLogs(directory: directory).remove(id: logID) }
         // Read references without loading image bytes, so missing or damaged images
         // do not prevent deletion. Unknown references conservatively skip cleanup.
         if var paths = try imagePaths(id: id) {
@@ -323,6 +333,13 @@ actor SessionStore {
         if catalog.activeID == id { catalog.activeID = nil }
         self.catalog = catalog
         try write(JSONEncoder().encode(catalog), name: "index.json")
+    }
+
+    private func shellLogIDs(id: UUID) throws -> Set<UUID>? {
+        struct References: Decodable { var inheritedShellLogIDs: [UUID]? }
+        guard let data = try read("\(id).json") else { return [id] }
+        guard let references = try? JSONDecoder().decode(References.self, from: data) else { return nil }
+        return Set(references.inheritedShellLogIDs ?? []).union([id])
     }
 
     private func imagePaths(id: UUID) throws -> Set<String>? {

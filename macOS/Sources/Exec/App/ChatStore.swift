@@ -334,6 +334,7 @@ import Observation
         conversationIdentity = provider.conversationIdentity
         provider.clearConversationState()
         allowanceObservations = []
+        inheritedShellLogIDs = []
     }
 
     // Capture the destination before asynchronous drop loading; navigation must not redirect attachments.
@@ -777,12 +778,14 @@ import Observation
         if models.isEmpty { throw ExecError("The provider returned no selectable models. Remove and add the provider in Settings → Providers, or update Exec.") }
     }
 
+    private var inheritedShellLogIDs: [UUID] = []
+
     private func snapshot() throws -> SessionSnapshot {
         SessionSnapshot(identity: conversationIdentity, workspace: workspace, selectedModel: selectedModel,
                         messages: messages, history: history, providerState: try provider.encodeConversationState(),
                         activeTurn: activeTurn, activeCallID: activeCallID, activityDate: sessionActivityDate, effort: selectedEffort,
                         autoApproveTools: prefersAutoApproval, allowanceObservations: allowanceObservations,
-                        pendingInputIDs: pendingInput.map(\.id))
+                        pendingInputIDs: pendingInput.map(\.id), inheritedShellLogIDs: inheritedShellLogIDs)
     }
 
     private func checkpoint(force: Bool = false) async throws {
@@ -811,11 +814,37 @@ import Observation
         }
     }
 
+    var canFork: Bool {
+        !busy && !isStartupPresentation && loadedSession && !restorationBlocked &&
+            !activeTurn && activeCallID == nil && conversationIdentity == provider.conversationIdentity
+    }
+
+    /// Copy completed context into a fresh runner, never share a mutable provider
+    /// or resume inference/tool execution. Unsent composer input stays in the source.
+    func copyConversation(from source: ChatStore) throws {
+        guard source !== self, source.canFork, !busy, messages.isEmpty,
+              let id = currentSessionID else { throw ExecError("This conversation cannot be forked right now.") }
+        var saved = try source.snapshot()
+        if let sourceID = source.currentSessionID {
+            saved.inheritedShellLogIDs = Array(Set(source.inheritedShellLogIDs + [sourceID]))
+        }
+        try applySnapshot(saved, id: id)
+        systemPrompt = source.systemPrompt
+        searchModel = source.searchModel
+        sessionActivityDate = Date()
+        savedRevision = nil
+    }
+
     private func applySavedSession(_ id: UUID, presentationOnly: Bool = false) async throws {
-        guard let sessions, var saved = try await sessions.load(id: id) else {
+        guard let sessions, let saved = try await sessions.load(id: id) else {
             throw ExecError("The saved conversation no longer exists.")
         }
         try Task.checkCancellation()
+        try applySnapshot(saved, id: id, presentationOnly: presentationOnly)
+    }
+
+    private func applySnapshot(_ snapshot: SessionSnapshot, id: UUID, presentationOnly: Bool = false) throws {
+        var saved = snapshot
         guard saved.identity == provider.conversationIdentity else {
             throw ExecError("Saved conversation belongs to another account. Connect that account again to open it.")
         }
@@ -831,6 +860,7 @@ import Observation
         selectedEffort = saved.effort
         reconcileEffort()
         allowanceObservations = saved.allowanceObservations ?? []
+        inheritedShellLogIDs = saved.inheritedShellLogIDs ?? []
         let accepted = isSending ? pendingInput : []
         messages = saved.messages; history = saved.history
         if !isSending { draft = ""; draftImages = [] }
