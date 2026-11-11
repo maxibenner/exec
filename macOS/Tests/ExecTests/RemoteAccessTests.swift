@@ -598,8 +598,9 @@ import WebKit
         let diffChecks = try await web.evaluateJavaScript(#"""
             (() => {
               const source = '--- a/file\n+++ b/file\n@@ -1,3 +1,3 @@\n-old\n+<img src=x onerror=alert(1)>\n context\n--- literal\n+++ literal\n-\n+\n\\ No newline at end of file\n+' + 'x'.repeat(500) + '\n';
+              const argumentsText = JSON.stringify({ path: 'file.swift', old_text: 'old', new_text: 'new' });
               const message = (id, isDiff) => ({ id, role: 'tool', status: 'completed',
-                tool: { title: 'Edit', arguments: '{}', output: source, isDiff } });
+                tool: { title: 'Edit', arguments: argumentsText, output: source, isDiff } });
               renderTranscript({ ...snapshot, messages: [message('diff-test', true), message('error-test', false)] });
               const pre = document.querySelector('pre.diff');
               pre.closest('details').open = true;
@@ -607,6 +608,10 @@ import WebKit
               const valid = pre.textContent === source && !pre.querySelector('img') &&
                 kinds === 'diff-header,diff-header,diff-header,diff-removed,diff-added,diff-context,diff-removed,diff-added,diff-removed,diff-added,diff-header,diff-added,diff-context' &&
                 document.querySelectorAll('pre.diff').length === 1 &&
+                document.querySelectorAll('[data-id="diff-test"] .tool-content pre').length === 1 &&
+                document.querySelector('[data-id="diff-test"] .tool-summary').textContent === 'file.swift' &&
+                !document.querySelector('[data-id="diff-test"] .tool-content').textContent.includes(argumentsText) &&
+                document.querySelector('[data-id="error-test"] .tool-content pre:first-child').textContent === argumentsText &&
                 document.querySelector('[data-id="error-test"] .tool-content pre:last-child').textContent === source &&
                 getComputedStyle(pre).whiteSpace === 'pre' && pre.scrollWidth > pre.clientWidth &&
                 document.documentElement.scrollWidth <= 390;

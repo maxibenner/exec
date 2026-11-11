@@ -300,7 +300,9 @@ function renderTranscript(data) {
         const details = element("details", undefined, "tool"); details.open = open;
         details.append(toolHeader(row.tool));
         const content = element("div", undefined, "tool-content");
-        content.append(element("pre", row.tool.arguments));
+        // A completed edit already shows its file in the header and its changes
+        // in the diff. Keep raw inputs only when no diff is available (e.g. errors).
+        if (!row.tool.isDiff) content.append(element("pre", row.tool.arguments));
         if (row.tool.output) {
           content.append(row.tool.isDiff ? diffView(row.tool.output) : element("pre", row.tool.output));
         }

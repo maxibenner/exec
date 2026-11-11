@@ -100,9 +100,17 @@ struct WorkingIndicator: NSViewRepresentable {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             effectiveAppearance.performAsCurrentDrawingAppearance {
-                let base = NSColor.quaternaryLabelColor
+                // Tool cards use quaternary gray at 25% opacity, but that extra
+                // reduction makes a 2.5-point dot nearly invisible. Retain the
+                // quaternary gray's full contrast and flatten it over the chat
+                // background so the base stays opaque beneath the blue pulse.
+                let gray = NSColor.quaternaryLabelColor
+                let base = NSColor.textBackgroundColor.blended(
+                    withFraction: gray.alphaComponent, of: gray.withAlphaComponent(1))
+                    ?? NSColor.windowBackgroundColor
                 for dot in baseDots {
-                    dot.backgroundColor = base.withAlphaComponent(base.alphaComponent * 0.25).cgColor
+                    dot.backgroundColor = base.cgColor
+                    dot.opacity = 1
                 }
                 for dot in activeDots { dot.backgroundColor = NSColor.controlAccentColor.cgColor }
             }
