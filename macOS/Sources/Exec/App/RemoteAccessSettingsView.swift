@@ -53,13 +53,15 @@ struct RemoteAccessSettingsView: View {
                 .multilineTextAlignment(.trailing)
                 .foregroundStyle(.primary)
             } header: {
-                Text("Pangolin")
+                HStack(alignment: .bottom, spacing: 8) {
+                    Text("Pangolin")
+                    Text(access.connectionState.rawValue)
+                        .font(.caption)
+                        .foregroundStyle(connectionColor)
+                }
             } footer: {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text(access.connectionState.rawValue)
-                            .font(.caption)
-                            .foregroundStyle(connectionColor)
                         Spacer()
                         Button("Apply") { access.apply(draft) }
                             .disabled(draft == access.configuration)
