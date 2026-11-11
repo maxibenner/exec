@@ -35,7 +35,7 @@ private struct FrozenIndicator: NSViewRepresentable {
     }
     func updateNSView(_ view: WorkingIndicator.NeuralActivityView, context: Context) {}
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: WorkingIndicator.NeuralActivityView,
-                     context: Context) -> CGSize? { CGSize(width: 40, height: 16) }
+                     context: Context) -> CGSize? { nsView.intrinsicContentSize }
     static func dismantleNSView(_ view: WorkingIndicator.NeuralActivityView, coordinator: ()) { view.stop() }
 }
 

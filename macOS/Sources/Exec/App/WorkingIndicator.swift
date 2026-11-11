@@ -10,7 +10,7 @@ struct WorkingIndicator: NSViewRepresentable {
         view.reduceMotion = reduceMotion
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NeuralActivityView, context: Context) -> CGSize? {
-        CGSize(width: 40, height: 16)
+        nsView.intrinsicContentSize
     }
     static func dismantleNSView(_ view: NeuralActivityView, coordinator: ()) { view.stop() }
 
@@ -25,7 +25,7 @@ struct WorkingIndicator: NSViewRepresentable {
         private var timer: Timer?
         private var elapsed: TimeInterval = 0
         private var lastTick: TimeInterval?
-        override var intrinsicContentSize: NSSize { NSSize(width: 40, height: 16) }
+        override var intrinsicContentSize: NSSize { NSSize(width: 28, height: 16) }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -66,7 +66,8 @@ struct WorkingIndicator: NSViewRepresentable {
             defer { WorkingIndicatorProbe.endDraw(probeStart) }
             let time = reduceMotion ? 0.8 : elapsed * 1.495
             for row in 0..<3 {
-                for column in 0..<7 {
+                for column in 0..<5 {
+                    // Retain the original seven-column phases for the remaining dots.
                     let index = Double(row * 7 + column)
                     // Two drifting waves interfere with individually phased node pulses.
                     // No per-frame randomness: brightness rises and falls continuously.
