@@ -20,6 +20,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Indicator gray bases stay visible under zero, partial and full blue pulses", { try WorkingIndicatorTests().grayBasesRemainVisibleUnderBluePulses() }),
             ("Indicator layers animate, freeze and stop when hidden or detached", { try WorkingIndicatorTests().layerAnimationLifecycle() }),
             ("Fork copies transcript, settings and opaque context independently", { try await ForkTests().copiesContextAndSettingsIndependently() }),
             ("Fork rejects active turns and preserves source on failure", { try await ForkTests().rejectsRunningTurnsAndPreservesSourceOnFailure() }),
