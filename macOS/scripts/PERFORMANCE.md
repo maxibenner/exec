@@ -3,6 +3,14 @@
 Run scripts from `macOS/`. These tools do not make model calls or read credentials.
 No third-party profiler installation is required.
 
+## Visual alternatives
+
+Run `./scripts/preview-indicators.sh` to open ten numbered animation experiments,
+each at actual size and 3× magnification. Closing the window exits the preview.
+It has no account access and does not modify the app's selected design. It uses a
+separate SwiftUI Canvas renderer for experimentation, not the production AppKit
+renderer; do not use this ten-animation window for performance comparisons.
+
 ## Indicator comparison
 
 ```sh
