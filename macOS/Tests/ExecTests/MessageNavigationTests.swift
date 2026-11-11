@@ -13,10 +13,20 @@ import AppKit
         }
         view.update(messages: messages, jumpRequest: 0, bottomInset: 140)
         settle(view)
-        for index in stride(from: 38, through: 0, by: -2) {
+        // Several recent user bubbles are below the top of the viewport. Up
+        // should skip those and move backward, never increase document height.
+        let initialBottom = view.contentView.bounds.minY
+        let firstTarget = stride(from: 38, through: 0, by: -2).first {
+            state.layout.offsets[$0] - 20 < initialBottom - 1
+        }!
+        try expect(firstTarget < 38)
+        for index in stride(from: firstTarget, through: 0, by: -2) {
+            let previousY = view.contentView.bounds.minY
             view.navigateSentMessage(.previous)
             settle(view)
             try aligned(index, in: view)
+            try expect(view.contentView.bounds.minY < previousY)
+            try expect(abs(view.documentView!.frame.height - state.layout.totalHeight - 140) < 1)
             try expect(!state.followsLatest)
         }
         view.navigateSentMessage(.previous)
@@ -39,15 +49,19 @@ import AppKit
         let bottom = view.contentView.bounds.minY
         view.navigateSentMessage(.next)
         try expect(view.contentView.bounds.minY == bottom)
-        view.navigateSentMessage(.previous)
-        try aligned(38, in: view)
-        view.navigateSentMessage(.previous)
-        try aligned(36, in: view)
-        try expect(view.documentView!.frame.height > state.layout.totalHeight + 140)
-        view.navigateSentMessage(.next)
-        settle(view)
-        try expect(state.followsLatest && abs(view.contentView.bounds.minY - bottom) < 1)
-        try expect(abs(view.documentView!.frame.height - state.layout.totalHeight - 140) < 1)
+        let previousTarget = stride(from: 38, through: 0, by: -2).first {
+            state.layout.offsets[$0] - 20 < bottom - 1
+        }!
+        for _ in 0..<3 {
+            view.navigateSentMessage(.previous)
+            settle(view)
+            try aligned(previousTarget, in: view)
+            try expect(view.contentView.bounds.minY < bottom)
+            try expect(abs(view.documentView!.frame.height - state.layout.totalHeight - 140) < 1)
+            view.navigateSentMessage(.next)
+            settle(view)
+            try expect(state.followsLatest && abs(view.contentView.bounds.minY - bottom) < 1)
+        }
     }
 
     func preservesTargetDuringUpdatesAndResumesFromManualScroll() throws {
@@ -60,8 +74,11 @@ import AppKit
             [Message(role: .user, text: String(repeating: "Sent \(index) ", count: 20)),
              Message(role: .assistant, text: "Reply \(index)")]
         }
+        // With enough real content after the last user message, Up still visits it.
+        messages[59].text = String(repeating: "Long response that fills the viewport. ", count: 100)
         view.update(messages: messages, jumpRequest: 0, bottomInset: 100)
         view.navigateSentMessage(.previous)
+        try aligned(58, in: view)
         view.navigateSentMessage(.previous)
         try aligned(56, in: view)
         messages[59].text += String(repeating: " More response.", count: 60)
@@ -103,6 +120,16 @@ import AppKit
         let messages = [Message(role: .user, text: "Only sent message"), Message(role: .assistant, text: "Reply")]
         a.update(messages: messages, jumpRequest: 0)
         b.update(messages: messages, jumpRequest: 0)
+        a.navigateSentMessage(.previous)
+        try aligned(0, in: a)
+        try expect(first.followsLatest && second.followsLatest)
+        for direction in [MessageNavigationDirection.previous, .next, .previous] {
+            a.navigateSentMessage(direction)
+            try expect(a.contentView.bounds.minY == 0)
+            try expect(a.documentView!.frame.height == a.contentSize.height)
+        }
+        a.update(messages: messages + [Message(role: .assistant,
+            text: String(repeating: "Long response. ", count: 300))], jumpRequest: 0)
         a.navigateSentMessage(.previous)
         try aligned(0, in: a)
         try expect(!first.followsLatest && second.followsLatest)
