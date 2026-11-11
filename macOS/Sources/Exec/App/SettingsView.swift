@@ -23,7 +23,15 @@ struct SettingsView: View {
                 .tag(ChatLibrary.SettingsTab.usage)
             if let remoteAccess {
                 RemoteAccessSettingsView(access: remoteAccess)
-                    .tabItem { Label("Remote Access", systemImage: "iphone") }
+                    .tabItem {
+                        Label {
+                            Text("Remote Access")
+                        } icon: {
+                            Image(systemName: "iphone")
+                                .renderingMode(.template)
+                                .symbolRenderingMode(.monochrome)
+                        }
+                    }
                     .tag(ChatLibrary.SettingsTab.remoteAccess)
             }
             UpdatesSettingsView(canCheckForUpdates: canCheckForUpdates, checkForUpdates: checkForUpdates)
