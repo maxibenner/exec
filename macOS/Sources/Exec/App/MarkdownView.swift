@@ -36,7 +36,7 @@ struct MarkdownView: View {
     @discardableResult
     func insert(_ blocks: [MarkdownBlock], for source: String) -> NSAttributedString {
         if let cached = renderedText(for: source) { return cached }
-        let text = MarkdownText.render(blocks)
+        let text = NSAttributedString(attributedString: MarkdownText.render(blocks))
         entries.setObject(text, forKey: source as NSString, cost: source.utf8.count + text.length * 2)
         return text
     }
