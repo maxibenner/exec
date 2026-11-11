@@ -97,9 +97,17 @@ import Observation
             let configuration = try configuration.validated()
             guard let assetDirectory else { throw ExecError("The remote frontend is missing. Rebuild Exec with scripts/build-app.sh.") }
             var assets: [String: RemoteHTTPResponse] = [:]
-            for (name, type) in [("index.html", "text/html"), ("app.js", "text/javascript"), ("style.css", "text/css")] {
+            for (name, type) in [
+                ("index.html", "text/html; charset=utf-8"),
+                ("app.js", "text/javascript; charset=utf-8"),
+                ("style.css", "text/css; charset=utf-8"),
+                ("manifest.webmanifest", "application/manifest+json; charset=utf-8"),
+                ("icon-180.png", "image/png"),
+                ("icon-192.png", "image/png"),
+                ("icon-512.png", "image/png")
+            ] {
                 let body = try Data(contentsOf: assetDirectory.appendingPathComponent(name))
-                assets[name == "index.html" ? "/" : "/" + name] = RemoteHTTPResponse(contentType: type + "; charset=utf-8", body: body)
+                assets[name == "index.html" ? "/" : "/" + name] = RemoteHTTPResponse(contentType: type, body: body)
             }
             let api = RemoteAPI(library: library, assets: assets, homeDirectory: homeDirectory,
                                 allowedOrigins: Set([PangolinConfiguration.origin(configuration.resourceURL)].compactMap { $0 }))

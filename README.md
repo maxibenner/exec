@@ -41,7 +41,7 @@ Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace
 
 ## Remote Access
 
-Follow conversations, create conversations in Mac folders, send text and stop turns from a browser. Install Pangolin CLI 0.21.0 once, then configure **Settings → Remote Access** with your site's connection details and resource URL. Exec manages the foreground connector and serves both the frontend and API at `http://127.0.0.1:9417`; no separate website, relay, or system service is needed. The connector is always managed by Exec.
+Follow conversations, create conversations in Mac folders, send text and stop turns from a browser. Install Pangolin CLI 0.21.0 once, then configure **Settings → Remote Access** with your site's connection details and resource URL. Exec manages the foreground connector and serves both the frontend and API at `http://127.0.0.1:9417`; no separate website, relay, or system service is needed. The connector is always managed by Exec. On iPhone, open the Pangolin resource URL in Safari and use **Share → Add to Home Screen** to install the same web client. It requires a live connection to Exec; it does not cache conversations or commands offline.
 
 Remote Access is off by default. Pangolin—not an additional Exec login—controls remote access. Public resources must require authentication across the frontend and all API routes; private resources require Pangolin client authentication and restricted permissions. Local processes on the Mac are trusted. Site credentials stay in Keychain. Tool approvals stay on the Mac, and existing auto-approval settings still apply.
 

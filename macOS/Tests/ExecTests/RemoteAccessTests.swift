@@ -110,6 +110,12 @@ import WebKit
         try expect(!body.contains("test@example.com") && !body.contains("providerState") && !body.contains(fixture.root.path))
         var conditional = try request("/api/conversations"); conditional.headers["if-none-match"] = response.etag
         response = await api.handle(conditional); try expect(response.status == 304 && response.body.isEmpty)
+        fixture.preferences.set(true, forKey: ToolDisplayPreferences.descriptiveShellTitlesKey)
+        response = await api.handle(conditional)
+        try expect(response.status == 200 && (try object(response))["descriptiveShellTitles"] as? Bool == true)
+        fixture.preferences.set(false, forKey: ToolDisplayPreferences.descriptiveShellTitlesKey)
+        response = await api.handle(try request("/api/conversations"))
+        try expect((try object(response))["descriptiveShellTitles"] as? Bool == false)
         response = await api.handle(try request("/api/conversations/new", command: command)); try expect(response.status == 404)
         response = await api.handle(try request("/api/conversations/\(UUID())")); try expect(response.status != 200)
         for host in ["evil.example", "exec.example.com.attacker.test", "exec.example.com:80", "exec.example.com.", "exec.example.com@evil.example", "127.0.0.2:9417"] {
@@ -453,6 +459,15 @@ import WebKit
         let (page, response) = try await get("/", port: port)
         try expect(response.statusCode == 200 && !String(decoding: page, as: UTF8.self).contains("access-key"))
         try expect(response.value(forHTTPHeaderField: "Content-Security-Policy")?.contains("frame-ancestors 'none'") == true)
+        try expect(response.value(forHTTPHeaderField: "Content-Security-Policy")?.contains("manifest-src 'self'") == true)
+        let (manifest, manifestResponse) = try await get("/manifest.webmanifest", port: port)
+        try expect(manifestResponse.statusCode == 200 && manifestResponse.mimeType == "application/manifest+json")
+        try expect((try JSONSerialization.jsonObject(with: manifest) as? [String: Any])?["display"] as? String == "standalone")
+        for name in ["icon-180.png", "icon-192.png", "icon-512.png"] {
+            let (icon, iconResponse) = try await get("/\(name)", port: port)
+            try expect(iconResponse.statusCode == 200 && iconResponse.mimeType == "image/png")
+            try expect(icon.starts(with: [0x89, 0x50, 0x4e, 0x47]))
+        }
         let (_, catalog) = try await get("/api/conversations", port: port)
         try expect(catalog.statusCode == 200)
         let running = fixture.library.current
@@ -609,12 +624,12 @@ import WebKit
         // The same lost-response protection applies to creation. Browsing/cancelling
         // makes no session; selecting a Mac folder makes exactly one durable session.
         _ = try await web.evaluateJavaScript("document.getElementById('back').click(); document.getElementById('new-conversation').click();")
-        try await waitJS("document.getElementById('folder-picker').open && folderListing !== null")
+        try await waitJS("!document.getElementById('folder-page').hidden && folderListing !== null")
         try expect(fixture.library.sessionList.count == 2)
-        let pickerFits = try await web.evaluateJavaScript("document.getElementById('folder-picker').scrollWidth <= 390") as? Bool
+        let pickerFits = try await web.evaluateJavaScript("document.getElementById('folder-page').scrollWidth <= 390") as? Bool
         try expect(pickerFits == true)
         _ = try await web.evaluateJavaScript("document.getElementById('folder-cancel').click()")
-        try await waitJS("!document.getElementById('folder-picker').open")
+        try await waitJS("document.getElementById('folder-page').hidden")
         try expect(fixture.library.sessionList.count == 2)
         _ = try await web.evaluateJavaScript("document.getElementById('new-conversation').click()")
         try await waitJS("folderListing !== null")

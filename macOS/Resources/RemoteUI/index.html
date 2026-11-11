@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Exec">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icon-180.png">
   <title>Exec</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
@@ -16,45 +19,66 @@
       <div class="actions"><button id="check-delivery">Check Receipt</button><button id="dismiss-delivery">Dismiss</button></div>
       <p id="receipt-error" class="error" role="alert" hidden></p>
     </div>
-    <div class="workspace-layout">
-      <aside id="sidebar">
-        <header><strong>Exec</strong></header>
-        <div id="list-error" class="banner error" role="alert" hidden></div>
-        <div class="list-heading"><h1>Conversations</h1><button id="new-conversation">New Conversation</button></div>
-        <nav id="conversations" aria-label="Conversations"></nav>
-        <p id="empty-list" class="context" hidden>No conversations.</p>
-      </aside>
-      <section id="chat" aria-label="Conversation">
-        <header class="chat-header">
-          <button id="back" aria-label="Back to conversations">Back</button>
-          <h1 id="title">Conversations</h1>
-          <button id="refresh">Refresh</button>
-        </header>
-        <div id="connection-error" class="banner error" role="alert" hidden></div>
-        <div id="approval" class="banner" hidden>Approval required on the Mac. You can send a message to change direction.</div>
-        <div id="conversation-error" class="banner error" role="alert" hidden></div>
-        <div id="transcript" tabindex="0" aria-label="Messages"></div>
-        <form id="composer" hidden>
-          <label class="visually-hidden" for="message">Message</label>
-          <textarea id="message" rows="2" placeholder="Message" maxlength="32768"></textarea>
-          <div class="composer-actions"><button id="stop" type="button" hidden>Stop</button><button id="send" type="submit">Send</button></div>
-        </form>
-      </section>
+    <section id="chat-page" class="page" aria-label="Conversation" hidden>
+      <header class="chat-header">
+        <button id="back" class="back-button" aria-label="Back to chats">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 4-8 8 8 8"/></svg>
+        </button>
+        <h1 id="title">Conversation</h1>
+      </header>
+    <div id="connection-error" class="banner error" role="alert" hidden></div>
+    <div id="approval" class="banner" hidden>Approval required on the Mac.</div>
+    <div id="conversation-error" class="banner error" role="alert" hidden></div>
+    <div id="transcript" tabindex="0" role="log" aria-live="polite" aria-label="Messages">
+      <div id="transcript-messages"></div>
+      <span id="working-indicator" class="small-spinner" role="img" aria-label="Conversation running" hidden></span>
+      <span id="chat-loading" hidden><span class="small-spinner loading-spinner" role="img" aria-label="Loading conversation"></span></span>
     </div>
-  </main>
-  <dialog id="folder-picker" aria-labelledby="folder-title">
-    <h1 id="folder-title">New Conversation</h1>
-    <form id="folder-form">
-      <label for="folder-path">Workspace folder on the Mac</label>
-      <div class="path-entry"><input id="folder-path" autocomplete="off" autocapitalize="none" spellcheck="false" required><button id="folder-go" type="submit">Go</button></div>
+    <form id="composer" hidden>
+      <div class="composer-field">
+        <label class="visually-hidden" for="message">Message</label>
+        <textarea id="message" rows="1" placeholder="Message…" maxlength="32768"></textarea>
+        <div class="composer-actions">
+          <button id="send" class="icon-button" type="submit" aria-label="Send message" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button>
+          <button id="stop" class="icon-button" type="button" aria-label="Stop response" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"/></svg></button>
+        </div>
+      </div>
     </form>
-    <div class="actions"><button id="folder-home">Home</button><button id="folder-up">Up</button></div>
-    <p id="folder-error" class="error" role="alert" hidden></p>
-    <p id="folder-limit" class="context" hidden>Only part of this folder is listed. Enter a full path to open another folder.</p>
-    <nav id="folders" aria-label="Mac folders"></nav>
-    <p id="folder-empty" hidden>No subfolders.</p>
-    <div class="actions"><button id="folder-cancel">Cancel</button><button id="folder-select">Use This Folder</button></div>
-  </dialog>
-  <noscript>Enable JavaScript to use Exec’s mobile frontend.</noscript>
+    </section>
+    <section id="list-page" class="page" aria-label="Sessions">
+      <header class="chat-header list-page-header"><h1>Sessions</h1></header>
+      <div id="list-error" class="banner error" role="alert" hidden></div>
+      <nav id="conversations" aria-label="Conversations"></nav>
+      <p id="empty-list" class="context" hidden>No conversations.</p>
+      <div id="list-footer" class="list-footer">
+        <button id="new-conversation" class="list-new" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          New session
+        </button>
+      </div>
+    </section>
+    <section id="folder-page" class="page" aria-label="Choose workspace folder" hidden>
+      <header class="folder-header">
+        <button id="folder-cancel" class="folder-cancel">Cancel</button>
+        <h1 id="folder-title">Choose folder</h1>
+      </header>
+      <div class="folder-location">
+        <button id="folder-up" class="folder-back" aria-label="Parent folder" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 17H9a4 4 0 0 1-4-4V5m-4 4 4-4 4 4"/></svg>
+          <span id="folder-parent">Back</span>
+        </button>
+        <h2 id="folder-current">On your Mac</h2>
+        <p id="folder-current-path" class="context"></p>
+      </div>
+      <p id="folder-error" class="banner error" role="alert" hidden></p>
+      <p id="folder-limit" class="banner context" hidden>Only part of this folder is listed.</p>
+      <p id="folder-empty" class="context" hidden>No subfolders.</p>
+      <nav id="folders" aria-label="Mac folders"></nav>
+      <div id="folder-footer" class="folder-footer">
+        <button id="folder-select" disabled>Use this folder</button>
+      </div>
+    </section>
+  </main>
+  <noscript>Enable JavaScript to use Exec’s web client.</noscript>
 </body>
 </html>

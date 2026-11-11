@@ -56,6 +56,7 @@ import Observation
     private let sessions: SessionStore
 
     private let preferences: UserDefaults
+    var descriptiveShellTitles: Bool { preferences.bool(forKey: ToolDisplayPreferences.descriptiveShellTitlesKey) }
     private var titleTasks: [UUID: Task<Void, Never>] = [:]
     private var titleRequests: [UUID: UUID] = [:]
     var generatedTitlesEnabled: Bool {

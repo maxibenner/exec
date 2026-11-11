@@ -80,6 +80,7 @@ struct RemoteTranscript: Encodable {
     private struct Catalog: Encodable {
         let serverID: UUID
         let conversations: [RemoteConversationSummary]
+        let descriptiveShellTitles: Bool
     }
     let serverID = UUID()
     private let library: ChatLibrary
@@ -116,7 +117,8 @@ struct RemoteTranscript: Encodable {
                         workspace: $0.workspace.map { URL(fileURLWithPath: $0).lastPathComponent },
                         running: library.isSessionResponding($0.id), needsApproval: library.needsApproval($0.id), unreadable: $0.unreadable)
                 }
-                return try conditional(Catalog(serverID: serverID, conversations: rows), request: request)
+                return try conditional(Catalog(serverID: serverID, conversations: rows,
+                                               descriptiveShellTitles: library.descriptiveShellTitles), request: request)
             }
             // A read-only POST keeps local filesystem paths out of proxy URLs/logs.
             if request.method == "POST", request.path == "/api/folders" {

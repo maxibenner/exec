@@ -16,16 +16,56 @@ let drafts = storage.get("drafts", {});
 let pending = storage.get("pending");
 let serverID = null;
 let snapshot = null;
+let revealPending = Boolean(selected);
 let online = false;
 let refreshing = false;
 let sending = false;
 let timer;
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+// Use the same eight-spoke activity indicator in the chat and the chat list.
+function addSpinnerSpokes(spinner) {
+  for (let index = 0; index < 8; index++) {
+    const spoke = document.createElement("span");
+    spoke.style.transform = `rotate(${index * 45}deg)`;
+    spoke.style.opacity = String(.18 + index * .1);
+    spinner.append(spoke);
+  }
+  return spinner;
+}
+addSpinnerSpokes($("working-indicator"));
+addSpinnerSpokes($("chat-loading").firstElementChild);
+let chatLoadingTimer = null;
+function stopChatLoading() {
+  clearTimeout(chatLoadingTimer);
+  chatLoadingTimer = null;
+  $("chat-loading").hidden = true;
+}
+function startChatLoading(id) {
+  stopChatLoading();
+  chatLoadingTimer = setTimeout(() => {
+    chatLoadingTimer = null;
+    if (selected === id && !snapshot && !document.hidden && !$("chat-page").hidden) {
+      $("chat-loading").hidden = false;
+    }
+  }, 500);
+}
+function syncActivityIndicator() {
+  const active = online && !$("chat-page").hidden && Boolean(snapshot?.operationID);
+  const indicator = $("working-indicator");
+  const transcript = $("transcript");
+  const atBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
+  const wasHidden = indicator.hidden;
+  indicator.hidden = !active;
+  if (active && wasHidden && atBottom) transcript.scrollTop = transcript.scrollHeight;
+}
 let rows = [];
 let folderListing = null;
+let folderErrorParent = null;
 let folderLoading = false;
 let folderVersion = 0;
 let openingCreatedID = null;
 const cache = new Map();
+let descriptiveShellTitles = false;
 
 class APIError extends Error {
   constructor(message, status) { super(message); this.status = status; }
@@ -50,14 +90,19 @@ function rememberDraft() {
 function updateControls() {
   $("composer").hidden = !selected;
   $("send").disabled = !online || !snapshot?.canSend || !$("message").value.trim() || sending || !!pending;
-  $("stop").hidden = !snapshot?.operationID;
+  const working = online && !!snapshot?.operationID;
+  $("send").hidden = working;
+  $("stop").hidden = !working;
+  $("message").style.height = "auto";
+  $("message").style.height = `${Math.min($("message").scrollHeight, 132)}px`;
+  syncActivityIndicator();
   $("stop").disabled = !online || sending || !!pending;
   $("uncertain").hidden = !pending || sending;
   $("new-conversation").disabled = !online || !serverID || sending || !!pending;
-  $("folder-select").disabled = !online || !folderListing || folderLoading || sending || !!pending || $("folder-path").value !== folderListing?.path;
-  $("folder-up").disabled = folderLoading || !folderListing?.parent;
-  $("folder-home").disabled = folderLoading;
-  $("folder-go").disabled = folderLoading;
+  $("folder-select").classList.toggle("navigating", folderLoading && !!folderListing);
+  $("folder-select").disabled = !online || !folderListing || folderLoading || sending || !!pending;
+  $("folder-up").classList.toggle("navigating", folderLoading && !!(folderErrorParent || folderListing?.parent));
+  $("folder-up").disabled = folderLoading || !(folderErrorParent || folderListing?.parent);
 }
 async function request(path, body) {
   const headers = { "X-Exec-Request": "1" };
@@ -134,44 +179,113 @@ function renderList() {
     button.setAttribute("aria-current", row.id === selected ? "page" : "false");
     button.disabled = row.unreadable;
     button.append(element("span", row.title, "conversation-title"));
-    const detail = [row.workspace, row.needsApproval ? "Approval required" : (row.running ? "●" : "")].filter(Boolean).join(" · ");
+    const detail = [row.workspace, row.needsApproval ? "Approval required" : ""].filter(Boolean).join(" ");
     if (detail) button.append(element("span", detail, "conversation-meta"));
+    if (row.running && !row.needsApproval) {
+      const spinner = addSpinnerSpokes(element("span", undefined, "small-spinner"));
+      spinner.setAttribute("role", "img"); spinner.setAttribute("aria-label", "Conversation running");
+      button.append(spinner);
+    }
     button.addEventListener("click", () => selectConversation(row.id));
     fragment.append(button);
   }
   $("conversations").replaceChildren(fragment);
   $("empty-list").hidden = rows.length !== 0;
 }
+function showChat() {
+  $("chat-page").hidden = false;
+  $("list-page").hidden = true;
+  $("folder-page").hidden = true;
+  updateControls();
+}
+function showList() {
+  stopChatLoading();
+  $("chat-page").hidden = true;
+  $("list-page").hidden = false;
+  $("folder-page").hidden = true;
+  syncActivityIndicator();
+}
 function selectConversation(id) {
   rememberDraft();
-  selected = id; storage.set("selected", id); snapshot = null;
-  $("transcript").replaceChildren(); $("approval").hidden = true;
+  selected = id; storage.set("selected", id); snapshot = null; revealPending = true;
+  $("transcript-messages").replaceChildren(); $("approval").hidden = true;
   showError("conversation-error", "");
   $("title").textContent = rows.find(row => row.id === id)?.title || "Conversation";
   $("message").value = drafts[id] || "";
-  $("app").classList.add("view-chat");
-  renderList(); updateControls();
+  renderList(); showChat(); startChatLoading(id);
   void refresh();
 }
-function renderTranscript(data) {
+// Tool headers mirror the Mac's compact disclosure rows. Untrusted argument
+// values are rendered only via textContent; only fixed icon markup is HTML.
+function toolHeader(tool) {
+  const icons = {
+    Search: '<circle cx="11" cy="11" r="6"/><path d="m16 16 5 5"/>',
+    Read: '<path d="M6 2h8l5 5v15H6zM14 2v5h5M9 12h7M9 16h7"/>',
+    List: '<path d="M2 6h8l2 2h10v12H2z"/>',
+    Shell: '<rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="m6 9 3 3-3 3M11 16h5"/>',
+    Edit: '<path d="m4 20 4-.5L20 7.5 16.5 4 4.5 16z"/>',
+    'Fetch page': '<path d="M6 2h8l5 5v15H6zM14 2v5h5M9 12h7"/>',
+    'Web search': '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c-5 5-5 13 0 18M12 3c5 5 5 13 0 18"/>',
+    'Generate image': '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1"/><path d="m3 18 6-6 4 4 3-3 5 5"/>',
+    Screenshot: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/>'
+  };
+  const summary = element("summary");
+  const chevron = element("span", undefined, "tool-chevron");
+  chevron.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg>';
+  const icon = element("span", undefined, "tool-icon");
+  icon.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[tool.title] || '<path d="M4 6h16v12H4zM8 10h8M8 14h5"/>'}</svg>`;
+  summary.append(chevron, icon, element("span", tool.title, "tool-name"));
+  let args = {};
+  try { args = JSON.parse(tool.arguments); } catch { /* Show the raw arguments when expanded. */ }
+  if (!args || typeof args !== "object" || Array.isArray(args)) args = {};
+  const text = value => typeof value === "string" ? value.replace(/[\r\n\t]+/g, " ") : "";
+  const description = tool.title === "Search" ? [text(args.query), text(args.path)].filter(Boolean).join(" · ") :
+    tool.title === "Web search" ? text(args.query) :
+    tool.title === "Fetch page" ? text(args.url) :
+    tool.title === "Generate image" ? text(args.prompt) :
+    tool.title === "Shell" ? (descriptiveShellTitles ? text(args.description).trim() || text(args.command) : text(args.command)) : text(args.path);
+  if (description) summary.append(element("span", description, "tool-summary"));
+  if (tool.title === "Read" && Number.isInteger(args.start_line) && Number.isInteger(args.end_line)) {
+    summary.append(element("span", `Lines ${args.start_line}–${args.end_line}`, "tool-detail"));
+  }
+  return summary;
+}
+// Fade the transcript once when its initial snapshot arrives; later updates
+// and scrolling remain immediate.
+function revealTranscript() {
+  if (!revealPending) return;
+  revealPending = false;
+  if (reduceMotion.matches || document.hidden || $("chat-page").hidden) return;
   const transcript = $("transcript");
-  const atBottom = !transcript.children.length || transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
-  const existing = new Map(Array.from(transcript.children, node => [node.dataset.id, node]));
+  const finish = event => {
+    if (event.target !== transcript) return;
+    transcript.classList.remove("transcript-reveal");
+    transcript.removeEventListener("animationend", finish);
+  };
+  transcript.classList.add("transcript-reveal");
+  transcript.addEventListener("animationend", finish);
+}
+function renderTranscript(data) {
+  stopChatLoading();
+  const transcript = $("transcript");
+  const messages = $("transcript-messages");
+  const atBottom = !messages.children.length || transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
+  const existing = new Map(Array.from(messages.children, node => [node.dataset.id, node]));
   const wanted = new Set(data.messages.map(row => row.id));
   for (const [id, node] of existing) if (!wanted.has(id)) node.remove();
   let previous = null;
   for (const row of data.messages) {
-    const signature = JSON.stringify(row);
+    const signature = JSON.stringify(row) + (row.tool?.title === "Shell" ? descriptiveShellTitles : "");
     let node = existing.get(row.id);
     if (!node) { node = element("article", undefined, `message ${row.role}`); node.dataset.id = row.id; }
     if (node.signature !== signature) {
       const open = node.querySelector("details")?.open || false;
       node.replaceChildren(); node.signature = signature;
-      const status = row.pending ? "Queued" : (row.status === "interrupted" ? "Interrupted" : row.status === "failed" ? "Failed" : "");
-      if (!row.tool) node.append(element("div", [row.role === "user" ? "You" : "Exec", status].filter(Boolean).join(" · "), "message-label"));
+      const status = row.role === "assistant" && row.status === "failed" ? "Failed" : "";
+      if (status) node.append(element("div", status, "message-label"));
       if (row.tool) {
         const details = element("details", undefined, "tool"); details.open = open;
-        details.append(element("summary", row.tool.title));
+        details.append(toolHeader(row.tool));
         const content = element("div", undefined, "tool-content");
         content.append(element("pre", row.tool.arguments));
         if (row.tool.output) content.append(element("pre", row.tool.output));
@@ -183,11 +297,12 @@ function renderTranscript(data) {
       }
       if (row.imageCount) node.append(element("div", `${row.imageCount} image${row.imageCount === 1 ? "" : "s"} · view on Mac`, "context"));
     }
-    const expected = previous ? previous.nextElementSibling : transcript.firstElementChild;
-    if (expected !== node) transcript.insertBefore(node, expected);
+    const expected = previous ? previous.nextElementSibling : messages.firstElementChild;
+    if (expected !== node) messages.insertBefore(node, expected);
     previous = node;
   }
   if (atBottom) transcript.scrollTop = transcript.scrollHeight;
+  revealTranscript();
   $("title").textContent = data.title;
   $("approval").hidden = !data.needsApproval;
   showError("conversation-error", data.error || (!data.canSend ? "Messaging is unavailable. Check this conversation on the Mac." : ""));
@@ -203,14 +318,24 @@ async function refresh() {
     serverID = catalog.serverID;
     const listChanged = JSON.stringify(rows) !== JSON.stringify(catalog.conversations);
     rows = catalog.conversations;
+    if (typeof catalog.descriptiveShellTitles === "boolean" && catalog.descriptiveShellTitles !== descriptiveShellTitles) {
+      descriptiveShellTitles = catalog.descriptiveShellTitles;
+      if (snapshot?.id === selected) renderTranscript(snapshot);
+    }
     if (openingCreatedID && rows.some(row => row.id === openingCreatedID)) {
       const id = openingCreatedID; openingCreatedID = null;
       selectConversation(id);
     }
     if (selected && !rows.some(row => row.id === selected && !row.unreadable)) {
       rememberDraft(); selected = ""; snapshot = null; storage.set("selected", "");
-      $("transcript").replaceChildren(); $("title").textContent = "Conversations";
-      $("app").classList.remove("view-chat");
+      $("transcript-messages").replaceChildren(); $("title").textContent = "Your chats";
+      $("approval").hidden = true; showError("conversation-error", "");
+      showList();
+    }
+    // Resume the tab's selected chat, or open the first readable conversation.
+    if (!selected) {
+      const first = rows.find(row => !row.unreadable);
+      if (first) selectConversation(first.id);
     }
     if (listChanged) renderList();
     if (destination && destination === selected) {
@@ -221,6 +346,7 @@ async function refresh() {
     }
     online = true; setConnectionError("");
   } catch (error) {
+    stopChatLoading();
     online = false;
     setConnectionError(error instanceof APIError ? error.message : "Cannot reach Exec. Check the Mac and connection, or reload this page to sign in to Pangolin. No command was resent.");
   } finally {
@@ -231,30 +357,57 @@ async function refresh() {
 }
 
 function closeFolders() {
-  folderVersion++; folderListing = null; folderLoading = false;
-  if ($("folder-picker").open) $("folder-picker").close();
-  $("folders").replaceChildren(); $("folder-path").value = "";
+  folderVersion++; folderListing = null; folderErrorParent = null; folderLoading = false;
+  $("folders").replaceChildren();
   $("folder-empty").hidden = true; $("folder-limit").hidden = true;
-  showError("folder-error", ""); updateControls();
+  showError("folder-error", ""); showList(); updateControls();
 }
 async function browseFolders(path = null) {
   const version = ++folderVersion;
-  folderLoading = true; folderListing = null;
-  $("folders").replaceChildren(); $("folder-empty").hidden = true; $("folder-limit").hidden = true;
+  const previous = folderListing;
+  const name = path => path.split("/").filter(Boolean).at(-1) || "/";
+  folderLoading = true;
+  // Keep the old listing on screen until the next read has completed.
   showError("folder-error", ""); updateControls();
   try {
     const listing = await request("/api/folders", { path });
-    if (version !== folderVersion || !$("folder-picker").open) return;
-    folderListing = listing; $("folder-path").value = listing.path;
+    if (version !== folderVersion || $("folder-page").hidden) return;
+    const nextRows = document.createDocumentFragment();
     for (const folder of listing.folders) {
-      const button = element("button", folder.name, "folder");
-      button.addEventListener("click", () => void browseFolders(folder.path));
-      $("folders").append(button);
+      const button = element("button", undefined, "folder");
+      const icon = element("span", undefined, "folder-icon");
+      icon.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 6h8l2 2h10v12H2z"/></svg>';
+      const chevron = element("span", undefined, "folder-chevron");
+      chevron.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>';
+      button.append(icon, element("span", folder.name, "folder-name"), chevron);
+      button.addEventListener("click", () => { if (!folderLoading) void browseFolders(folder.path); });
+      nextRows.append(button);
     }
+    folderListing = listing; folderErrorParent = null;
+    $("folders").replaceChildren(nextRows);
+    $("folder-current").textContent = name(listing.path);
+    $("folder-current-path").textContent = listing.path;
+    $("folder-parent").textContent = listing.parent ? name(listing.parent) : "Back";
+    $("folder-up").setAttribute("aria-label", listing.parent ? `Back to ${name(listing.parent)}` : "No parent folder");
     $("folder-empty").hidden = listing.folders.length !== 0;
     $("folder-limit").hidden = !listing.truncated;
   } catch (error) {
-    if (version === folderVersion) showError("folder-error", error.message);
+    if (version === folderVersion) {
+      const child = previous && path?.startsWith(previous.path === "/" ? "/" : previous.path + "/");
+      if (child) {
+        // The unreadable child cannot be selected, but its parent remains reachable.
+        folderListing = null; folderErrorParent = previous.path;
+        $("folders").replaceChildren();
+        $("folder-empty").hidden = true; $("folder-limit").hidden = true;
+        $("folder-current").textContent = name(path);
+        $("folder-current-path").textContent = path;
+        $("folder-parent").textContent = name(previous.path);
+        $("folder-up").setAttribute("aria-label", `Back to ${name(previous.path)}`);
+      } else {
+        folderListing = previous; folderErrorParent = null;
+      }
+      showError("folder-error", error.message);
+    }
   } finally {
     if (version === folderVersion) { folderLoading = false; updateControls(); }
   }
@@ -286,7 +439,7 @@ function finishAccepted(command) {
 }
 async function submit(kind) {
   if (!online || !serverID || !selected || pending || sending) return;
-  if (kind === "messages" && (!snapshot?.canSend || !$("message").value.trim())) return;
+  if (kind === "messages" && (!snapshot?.canSend || snapshot.operationID || !$("message").value.trim())) return;
   if (kind === "stop" && !snapshot?.operationID) return;
   rememberDraft();
   const command = { kind, conversationID: selected, body: { serverID, requestID: commandID() } };
@@ -323,17 +476,18 @@ async function checkDelivery() {
 
 $("new-conversation").addEventListener("click", () => {
   if ($("new-conversation").disabled) return;
-  $("folder-picker").showModal(); void browseFolders();
+  $("list-page").hidden = true;
+  $("folder-page").hidden = false;
+  void browseFolders();
 });
-$("folder-form").addEventListener("submit", event => { event.preventDefault(); void browseFolders($("folder-path").value); });
-$("folder-path").addEventListener("input", updateControls);
-$("folder-home").addEventListener("click", () => void browseFolders());
-$("folder-up").addEventListener("click", () => { if (folderListing?.parent) void browseFolders(folderListing.parent); });
+$("folder-up").addEventListener("click", () => {
+  if (folderLoading) return;
+  const parent = folderErrorParent || folderListing?.parent;
+  if (parent) void browseFolders(parent);
+});
 $("folder-cancel").addEventListener("click", closeFolders);
-$("folder-picker").addEventListener("cancel", event => { event.preventDefault(); closeFolders(); });
 $("folder-select").addEventListener("click", () => void createConversation());
-$("back").addEventListener("click", () => $("app").classList.remove("view-chat"));
-$("refresh").addEventListener("click", () => { cache.clear(); void refresh(); });
+$("back").addEventListener("click", showList);
 $("message").addEventListener("input", rememberDraft);
 $("message").addEventListener("keydown", event => {
   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submit("messages"); }
@@ -345,16 +499,56 @@ $("dismiss-delivery").addEventListener("click", () => {
   if (window.confirm("This command may already have run. Dismiss the warning without resending it?")) { savePending(null); showError("receipt-error", ""); }
 });
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) { clearTimeout(timer); online = false; updateControls(); }
-  else void refresh();
+  if (document.hidden) { stopChatLoading(); clearTimeout(timer); online = false; updateControls(); }
+  else { if (selected && !snapshot && !$("chat-page").hidden) startChatLoading(selected); void refresh(); }
 });
 window.addEventListener("offline", () => { online = false; updateControls(); });
 window.addEventListener("online", () => void refresh());
-// Keep the composer above the iOS software keyboard without page zooming.
+// Keep the header at the page top. Only the composer follows the visible
+// viewport above the iOS keyboard; moving the whole page makes the header jump.
 if (window.visualViewport) {
-  const fit = () => { document.body.style.height = `${window.visualViewport.height}px`; };
-  window.visualViewport.addEventListener("resize", fit); fit();
+  const fit = () => {
+    const viewport = window.visualViewport;
+    const inset = window.innerWidth > 700 ? 0 :
+      Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+    const transcript = $("transcript");
+    const nearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
+    $("app").style.setProperty("--keyboard-inset", `${inset}px`);
+    if (nearBottom) requestAnimationFrame(() => { transcript.scrollTop = transcript.scrollHeight; });
+  };
+  window.visualViewport.addEventListener("resize", fit);
+  window.visualViewport.addEventListener("scroll", fit);
+  window.addEventListener("resize", fit);
+  fit();
 }
+// The transcript scrolls behind the composer, while its bottom inset tracks
+// the actual composer height (including multiline drafts and the iOS safe area).
+const composerObserver = new ResizeObserver(() => {
+  const transcript = $("transcript");
+  const nearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 100;
+  const height = $("composer").hidden ? 0 : $("composer").getBoundingClientRect().height;
+  $("app").style.setProperty("--composer-height", `${height}px`);
+  if (nearBottom) transcript.scrollTop = transcript.scrollHeight;
+});
+composerObserver.observe($("composer"));
+const folderFooterObserver = new ResizeObserver(() => {
+  const folders = $("folders");
+  const nearBottom = folders.scrollHeight - folders.scrollTop - folders.clientHeight < 100;
+  const height = $("folder-page").hidden ? 0 : $("folder-footer").getBoundingClientRect().height;
+  $("folder-page").style.setProperty("--folder-footer-height", `${height}px`);
+  if (nearBottom) folders.scrollTop = folders.scrollHeight;
+});
+folderFooterObserver.observe($("folder-footer"));
+const listFooterObserver = new ResizeObserver(() => {
+  const list = $("conversations");
+  const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 100;
+  const height = $("list-page").hidden ? 0 : $("list-footer").getBoundingClientRect().height;
+  $("list-page").style.setProperty("--list-footer-height", `${height}px`);
+  if (nearBottom) list.scrollTop = list.scrollHeight;
+});
+listFooterObserver.observe($("list-footer"));
 $("message").value = drafts[selected] || "";
+if (selected) { showChat(); startChatLoading(selected); } else showList();
+renderList();
 void refresh();
 updateControls();

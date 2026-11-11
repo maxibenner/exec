@@ -72,7 +72,7 @@ struct RemoteHTTPResponse: Sendable {
         var header = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: \(contentType)\r\n"
         if status != 304 { header += "Content-Length: \(body.count)\r\n" }
         header += "Connection: close\r\nX-Exec-Response: 1\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\n"
-        header += "Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\n"
+        header += "Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\n"
         if let etag { header += "ETag: \(etag)\r\n" }
         return Data((header + "\r\n").utf8) + body
     }
