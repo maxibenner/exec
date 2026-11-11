@@ -19,12 +19,6 @@
 - Added configurable timeouts for the shell tool.
 - Prevented idle sleep while runs are active.
 - Added release notes to the in-app update feed.
-
-## Install
-
-[Download the DMG installer](https://github.com/maxibenner/exec/releases/download/v0.1.3/Exec-macOS-arm64.dmg), open it, and drag **Exec** into **Applications**.
-
-Requires **macOS 14 or later on Apple Silicon**. Existing installations can update through **Settings → Updates → Check for Updates…**. The ZIP is for Sparkle in-app updates; use the DMG for manual installation. SHA-256 checksums are included for both downloads.
 ]]></description>
             <enclosure url="https://github.com/maxibenner/exec/releases/download/v0.1.3/Exec-0.1.3-macOS-arm64.zip" length="4818387" type="application/octet-stream" sparkle:edSignature="h6knIqKOdbIm41mSfM737aSFVe6qaju8RNv6cc2bJc8LaJFWL9WAAJS7Bdq3lHg5YO6S4T2yNuI7DxmLxvp9DQ=="/>
         </item>
@@ -39,12 +33,6 @@ Requires **macOS 14 or later on Apple Silicon**. Existing installations can upda
 - Kept tool rows stable as activity indicators change.
 - Added a stopping state while cancellation completes and removed stopped labels from replies.
 - Reduced account-allowance refreshes to after runs.
-
-## Install
-
-[Download the DMG installer](https://github.com/maxibenner/exec/releases/download/v0.1.2/Exec-macOS-arm64.dmg), open it, and drag **Exec** into **Applications**.
-
-Requires **macOS 14 or later on Apple Silicon**. Existing installations can update through **Settings → Updates → Check for Updates…**. The ZIP is for Sparkle in-app updates; use the DMG for manual installation. SHA-256 checksums are included for both downloads.
 ]]></description>
             <pubDate>Mon, 09 Nov 2026 20:12:53 -0500</pubDate>
             <link>https://github.com/maxibenner/exec</link>
@@ -64,12 +52,6 @@ Requires **macOS 14 or later on Apple Silicon**. Existing installations can upda
 - Chats continue after recoverable tool failures.
 - User messages now have blue backgrounds.
 - Manually chosen session names are preserved.
-
-## Install
-
-[Download the DMG installer](https://github.com/maxibenner/exec/releases/download/v0.1.1/Exec-macOS-arm64.dmg), open it, and drag **Exec** into **Applications**.
-
-Requires **macOS 14 or later on Apple Silicon**. Existing installations can update through **Settings → Updates → Check for Updates…**. The ZIP is for Sparkle in-app updates; use the DMG for manual installation. SHA-256 checksums are included for both downloads.
 ]]></description>
             <pubDate>Mon, 09 Nov 2026 12:40:03 -0500</pubDate>
             <link>https://github.com/maxibenner/exec</link>

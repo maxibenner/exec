@@ -35,7 +35,7 @@ The app's public key must match the release-signing key. `prepare-update.sh` che
 
 3. Preserve a copy of `dist/Exec.app` in a release-specific directory and record the source commit. Submit an archive of that copy using `xcrun notarytool submit --keychain-profile exec-notary`. Do not automatically retry an interrupted submission: query its existing ID/history first.
 4. Wait for **Accepted**, inspect the notarization log, then staple the ticket to the preserved app with `xcrun stapler staple`. Do not rebuild or modify the signed app afterward.
-5. Write the GitHub release description in a nonempty UTF-8 Markdown (`.md`) file. Prepare the Sparkle ZIP and candidate feed from the preserved app and that notes file:
+5. Write the GitHub release description in a nonempty UTF-8 Markdown (`.md`) file. Include only the changelog: keep installation instructions, download guidance, and system requirements in the README, not in the release description or update-feed notes. Prepare the Sparkle ZIP and candidate feed from the preserved app and that notes file:
 
    ```sh
    ./scripts/prepare-update.sh /absolute/path/to/notarized/Exec.app /absolute/path/to/release-notes.md
