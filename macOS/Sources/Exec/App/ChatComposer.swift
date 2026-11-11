@@ -85,6 +85,7 @@ struct ChatComposer: View {
                 }
                 .zIndex(1)
             information
+                .padding(.horizontal, 12)
                 .frame(maxWidth: 820)
                 .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12)
                 .frame(maxWidth: .infinity)
