@@ -31,6 +31,7 @@ struct ConversationView: View {
         Group {
             if panel.hasConversation {
                 conversation
+                    .ignoresSafeArea(.container, edges: .top)
             } else if panel.current.isRestoringSession {
                 Color.clear
             } else {

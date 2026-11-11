@@ -6,6 +6,9 @@ import SwiftUI
     static func configure(_ window: NSWindow?) {
         guard let window else { return }
         if window.titleVisibility != .visible { window.titleVisibility = .visible }
+        if !window.styleMask.contains(.fullSizeContentView) {
+            window.styleMask.insert(.fullSizeContentView)
+        }
     }
 }
 

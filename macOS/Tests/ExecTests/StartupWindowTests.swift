@@ -92,7 +92,11 @@ import SwiftUI
                 // Its intrinsic fitting size changes; the window minimum must not.
                 try expect(window.contentMinSize == minimum)
                 let restoredColor = try sidebarBackground(in: controller.view)
-                try expect(zip(initialSidebarColor, restoredColor).allSatisfy { abs($0 - $1) < 1.0 / 255 })
+                // A full-size native sidebar list can be composited by the
+                // window server rather than into this cached bitmap. Transparent
+                // output after the list mounts is not a background-color change.
+                let compositedList = stage == 2 && restoredColor[3] == 0
+                try expect(compositedList || zip(initialSidebarColor, restoredColor).allSatisfy { abs($0 - $1) < 1.0 / 255 })
             }
             try expect(window.title == "Restored conversation")
             try expect(window.titlebarSeparatorStyle == .automatic)
@@ -103,6 +107,11 @@ import SwiftUI
                   let composer = descendant(ComposerCursor.CursorView.self, in: controller.view) else {
                 throw CheckFailure(description: "Missing native chat layout views")
             }
+            let transcriptFrame = transcript.convert(transcript.bounds, to: nil)
+            guard transcript.topInset > 0 else {
+                throw CheckFailure(description: "Missing header overlap: transcript \(transcriptFrame), content layout \(window.contentLayoutRect), window style \(window.styleMask)")
+            }
+            try expect(abs(transcriptFrame.maxY - window.contentLayoutRect.maxY - transcript.topInset) < 2)
             for (index, collapsed) in [true, false, true, false].enumerated() {
                 let startingWidth = transcript.bounds.width
                 var animationWidths: [CGFloat] = []

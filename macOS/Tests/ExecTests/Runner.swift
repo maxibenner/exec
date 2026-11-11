@@ -180,6 +180,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Composer command and path isolation", { try ComposerCommandTests().recognizesOnlyLeadingCommands() }),
             ("Composer cursor excludes controls", { try ComposerCursorTests().excludesControlsWithoutLeavingGaps() }),
             ("Batched snapshots flush on failure and cancellation", { try await chat.batchedSnapshotsFlushOnFailureAndCancellation() }),
+            ("Header underlap preserves transcript geometry and anchors", { try TranscriptScrollTests().headerUnderlapPreservesGeometryAndAnchors() }),
             ("Transcript scroll routing and gesture isolation", { try TranscriptScrollTests().routesVerticalGesturesWithoutStealingOtherScrolling() }),
             ("Empty tool steps do not move the transcript", { try TranscriptTests().emptyToolStepsDoNotMoveTranscript() }),
             ("Expanded tool content stays within native row bounds", { try TranscriptTests().expandedToolContentStaysInsideCommittedRowBounds() }),

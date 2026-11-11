@@ -20,6 +20,7 @@ def replace(path, old, new):
 
 path = 'Sources/Exec/App/TranscriptView.swift'
 replace(path, '''        VirtualTranscript(messages: messages, state: state, jumpRequest: state.jumpRequest, bottomInset: bottomInset)
+            .ignoresSafeArea(.container, edges: .top)
             .focusedSceneValue(\\.transcriptNavigation, messages.contains { $0.role == .user } ? state : nil)''', '''        if #available(macOS 15.0, *) {
             PreviewLazyTranscript(messages: messages, state: state, bottomInset: bottomInset)
         } else {

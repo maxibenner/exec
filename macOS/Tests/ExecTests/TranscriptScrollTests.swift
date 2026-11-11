@@ -1,6 +1,70 @@
 import AppKit
 
 @MainActor struct TranscriptScrollTests {
+    func headerUnderlapPreservesGeometryAndAnchors() throws {
+        _ = NSApplication.shared
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        defer { view.detach() }
+        let messages = (0..<8).map { Message(role: .user, text: "Message \($0)") }
+        func settle(header: CGFloat, height: CGFloat = 300, width: CGFloat = 700) {
+            view.frame.size = NSSize(width: width, height: height + header)
+            view.updateHeaderInset(header)
+            view.update(messages: messages, jumpRequest: state.jumpRequest, bottomInset: 100)
+            for _ in 0..<8 { view.layoutSubtreeIfNeeded(); view.refresh() }
+        }
+        settle(header: 0)
+        // Measure the whole fixture before comparing geometry; otherwise a
+        // larger overscan region can legitimately replace more estimates.
+        for _ in messages { view.navigateSentMessage(.previous); settle(header: 0) }
+        state.jumpToLatest()
+        settle(header: 0)
+        let heights = state.layout.heights
+        let width = state.layout.width
+        let maximum = view.documentView!.frame.height - view.contentView.bounds.height
+        try expect(maximum > 40)
+        for header: CGFloat in [52, 0, 78] {
+            settle(header: header)
+            try expect(state.layout.width == width && state.layout.heights == heights)
+            try expect(abs(view.contentView.bounds.minY - maximum) < 1)
+            try expect(state.followsLatest)
+        }
+        // Keep a manually chosen reading position while the header changes.
+        view.contentView.scroll(to: NSPoint(x: 0, y: 50))
+        view.reflectScrolledClipView(view.contentView)
+        view.refresh()
+        try expect(!state.followsLatest)
+        // Rows are actually mounted in the header-covered portion of the clip
+        // view, not merely moved out of sight at the safe-area boundary.
+        try expect(view.documentView!.subviews.contains {
+            $0.frame.minY < view.contentView.bounds.minY + view.topInset &&
+            $0.frame.maxY > view.contentView.bounds.minY
+        })
+        let anchor = state.anchor!
+        for header: CGFloat in [0, 52, 78] {
+            settle(header: header)
+            try expect(state.anchor?.id == anchor.id)
+            try expect(abs(state.anchor!.offset - anchor.offset) < 1)
+            try expect(state.layout.heights == heights)
+        }
+        view.navigateSentMessage(.previous)
+        let target = state.anchor!
+        settle(header: 52)
+        try expect(state.anchor?.id == target.id && abs(state.anchor!.offset - target.offset) < 1)
+        // Reflow still preserves a message anchor, and jump-to-latest stays at
+        // the natural bottom with both header and composer space included.
+        settle(header: 52, height: 360, width: 540)
+        state.jumpToLatest()
+        settle(header: 52, height: 360, width: 540)
+        try expect(abs(view.contentView.bounds.maxY - view.documentView!.frame.height) < 1)
+        try expect(state.followsLatest)
+        view.update(messages: [messages[0]], jumpRequest: state.jumpRequest, bottomInset: 100)
+        for _ in 0..<8 { view.layoutSubtreeIfNeeded(); view.refresh() }
+        try expect(view.contentView.bounds.minY == 0)
+        try expect(view.documentView!.frame.height == view.contentSize.height)
+        try expect(view.documentView!.subviews.allSatisfy { $0.frame.minY >= view.topInset })
+    }
+
     func routesVerticalGesturesWithoutStealingOtherScrolling() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),

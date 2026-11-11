@@ -22,6 +22,7 @@ struct TranscriptView: View {
     var bottomInset: CGFloat = 0
     var body: some View {
         VirtualTranscript(messages: messages, state: state, jumpRequest: state.jumpRequest, bottomInset: bottomInset)
+            .ignoresSafeArea(.container, edges: .top)
             .focusedSceneValue(\.transcriptNavigation, messages.contains { $0.role == .user } ? state : nil)
     }
 }
@@ -69,6 +70,11 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var pendingContentFollow = false
     private var bottomInset: CGFloat = 0
     private var renderedBottomInset: CGFloat = 0
+    // Rows move down by the header overlap; anchors remain relative to the
+    // unobscured viewport. Equal extra document and viewport height cancel out,
+    // preserving the original scroll range, row widths and navigation targets.
+    private(set) var topInset: CGFloat = 0
+    private var renderedTopInset: CGFloat = 0
     private var selectionClearing: TranscriptSelectionClearing?
     var mountedRowCount: Int { rows.count }
     private(set) var rowMeasurementCount = 0
@@ -82,12 +88,18 @@ private struct VirtualTranscript: NSViewRepresentable {
         hasVerticalScroller = true
         verticalScrollElasticity = .allowed
         autohidesScrollers = true
+        automaticallyAdjustsContentInsets = false
         documentView = content
         contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled),
             name: NSView.boundsDidChangeNotification, object: contentView)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func updateHeaderInset(_ inset: CGFloat) {
+        topInset = max(0, inset)
+        if scrollerInsets.top != topInset { scrollerInsets.top = topInset }
+    }
 
     func update(messages: [Message], jumpRequest: Int, bottomInset: CGFloat = 0) {
         self.bottomInset = max(0, bottomInset)
@@ -117,9 +129,14 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
     override func layout() {
         super.layout()
+        if let window {
+            // Read the actual native titlebar overlap, including detached and
+            // full-screen windows, rather than assuming a toolbar height.
+            updateHeaderInset(min(bounds.height, convert(bounds, to: nil).maxY - window.contentLayoutRect.maxY))
+        }
         // Commit row widths in this layout pass. Deferring to the main queue lets
         // a live split-view resize display one frame with the previous text width.
-        if contentSize != lastSize { refresh() }
+        if contentSize != lastSize || topInset != renderedTopInset { refresh() }
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -194,7 +211,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         guard !state.followsLatest, navigationAnchor == nil else { readingAnchor = nil; return }
         guard readingAnchor == nil, contentSize == lastSize,
               let anchor = state.anchor, let text = rows[anchor.id]?.readingText else { return }
-        let y = text.convert(NSPoint(x: 0, y: contentView.bounds.minY), from: content).y
+        let y = text.convert(NSPoint(x: 0, y: contentView.bounds.minY + topInset), from: content).y
         if let position = text.readingPosition(at: y) { readingAnchor = (anchor.id, position) }
     }
     private func scheduleRefresh() {
@@ -234,7 +251,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         // AppKit owns rubber-banding and its spring back. Defer content geometry
         // changes until the clip view returns in bounds, unless explicitly jumping.
         let bounds = contentView.bounds
-        if initialized, size == lastSize, !requestedScroll,
+        if initialized, size == lastSize, topInset == renderedTopInset, !requestedScroll,
            bounds.minY < 0 || bounds.maxY > content.bounds.height { return }
         updating = true
         refreshNeeded = false
@@ -247,10 +264,12 @@ private struct VirtualTranscript: NSViewRepresentable {
         var anchor = navigationAnchor ?? (initialized ? state.layout.anchor(at: contentView.bounds.minY) : state.anchor)
         let reading = !state.followsLatest && navigationAnchor == nil && width != state.layout.width ? readingAnchor : nil
         let oldHeight = state.layout.totalHeight
-        let needsRestore = !initialized || requestedScroll || size != lastSize || bottomInset != renderedBottomInset
+        let needsRestore = !initialized || requestedScroll || size != lastSize ||
+            bottomInset != renderedBottomInset || topInset != renderedTopInset
         let pinBottom = state.followsLatest && (needsRestore || pendingContentFollow || abs(content.bounds.height - bounds.maxY) < 1)
         pendingContentFollow = false
         renderedBottomInset = bottomInset
+        renderedTopInset = topInset
         if messagesChanged {
             state.layout.update(messages: messages, width: width)
             messagesChanged = false
@@ -266,7 +285,8 @@ private struct VirtualTranscript: NSViewRepresentable {
         // passes, then continue on the next run-loop turn if more work is needed.
         var changed = false
         for _ in 0..<3 {
-            let range = state.layout.visibleRange(y: contentView.bounds.minY, height: size.height, overscan: size.height * 0.5)
+            let range = state.layout.visibleRange(y: contentView.bounds.minY - topInset,
+                                                  height: size.height, overscan: size.height * 0.5)
             let wanted = Set(range.map { messages[$0].id })
             for id in Array(rows.keys) where !wanted.contains(id) {
                 if let row = rows.removeValue(forKey: id) {
@@ -301,7 +321,7 @@ private struct VirtualTranscript: NSViewRepresentable {
                 restore(anchor, pinBottom: pinBottom)
             }
             for index in range {
-                let frame = CGRect(x: (size.width - width) / 2, y: state.layout.offsets[index],
+                let frame = CGRect(x: (size.width - width) / 2, y: state.layout.offsets[index] + topInset,
                                    width: width, height: state.layout.heights[index])
                 if rows[messages[index].id]?.frame != frame { rows[messages[index].id]?.frame = frame }
             }
@@ -326,7 +346,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
     private func setDocumentSize() {
         let size = CGSize(width: contentSize.width,
-                          height: max(contentSize.height, state.layout.totalHeight + bottomInset))
+                          height: max(contentSize.height, state.layout.totalHeight + bottomInset + topInset))
         if content.frame.size != size { content.setFrameSize(size) }
     }
     private func restore(_ anchor: TranscriptLayout.Anchor?, pinBottom: Bool) {
