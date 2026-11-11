@@ -37,7 +37,7 @@ cd macOS
 
 Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace`, `/finder`, `/terminal`.
 
-![Exec screenshot](screenshot.png)
+![Exec screenshot](screenshot-2.png)
 
 ## Remote Access
 
