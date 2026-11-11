@@ -10,7 +10,7 @@ import Observation
         _ = authenticating
         return isPresentingStartup ? discoveredModels : discoveredModels.filter { provider.isModelAvailable($0.id) }
     }
-    enum SettingsTab { case modelsAndTools, accounts, usage, updates, remoteAccess }
+    enum SettingsTab { case modelsAndTools, systemPrompt, accounts, usage, updates, remoteAccess }
     var settingsTab = SettingsTab.modelsAndTools
     var connectionError: String?
     private var rememberedModels: [String: String]
@@ -59,6 +59,12 @@ import Observation
     var descriptiveShellTitles: Bool { preferences.bool(forKey: ToolDisplayPreferences.descriptiveShellTitlesKey) }
     private var titleTasks: [UUID: Task<Void, Never>] = [:]
     private var titleRequests: [UUID: UUID] = [:]
+    var systemPrompt: String {
+        didSet {
+            preferences.set(systemPrompt, forKey: "systemPrompt")
+            for conversation in conversations { conversation.systemPrompt = systemPrompt }
+        }
+    }
     var generatedTitlesEnabled: Bool {
         didSet {
             preferences.set(generatedTitlesEnabled, forKey: "generatedTitlesEnabled")
@@ -143,7 +149,7 @@ import Observation
         let autoApproveTools = preferences.object(forKey: "defaultSessionAutoApproveTools") as? Bool ?? true
         defaultAutoApproveTools = autoApproveTools
         searchModel = preferences.string(forKey: "searchModel") ?? ChatStore.defaultSearchModel
-        preferences.removeObject(forKey: "systemPrompt")
+        systemPrompt = preferences.string(forKey: "systemPrompt") ?? ""
         generatedTitlesEnabled = preferences.object(forKey: "generatedTitlesEnabled") as? Bool ?? true
         titleModel = preferences.string(forKey: "sessionTitleModel") ?? ""
         self.residentLimit = max(1, residentLimit)
@@ -544,6 +550,7 @@ import Observation
         guard !conversation.busy else { return } // Never change settings beneath a running turn.
         let needsDefault = conversation.messages.isEmpty && conversation.selectedModel.isEmpty
         conversation.installModels(models, cached: modelsAreCached)
+        conversation.systemPrompt = systemPrompt
         conversation.searchModel = resolvedSearchModel
         if needsDefault, provider.preservesModelSelection {
             conversation.selectedModel = defaultSessionModel?.id ?? ""
@@ -858,6 +865,7 @@ import Observation
     }
 
     private func observe(_ conversation: ChatStore) {
+        conversation.systemPrompt = systemPrompt
         conversation.searchModel = resolvedSearchModel
         conversation.didLoadSessionList = { [weak self, weak conversation] summaries in
             guard let self, let conversation, conversation === self.current else { return }

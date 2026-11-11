@@ -89,7 +89,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Metadata refresh preserves running settings and offline restoration", { try await MetadataCacheTests().refreshDuringRunAndOfflineMiss() }),
             ("Workspace picker waits for the owning conversation window", { try await WorkspacePickerTests().presentsPickerInOwningWindow() }),
             ("First send requires a workspace and preserves cancelled drafts", { try await WorkspacePickerTests().sendRequiresWorkspaceAndPreservesDraft() }),
-            ("Legacy custom prompts are ignored while workspace instructions survive", { try await SessionInstructionsTests().ignoresLegacyPrompts() }),
+            ("System prompt autosaves and applies alongside workspace instructions", { try await SessionInstructionsTests().savesAndAppliesSystemPrompt() }),
             ("Generated titles persist with isolated context and preferences", { try await SessionTitleTests().updatesPersistWithoutChangingChatContext() }),
             ("Manual session names survive messages, late title results and restart", { try await SessionTitleTests().manualNamesSurviveMessagesAndRestart() }),
             ("Title generation rejects incomplete and cancelled responses", { try await SessionTitleTests().rejectsFailedAndCancelledGeneration() }),

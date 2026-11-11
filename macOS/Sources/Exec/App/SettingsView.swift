@@ -12,6 +12,9 @@ struct SettingsView: View {
             ModelsAndToolsSettingsView(store: store)
                 .tabItem { Label("Models & Tools", systemImage: "slider.horizontal.3") }
                 .tag(ChatLibrary.SettingsTab.modelsAndTools)
+            SystemPromptSettingsView(store: store)
+                .tabItem { Label("System Prompt", systemImage: "text.alignleft") }
+                .tag(ChatLibrary.SettingsTab.systemPrompt)
             ProviderSettingsView(store: store)
                 .tabItem { Label("Providers", systemImage: "person.crop.circle") }
                 .tag(ChatLibrary.SettingsTab.accounts)

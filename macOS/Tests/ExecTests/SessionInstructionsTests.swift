@@ -9,7 +9,7 @@ import Foundation
         throw ExecError("Conversation did not settle")
     }
 
-    func ignoresLegacyPrompts() async throws {
+    func savesAndAppliesSystemPrompt() async throws {
         let suite = "SessionInstructionsTests.\(UUID())"
         let preferences = UserDefaults(suiteName: suite)!
         preferences.set(false, forKey: "generatedTitlesEnabled") // Inspect chat instructions, not title prompts.
@@ -32,10 +32,14 @@ import Foundation
         var legacy = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
         legacy["systemPrompt"] = "Obsolete conversation instructions."
         try JSONSerialization.data(withJSONObject: legacy).write(to: file, options: .atomic)
-        preferences.set("Obsolete default instructions.", forKey: "systemPrompt")
+        preferences.set("Saved global instructions.", forKey: "systemPrompt")
 
         let library = try ChatLibrary(provider: provider, sessions: sessions, preferences: preferences)
-        try expect(preferences.object(forKey: "systemPrompt") == nil)
+        try expect(library.systemPrompt == "Saved global instructions.")
+        library.systemPrompt = "Updated global instructions."
+        try expect(preferences.string(forKey: "systemPrompt") == "Updated global instructions.")
+        let reopened = try ChatLibrary(provider: FakeProvider(), sessions: sessions, preferences: preferences)
+        try expect(reopened.systemPrompt == "Updated global instructions.")
         library.restore()
         try await settle(library)
         try expect(library.current.error == nil && library.current.messages.map(\.text) == history.map(\.text))
@@ -45,6 +49,8 @@ import Foundation
         let instructions = provider.children.first?.instructions.last ?? ""
         try expect(library.current.error == nil && instructions.contains("Keep project instructions."))
         try expect(instructions.contains("fetch_content") && !instructions.contains("Obsolete"))
+        try expect(instructions.contains("Updated global instructions."))
+        library.systemPrompt = "New chat instructions."
         let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
         try expect(saved["systemPrompt"] == nil)
 
@@ -55,6 +61,12 @@ import Foundation
         try await settle(library)
         let fresh = provider.children.last?.instructions.last ?? ""
         try expect(library.current.error == nil && fresh.contains("Keep project instructions."))
-        try expect(!fresh.contains("Obsolete"))
+        try expect(!fresh.contains("Obsolete") && fresh.contains("New chat instructions."))
+        library.systemPrompt = ""
+        library.draft = "Without custom instructions"
+        library.send()
+        try await settle(library)
+        let cleared = provider.children.last?.instructions.last ?? ""
+        try expect(!cleared.contains("New chat instructions.") && cleared.contains("Keep project instructions."))
     }
 }
