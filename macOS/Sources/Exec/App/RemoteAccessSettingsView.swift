@@ -17,7 +17,7 @@ struct RemoteAccessSettingsView: View {
             Section {
                 Toggle("Enable Remote Access", isOn: Binding(get: { access.enabled }, set: access.setEnabled))
             } footer: {
-                Text("Pangolin controls who can access Exec. Local connections on this Mac are trusted. No additional Exec login is required. \(Text(access.connectionState.rawValue).foregroundColor(connectionColor))")
+                Text("This exposes a remote interface at port \(RemoteAccess.port) and connect it to the given Pangolin resource. All local connections are trusted. Make sure to properly protect access through Pangolin.")
                     .font(.caption)
                     .multilineTextAlignment(.leading)
             }
@@ -57,6 +57,9 @@ struct RemoteAccessSettingsView: View {
             } footer: {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
+                        Text(access.connectionState.rawValue)
+                            .font(.caption)
+                            .foregroundStyle(connectionColor)
                         Spacer()
                         Button("Apply") { access.apply(draft) }
                             .disabled(draft == access.configuration)
