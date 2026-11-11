@@ -106,8 +106,47 @@ struct TranscriptLayout {
 
     private static func estimate(_ message: Message, width: CGFloat) -> CGFloat {
         if message.toolResult != nil || message.pendingTool != nil { return 80 }
-        let charactersPerLine = max(20, Int(max(100, width) / 7))
-        let lines = max(1, message.text.utf8.count / charactersPerLine + 1)
-        return CGFloat(min(100, lines)) * 20 + (message.role == .user ? 16 : 0)
+        // Match the bubble's 40pt spacer, 600pt cap and 24pt horizontal padding.
+        // Count graphemes rather than UTF-8 bytes, and never cap explicit lines.
+        let textWidth = message.role == .user ? min(600, width - 40) - 24 : width
+        let charactersPerLine = max(1, Int(max(1, textWidth) / 7))
+        func wrappedLines(_ count: Int) -> CGFloat {
+            CGFloat(max(1, (count + charactersPerLine - 1) / charactersPerLine))
+        }
+        let sourceLines = message.text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        if message.role == .user {
+            return sourceLines.reduce(0) { $0 + wrappedLines($1.count) } * 19 + 16
+        }
+        // Cheap Markdown approximation only; do not parse/layout offscreen rows.
+        // Ordinary soft breaks share a paragraph, while fences and block starts
+        // keep their lines. Mounted rows always replace this with measured text.
+        var lines: CGFloat = 0
+        var paragraphCharacters = 0
+        var fence: String?
+        func flushParagraph() {
+            if paragraphCharacters > 0 { lines += wrappedLines(paragraphCharacters); paragraphCharacters = 0 }
+        }
+        for sourceLine in sourceLines {
+            let trimmed = sourceLine.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                flushParagraph()
+                let marker = String(trimmed.prefix(3))
+                if fence == marker { fence = nil } else if fence == nil { fence = marker }
+            } else if fence != nil {
+                lines += wrappedLines(sourceLine.count)
+            } else if trimmed.isEmpty {
+                flushParagraph()
+                lines += 0.5 // Paragraph spacing, not an empty source line.
+            } else if ["#", ">", "- ", "* ", "+ ", "|"].contains(where: { trimmed.hasPrefix($0) }) ||
+                        trimmed.first?.isNumber == true || sourceLine.hasPrefix("    ") {
+                flushParagraph()
+                lines += wrappedLines(sourceLine.count)
+            } else {
+                paragraphCharacters += sourceLine.count + (paragraphCharacters > 0 ? 1 : 0)
+                if sourceLine.hasSuffix("  ") || sourceLine.hasSuffix("\\") { flushParagraph() }
+            }
+        }
+        flushParagraph()
+        return max(1, lines) * 19
     }
 }

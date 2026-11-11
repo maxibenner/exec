@@ -99,6 +99,56 @@ import AppKit
         }
     }
 
+    func estimatesAndFirstMarkdownLayoutStayBounded() async throws {
+        _ = NSApplication.shared
+        let sources = [String(repeating: "x\n", count: 300),
+                       (0..<500).map { "Line \($0): 👩🏽‍💻 漢字" }.joined(separator: "\n"),
+                       String(repeating: "Long words wrapping within a user bubble. ", count: 600)]
+        for width: CGFloat in [380, 580, 820] {
+            for source in sources {
+                let message = Message(role: .user, text: source)
+                var layout = TranscriptLayout()
+                layout.update(messages: [message], width: width)
+                let measured = LinkedText.measuredSize(of: LinkedText.attributed(AttributedString(source)),
+                                                       width: min(600, width - 40) - 24).height + 16
+                let ratio = layout.heights[0] / measured
+                try expect(ratio > 0.7 && ratio < 1.4)
+            }
+        }
+        let messages = (0..<100).map { _ in Message(role: .user, text: sources[0]) }
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        view.frame = NSRect(x: 0, y: 0, width: 900, height: 650)
+        defer { view.detach() }
+        view.update(messages: messages, jumpRequest: 0)
+        try await settle(view)
+        let initialHeight = state.layout.totalHeight
+        try expect(view.rowMeasurementCount < 10)
+        for index in stride(from: 90, through: 0, by: -10) {
+            view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[index]))
+            try await settle(view)
+            try expect(view.mountedRowCount < 10)
+            try expect(abs(state.layout.totalHeight / initialHeight - 1) < 0.1)
+        }
+        // Soft source breaks must never become a temporary multi-page live row.
+        let source = String(repeating: "x\n", count: 300)
+        let assistant = Message(role: .assistant, text: source)
+        let markdownState = TranscriptState()
+        let markdownView = TranscriptScrollView(state: markdownState)
+        markdownView.frame = view.frame
+        defer { markdownView.detach() }
+        markdownView.update(messages: [assistant], jumpRequest: 0, bottomInset: 140)
+        markdownView.layoutSubtreeIfNeeded()
+        markdownView.refresh()
+        let firstHeight = markdownState.layout.totalHeight
+        let rendered = MarkdownText.render(MarkdownDocument.parse(source))
+        let liveText = try onlyText(in: markdownView)
+        try expect(liveText.string == rendered.string)
+        try expect(markdownState.layout.heights[0] == LinkedText.measuredSize(of: rendered, width: markdownState.layout.width).height)
+        try await settle(markdownView)
+        try expect(markdownState.layout.totalHeight == firstHeight)
+    }
+
     private func onlyText(in view: NSView) throws -> LinkedText.TextView {
         if let text = view as? LinkedText.TextView { return text }
         for child in view.subviews {

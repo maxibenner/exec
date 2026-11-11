@@ -28,8 +28,9 @@ import SwiftUI
         """
         let blocks = MarkdownDocument.parse(source)
         let cache = MarkdownCache()
-        let placeholder = cache.initialText(for: source)
-        try expect(placeholder === cache.initialText(for: source) && cache.renderedText(for: source) == nil)
+        let initial = cache.initialText(for: source)
+        try expect(initial === cache.initialText(for: source) && initial === cache.renderedText(for: source))
+        try expect(initial.string == MarkdownText.render(blocks).string)
         let rendered = cache.insert(blocks, for: source)
         try expect(rendered === cache.renderedText(for: source) && rendered === cache.initialText(for: source))
         try expect(rendered === cache.insert(blocks, for: source))
