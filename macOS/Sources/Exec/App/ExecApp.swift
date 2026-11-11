@@ -117,7 +117,10 @@ import SwiftUI
             }
         }
         .defaultSize(width: 980, height: 700)
-        .commands { SessionCommands(store: startup.store, windows: startup.windows) }
+        .commands {
+            SessionCommands(store: startup.store, windows: startup.windows)
+            TranscriptCommands()
+        }
     }
 
     private func start() {
