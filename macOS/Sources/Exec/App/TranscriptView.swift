@@ -41,6 +41,7 @@ private struct VirtualTranscript: NSViewRepresentable {
 /// A native scroll surface with a viewport-sized pool of SwiftUI message hosts.
 /// Offscreen messages have geometry only. Height corrections preserve the top
 /// message and its pixel offset, or the bottom edge when following a response.
+/// Width reflow additionally preserves the reading character in ordinary text.
 @MainActor final class TranscriptScrollView: NSScrollView {
     private final class DocumentView: NSView {
         override var isFlipped: Bool { true }

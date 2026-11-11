@@ -99,7 +99,10 @@ struct LinkedText: NSViewRepresentable {
         private func completeLayout() {
             guard let container = textContainer, let layout = layoutManager else { return }
             if container.widthTracksTextView {
-                container.containerSize = NSSize(width: max(1, bounds.width), height: .greatestFiniteMagnitude)
+                // A newly created representable has no assigned width yet.
+                // Avoid laying out a large document into a synthetic 1pt column.
+                guard bounds.width > 0 else { return }
+                container.containerSize = NSSize(width: bounds.width, height: .greatestFiniteMagnitude)
             }
             layout.ensureLayout(for: container)
         }
@@ -126,6 +129,7 @@ struct LinkedText: NSViewRepresentable {
             guard let layout = layoutManager, let container = textContainer,
                   y >= 0, y < layout.usedRect(for: container).maxY, layout.numberOfGlyphs > 0 else { return nil }
             let glyph = layout.glyphIndex(for: NSPoint(x: 0, y: y), in: container)
+            guard glyph < layout.numberOfGlyphs else { return nil }
             var range = NSRange()
             let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: &range)
             return ReadingPosition(character: layout.characterIndexForGlyph(at: range.location), lineOffset: y - line.minY)
