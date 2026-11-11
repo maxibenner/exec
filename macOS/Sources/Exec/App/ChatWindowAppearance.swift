@@ -1,12 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// Keep native title controls; ConversationView owns the conditional divider.
+/// Keep native title controls and let the system manage the toolbar boundary.
 @MainActor enum ChatWindowAppearance {
     static func configure(_ window: NSWindow?) {
         guard let window else { return }
         if window.titleVisibility != .visible { window.titleVisibility = .visible }
-        if window.titlebarSeparatorStyle != .none { window.titlebarSeparatorStyle = .none }
     }
 }
 

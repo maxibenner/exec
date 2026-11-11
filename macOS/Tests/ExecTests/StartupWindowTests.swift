@@ -76,7 +76,7 @@ import SwiftUI
             // way, there must not be an additional custom toolbar button.
             try expect(controls.count <= 1 && controls.allSatisfy { $0.itemIdentifier == .toggleSidebar })
             try expect(window.titleVisibility == .visible)
-            try expect(window.titlebarSeparatorStyle == .none)
+            try expect(window.titlebarSeparatorStyle == .automatic)
             let minimum = window.contentMinSize
             let initialSidebarColor = try sidebarBackground(in: controller.view)
             for stage in 0..<3 {
@@ -95,7 +95,7 @@ import SwiftUI
                 try expect(zip(initialSidebarColor, restoredColor).allSatisfy { abs($0 - $1) < 1.0 / 255 })
             }
             try expect(window.title == "Restored conversation")
-            try expect(window.titlebarSeparatorStyle == .none)
+            try expect(window.titlebarSeparatorStyle == .automatic)
             guard let split = splitView(in: controller.view),
                   let splitController = split.delegate as? NSSplitViewController,
                   let sidebar = split.arrangedSubviews.first,

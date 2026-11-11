@@ -36,8 +36,6 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
-        // Let the shared sidebar surface show through the list.
-        .scrollContentBackground(.hidden)
         .padding(.horizontal, 10)
         // Selection is drawn above, not by the native list, so responder changes
         // cannot flash an accent-colored selection. Shortcuts still navigate sessions.
