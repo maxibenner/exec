@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct ChatComposer: View {
     @Bindable var store: ChatPanel
+    @Environment(SessionWindows.self) private var windows: SessionWindows?
     var overlayScrollerInset: CGFloat = 0
     @FocusState.Binding var focused: Bool
     @State private var imageDropTargeted = false
@@ -42,6 +43,7 @@ struct ChatComposer: View {
                      Choice(id: "effort", title: "reasoning", detail: effortName, enabled: store.current.model?.efforts.isEmpty == false),
                      Choice(id: "approve", title: "auto-approve", detail: store.autoApproveTools ? "On" : "Off", enabled: canApprove),
                      Choice(id: "compact", title: "compact", enabled: store.canCompact),
+                     Choice(id: "fork", title: "fork", enabled: store.library.canForkConversation(store.current)),
                      Choice(id: "workspace", title: "workspace", detail: "Change workspace…", enabled: store.canChooseWorkspace),
                      Choice(id: "finder", title: "finder", detail: "Open workspace in Finder", enabled: store.workspace != nil),
                      Choice(id: "terminal", title: "terminal", detail: "Open workspace in Terminal", enabled: store.workspace != nil)]
@@ -55,7 +57,7 @@ struct ChatComposer: View {
             items = [Choice(id: "", title: "Default", selected: store.current.selectedEffort == nil, enabled: available)] + (store.current.model?.efforts ?? []).map {
                 Choice(id: $0.id, title: $0.name, selected: store.current.selectedEffort == $0.id, enabled: available)
             }
-        case .approve, .compact, .workspace, .finder, .terminal:
+        case .approve, .compact, .fork, .workspace, .finder, .terminal:
             items = [] // Actions stay in the root command list.
 
         }
@@ -216,7 +218,7 @@ struct ChatComposer: View {
                         ForEach(Array(choices.enumerated()), id: \.element.id) { index, choice in
                             Button { choose(choice) } label: {
                                 HStack(spacing: 10) {
-                                    Text(choice.title)
+                                    Text(page == nil ? "/" + choice.title : choice.title)
                                     Spacer(minLength: 4)
                                     Text(choice.detail).foregroundStyle(.secondary).lineLimit(1)
                                     Group {
@@ -229,7 +231,7 @@ struct ChatComposer: View {
                                     .frame(width: 12)
                                 }
                                 .padding(8).contentShape(Rectangle())
-                                .background(index == highlighted ? Color.accentColor.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+                                .background(index == highlighted ? Color.gray.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
                             }
                             .buttonStyle(.plain).disabled(!choice.enabled).id(index)
                             .accessibilityAddTraits(index == highlighted ? .isSelected : [])
@@ -277,6 +279,11 @@ struct ChatComposer: View {
                 store.draft = ""
                 close()
                 store.compact()
+            case .fork:
+                guard store.library.canForkConversation(store.current) else { return }
+                if let windows { windows.forkConversation(store.current) }
+                else { store.library.forkConversation(store.current) }
+                close()
             case .workspace:
                 guard store.canChooseWorkspace else { return }
                 store.draft = ""
@@ -302,7 +309,7 @@ struct ChatComposer: View {
         switch page {
         case .model: store.selectedModel = choice.id
         case .effort: store.selectedEffort = choice.id.isEmpty ? nil : choice.id
-        case .approve, .compact, .workspace, .finder, .terminal: return
+        case .approve, .compact, .fork, .workspace, .finder, .terminal: return
         }
         store.draft = ""
         close(); focused = true

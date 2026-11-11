@@ -39,6 +39,7 @@ struct SessionCommandScope: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .environment(windows)
             .focusedSceneValue(\.sessionWindowActions, actions)
     }
 }

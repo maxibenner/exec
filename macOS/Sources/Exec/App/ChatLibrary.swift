@@ -662,6 +662,28 @@ import Observation
         remember(next)
     }
 
+    func canForkConversation(_ source: ChatStore) -> Bool {
+        canModify && source.canFork && hasConversation(source) && openConversations.contains { $0 === source }
+    }
+
+    func forkConversation(_ source: ChatStore, onOpened: @escaping @MainActor () -> Void = {}) {
+        guard canForkConversation(source) else { return }
+        let commandDraft = source.draft
+        navigate(reportingTo: source) {
+            let next = try self.makeConversation()
+            self.loading = next
+            try next.copyConversation(from: source)
+            try await next.saveIfIdle(force: true)
+            try Task.checkCancellation()
+            if source.draft == commandDraft, let command = ComposerCommand(commandDraft),
+               command.page == .fork || (command.page == nil && ComposerCommand.Page.fork.matches(command.query)) {
+                source.draft = ""
+            }
+            self.activate(next)
+            onOpened()
+        }
+    }
+
     func newConversation() {
         guard canNavigate else { return }
         cancelOpening()

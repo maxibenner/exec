@@ -21,6 +21,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
             ("Indicator layers animate, freeze and stop when hidden or detached", { try WorkingIndicatorTests().layerAnimationLifecycle() }),
+            ("Fork copies transcript, settings and opaque context independently", { try await ForkTests().copiesContextAndSettingsIndependently() }),
+            ("Fork rejects active turns and preserves source on failure", { try await ForkTests().rejectsRunningTurnsAndPreservesSourceOnFailure() }),
+            ("Detached forks retain inherited assets after source deletion", { try await ForkTests().detachedForkAndDeletionRetainInheritedAssets() }),
             ("Overlapping sessions release sleep prevention independently", { try await SessionSleepPreventionTests().overlappingRunsReleaseIndependently() }),
             ("Sleep prevention excludes idle work and cleans up failure and compaction", { try await SessionSleepPreventionTests().idleFailureAndCompactionLifecycle() }),
             ("Approval waits retain sleep prevention until cancellation completes", { try await SessionSleepPreventionTests().approvalWaitKeepsActivityUntilStopped() }),
