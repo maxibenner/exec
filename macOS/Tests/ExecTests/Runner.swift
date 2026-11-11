@@ -20,6 +20,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let streaming = StreamingTests()
         let chat = ChatStoreTests()
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Indicator layers animate, freeze and stop when hidden or detached", { try WorkingIndicatorTests().layerAnimationLifecycle() }),
             ("Overlapping sessions release sleep prevention independently", { try await SessionSleepPreventionTests().overlappingRunsReleaseIndependently() }),
             ("Sleep prevention excludes idle work and cleans up failure and compaction", { try await SessionSleepPreventionTests().idleFailureAndCompactionLifecycle() }),
             ("Approval waits retain sleep prevention until cancellation completes", { try await SessionSleepPreventionTests().approvalWaitKeepsActivityUntilStopped() }),

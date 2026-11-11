@@ -17,18 +17,23 @@ renderer; do not use this ten-animation window for performance comparisons.
 ./scripts/profile-indicator.sh
 ```
 
-Builds an optimized, isolated SwiftUI host around the production indicator. Keep its
-window visible. It measures hidden, animated, frozen, and animated-again phases,
-10 seconds each after 2 seconds of settling. Output includes whole-process CPU,
-timer callbacks, draws, and wall-clock time inside drawing. CPU 100% means one core.
-The frozen view uses the production Reduce Motion rendering without changing OS settings.
-If macOS Reduce Motion is already enabled, the animated phases also remain static;
-check the draw/tick counts before interpreting results.
+Builds an optimized, isolated SwiftUI host around the production indicator. The small
+window floats above other windows to keep samples visible. It measures hidden,
+animated, frozen, and animated-again phases, 10 seconds each after 2 seconds of settling.
+Output includes whole-process CPU, active layer animations, and animation starts during
+measurement. Expect 15 active animations while visible and animated, zero when frozen.
+CPU 100% means one core. The frozen view uses production Reduce Motion rendering without
+changing OS settings. If macOS Reduce Motion is enabled, animated phases also remain
+static; check the active-animation count and visibility before interpreting results.
 
 This is not a full Exec session: it excludes transcript layout, tools, streaming,
 providers, and WindowServer/GPU work. Startup and instrumentation overhead can affect
-results. Draw wall time is not the same as CPU time. Compare repeated phases rather
-than attributing every change to the animation.
+results. Compare repeated phases rather than attributing every change to the animation.
+Core Animation replaces the old timer/draw probes: there is no per-frame application
+callback. The app precomputes and caches opacity curves at 30 samples/second over their
+shared ~419-second period, preserving the independent-neuron pattern without a loop seam.
+This trades some startup/memory work for reduced steady-state app CPU; the compositor
+still does work. System-wide energy/GPU costs are not established by this benchmark.
 
 ## Whole-session CPU and memory
 
@@ -54,8 +59,8 @@ inference, tool execution, or retry is performed by the profiling scripts.
 
 ## Instruments probes
 
-The app has opt-in **Indicator tick** events and **Indicator draw** intervals in the
-`Exec` Points of Interest log. They count/timestamp drawing only—no user content.
+The app has opt-in **Indicator animations started** and **Indicator animations stopped**
+events in the `Exec` Points of Interest log. They record layer counts only—no user content.
 They are disabled unless the process starts with `EXEC_PROFILE_INDICATOR=1`.
 
 For a profiling run, quit Exec normally first, then launch the built executable:

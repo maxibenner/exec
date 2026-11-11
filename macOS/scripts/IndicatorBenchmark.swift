@@ -52,6 +52,7 @@ private struct FrozenIndicator: NSViewRepresentable {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 308, height: 100),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.title = "Exec indicator benchmark"
+        window.level = .floating // Keep samples visible while other apps are active.
         window.contentView = NSHostingView(rootView: BenchmarkView(state: state))
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -68,22 +69,35 @@ private struct FrozenIndicator: NSViewRepresentable {
                 try? await Task.sleep(for: .seconds(2))
                 let cpuStart = cpuSeconds()
                 let start = ProcessInfo.processInfo.systemUptime
-                let ticks = WorkingIndicatorProbe.ticks
-                let draws = WorkingIndicatorProbe.draws
-                let drawSeconds = WorkingIndicatorProbe.drawSeconds
+                let starts = WorkingIndicatorProbe.animationStarts
+                let before = presentationOpacities(in: window.contentView)
                 try? await Task.sleep(for: .seconds(10))
                 let cpu = cpuSeconds() - cpuStart
                 let duration = ProcessInfo.processInfo.systemUptime - start
-                let count = WorkingIndicatorProbe.draws - draws
-                let drawTime = WorkingIndicatorProbe.drawSeconds - drawSeconds
-                print(String(format: "%@: CPU %.2f%%, ticks %d, draws %d, draw wall time %.2f ms total / %.3f ms per draw, visible %@",
-                             name, cpu / duration * 100, WorkingIndicatorProbe.ticks - ticks,
-                             count, drawTime * 1000, count == 0 ? 0 : drawTime * 1000 / Double(count),
+                print(String(format: "%@: CPU %.2f%%, active layer animations %d, new animations during sample %d, visible %@",
+                             name, cpu / duration * 100, WorkingIndicatorProbe.activeAnimations,
+                             WorkingIndicatorProbe.animationStarts - starts,
                              window.occlusionState.contains(.visible) ? "yes" : "NO"))
+                if WorkingIndicatorProbe.activeAnimations > 0 {
+                    let after = presentationOpacities(in: window.contentView)
+                    let moving = before.count == 15 && after.count == 15
+                        && zip(before, after).contains { abs($0 - $1) > 0.01 }
+                    print("Presentation-layer opacity changed: \(moving ? "yes" : "NO — sample not verified")")
+                }
             }
             app.terminate(nil)
         }
         app.run()
+    }
+
+    @MainActor private static func presentationOpacities(in view: NSView?) -> [Float] {
+        guard let view else { return [] }
+        if view is WorkingIndicator.NeuralActivityView {
+            return (view.layer?.sublayers ?? []).compactMap {
+                $0.animation(forKey: "neuralPulse") == nil ? nil : $0.presentation()?.opacity
+            }
+        }
+        return view.subviews.flatMap { presentationOpacities(in: $0) }
     }
 
     private static func cpuSeconds() -> Double {
