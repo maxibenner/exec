@@ -56,6 +56,14 @@ import SwiftUI
                     ToolMessageView(call: call, result: result, isAwaitingApproval: awaiting,
                                     state: state, messageID: id)
                 }
+                func containsSpinner(_ view: NSView) -> Bool {
+                    view is NSProgressIndicator || view.subviews.contains(where: containsSpinner)
+                }
+                for awaiting in [false, true] {
+                    let host = NSHostingView(rootView: card(nil, awaiting: awaiting).frame(width: width))
+                    host.layoutSubtreeIfNeeded()
+                    try expect(!containsSpinner(host))
+                }
                 let resting = size(card(ToolResult(call: call, text: "Done")), width: width)
                 let variants = [size(card(nil), width: width), size(card(nil, awaiting: true), width: width),
                                 size(card(ToolResult(call: call, text: "Tool error: Failed")), width: width),
@@ -67,11 +75,10 @@ import SwiftUI
                 }
             }
         }
-        // Reserving width as well as height keeps adjacent summary text from
-        // gaining or losing space when the spinner or approval icon disappears.
-        for (running, awaiting) in [(true, false), (false, true), (false, false)] {
+        // Compaction retains its existing activity indicator and reserved space.
+        for running in [true, false] {
             let host = NSHostingView(rootView: ToolActivityIndicator(isRunning: running,
-                isAwaitingApproval: awaiting, label: "Tool active"))
+                label: "Compaction active"))
             try expect(host.fittingSize == NSSize(width: 16, height: 16))
         }
     }

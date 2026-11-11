@@ -55,9 +55,15 @@ struct ToolMessageView: View {
         } label: {
             HStack(spacing: 8) {
                 ToolCallHeader(presentation: presentation)
-                ToolActivityIndicator(isRunning: result == nil,
-                                      isAwaitingApproval: result == nil && isAwaitingApproval,
-                                      label: "Tool active")
+                Color.clear
+                    .frame(width: 16, height: 16)
+                    .overlay {
+                        if result == nil && isAwaitingApproval {
+                            Image(systemName: "hand.raised")
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("Awaiting approval")
+                        }
+                    }
             }
         }
         .disclosureGroupStyle(InstantToolDisclosureStyle())
