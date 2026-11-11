@@ -60,6 +60,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var jumpRequest = 0
     private var lastMessageID: UUID?
     private var navigationAnchor: TranscriptLayout.Anchor?
+    private var navigationExtendsContent = false
     private static let navigationPadding: CGFloat = 20
     private var requestedScroll = false
     private var pendingContentFollow = false
@@ -150,6 +151,7 @@ private struct VirtualTranscript: NSViewRepresentable {
             }
         }
         navigationAnchor = target.map { TranscriptLayout.Anchor(id: messages[$0].id, offset: -Self.navigationPadding) }
+        navigationExtendsContent = direction == .previous
         state.followsLatest = target == nil
         requestedScroll = true
         refresh()
@@ -292,13 +294,20 @@ private struct VirtualTranscript: NSViewRepresentable {
             }
             if !changed { break }
         }
+        // Downward navigation stops at the natural bottom after visible rows have
+        // been measured. Repeated Down commands must not introduce trailing space.
+        if navigationAnchor != nil, !navigationExtendsContent,
+           contentView.bounds.maxY >= content.bounds.height - 1 {
+            navigationAnchor = nil
+            state.followsLatest = true
+        }
         rememberAnchor()
         if changed { scheduleRefresh() }
     }
     private func setDocumentSize() {
-        // A short final turn still needs enough room to align its user bubble at
-        // the top. This temporary space disappears on manual scroll or bottom jump.
-        let navigationHeight = navigationAnchor.flatMap { state.layout.position(of: $0) }
+        // Only upward navigation may add room to align a short final turn.
+        let navigationHeight = (navigationExtendsContent ? navigationAnchor : nil)
+            .flatMap { state.layout.position(of: $0) }
             .map { max(0, $0) + contentSize.height } ?? 0
         let size = CGSize(width: contentSize.width,
                           height: max(contentSize.height, state.layout.totalHeight + bottomInset, navigationHeight))

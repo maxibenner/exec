@@ -24,11 +24,13 @@ import AppKit
         for index in stride(from: 2, through: 38, by: 2) {
             view.navigateSentMessage(.next)
             settle(view)
-            try aligned(index, in: view)
+            let maximum = max(0, state.layout.totalHeight + 140 - view.contentSize.height)
+            let expected = min(maximum, state.layout.offsets[index] - 20)
+            try expect(abs(view.contentView.bounds.minY - expected) < 1)
+            try expect(abs(view.documentView!.frame.height - state.layout.totalHeight - 140) < 1)
         }
-        // The short final turn still aligns at the top, then temporary trailing
-        // space is removed when the next command returns to the actual bottom.
-        try expect(view.documentView!.frame.height > state.layout.totalHeight + 140)
+        // Down clamps to the natural bottom, even when later user messages cannot
+        // reach the top. Repeating the command there must leave the viewport alone.
         view.navigateSentMessage(.next)
         settle(view)
         try expect(state.followsLatest)
@@ -39,6 +41,13 @@ import AppKit
         try expect(view.contentView.bounds.minY == bottom)
         view.navigateSentMessage(.previous)
         try aligned(38, in: view)
+        view.navigateSentMessage(.previous)
+        try aligned(36, in: view)
+        try expect(view.documentView!.frame.height > state.layout.totalHeight + 140)
+        view.navigateSentMessage(.next)
+        settle(view)
+        try expect(state.followsLatest && abs(view.contentView.bounds.minY - bottom) < 1)
+        try expect(abs(view.documentView!.frame.height - state.layout.totalHeight - 140) < 1)
     }
 
     func preservesTargetDuringUpdatesAndResumesFromManualScroll() throws {
