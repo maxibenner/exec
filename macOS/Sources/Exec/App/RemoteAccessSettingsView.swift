@@ -17,7 +17,7 @@ struct RemoteAccessSettingsView: View {
             Section {
                 Toggle("Enable Remote Access", isOn: Binding(get: { access.enabled }, set: access.setEnabled))
             } footer: {
-                Text("This exposes a remote interface at port \(RemoteAccess.port) and connect it to the given Pangolin resource. All local connections are trusted. Make sure to properly protect access through Pangolin.")
+                Text("This exposes a remote interface at port \(String(RemoteAccess.port)) and connects it to the given Pangolin resource. All local connections are trusted. Make sure to properly protect access through Pangolin.")
                     .font(.caption)
                     .multilineTextAlignment(.leading)
             }
@@ -76,7 +76,7 @@ struct RemoteAccessSettingsView: View {
                     }
                     .font(.caption)
                     .multilineTextAlignment(.leading)
-                    .padding(.top, 24)
+                    .padding(.vertical, 24)
                 }
             }
         }
