@@ -8,6 +8,7 @@ import Observation
     var jumpRequest = 0
     var trailingInset: CGFloat = 0
     var overlayScrollerInset: CGFloat = 0
+    @ObservationIgnored weak var scrollView: TranscriptScrollView?
     @ObservationIgnored var anchor: TranscriptLayout.Anchor?
     @ObservationIgnored var layout = TranscriptLayout()
     @ObservationIgnored var expanded: [UUID: Bool] = [:]
@@ -21,14 +22,7 @@ struct TranscriptView: View {
     var bottomInset: CGFloat = 0
     var body: some View {
         VirtualTranscript(messages: messages, state: state, jumpRequest: state.jumpRequest, bottomInset: bottomInset)
-            .overlay(alignment: .bottomTrailing) {
-                if !state.followsLatest {
-                    Button(action: state.jumpToLatest) { Image(systemName: "arrow.down") }
-                        .buttonStyle(.bordered).buttonBorderShape(.circle)
-                        .help("Jump to latest message").accessibilityLabel("Jump to latest message")
-                        .padding(16).padding(.bottom, bottomInset)
-                }
-            }
+            .focusedSceneValue(\.transcriptNavigation, messages.contains { $0.role == .user } ? state : nil)
     }
 }
 
@@ -65,6 +59,8 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var lastSize = CGSize.zero
     private var jumpRequest = 0
     private var lastMessageID: UUID?
+    private var navigationAnchor: TranscriptLayout.Anchor?
+    private static let navigationPadding: CGFloat = 20
     private var requestedScroll = false
     private var pendingContentFollow = false
     private var bottomInset: CGFloat = 0
@@ -76,6 +72,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     init(state: TranscriptState) {
         self.state = state
         super.init(frame: .zero)
+        state.scrollView = self
         drawsBackground = false
         borderType = .noBorder
         hasVerticalScroller = true
@@ -128,8 +125,39 @@ private struct VirtualTranscript: NSViewRepresentable {
             scheduleRefresh()
         }
     }
+    /// Use the current viewport after manual scrolling, or the last explicit target
+    /// for repeated commands. Native clip-view scrolling is intentionally immediate.
+    func navigateSentMessage(_ direction: MessageNavigationDirection) {
+        guard !detached, !updating, contentSize.width > 0, contentSize.height > 0 else { return }
+        // Settle even during rubber-banding so message indices and geometry agree.
+        requestedScroll = true
+        refresh()
+        let sent = messages.indices.filter { messages[$0].role == .user }
+        guard let first = sent.first else { return }
+        let target: Int?
+        if let anchor = navigationAnchor, let current = sent.firstIndex(where: { messages[$0].id == anchor.id }) {
+            switch direction {
+            case .previous: target = sent[max(0, current - 1)]
+            case .next: target = current + 1 < sent.count ? sent[current + 1] : nil
+            }
+        } else {
+            let top = contentView.bounds.minY + Self.navigationPadding
+            switch direction {
+            case .previous:
+                target = state.followsLatest ? sent.last : sent.last(where: { state.layout.offsets[$0] < top - 1 }) ?? first
+            case .next:
+                target = state.followsLatest ? nil : sent.first(where: { state.layout.offsets[$0] > top + 1 })
+            }
+        }
+        navigationAnchor = target.map { TranscriptLayout.Anchor(id: messages[$0].id, offset: -Self.navigationPadding) }
+        state.followsLatest = target == nil
+        requestedScroll = true
+        refresh()
+    }
+
     func detach() {
         detached = true
+        if state.scrollView === self { state.scrollView = nil }
         selectionClearing?.stop()
         selectionClearing = nil
         rememberAnchor()
@@ -143,6 +171,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         // Our own geometry corrections run under `updating`. Other offset changes
         // include keyboard, wheel and scrollbar navigation; resizing isn't a scroll.
         if initialized, contentSize == lastSize {
+            navigationAnchor = nil
             let maximum = max(0, content.bounds.height - contentView.bounds.height)
             let position = min(maximum, max(0, contentView.bounds.minY))
             let nearBottom = maximum - position <= 40
@@ -197,7 +226,11 @@ private struct VirtualTranscript: NSViewRepresentable {
         refreshNeeded = false
         defer { updating = false }
         let width = max(1, min(820, size.width - 40))
-        let anchor = initialized ? state.layout.anchor(at: contentView.bounds.minY) : state.anchor
+        if requestedScroll && state.followsLatest { navigationAnchor = nil }
+        if let navigationAnchor, !messages.contains(where: { $0.id == navigationAnchor.id }) {
+            self.navigationAnchor = nil
+        }
+        let anchor = navigationAnchor ?? (initialized ? state.layout.anchor(at: contentView.bounds.minY) : state.anchor)
         let oldHeight = state.layout.totalHeight
         let needsRestore = !initialized || requestedScroll || size != lastSize || bottomInset != renderedBottomInset
         let pinBottom = state.followsLatest && (needsRestore || pendingContentFollow || abs(content.bounds.height - bounds.maxY) < 1)
@@ -263,7 +296,12 @@ private struct VirtualTranscript: NSViewRepresentable {
         if changed { scheduleRefresh() }
     }
     private func setDocumentSize() {
-        let size = CGSize(width: contentSize.width, height: max(contentSize.height, state.layout.totalHeight + bottomInset))
+        // A short final turn still needs enough room to align its user bubble at
+        // the top. This temporary space disappears on manual scroll or bottom jump.
+        let navigationHeight = navigationAnchor.flatMap { state.layout.position(of: $0) }
+            .map { max(0, $0) + contentSize.height } ?? 0
+        let size = CGSize(width: contentSize.width,
+                          height: max(contentSize.height, state.layout.totalHeight + bottomInset, navigationHeight))
         if content.frame.size != size { content.setFrameSize(size) }
     }
     private func restore(_ anchor: TranscriptLayout.Anchor?, pinBottom: Bool) {
