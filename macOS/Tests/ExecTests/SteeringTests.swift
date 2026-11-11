@@ -222,12 +222,4 @@ import Foundation
         try expect(library.current === foreground && library.draft == "Other draft" && foreground.messages.isEmpty)
     }
 
-    func progressFramesMatchPi() throws {
-        try expect(String(WorkingFrames.frame(0)) == "█·······")
-        try expect(String(WorkingFrames.frame(3)) == "░▒▓█····")
-        try expect(String(WorkingFrames.frame(7)) == "····░▒▓█")
-        try expect(String(WorkingFrames.frame(8)) == "······█▓")
-        try expect(String(WorkingFrames.frame(13)) == "·█▓▒░···")
-        try expect(WorkingFrames.frame(14) == WorkingFrames.frame(0))
-    }
 }

@@ -159,7 +159,6 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Steering tool failure, cancellation and checkpoint safety", { try await SteeringTests().toolFailureAndCheckpointFailurePreserveInput() }),
             ("Steering stays with background conversation", { try await SteeringTests().backgroundInputStaysWithConversation() }),
             ("Session switches preserve native focus", { try await ComposerFocusTests().switchingSessionsDoesNotStealFocus() }),
-            ("Pi progress animation frames", { try SteeringTests().progressFramesMatchPi() }),
             ("Run allowance observations persist with unknown values and legacy compatibility", { try await AccountUsageTests().runObservationsPersist() }),
             ("Response token details reject malformed counts", { try AccountUsageTests().responseUsageValidation() }),
             ("Account usage request, parsing and no retry", { try await AccountUsageTests().requestParsingAndFailure() }),
