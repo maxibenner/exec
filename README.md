@@ -33,9 +33,11 @@ cd macOS
 | Detach conversation             | ⌘D                  |
 | Move detached conversation back | ⌘W                  |
 | Delete conversation             | ⌘⇧Delete            |
+| Previous sent message           | ⌘↑                  |
+| Next sent message               | ⌘↓                  |
 | Interrupt turn                  | Escape              |
 
-Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/workspace`, `/finder`, `/terminal`.
+Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/fork`, `/workspace`, `/finder`, `/terminal`.
 
 ![Exec screenshot](screenshot-2.png)
 
