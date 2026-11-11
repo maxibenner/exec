@@ -86,6 +86,16 @@ struct LinkedText: NSViewRepresentable {
             completeLayout()
         }
 
+        override func viewDidEndLiveResize() {
+            // AppKit invokes its private frame-sizing path here without going
+            // through setFrameSize, including after native sidebar animations.
+            let wasChanging = changingLayout
+            changingLayout = true
+            defer { changingLayout = wasChanging }
+            super.viewDidEndLiveResize()
+            completeLayout()
+        }
+
         private func completeLayout() {
             guard let container = textContainer, let layout = layoutManager else { return }
             if container.widthTracksTextView {

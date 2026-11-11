@@ -192,9 +192,11 @@ import SwiftUI
         }
     }
 
-    @Observable fileprivate final class SidebarPresentation {
+    @MainActor @Observable fileprivate final class SidebarPresentation {
         var hasSessions = false
         var revealRequest = 0
+        let transcript = TranscriptState()
+        let messages = [Message(role: .user, text: String(repeating: "Long wrapped sidebar reflow text. ", count: 600))]
     }
 
     private struct SidebarFixture: View {
@@ -203,7 +205,7 @@ import SwiftUI
             ChatWindowLayout(initiallyShowsSidebar: presentation.hasSessions, sidebarRevealRequest: presentation.revealRequest) {
                 Text("Sessions")
             } detail: {
-                Text("Conversation")
+                TranscriptView(messages: presentation.messages, state: presentation.transcript, bottomInset: 140)
             }
         }
     }
@@ -246,6 +248,41 @@ import SwiftUI
             presentation.hasSessions.toggle()
             try await settle(window)
             try expect(split.isSubviewCollapsed(sidebar))
+            for width: CGFloat in [720, 980] {
+                window.setContentSize(NSSize(width: width, height: 700))
+                try await settle(window)
+                for toggle in 0..<4 {
+                    let closing = !split.isSubviewCollapsed(sidebar)
+                    let transcript = presentation.transcript.scrollView!
+                    var previousWidth = transcript.contentSize.width
+                    if toggle.isMultiple(of: 2) {
+                        splitController.toggleSidebar(nil) // Native toolbar action.
+                    } else {
+                        func configuration(in view: NSView) -> SidebarResizeBehavior.ConfigurationView? {
+                            (view as? SidebarResizeBehavior.ConfigurationView) ?? view.subviews.lazy.compactMap { configuration(in: $0) }.first
+                        }
+                        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                            timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                            characters: "s", charactersIgnoringModifiers: "s", isARepeat: false, keyCode: 1)!
+                        try expect(configuration(in: controller.view)!.performKeyEquivalent(with: event))
+                    }
+                    // Presentation changes during and after the animation must
+                    // not replay the previous visibility or reverse pane width.
+                    for sample in 0..<24 {
+                        if sample.isMultiple(of: 4) { presentation.hasSessions.toggle() }
+                        window.contentView?.layoutSubtreeIfNeeded()
+                        try await Task.sleep(for: .milliseconds(20))
+                        let currentWidth = transcript.contentSize.width
+                        try expect(closing ? currentWidth >= previousWidth - 2 : currentWidth <= previousWidth + 2)
+                        previousWidth = currentWidth
+                    }
+                    try expect(split.isSubviewCollapsed(sidebar) == closing)
+                    try expect(presentation.transcript.followsLatest)
+                    guard abs(transcript.contentView.bounds.maxY - transcript.documentView!.bounds.height) < 1 else {
+                        throw CheckFailure(description: "Sidebar width=\(width) closing=\(closing) clip=\(transcript.contentView.bounds) document=\(transcript.documentView!.bounds) follows=\(presentation.transcript.followsLatest)")
+                    }
+                }
+            }
         }
     }
 
