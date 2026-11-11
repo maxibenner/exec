@@ -68,15 +68,15 @@ struct RemoteAccessSettingsView: View {
                     .controlSize(.regular)
                     .font(.body)
 
-                    if access.configuration == nil {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Setup").bold()
-                            setupStep("Create a site in Pangolin and enter its connection details above.")
-                            setupStep("Create an authenticated public HTTPS resource, or a private resource with restricted access, targeting HTTP → 127.0.0.1:9417 on that site.")
-                            setupStep("Enter the resource’s browser URL, apply, and enable Remote Access. Open that URL to use Exec.")
-                        }
-                        .padding(.top, 24)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Setup").bold()
+                        setupStep(1, "Create a new Pangolin site and paste the url, id and secret.")
+                        setupStep(2, "Create a new resource and connect it to the port specified above.")
+                        setupStep(3, "Make sure the Pangolin CLI is installed.")
                     }
+                    .font(.caption)
+                    .multilineTextAlignment(.leading)
+                    .padding(.top, 24)
                 }
             }
         }
@@ -97,9 +97,9 @@ struct RemoteAccessSettingsView: View {
         }
     }
 
-    private func setupStep(_ text: String) -> some View {
+    private func setupStep(_ number: Int, _ text: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("•").accessibilityHidden(true)
+            Text("\(number).")
             Text(text).fixedSize(horizontal: false, vertical: true)
         }
     }
