@@ -1,13 +1,27 @@
 import { randomUUID } from "node:crypto";
 import { ToolFailure } from "./tool-failure.ts";
+import { finishMissingResults, recoverRecord, type ConversationRecord } from "./conversation-record.ts";
 import type {
   Approval, ChatProvider, ContextMessage, ConversationSnapshot, Message, Operation,
   OperationState, RuntimeEvent, Tool, ToolCall, ToolOutcome,
 } from "./types.ts";
 
+export interface ConversationOptions {
+  provider: ChatProvider;
+  model: string;
+  workspace: string;
+  tools?: Tool[];
+  maxSteps?: number;
+  checkpoint?: (record: ConversationRecord) => Promise<void>;
+}
+
+class CheckpointFailure extends Error {}
+const storageFailure = "Could not save conversation. Work stopped; prior actions may have had effects. Reload the last durable checkpoint before continuing.";
+
 interface ActiveRun {
   operation: Operation;
   controller: AbortController;
+  finishing: boolean;
 }
 
 interface PendingApproval {
@@ -29,18 +43,29 @@ export class Conversation {
   private active: ActiveRun | undefined;
   private operation: Operation | null = null;
   private pending: PendingApproval | undefined;
+  private readonly persist: ConversationOptions["checkpoint"];
+  private executingToolID: string | null = null;
+  private storageError: string | null = null;
+  private disposed = false;
 
-  constructor(options: {
-    provider: ChatProvider; model: string; workspace: string; tools?: Tool[]; maxSteps?: number;
-  }) {
+  constructor(options: ConversationOptions, initial?: ConversationRecord) {
+    const restored = initial ? recoverRecord(initial) : null;
+    if (restored && (restored.model !== options.model || restored.workspace !== options.workspace)) {
+      throw new Error("Restored conversation configuration does not match.");
+    }
     if (!options.model.trim() || !options.workspace.trim()) {
       throw new Error("A model and workspace are required.");
     }
-    this.id = randomUUID();
+    this.id = restored?.id ?? randomUUID();
     this.model = options.model;
     this.workspace = options.workspace;
     this.provider = options.provider;
-    this.maxSteps = options.maxSteps ?? 32;
+    this.persist = options.checkpoint;
+    this.maxSteps = restored?.maxSteps ?? options.maxSteps ?? 32;
+    if (restored) {
+      this.messages = restored.messages;
+      this.operation = restored.operation;
+    }
     if (!Number.isSafeInteger(this.maxSteps) || this.maxSteps < 1) {
       throw new Error("maxSteps must be a positive integer.");
     }
@@ -58,10 +83,33 @@ export class Conversation {
 
   get busy(): boolean { return this.active !== undefined; }
 
+  dispose(): void {
+    if (this.active) throw new Error("Cannot close an active conversation.");
+    this.disposed = true;
+  }
+
+  record(): ConversationRecord {
+    return structuredClone({ version: 1, id: this.id, model: this.model, workspace: this.workspace,
+      maxSteps: this.maxSteps, messages: this.messages, operation: this.operation, executingToolID: this.executingToolID });
+  }
+
+  private async checkpoint(terminal?: OperationState): Promise<void> {
+    if (this.storageError) throw new CheckpointFailure();
+    if (!this.persist) return;
+    const record = this.record();
+    if (terminal && record.operation) record.operation.state = terminal;
+    try { await this.persist(record); }
+    catch {
+      this.storageError = storageFailure;
+      throw new CheckpointFailure();
+    }
+  }
+
   snapshot(): ConversationSnapshot {
     return structuredClone({
       id: this.id, model: this.model, workspace: this.workspace,
       messages: this.messages, operation: this.operation, approval: this.pending?.value ?? null,
+      storageError: this.storageError,
     });
   }
 
@@ -71,10 +119,12 @@ export class Conversation {
   }
 
   submit(text: string): { operationID: string; completion: Promise<Operation> } {
+    if (this.disposed) throw new Error("Conversation is closed.");
+    if (this.storageError) throw new Error(storageFailure);
     if (this.active) throw new Error("Conversation is busy.");
     if (!text.trim()) throw new Error("Message must not be empty.");
     const run: ActiveRun = {
-      operation: { id: randomUUID(), state: "running" }, controller: new AbortController(),
+      operation: { id: randomUUID(), state: "running" }, controller: new AbortController(), finishing: false,
     };
     this.active = run;
     this.operation = run.operation;
@@ -86,7 +136,7 @@ export class Conversation {
 
   cancel(operationID: string): boolean {
     const run = this.active;
-    if (!run || run.operation.id !== operationID
+    if (!run || run.finishing || run.operation.id !== operationID
       || !["running", "awaiting_approval", "cancelling"].includes(run.operation.state)) return false;
     if (!run.controller.signal.aborted) {
       run.controller.abort();
@@ -134,32 +184,39 @@ export class Conversation {
 
   private async run(run: ActiveRun): Promise<Operation> {
     const signal = run.controller.signal;
+    let terminal: OperationState = "failed";
     try {
       signal.throwIfAborted();
+      await this.checkpoint(); // Record the user input before any inference.
       this.setState(run, "running");
       for (let step = 0; step < this.maxSteps; step++) {
         signal.throwIfAborted();
         const assistant = await this.respond(run);
-        // respond has finalized a complete provider response; every call must get a result,
-        // even if cancellation arrived in a completion observer or between tools.
+        await this.checkpoint(); // Finalized tool calls precede all tool execution.
         await this.executeCalls(run, assistant.calls);
         signal.throwIfAborted();
-        if (assistant.calls.length === 0) {
-          this.setState(run, "completed");
-          return structuredClone(run.operation);
-        }
+        if (assistant.calls.length === 0) { terminal = "completed"; break; }
       }
-      run.operation.error = "Agent step limit reached. No further request was sent.";
-      this.setState(run, "failed");
-    } catch {
-      if (signal.aborted) this.setState(run, "interrupted");
-      else {
+      if (terminal === "failed") run.operation.error = "Agent step limit reached. No further request was sent.";
+    } catch (error) {
+      terminal = signal.aborted ? "interrupted" : "failed";
+      if (error instanceof CheckpointFailure) run.operation.error = storageFailure;
+      else if (!signal.aborted) {
         // Provider errors can include credentials or raw responses. Do not export them.
         run.operation.error = "Provider operation failed or returned an incomplete response. It was not retried.";
-        this.setState(run, "failed");
       }
     } finally {
+      // A failed checkpoint can stop a round before every tool gets a result.
+      finishMissingResults(this.messages, this.executingToolID);
+      this.executingToolID = null;
+      run.finishing = true;
+      if (!this.storageError) {
+        try { await this.checkpoint(terminal); } catch { /* Latched below; never automatically retry a write. */ }
+      }
+      if (this.storageError) { terminal = "failed"; run.operation.error = storageFailure; }
       this.active = undefined;
+      // Publish terminal success only after its checkpoint has succeeded.
+      this.setState(run, terminal);
     }
     return structuredClone(run.operation);
   }
@@ -175,7 +232,9 @@ export class Conversation {
     const calls: ToolCall[] = [];
     const knownIDs = new Set(this.messages.flatMap(row => row.role === "assistant" ? row.calls.map(call => call.id) : []));
     let done = false;
+    let lastPartialSave = -Infinity;
     try {
+      await this.checkpoint(); // The in-flight response is recoverable before opening its stream.
       signal.throwIfAborted();
       for await (const event of this.provider.stream({
         model: this.model, messages,
@@ -186,6 +245,10 @@ export class Conversation {
           message.text += event.delta;
           this.emit({ type: "text", conversationID: this.id, operationID: run.operation.id,
             messageID: message.id, delta: event.delta });
+          if (performance.now() - lastPartialSave >= 1000) {
+            await this.checkpoint();
+            lastPartialSave = performance.now();
+          }
         } else if (event.type === "tool_call") {
           if (!event.call.id || !event.call.name || knownIDs.has(event.call.id) || calls.length >= 64) {
             throw new Error("Invalid tool call.");
@@ -231,12 +294,21 @@ export class Conversation {
               outcome = "denied";
               text = "User denied this action. Nothing was executed. Do not retry without a new user request.";
             } else {
+              this.executingToolID = call.id;
+              await this.checkpoint(); // Durable intent before any possible side effect.
+              signal.throwIfAborted();
               started = true;
               text = await prepared.execute();
               signal.throwIfAborted();
               outcome = "completed";
             }
           } catch (error) {
+            if (error instanceof CheckpointFailure) {
+              // No tool started if its intent could not be committed. Disk may
+              // nevertheless contain the intent, so recovery remains conservative.
+              this.executingToolID = null;
+              throw error;
+            }
             outcome = signal.aborted ? (started ? "interrupted" : "not_executed") : "failed";
             text = error instanceof ToolFailure
               ? `${error.message}\nDo not retry without a new user request.`
@@ -248,7 +320,9 @@ export class Conversation {
       }
       const result: Message = { id: randomUUID(), role: "tool", callID: call.id, text, outcome };
       this.messages.push(result);
+      this.executingToolID = null;
       this.changed(run, result);
+      await this.checkpoint();
     }
   }
 
@@ -258,6 +332,9 @@ export class Conversation {
     const value: Approval = {
       id: randomUUID(), operationID: run.operation.id, call: structuredClone(call), description, workspace: this.workspace,
     };
+    run.operation.state = "awaiting_approval";
+    await this.checkpoint();
+    signal.throwIfAborted();
     const approved = await new Promise<boolean>(resolve => {
       const finish = (decision: boolean) => {
         if (this.pending?.value.id !== value.id) return;

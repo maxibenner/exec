@@ -85,6 +85,7 @@ export interface ConversationSnapshot {
   messages: Message[];
   operation: Operation | null;
   approval: Approval | null;
+  storageError: string | null;
 }
 
 export type RuntimeEvent = {

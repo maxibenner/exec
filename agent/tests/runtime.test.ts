@@ -291,13 +291,13 @@ test("manager runs conversations concurrently with independent cancellation/cont
     yield done;
   }]);
   const manager = new AgentManager();
-  const first = manager.create({ provider: firstProvider, model: "a", workspace: "/first" });
-  const second = manager.create({ provider: secondProvider, model: "b", workspace: "/second" });
+  const first = await manager.create({ provider: firstProvider, model: "a", workspace: "/first" });
+  const second = await manager.create({ provider: secondProvider, model: "b", workspace: "/second" });
   const a = first.submit("First conversation");
   const b = second.submit("Second conversation");
   await Promise.all([firstStarted.promise, secondStarted.promise]);
   assert.equal(manager.list().filter(row => row.operation?.state === "running").length, 2);
-  assert.throws(() => manager.delete(first.id), /active/);
+  await assert.rejects(manager.delete(first.id), /active/);
   first.cancel(a.operationID);
   assert.equal((await a.completion).state, "interrupted");
   assert.equal(second.busy, true);
@@ -305,6 +305,6 @@ test("manager runs conversations concurrently with independent cancellation/cont
   assert.equal((await b.completion).state, "completed");
   assert.deepEqual(secondProvider.requests[0]?.messages, [{ role: "user", text: "Second conversation" }]);
   assert.equal(firstProvider.requests.length, 1);
-  manager.delete(first.id);
+  await manager.delete(first.id);
   assert.deepEqual(manager.list().map(row => row.id), [second.id]);
 });

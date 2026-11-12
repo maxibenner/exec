@@ -11,19 +11,21 @@ npm test
 
 ## Current boundary
 
-The package implements the provider-neutral loop, an in-memory manager, and workspace file/shell tools. It is not yet a usable coding agent or the completion of milestone 1 in [the plan](../docs/cross-platform-agent-plan.md).
+The package implements the provider-neutral loop, a manager with optional durable JSON storage, restart recovery, and workspace file/shell tools. It is not yet a usable coding agent or the completion of milestone 1 in [the plan](../docs/cross-platform-agent-plan.md).
 
 - `src/core/types.ts`: provider, tool, context, approval, and event contracts.
 - `src/core/conversation.ts`: one conversation runner with streamed text, sequential tool execution, approvals, and cancellation.
 - `src/manager/agent-manager.ts`: owns multiple independent runners in one process.
 - `src/tools/`: bounded file operations, revision-checked edits, and approved shell execution.
-- `tests/`: fake-provider runtime tests and real filesystem/subprocess tests in temporary workspaces.
+- `src/storage/conversation-store.ts`: single-owner JSON profiles and atomic checkpoints.
+- `src/core/conversation-record.ts`: record validation and interrupted-state recovery.
+- `tests/`: fake-provider runtime tests, real filesystem/subprocess tests, and abrupt-process-exit recovery tests in temporary profiles.
 
-Still to implement: real provider adapters/authentication, durable storage/recovery, full shell-log retention, HTTP/SSE, and the CLI. No provider credentials are read. The Swift app remains unchanged.
+Still to implement: real provider adapters/authentication, full shell-log retention, HTTP/SSE, and the CLI. No provider credentials are read. The Swift app remains unchanged.
 
 ## Using the core
 
-Create an `AgentManager`, then call `create({ provider, model, workspace, tools })`. Subscribe to the returned conversation before calling `submit(text)` to observe all updates. Submission returns an operation ID and a completion promise; snapshots contain the transcript, latest operation, and pending approval.
+For in-memory use, create an `AgentManager`, then `await manager.create({ provider, model, workspace, tools })`. Subscribe to the returned conversation before calling `submit(text)` to observe all updates. Submission returns an operation ID and a completion promise; snapshots contain the transcript, latest operation, pending approval, and any latched storage error. The synchronous submission result is not a durable acceptance receipt; work first checkpoints asynchronously before inference begins.
 
 Use `resolveApproval(operationID, approvalID, approved)` and `cancel(operationID)` to act on that exact operation. Both return false for stale targets. Snapshots/events are copies; consumers cannot mutate execution state through them. Observer exceptions are isolated from execution, so observers must report their own failures.
 
@@ -53,6 +55,20 @@ File tools reject absolute/parent-traversal paths, validate path components, and
 
 Shells run in a separate POSIX process group. Cancellation/timeouts send TERM then KILL, and background jobs in the group are killed when the shell exits. Processes deliberately escaping the group are not contained; pipe cleanup is bounded and reports failure if necessary. Persistent background services are not supported through this tool. Shells use a small explicit environment, not the service's environment, so provider keys and shell startup injection variables are not automatically inherited. Unrestricted same-user shell access can still read same-user files/credentials.
 
+## Persistence and recovery
+
+Open a store with `await JsonConversationStore.open(absoluteProfileDirectory)`, then transfer it to `await AgentManager.open(store, saved => ({ provider, tools }))`. The factory supplies runtime dependencies for each saved model/workspace; providers, tools, credentials, and approval grants are never serialized. Opening does not call a provider or run a tool. Creation and deletion are asynchronous and confirm their durable change before resolving.
+
+Profiles contain one versioned `<conversation-id>.json` file per conversation, with no separate catalog. New directories use mode `0700`; checkpoints use `0600`, a same-directory temporary file, file synchronization, atomic rename, and directory synchronization. Writes are serialized, and reads validate schema, IDs, tool-call/result ordering, and a 16 MiB per-record limit. Corrupt, linked, or unsupported records fail startup rather than being silently discarded or overwritten. Keep the profile outside agent workspaces. This is local single-owner storage, not a hostile-filesystem sandbox or a shared/network database.
+
+The runtime checkpoints user input before inference, in-flight responses before opening streams, finalized tool calls, pending approval state, execution intent before each tool, and each tool result. Partial text is saved on the first delta and then at most once per second as deltas arrive; a crash can lose the unsaved tail. Terminal success is published only after its final checkpoint succeeds. Cancellation is accepted until final commit begins; final commit itself is not cancelled.
+
+Recovery marks unfinished operations/partial assistant messages interrupted and clears approvals. Missing results are filled explicitly: a saved execution intent means the action **may have had effects**; later calls are marked not executed. Neither inference nor tool execution is replayed. These results preserve valid context without pretending an interrupted action succeeded. Recovery itself is saved before the manager is returned.
+
+A failed checkpoint stops further work and blocks new submissions on that runner. The failure may have happened after a rename succeeded, so there is no automatic save/inference retry: close and reload to inspect the last durable record. A failed deletion similarly leaves its old runner closed until reload. `await manager.close()` requires all runs and catalog operations to have settled; cancel and await active runs first. Closed/deleted runner references cannot recreate their records.
+
+The profile's `.lock` directory prevents a second owner. An abrupt exit deliberately leaves it in place: the store never steals a lock based on its age or PID. Inspect `.lock/owner`, verify the old service and its tool processes have stopped, then explicitly remove **only that profile's `.lock` directory** before reopening. Restart recovery does not terminate shell processes orphaned by a service crash. Orphaned `.tmp` files are ignored, not promoted into conversation state. A future service host can provide a deliberate recovery command; there is no daemon or automatic lock recovery yet.
+
 ## Verification limits
 
-Tests use fake providers, isolated in-memory state, temporary files, and real local subprocesses. They do not establish live provider compatibility, credential security, crash recovery, or Linux support until run on that platform. No native UI or provider code has been changed.
+Tests use fake providers, isolated state, temporary files, real local subprocesses, and child processes exiting without cleanup at checkpoint boundaries. They verify application-process restart behavior, not machine power-loss/filesystem guarantees, live provider compatibility, or credential security. Linux behavior remains unverified until the suite is run there. No native UI or provider code has been changed.
