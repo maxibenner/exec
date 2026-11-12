@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ToolFailure } from "./tool-failure.ts";
+import { ProviderFailure } from "./provider-failure.ts";
 import { finishMissingResults, recoverRecord, type ConversationRecord } from "./conversation-record.ts";
 import type {
   Approval, ChatProvider, ContextMessage, ConversationSnapshot, Message, Operation,
@@ -203,7 +204,8 @@ export class Conversation {
       if (error instanceof CheckpointFailure) run.operation.error = storageFailure;
       else if (!signal.aborted) {
         // Provider errors can include credentials or raw responses. Do not export them.
-        run.operation.error = "Provider operation failed or returned an incomplete response. It was not retried.";
+        run.operation.error = error instanceof ProviderFailure ? error.message
+          : "Provider operation failed or returned an incomplete response. It was not retried.";
       }
     } finally {
       // A failed checkpoint can stop a round before every tool gets a result.

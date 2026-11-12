@@ -37,10 +37,18 @@ export type ProviderEvent =
   | { type: "tool_call"; call: ToolCall }
   | { type: "done" };
 
+export interface ChatModel {
+  id: string;
+  name: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+}
+
 export interface ChatProvider {
   // Adapters decode their own wire format and yield fully parsed tool calls.
   // They must honor cancellation and must not retry inference automatically.
   stream(request: ProviderRequest): AsyncIterable<ProviderEvent>;
+  models?(signal: AbortSignal): Promise<ChatModel[]>;
 }
 
 export interface ToolContext {

@@ -11,7 +11,7 @@ npm test
 
 ## Current boundary
 
-The package implements the provider-neutral loop, a manager with optional durable JSON storage, restart recovery, and workspace file/shell tools. It is not yet a usable coding agent or the completion of milestone 1 in [the plan](../docs/cross-platform-agent-plan.md).
+The package implements the provider-neutral loop, a concrete DeepSeek adapter, a manager with optional durable JSON storage, restart recovery, and workspace file/shell tools. It supports an end-to-end embedded workflow; there is no standalone service or CLI yet. Live provider compatibility remains unverified. See [the plan](../docs/cross-platform-agent-plan.md).
 
 - `src/core/types.ts`: provider, tool, context, approval, and event contracts.
 - `src/core/conversation.ts`: one conversation runner with streamed text, sequential tool execution, approvals, and cancellation.
@@ -19,9 +19,11 @@ The package implements the provider-neutral loop, a manager with optional durabl
 - `src/tools/`: bounded file operations, revision-checked edits, and approved shell execution.
 - `src/storage/conversation-store.ts`: single-owner JSON profiles and atomic checkpoints.
 - `src/core/conversation-record.ts`: record validation and interrupted-state recovery.
-- `tests/`: fake-provider runtime tests, real filesystem/subprocess tests, and abrupt-process-exit recovery tests in temporary profiles.
+- `src/providers/deepseek.ts`: DeepSeek request encoding, stream decoding, and model discovery.
+- `src/providers/response-stream.ts`: bounded SSE/JSON response reading, not an OpenAI compatibility layer.
+- `tests/`: fake-provider/HTTP tests, real filesystem/subprocess tests, and abrupt-process-exit recovery tests in temporary profiles.
 
-Still to implement: real provider adapters/authentication, full shell-log retention, HTTP/SSE, and the CLI. No provider credentials are read. The Swift app remains unchanged.
+Still to implement: credential onboarding, OpenAI subscription access, full shell-log retention, HTTP/SSE serving, and the CLI. Credential loading is caller-supplied; this package does not automatically read credential files, environment variables, or Keychain. The Swift app remains unchanged.
 
 ## Using the core
 
@@ -30,6 +32,29 @@ For in-memory use, create an `AgentManager`, then `await manager.create({ provid
 Use `resolveApproval(operationID, approvalID, approved)` and `cancel(operationID)` to act on that exact operation. Both return false for stale targets. Snapshots/events are copies; consumers cannot mutate execution state through them. Observer exceptions are isolated from execution, so observers must report their own failures.
 
 One conversation accepts one operation at a time, while different conversations run concurrently. Cancellation requests cooperative cleanup and does not release conversation ownership until the active provider/tool finishes unwinding. Adapters must honor their abort signal. A noncooperative adapter can keep a conversation busy; this is not process isolation or a sandbox.
+
+## DeepSeek provider
+
+`DeepSeekProvider` is a concrete provider, not a configurable OpenAI-compatible backend. It uses the fixed `https://api.deepseek.com` origin for `/chat/completions` and `/models`, with Node's native fetch by default. Supply a host-owned credential function:
+
+```ts
+import { DeepSeekProvider } from "./src/providers/deepseek.ts";
+
+// loadDeepSeekKey(signal) is supplied by the embedding application.
+const provider = new DeepSeekProvider({ getAPIKey: loadDeepSeekKey });
+const models = await provider.models(new AbortController().signal);
+// Pass provider and a selected model ID to manager.create().
+```
+
+The credential source and any injected HTTP transport must honor their abort signal. Late credential results are checked before sending a request. Credentials are not placed in conversation state or model metadata. The adapter does not manage sign-in, store keys, discover models implicitly, or retry failed requests. Redirects, ambient cookies, and caching are disabled; errors use fixed safe diagnostics rather than response bodies or raw transport errors.
+
+This initial implementation supports **text and function/tool calls in non-thinking mode**. It explicitly sends `thinking: { type: "disabled" }` and `reasoning_effort: "none"`; unexpected reasoning content fails rather than being silently discarded. Thinking/reasoning-context persistence, images, and usage/balance reporting are not implemented. Discovery returns model IDs/names and available context/output limits, not promises that every advertised model capability is supported by this adapter.
+
+Text is streamed immediately; fragmented tool calls are assembled and validated before release. Only a supported finish reason followed by `[DONE]` completes a response. Truncated, malformed, duplicate, inconsistent, or oversized calls cannot execute. Tool outcome markers preserve denied/failed/interrupted state in the provider's textual tool results. All per-request state is local, allowing one provider instance to serve concurrent conversations without sharing cancellation or response context.
+
+Limits: 120-second request deadline by default (configurable through `timeoutMs`, up to 900 seconds), 16 MiB request/stream bounds, 256 KiB SSE events, 4 MiB response text, 64 calls with 32 KiB argument JSON each, and 128 KiB model discovery responses. There is no automatic reconnect, parameter fallback, or inference retry.
+
+Protocol references: [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) and [Lists Models](https://api-docs.deepseek.com/api/list-models/). Tests use synthetic responses, not a live compatibility check.
 
 ## Provider and tool contracts
 
@@ -71,4 +96,4 @@ The profile's `.lock` directory prevents a second owner. An abrupt exit delibera
 
 ## Verification limits
 
-Tests use fake providers, isolated state, temporary files, real local subprocesses, and child processes exiting without cleanup at checkpoint boundaries. They verify application-process restart behavior, not machine power-loss/filesystem guarantees, live provider compatibility, or credential security. Linux behavior remains unverified until the suite is run there. No native UI or provider code has been changed.
+Tests use fake providers and HTTP transports, isolated state, temporary files, real local subprocesses, and child processes exiting without cleanup at checkpoint boundaries. They verify application-process restart behavior and a complete DeepSeek-shaped request/tool/persistence workflow, not machine power-loss/filesystem guarantees, live provider compatibility, or credential security. Linux behavior remains unverified until the suite is run there. No native UI or Swift provider code has been changed.
