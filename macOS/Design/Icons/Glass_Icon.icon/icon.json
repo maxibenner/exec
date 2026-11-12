@@ -4,12 +4,6 @@
       "value" : {
         "solid" : "display-p3:0.06665,0.06665,0.06665,1.00000"
       }
-    },
-    {
-      "appearance" : "dark",
-      "value" : {
-        "solid" : "display-p3:0.06665,0.06665,0.06665,1.00000"
-      }
     }
   ],
   "groups" : [
@@ -17,58 +11,34 @@
       "hidden" : false,
       "layers" : [
         {
-          "blend-mode-specializations" : [
-            {
-              "appearance" : "dark",
-              "value" : "normal"
-            }
-          ],
-          "fill-specializations" : [
-            {
-              "value" : "none"
-            },
-            {
-              "appearance" : "dark",
-              "value" : "none"
-            }
-          ],
-          "glass" : true,
+          "glass" : false,
           "hidden" : false,
-          "image-name" : "green-line.svg",
-          "name" : "green-line",
+          "image-name" : "Exec.png",
+          "name" : "Exec",
           "opacity-specializations" : [
             {
-              "value" : 1
-            },
-            {
-              "appearance" : "dark",
               "value" : 1
             }
           ],
           "position" : {
             "scale" : 1,
-            "translation-in-points" : [
-              0,
-              -22
-            ]
+            "translation-in-points" : [0, 0]
           }
         }
       ],
-      "name" : "Group",
+      "name" : "Exec",
       "shadow" : {
         "kind" : "neutral",
-        "opacity" : 0.5
+        "opacity" : 0
       },
       "translucency" : {
-        "enabled" : true,
-        "value" : 0.3
+        "enabled" : false,
+        "value" : 0
       }
     }
   ],
   "supported-platforms" : {
-    "circles" : [
-      "watchOS"
-    ],
+    "circles" : ["watchOS"],
     "squares" : "shared"
   }
 }

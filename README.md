@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="macOS/Resources/Glass_Icon.png" alt="Exec glass app icon" width="64" height="64">
+  <img src="macOS/Resources/Glass_Icon.png" alt="Exec app icon" width="80" height="80">
 </p>
 
 # Exec
