@@ -102,9 +102,9 @@ import Observation
                 ("app.js", "text/javascript; charset=utf-8"),
                 ("style.css", "text/css; charset=utf-8"),
                 ("manifest.webmanifest", "application/manifest+json; charset=utf-8"),
-                ("icon-180.png", "image/png"),
-                ("icon-192.png", "image/png"),
-                ("icon-512.png", "image/png")
+                ("exec-icon-180.png", "image/png"),
+                ("exec-icon-192.png", "image/png"),
+                ("exec-icon-512.png", "image/png")
             ] {
                 let body = try Data(contentsOf: assetDirectory.appendingPathComponent(name))
                 assets[name == "index.html" ? "/" : "/" + name] = RemoteHTTPResponse(contentType: type, body: body)

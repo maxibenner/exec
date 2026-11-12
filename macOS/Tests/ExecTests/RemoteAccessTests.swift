@@ -462,11 +462,19 @@ import WebKit
         try expect(response.value(forHTTPHeaderField: "Content-Security-Policy")?.contains("manifest-src 'self'") == true)
         let (manifest, manifestResponse) = try await get("/manifest.webmanifest", port: port)
         try expect(manifestResponse.statusCode == 200 && manifestResponse.mimeType == "application/manifest+json")
-        try expect((try JSONSerialization.jsonObject(with: manifest) as? [String: Any])?["display"] as? String == "standalone")
-        for name in ["icon-180.png", "icon-192.png", "icon-512.png"] {
-            let (icon, iconResponse) = try await get("/\(name)", port: port)
+        let pageHTML = String(decoding: page, as: UTF8.self)
+        try expect(pageHTML.contains("rel=\"apple-touch-icon\" href=\"/exec-icon-180.png\""))
+        try expect(pageHTML.contains("rel=\"icon\" type=\"image/png\" sizes=\"192x192\" href=\"/exec-icon-192.png\""))
+        let manifestJSON = try JSONSerialization.jsonObject(with: manifest) as? [String: Any]
+        try expect(manifestJSON?["display"] as? String == "standalone")
+        let manifestIcons = manifestJSON?["icons"] as? [[String: String]]
+        try expect(manifestIcons?.map { $0["src"] } == ["/exec-icon-192.png", "/exec-icon-512.png"])
+        for size in [180, 192, 512] {
+            let (icon, iconResponse) = try await get("/exec-icon-\(size).png", port: port)
             try expect(iconResponse.statusCode == 200 && iconResponse.mimeType == "image/png")
             try expect(icon.starts(with: [0x89, 0x50, 0x4e, 0x47]))
+            let bitmap = NSBitmapImageRep(data: icon)
+            try expect(bitmap?.pixelsWide == size && bitmap?.pixelsHigh == size)
         }
         let (_, catalog) = try await get("/api/conversations", port: port)
         try expect(catalog.statusCode == 200)
