@@ -11,7 +11,7 @@ npm test
 
 ## Current boundary
 
-The package implements the provider-neutral loop, a concrete DeepSeek adapter, a manager with optional durable JSON storage, restart recovery, and workspace file/shell tools. It supports an end-to-end embedded workflow; there is no standalone service or CLI yet. Live provider compatibility remains unverified. See [the plan](../docs/cross-platform-agent-plan.md).
+The package implements the provider-neutral loop, a concrete DeepSeek adapter, a manager with durable JSON storage, restart recovery, workspace file/shell tools, a local HTTP service, and an API-backed CLI. The service currently starts through a provider-injected host function; a credential-configured standalone launcher is still pending. Live provider compatibility remains unverified. See [the plan](../docs/cross-platform-agent-plan.md) and [the local API/CLI guide](API.md).
 
 - `src/core/types.ts`: provider, tool, context, approval, and event contracts.
 - `src/core/conversation.ts`: one conversation runner with streamed text, sequential tool execution, approvals, and cancellation.
@@ -21,9 +21,12 @@ The package implements the provider-neutral loop, a concrete DeepSeek adapter, a
 - `src/core/conversation-record.ts`: record validation and interrupted-state recovery.
 - `src/providers/deepseek.ts`: DeepSeek request encoding, stream decoding, and model discovery.
 - `src/providers/response-stream.ts`: bounded SSE/JSON response reading, not an OpenAI compatibility layer.
-- `tests/`: fake-provider/HTTP tests, real filesystem/subprocess tests, and abrupt-process-exit recovery tests in temporary profiles.
+- `src/service/`: versioned HTTP/NDJSON API over a private Unix socket, durable host composition, and orderly shutdown.
+- `src/client/`: transport-only API client and terminal transcript rendering.
+- `src/entrypoints/cli.ts`: interactive chat and scriptable commands; no agent loop or provider imports.
+- `tests/`: fake-provider/HTTP tests, real socket/CLI/filesystem/subprocess tests, and abrupt-process-exit recovery tests in temporary profiles.
 
-Still to implement: credential onboarding, OpenAI subscription access, full shell-log retention, HTTP/SSE serving, and the CLI. Credential loading is caller-supplied; this package does not automatically read credential files, environment variables, or Keychain. The Swift app remains unchanged.
+Still to implement: credential onboarding/loading and a standalone service launcher, OpenAI subscription access, full shell-log retention, authenticated remote serving, and Swift client integration. Credential loading is caller-supplied; this package does not automatically read credential files, environment variables, or Keychain. The Swift app remains unchanged.
 
 ## Using the core
 
