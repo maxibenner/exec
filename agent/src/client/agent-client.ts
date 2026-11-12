@@ -1,6 +1,10 @@
 import { request, type IncomingMessage } from "node:http";
-import { APIError, type ConversationSummary, type ServiceEvent } from "../service/protocol.ts";
-import type { ChatModel, ConversationSnapshot } from "../core/types.ts";
+import {
+  APIError, type ServiceEvent, type HealthResponse, type ModelsResponse, type ListConversationsResponse,
+  type CreateConversationRequest, type CreateConversationResponse, type GetConversationResponse,
+  type SubmitTurnRequest, type SubmitTurnResponse, type CancelOperationRequest, type CancelOperationResponse,
+  type ResolveApprovalRequest, type ResolveApprovalResponse,
+} from "../service/protocol.ts";
 
 const maxResponse = 32 * 1024 * 1024;
 const base = "/v1/conversations";
@@ -50,15 +54,21 @@ export class AgentClient {
     const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
     return await this.read(await this.open(method, route, value, combined)) as T;
   }
-  health(): Promise<{ version: number; toolsEnabled: boolean }> { return this.call("GET", "/v1/health"); }
-  models(): Promise<ChatModel[]> { return this.call("GET", "/v1/models"); }
-  list(): Promise<ConversationSummary[]> { return this.call("GET", base); }
-  create(model: string, workspace: string): Promise<ConversationSnapshot> { return this.call("POST", base, { model, workspace }); }
-  get(id: string): Promise<ConversationSnapshot> { return this.call("GET", path(id)); }
-  submit(id: string, text: string): Promise<{ operationID: string }> { return this.call("POST", `${path(id)}/turns`, { text }); }
-  cancel(id: string, operationID: string): Promise<{ cancelled: boolean }> { return this.call("POST", `${path(id)}/cancel`, { operationID }); }
-  approve(id: string, operationID: string, approvalID: string, approved: boolean): Promise<{ resolved: boolean }> {
-    return this.call("POST", `${path(id)}/approvals`, { operationID, approvalID, approved });
+  health(): Promise<HealthResponse> { return this.call("GET", "/v1/health"); }
+  models(): Promise<ModelsResponse> { return this.call("GET", "/v1/models"); }
+  list(): Promise<ListConversationsResponse> { return this.call("GET", base); }
+  create(model: string, workspace: string): Promise<CreateConversationResponse> {
+    return this.call("POST", base, { model, workspace } satisfies CreateConversationRequest);
+  }
+  get(id: string): Promise<GetConversationResponse> { return this.call("GET", path(id)); }
+  submit(id: string, text: string): Promise<SubmitTurnResponse> {
+    return this.call("POST", `${path(id)}/turns`, { text } satisfies SubmitTurnRequest);
+  }
+  cancel(id: string, operationID: string): Promise<CancelOperationResponse> {
+    return this.call("POST", `${path(id)}/cancel`, { operationID } satisfies CancelOperationRequest);
+  }
+  approve(id: string, operationID: string, approvalID: string, approved: boolean): Promise<ResolveApprovalResponse> {
+    return this.call("POST", `${path(id)}/approvals`, { operationID, approvalID, approved } satisfies ResolveApprovalRequest);
   }
 
   async *events(id: string, signal?: AbortSignal): AsyncGenerator<ServiceEvent> {

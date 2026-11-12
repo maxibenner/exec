@@ -120,15 +120,23 @@ Bodies use `Content-Type: application/json`, with no unknown fields. Requests ar
 |---|---|---|
 | GET | `/v1/health` | `{ version: 1, toolsEnabled: boolean }` |
 | GET | `/v1/models` | Neutral `ChatModel[]`; explicit provider discovery |
-| GET | `/v1/conversations` | Summary array: ID, model, workspace, latest operation, storage error; no messages/approval descriptions |
+| GET | `/v1/conversations` | Summary array: ID, model, workspace, latest operation, active tool call ID, storage error; no messages/approval descriptions |
 | POST | `/v1/conversations` | `{ model, workspace }` → `201 ConversationSnapshot`, after durable creation |
 | GET | `/v1/conversations/:id` | `ConversationSnapshot` |
 | GET | `/v1/conversations/:id/events` | Live NDJSON, described below |
 | POST | `/v1/conversations/:id/turns` | `{ text }` → `202 { operationID }` |
-| POST | `/v1/conversations/:id/cancel` | `{ operationID }` → `202 { cancelled: true }` |
+| POST | `/v1/conversations/:id/cancel` | `{ operationID }` → `202 { accepted: true, operationID }` |
 | POST | `/v1/conversations/:id/approvals` | `{ operationID, approvalID, approved: boolean }` → `{ resolved: true }` |
 
-Missing conversations return 404; invalid requests 400; busy/storage-blocked submissions and stale approvals/cancellations 409. Cancellation acceptance is not completion; observe the terminal operation. Approvals resolve exactly once, including when clients race.
+Missing conversations return 404; invalid requests 400; busy/storage-blocked submissions and stale approvals/cancellations 409. Cancellation acceptance is not completion; observe the terminal operation. The acknowledgment echoes the exact operation whose cancellation was accepted, even if it settles before the response reaches the client. Approvals resolve exactly once, including when clients race.
+
+**Early-v1 contract change:** cancellation now returns `{ accepted: true, operationID }`, not `{ cancelled: true }`. Upgrade/restart the service and CLI together. The old field is intentionally not retained; it incorrectly suggested execution had already stopped. The new snapshot field and tool events below do not change the durable record format.
+
+All command bodies and endpoint results, including errors, are named in `src/service/protocol.ts`. The server uses the shared command decoders and typed responses; the client uses those same request/result types. Non-text event snapshots are required by the shared event union. These are TypeScript contracts and server-side command validators, **not** a generated cross-language schema or comprehensive client-side response validation. Add that boundary before maintaining a separate Swift protocol implementation.
+
+### Approval policy without a connected client
+
+An approval-required action stays in `awaiting_approval` until an explicit, matching approval/denial or cancellation arrives. No connected/capable approving client is required to keep the prompt pending, and there is no automatic expiry. Disconnecting neither approves nor rejects it. Reconnecting clients receive the same pending approval and can resolve it once. This deliberately favors reconnectable work over rejecting commands whenever a client is absent. Service shutdown interrupts pending work; restart never restores an approval grant.
 
 **Turn acceptance is in-memory, not a durable receipt.** The runtime persists the input before inference, but a `202` may precede that checkpoint. A lost response can also happen after inference or tools started. No idempotent submission/replay mechanism is advertised: reconnect, inspect the snapshot, and make an explicit decision. Terminal success is emitted only after its final checkpoint succeeds. Intermediate streaming snapshots are not durability acknowledgments.
 
@@ -148,6 +156,19 @@ curl --no-buffer --unix-socket "$HOME/.exec-agent/service.sock" \
 2. Subsequent frames are `{ type: "runtime", event: RuntimeEvent, snapshot?: ConversationSnapshot }`.
 3. Text events contain `messageID` and `delta`; append that delta to that message's text.
 4. Non-text events carry a complete snapshot; replace/reconcile state, do not append its transcript again.
+
+Snapshots and conversation summaries include `activeToolCallID: string | null`. A non-null ID identifies the executor currently owned by the operation, including cancellation cleanup. Resolve it against the assistant's finalized `calls` in a full snapshot. It is null while awaiting approval, preparing an action, or saving execution intent, and after executor settlement. Thus null does **not** mean the entire operation is idle. This live field is never restored from a saved intent: after restart, work is interrupted and active tool ownership is null.
+
+Tool lifecycle events include the usual `conversationID` and `operationID`, plus:
+
+| Event | Fields | Meaning |
+|---|---|---|
+| `tool_started` | `callID` | The executor has been invoked, after required approval and a successful intent checkpoint. No claim that effects succeeded. |
+| `tool_finished` | `callID`, `messageID`, `outcome` | A final tool-result message exists and the executor, if any, has settled. The snapshot's active tool field is null. |
+
+Every finalized call receives one `tool_finished` event during normal runtime finalization, including denied, failed-preparation, interrupted, and not-executed calls. Calls that never enter their executor have **no** `tool_started` event. `outcome` is `completed`, `denied`, `failed`, `interrupted`, or `not_executed`; “finished” does not mean success. A failed checkpoint can finalize remaining calls as not executed without starting them. Abrupt process exit cannot guarantee delivery; reconnect/recovery uses snapshots rather than replaying these events.
+
+Neither tool lifecycle event is a durable acknowledgment. The result event can precede its checkpoint; only terminal operation success confirms the final checkpoint. Cancellation cannot undo effects: a tool whose successful result was already published remains completed even if its containing operation is subsequently interrupted. Cancellation at the executor/result handoff is conservatively recorded as interrupted with possible effects. Existing `message` events still accompany tool-result messages; clients should reconcile by message ID, not append twice.
 
 The subscription and initial snapshot are established synchronously, with no update gap. There is no event replay buffer, cursor, heartbeat, or automatic reconnect. A new connection always starts from the current snapshot, including any pending approval. Streams remain open after a terminal operation to observe future turns. Slow observers are disconnected when the queued response exceeds 1 MiB before the next frame; one frame can be larger than that threshold. This cannot block inference or trigger a retry. Clients bound individual responses/frames to 32 MiB and must explicitly reconnect after interruption.
 

@@ -45,7 +45,8 @@ export class Conversation {
   private operation: Operation | null = null;
   private pending: PendingApproval | undefined;
   private readonly persist: ConversationOptions["checkpoint"];
-  private executingToolID: string | null = null;
+  private executingToolID: string | null = null; // Durable intent, not proof of execution.
+  private activeToolCallID: string | null = null; // Live executor ownership only.
   private storageError: string | null = null;
   private disposed = false;
 
@@ -110,7 +111,7 @@ export class Conversation {
     return structuredClone({
       id: this.id, model: this.model, workspace: this.workspace,
       messages: this.messages, operation: this.operation, approval: this.pending?.value ?? null,
-      storageError: this.storageError,
+      activeToolCallID: this.activeToolCallID, storageError: this.storageError,
     });
   }
 
@@ -168,6 +169,10 @@ export class Conversation {
 
   private changed(run: ActiveRun, message: Message): void {
     this.emit({ type: "message", conversationID: this.id, operationID: run.operation.id, messageID: message.id });
+    if (message.role === "tool") {
+      this.emit({ type: "tool_finished", conversationID: this.id, operationID: run.operation.id,
+        callID: message.callID, messageID: message.id, outcome: message.outcome });
+    }
   }
 
   private context(): ContextMessage[] {
@@ -209,9 +214,12 @@ export class Conversation {
       }
     } finally {
       // A failed checkpoint can stop a round before every tool gets a result.
+      const previousLength = this.messages.length;
       finishMissingResults(this.messages, this.executingToolID);
       this.executingToolID = null;
+      this.activeToolCallID = null;
       run.finishing = true;
+      for (const result of this.messages.slice(previousLength)) this.changed(run, result);
       if (!this.storageError) {
         try { await this.checkpoint(terminal); } catch { /* Latched below; never automatically retry a write. */ }
       }
@@ -300,7 +308,15 @@ export class Conversation {
               await this.checkpoint(); // Durable intent before any possible side effect.
               signal.throwIfAborted();
               started = true;
-              text = await prepared.execute();
+              this.activeToolCallID = call.id;
+              let execution: Promise<string>;
+              try { execution = prepared.execute(); }
+              finally {
+                // Publish only after entering the executor, even if it throws
+                // synchronously. Observer cancellation cannot prevent that entry.
+                this.emit({ type: "tool_started", conversationID: this.id, operationID: run.operation.id, callID: call.id });
+              }
+              text = await execution;
               signal.throwIfAborted();
               outcome = "completed";
             }
@@ -317,7 +333,7 @@ export class Conversation {
               : started
                 ? "Action failed or was interrupted after execution began; it may have had effects. Do not retry without a new user request."
                 : "Action did not execute. Preparation failed or the operation was interrupted. Do not retry without a new user request.";
-          }
+          } finally { this.activeToolCallID = null; }
         }
       }
       const result: Message = { id: randomUUID(), role: "tool", callID: call.id, text, outcome };

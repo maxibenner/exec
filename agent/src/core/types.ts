@@ -93,6 +93,9 @@ export interface ConversationSnapshot {
   messages: Message[];
   operation: Operation | null;
   approval: Approval | null;
+  // Live executor ownership, including cancellation cleanup. Never restored from
+  // durable execution intent; resolve the ID against the assistant tool calls.
+  activeToolCallID: string | null;
   storageError: string | null;
 }
 
@@ -104,4 +107,8 @@ export type RuntimeEvent = {
   | { type: "message"; messageID: string }
   | { type: "text"; messageID: string; delta: string }
   | { type: "approval"; approvalID: string | null }
+  | { type: "tool_started"; callID: string }
+  // Every finalized call gets one result, even if it never started. finished is
+  // an observation of settlement, not success or a durable checkpoint receipt.
+  | { type: "tool_finished"; callID: string; messageID: string; outcome: ToolOutcome }
 );

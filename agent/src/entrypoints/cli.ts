@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { AgentClient } from "../client/agent-client.ts";
 import { followConversation, terminalText, Transcript } from "../client/terminal.ts";
-import { activeOperation } from "../service/protocol.ts";
+import { activeOperation, type SubmitTurnResponse } from "../service/protocol.ts";
 import { serve } from "./serve.ts";
 
 const help = `Exec agent CLI (local service client)
@@ -84,7 +84,7 @@ async function main(): Promise<void> {
   const readline = command === "chat" ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
   let question: AbortController | undefined;
   let signalling = false;
-  let submitting: Promise<{ operationID: string }> | undefined;
+  let submitting: Promise<SubmitTurnResponse> | undefined;
   const ask = async (prompt: string): Promise<string | undefined> => {
     question = new AbortController();
     try { return await readline!.question(prompt, { signal: AbortSignal.any([question.signal, lifetime.signal]) }); }

@@ -36,6 +36,8 @@ For in-memory use, create an `AgentManager`, then `await manager.create({ provid
 
 Use `resolveApproval(operationID, approvalID, approved)` and `cancel(operationID)` to act on that exact operation. Both return false for stale targets. Snapshots/events are copies; consumers cannot mutate execution state through them. Observer exceptions are isolated from execution, so observers must report their own failures.
 
+Snapshots expose `activeToolCallID` while an executor is owned, including cancellation cleanup—not while waiting for approval or saving intent. `tool_started` announces executor entry; `tool_finished` identifies the result message and outcome, including calls that never executed. Neither event is a durability receipt. Live tool ownership is never restored after restart. With no approving client connected, an approval stays pending until explicitly resolved or cancelled; disconnecting is never permission to proceed. See [the API contract](API.md#streaming-contract) for event reconciliation and cancellation acknowledgments.
+
 One conversation accepts one operation at a time, while different conversations run concurrently. Cancellation requests cooperative cleanup and does not release conversation ownership until the active provider/tool finishes unwinding. Adapters must honor their abort signal. A noncooperative adapter can keep a conversation busy; this is not process isolation or a sandbox.
 
 ## DeepSeek provider

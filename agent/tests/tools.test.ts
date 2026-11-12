@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import { Conversation } from "../src/core/conversation.ts";
-import type { Approval, ChatProvider, Json, ProviderRequest } from "../src/core/types.ts";
+import type { Approval, ChatProvider, Json, ProviderRequest, RuntimeEvent, Tool } from "../src/core/types.ts";
 import { createWorkspaceTools } from "../src/tools/index.ts";
 import { OUTPUT_LIMIT, revision } from "../src/tools/workspace.ts";
 
@@ -308,3 +308,60 @@ test("runtime denial never starts a real shell command", { timeout: 5000 }, asyn
   assert.ok(result?.role === "tool");
   assert.equal(result.outcome, "denied");
 });
+
+for (const boundary of ["executor return", "result publication"] as const) {
+  test(`cancellation at real shell ${boundary} preserves effects and does not repeat execution`, { timeout: 5000 }, async t => {
+    const root = await workspace(t);
+    let requests = 0, executions = 0;
+    let shellResult = "";
+    let cancellationAccepted = false;
+    const events: RuntimeEvent[] = [];
+    const provider: ChatProvider = { async *stream() {
+      requests++;
+      yield { type: "tool_call", call: { id: "shell", name: "shell", arguments: {
+        command: "printf effect >> effects; printf '%s' $$ > shell.pid", timeout_seconds: 2,
+      } } };
+      yield { type: "done" };
+    } };
+    const shell = createWorkspaceTools().find(tool => tool.definition.name === "shell")!;
+    // Interpose only at the handoff after the REAL shell has exited/cleaned up.
+    // This deterministically covers both sides of result publication, rather
+    // than relying on a sleep to guess when a child happens to exit.
+    const wrapped: Tool = { definition: shell.definition, async prepare(args, context) {
+      const prepared = await shell.prepare(args, context);
+      return { approval: prepared.approval, async execute() {
+        executions++;
+        shellResult = await prepared.execute();
+        if (boundary === "executor return") cancellationAccepted = conversation.cancel(run.operationID);
+        return shellResult;
+      } };
+    } };
+    const conversation = new Conversation({ provider, model: "fake", workspace: root, tools: [wrapped] });
+    conversation.subscribe(event => {
+      events.push(event);
+      if (boundary === "result publication" && event.type === "tool_finished") {
+        cancellationAccepted = conversation.cancel(event.operationID);
+      }
+    });
+    const pending = nextApproval(conversation);
+    const run = conversation.submit("Run once");
+    t.after(async () => { conversation.cancel(run.operationID); await run.completion; });
+    const approval = await pending;
+    conversation.resolveApproval(run.operationID, approval.id, true);
+    assert.equal((await run.completion).state, "interrupted");
+    assert.equal(cancellationAccepted, true);
+    assert.match(shellResult, /^Exit code: 0/);
+    assert.equal(await readFile(join(root, "effects"), "utf8"), "effect");
+    const pid = Number(await readFile(join(root, "shell.pid"), "utf8"));
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    assert.equal(requests, 1);
+    assert.equal(executions, 1);
+    assert.equal(events.filter(event => event.type === "tool_started").length, 1);
+    const finished = events.filter(event => event.type === "tool_finished");
+    assert.equal(finished.length, 1);
+    assert.equal(finished[0]?.outcome, boundary === "executor return" ? "interrupted" : "completed");
+    assert.equal(conversation.snapshot().activeToolCallID, null);
+    assert.equal(conversation.busy, false);
+    assert.equal(conversation.cancel(run.operationID), false, "late cancellation cannot rewrite the terminal result");
+  });
+}

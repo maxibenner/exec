@@ -130,6 +130,22 @@ for (const approved of [true, false]) {
     const approval = pending.approval!;
     assert.equal(executed, 0);
     assert.equal(approval.description, "Exact test effect");
+    // until() detached its only observer. No approving client is registered or
+    // required to remain connected; absence means keep waiting, never execute.
+    assert.equal((await client.get(conversation.id)).operation?.state, "awaiting_approval");
+    const reconnect = client.events(conversation.id);
+    const initial = (await reconnect.next()).value;
+    await reconnect.return(undefined);
+    assert.equal(initial?.snapshot?.approval?.id, approval.id);
+    assert.equal(initial?.snapshot?.activeToolCallID, null);
+    assert.equal(executed, 0);
+    await assert.rejects(client.call("POST", `/v1/conversations/${conversation.id}/cancel`, {
+      operationID: approval.operationID, unexpected: true,
+    }), status(400));
+    await assert.rejects(client.call("POST", `/v1/conversations/${conversation.id}/approvals`, {
+      operationID: approval.operationID, approvalID: approval.id, approved: true, unexpected: true,
+    }), status(400));
+    assert.equal((await client.get(conversation.id)).approval?.id, approval.id);
     await assert.rejects(client.approve(conversation.id, randomUUID(), approval.id, true), status(409));
     await assert.rejects(client.approve(conversation.id, approval.operationID, randomUUID(), true), status(409));
     await client.approve(conversation.id, approval.operationID, approval.id, approved);
@@ -328,4 +344,62 @@ test("an attached client receives live deltas before terminal completion", { tim
   assert.equal((await client.get(conversation.id)).operation?.state, "running");
   finish.release();
   assert.equal((await observed).messages.at(-1)?.text, deltas);
+});
+
+test("API exposes tool entry, reconnect ownership, cancellation acceptance and settled results", { timeout: 10000 }, async t => {
+  const cleanup = gate();
+  t.after(() => cleanup.release()); // Release before setup's service-close hook, even on assertion failure.
+  let inference = 0;
+  const provider: ChatProvider = { async *stream() {
+    inference++;
+    yield { type: "tool_call", call: { id: "effect-1", name: "effect", arguments: {} } };
+    yield { type: "done" };
+  } };
+  const tool: Tool = { definition: { name: "effect", description: "Test cleanup", parameters: {} }, async prepare() {
+    return { approval: "Exact action", async execute() { await cleanup.promise; return "settled"; } };
+  } };
+  const { root, client } = await setup(t, provider, [tool]);
+  const conversation = await client.create("fake", root);
+  const run = await client.submit(conversation.id, "Act");
+  const pending = await until(client, conversation.id, snapshot => !!snapshot.approval);
+  const observer = client.events(conversation.id, AbortSignal.timeout(5000));
+  await observer.next();
+  const observed = (async () => {
+    const frames = [];
+    for await (const frame of observer) {
+      frames.push(frame);
+      if (frame.snapshot?.operation?.state === "interrupted") return frames;
+    }
+    throw new Error("Missing terminal frame");
+  })();
+  await client.approve(conversation.id, run.operationID, pending.approval!.id, true);
+  await until(client, conversation.id, snapshot => snapshot.activeToolCallID === "effect-1");
+  const reconnect = new AgentClient(profileSocket(root)).events(conversation.id);
+  const current = (await reconnect.next()).value;
+  await reconnect.return(undefined);
+  assert.equal(current?.snapshot?.activeToolCallID, "effect-1");
+  assert.equal(current?.snapshot?.approval, null);
+  assert.deepEqual(await client.cancel(conversation.id, run.operationID), { accepted: true, operationID: run.operationID });
+  const cancelling = await client.get(conversation.id);
+  assert.equal(cancelling.operation?.state, "cancelling");
+  assert.equal(cancelling.activeToolCallID, "effect-1", "acceptance is not cleanup completion");
+  await assert.rejects(client.submit(conversation.id, "Too early"), status(409));
+  cleanup.release();
+  const frames = await observed;
+  const starts = frames.filter(frame => frame.type === "runtime" && frame.event.type === "tool_started");
+  const finishes = frames.filter(frame => frame.type === "runtime" && frame.event.type === "tool_finished");
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0]?.snapshot?.activeToolCallID, "effect-1");
+  assert.equal(finishes.length, 1);
+  assert.equal(finishes[0]?.snapshot?.activeToolCallID, null);
+  const final = await client.get(conversation.id);
+  const result = final.messages.find(message => message.role === "tool")!;
+  assert.deepEqual(finishes[0]?.type === "runtime" ? finishes[0].event : null, {
+    type: "tool_finished", conversationID: conversation.id, operationID: run.operationID,
+    callID: "effect-1", messageID: result.id, outcome: "interrupted",
+  });
+  assert.equal(final.activeToolCallID, null);
+  assert.equal(final.operation?.state, "interrupted");
+  assert.equal(inference, 1);
+  await assert.rejects(client.cancel(conversation.id, run.operationID), status(409));
 });
