@@ -8,7 +8,7 @@ This is greenfield. The Swift app is a reference for eventual functionality, not
 
 ## Keep the structure small
 
-Start in `agent/` with one package and one service process. These are module boundaries, not separate services:
+Start in `agent/` with one package and one service process. Multiple conversations can run concurrently, each with its own context, operation, approval, and cancellation state; initially allow one active operation per conversation. These are module boundaries, not separate services:
 
 - **Runtime:** provider calls, streaming, the agent/tool loop, context, approvals, and cancellation.
 - **Manager:** conversations, workspaces, configuration, persistence, and credential ownership.
@@ -29,7 +29,7 @@ Do not introduce a plugin framework, distributed architecture, generic backend s
 - Never automatically retry inference, side-effecting tools, or rotating-token exchanges after ambiguous outcomes.
 - One owner manages mutable conversation state and credentials. Do not duplicate the agent loop or transcript storage across layers.
 - Client disconnects do not implicitly cancel work. Restarted services do not automatically resume interrupted actions.
-- Credentials stay on the runtime host, out of logs and client responses. Preserve Keychain on macOS; explicitly choose the Linux storage approach before using real credentials.
+- Use a private JSON credential file or environment variables on both macOS and Linux; no Keychain dependency. Persist rotating OAuth credentials in JSON; allow API keys through environment variables without saving them. Keep credential files outside workspaces with owner-only permissions and safe writes. Never commit secrets, log them, return them to clients, or automatically pass them into tool subprocesses.
 - Bind locally by default and authenticate API access. Remote exposure requires authenticated HTTPS ingress; workspace selection is not a sandbox.
 
 ## 1. Working runtime and persistence
@@ -94,7 +94,7 @@ Record explicit deferrals instead of claiming parity prematurely. Windows suppor
 
 ## Verification and next action
 
-Keep tests focused on approvals, cancellation, conversation integrity, authentication, and error recovery. Use fake transports, temporary workspaces, and isolated credential stores—not the user's Keychain or live model calls. Manual provider, signing, and deployment checks remain separate from mock verification.
+Keep tests focused on approvals, cancellation, conversation integrity, authentication, and error recovery. Use fake transports, temporary workspaces, and isolated credential files/environment variables—not real user credentials or live model calls. Manual provider and deployment checks remain separate from mock verification.
 
 Consult `ChatStore`, `ChatLibrary`, `ChatProvider`, tools, providers, and existing regression tests for lessons and behavior. Do not translate their structure mechanically.
 
