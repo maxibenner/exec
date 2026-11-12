@@ -26,7 +26,7 @@
 - Design for straightforward extension through small, explicit interfaces and composition. Introduce plugin/skill infrastructure only when a concrete feature needs it—not speculative scaffolding.
 - UI and orchestration depend on `ChatProvider`, not OpenAI wire formats.
 - Provider-specific authentication, model discovery and opaque response context stay in `Providers/`.
-- Keep credentials in Keychain. Never log tokens, authorization URLs, raw token responses or personal account identifiers.
+- Never log tokens, authorization URLs, raw token responses or personal account identifiers.
 - No automatic retries of inference or rotating-token exchanges; failures can occur after the server performed the operation.
 - Preserve explicit cancellation and distinguish interrupted/failed turns from completed context.
 - Use stable code signing when a certificate is available; never silently change signing identity or relax Keychain access controls.
