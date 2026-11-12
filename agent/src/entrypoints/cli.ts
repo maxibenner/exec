@@ -4,10 +4,13 @@ import { createInterface } from "node:readline/promises";
 import { AgentClient } from "../client/agent-client.ts";
 import { followConversation, terminalText, Transcript } from "../client/terminal.ts";
 import { activeOperation } from "../service/protocol.ts";
+import { serve } from "./serve.ts";
 
 const help = `Exec agent CLI (local service client)
 
 Usage: npm run cli -- [--profile PATH] COMMAND
+  serve [--credentials PATH] [--workspace-tools]
+                                      Run the service in the foreground (DeepSeek)
   health                              Show service capabilities
   models                              Discover provider models
   list                                List saved conversations
@@ -21,7 +24,10 @@ Usage: npm run cli -- [--profile PATH] COMMAND
   deny ID OPERATION_ID APPROVAL_ID     Deny exactly that pending action
 
 Default profile: ~/.exec-agent
-No service is started by the CLI. There are no automatic request retries.
+Only serve starts a service. There are no automatic request retries.
+serve reads DEEPSEEK_API_KEY, otherwise PROFILE/credentials.json (private mode 0600).
+--credentials selects another JSON file; environment credentials take precedence.
+Restart serve after changing credentials. Keys are never accepted as arguments.
 In chat, /quit or EOF detaches; Ctrl-C cancels an active turn or exits while idle.
 In send, pending approvals must be resolved explicitly from another client.
 `;
@@ -37,6 +43,21 @@ async function main(): Promise<void> {
   }
   const command = args.shift();
   if (!command || command === "--help" || command === "help") { process.stdout.write(help); return; }
+  if (command === "serve") {
+    let credentialsPath: string | undefined;
+    let workspaceTools = false;
+    while (args.length) {
+      const flag = args.shift();
+      if (flag === "--workspace-tools" && !workspaceTools) workspaceTools = true;
+      else if (flag === "--credentials" && credentialsPath === undefined) {
+        const value = args.shift();
+        if (!value || value.startsWith("--")) throw new Error("--credentials requires a path.");
+        credentialsPath = resolve(value);
+      } else throw new Error("Invalid serve arguments. Use --help.");
+    }
+    await serve({ profile, ...(credentialsPath === undefined ? {} : { credentialsPath }), workspaceTools });
+    return;
+  }
   const arity: Record<string, [number, number]> = {
     health: [0, 0], models: [0, 0], list: [0, 0], new: [1, 2], show: [1, 1],
     chat: [1, 1], send: [2, 2], watch: [1, 1], cancel: [2, 2], approve: [3, 3], deny: [3, 3],

@@ -2,9 +2,37 @@
 
 The service owns the existing `AgentManager`, provider, tools, approvals, and JSON persistence. Clients never run another agent loop. One operation runs per conversation; different conversations can run concurrently. The Swift app is not connected to this API yet.
 
-## Startup boundary
+## Standalone startup and credentials
 
-The implemented host entry is `startPersistentService()` in `src/service/persistent-service.ts`. It accepts an absolute profile directory and an already-configured `ChatProvider`. **There is not yet a credential-configured `serve` executable.** Credential loading and storage are unchanged: DeepSeek still accepts a host-supplied `getAPIKey(signal)` function. Do not put keys in CLI arguments, API requests, or conversation records.
+Node 24+ is required. From `agent/`, install tooling with `npm ci --ignore-scripts`, then run the foreground service:
+
+```sh
+# Set DEEPSEEK_API_KEY securely in the service environment first.
+npm run cli -- serve
+# Optional private profile, credential file, and explicit file/shell tool opt-in:
+npm run cli -- --profile /absolute/profile serve --credentials /private/credentials.json --workspace-tools
+```
+
+The service loads credentials once at startup, in this order:
+
+1. `DEEPSEEK_API_KEY`, if set. It overrides JSON entirely (even an explicitly selected file). Empty/invalid values fail rather than silently falling back.
+2. `--credentials PATH`, or by default `PROFILE/credentials.json` (`~/.exec-agent/credentials.json`). Missing or invalid files fail startup; there is no implicit sign-in or credential prompt.
+
+JSON has exactly this shape (replace the placeholder locally, never commit a real key):
+
+```json
+{"deepseek":{"apiKey":"YOUR_DEEPSEEK_API_KEY"}}
+```
+
+Create the containing directory privately (`0700`) and the file with mode `0600`, using a secure editor or secret provisioning tool. The loader requires an owned regular file with no group/other permissions, refuses final-component symlinks, bounds reads to 16 KiB, and validates the schema and key. It never creates, rewrites, or changes permissions on credential files. JSON is **plaintext storage**, not encryption; protect backups too. There is no Keychain dependency or `.env` file parser. Keep keys out of shell history, CLI arguments, repositories, API requests, and conversation records. Client commands do not load credentials.
+
+Restart the service after replacing a key or changing its environment; there is no hot reload or automatic authentication/inference retry. Startup performs no model discovery or inference, so a syntactically valid but revoked key is only detected by an explicit provider request. SIGINT/SIGTERM stop the foreground service through the normal cancellation/checkpoint/close path; repeated signals do not force-kill tools.
+
+Keep the profile and credential file **outside all model workspaces**. Shell tools do not inherit the service environment, but tools are not sandboxed: approved shell commands and other processes running as your user can still read your files and possibly process environment. This is not protection from hostile same-user code.
+
+## Embedded startup boundary
+
+The host entry `startPersistentService()` in `src/service/persistent-service.ts` still accepts an absolute profile directory and any configured `ChatProvider`. Credentials remain provider-owned, not manager/API state. For embedding with the same JSON/env configuration, use `await configuredDeepSeekProvider({ profile: absoluteProfileDirectory })` from `src/providers/credentials.ts`; hosts may alternatively supply their own `getAPIKey(signal)` callback.
 
 Host integration, with a configured provider supplied by the embedding application:
 
@@ -36,6 +64,7 @@ The profile contains:
 
 ```
 profile/                    owned directory, mode 0700
+  credentials.json          optional manually managed plaintext key, mode 0600
   service.sock              HTTP Unix socket, mode 0600
   conversations/
     .lock/                  single-owner store lock
@@ -52,7 +81,7 @@ Node 24+ is required. From `agent/`:
 npm ci --ignore-scripts
 npm run cli -- --help
 
-# Once a provider-configured service host is running:
+# In another terminal, while serve is running:
 npm run cli -- health
 npm run cli -- models
 npm run cli -- new MODEL_ID /absolute/workspace
@@ -132,4 +161,4 @@ Normal shutdown removes the socket and releases the store lock. Abrupt terminati
 
 ## Verification
 
-Automated tests use real Unix sockets and separate CLI subprocesses with fake providers, isolated stores, and temporary workspaces. They cover durable reopening, concurrent operations, exact approvals, cancellation, disconnect semantics, safe errors, and lost-response no-retry behavior. They do not verify live DeepSeek, credential loading, interactive TTY behavior, Linux deployment, remote access, or a connected Swift UI.
+Automated tests use real Unix sockets and separate CLI subprocesses with fake providers, isolated stores, and temporary workspaces. They cover JSON/env credential loading and validation, safe credential diagnostics, standalone startup/shutdown and reopening, durable conversations, concurrent operations, exact approvals, cancellation, disconnect semantics, and lost-response no-retry behavior. They do not verify live DeepSeek authentication, interactive TTY behavior, Linux deployment, remote access, or a connected Swift UI.
