@@ -55,28 +55,15 @@ import SwiftUI
         try expect(restoredProvider.runner.inputs.isEmpty)
     }
 
-    func rejectsRunningTurnsAndPreservesSourceOnFailure() async throws {
+    func forksRunningTurnsAndPreservesSourceOnFailure() async throws {
+        try await forksStreamingResponseWithoutWaiting()
+        try await forksCompletedToolResultsWithoutWaiting()
+        try await forksDuringCompaction()
         let fixture = try await Fixture()
         defer { fixture.cleanUp() }
         let library = fixture.library
         let source = library.current
-        let provider = fixture.provider.children.last!
-        provider.runner.holdOpen = true
-        source.draft = "Still running"
-        library.send()
-        for _ in 0..<500 {
-            if provider.runner.pending != nil { break }
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        try expect(source.busy && !library.canForkConversation(source))
         let count = fixture.provider.children.count
-        library.forkConversation(source)
-        try expect(fixture.provider.children.count == count && library.current === source)
-        source.stop()
-        await source.waitUntilIdle()
-        provider.runner.pending?.finish()
-        try await settle(library)
-
         source.draft = "/fork"
         let original = source.messages
         fixture.provider.failRestore = true
@@ -95,6 +82,111 @@ import SwiftUI
         try await settle(library)
         try expect(library.current === source && source.draft == "/fork" && source.messages == original)
         try expect(source.error?.contains("Could not save") == true)
+    }
+
+    private func forksStreamingResponseWithoutWaiting() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.cleanUp() }
+        let library = fixture.library
+        let source = library.current
+        let provider = fixture.provider.children.last!
+        let original = try await fixture.sessions.load(id: source.currentSessionID!)!
+        provider.runner.holdOpen = true
+        source.draft = "Still running"
+        library.send()
+        for _ in 0..<500 {
+            if provider.runner.pending != nil { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try expect(source.busy && library.canForkConversation(source))
+        source.draft = "Queued input"
+        source.send()
+        source.draft = "/fork"
+        library.forkConversation(source)
+        for _ in 0..<500 {
+            if library.current !== source { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let fork = library.current
+        try expect(fork !== source && source.busy && !source.isStopping)
+        try expect(fork.messages == original.messages + [source.messages[original.messages.count]])
+        try expect(fork.pendingInput.isEmpty && fork.draft.isEmpty)
+        let saved = try await fixture.sessions.load(id: fork.currentSessionID!)!
+        try expect(saved.history == provider.runner.inputs.last)
+        try expect(saved.providerState == original.providerState)
+        try expect(!saved.activeTurn && saved.activeCallID == nil)
+        try expect(source.pendingInput.count == 1 && source.draft.isEmpty)
+        source.stop()
+        await source.waitUntilIdle()
+        provider.runner.pending?.finish()
+    }
+
+    private func forksCompletedToolResultsWithoutWaiting() async throws {
+        let provider = FakeProvider()
+        let calls = ["finished", "running", "queued"].map {
+            ToolCall(id: $0, name: "fetch_content", arguments: "{\"url\":\"https://example.com/\($0)\"}")
+        }
+        provider.scripted = [calls.map(ChatEvent.toolCall) + [.completed]]
+        var started = 0
+        let source = ChatStore(provider: provider, newConversation: true, fetchContent: { _ in
+            let number = await MainActor.run { started += 1; return started }
+            if number == 1 { return "Completed page" }
+            while true { try await Task.sleep(for: .milliseconds(5)) }
+        })
+        source.selectedModel = "test"
+        source.draft = "Fetch pages"
+        source.send()
+        for _ in 0..<500 {
+            if started == 2 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try expect(started == 2 && source.canFork)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = SessionStore(directory: root)
+        let forkProvider = FakeProvider()
+        let fork = ChatStore(provider: forkProvider, sessions: sessions, newConversation: true)
+        try fork.copyConversation(from: source)
+        try await fork.saveIfIdle(force: true)
+        let saved = try await sessions.load(id: fork.currentSessionID!)!
+        try expect(source.busy && !source.isStopping && started == 2)
+        try expect(fork.error == nil && !fork.busy && fork.pendingInput.isEmpty)
+        try expect(fork.messages.allSatisfy { $0.status == .complete && $0.pendingTool == nil })
+        try expect(fork.messages.compactMap(\.toolResult).map(\.text) == ["Completed page"])
+        let outcomes = saved.history.compactMap(\.toolResult)
+        try expect(outcomes.map(\.call.id) == calls.map(\.id))
+        try expect(outcomes[0].text == "Completed page")
+        try expect(outcomes.dropFirst().allSatisfy { $0.text.contains("may still be running") })
+        try expect(forkProvider.inputs.isEmpty)
+        source.stop()
+        await source.waitUntilIdle()
+    }
+
+    private func forksDuringCompaction() async throws {
+        let provider = FakeProvider()
+        let source = ChatStore(provider: provider, newConversation: true)
+        source.selectedModel = "test"
+        source.draft = "Original input"
+        source.send()
+        await source.waitUntilIdle()
+        let original = source.messages
+        var started = false
+        provider.manualCompactionAction = { _ in
+            started = true
+            while true { try await Task.sleep(for: .milliseconds(5)) }
+        }
+        source.compact()
+        for _ in 0..<500 {
+            if started { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try expect(started && source.canFork)
+        let fork = ChatStore(provider: FakeProvider(), newConversation: true)
+        try fork.copyConversation(from: source)
+        try expect(source.busy && !source.isStopping && fork.messages == original)
+        try expect(fork.error == nil && !fork.busy)
+        source.stop()
+        await source.waitUntilIdle()
     }
 
     func detachedForkAndDeletionRetainInheritedAssets() async throws {

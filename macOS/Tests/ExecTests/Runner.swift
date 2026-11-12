@@ -27,7 +27,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Indicator gray bases stay visible under zero, partial and full blue pulses", { try WorkingIndicatorTests().grayBasesRemainVisibleUnderBluePulses() }),
             ("Indicator layers animate, freeze and stop when hidden or detached", { try WorkingIndicatorTests().layerAnimationLifecycle() }),
             ("Fork copies transcript, settings and opaque context independently", { try await ForkTests().copiesContextAndSettingsIndependently() }),
-            ("Fork rejects active turns and preserves source on failure", { try await ForkTests().rejectsRunningTurnsAndPreservesSourceOnFailure() }),
+            ("Fork snapshots active turns and preserves source on failure", { try await ForkTests().forksRunningTurnsAndPreservesSourceOnFailure() }),
             ("Detached forks retain inherited assets after source deletion", { try await ForkTests().detachedForkAndDeletionRetainInheritedAssets() }),
             ("Overlapping sessions release sleep prevention independently", { try await SessionSleepPreventionTests().overlappingRunsReleaseIndependently() }),
             ("Sleep prevention excludes idle work and cleans up failure and compaction", { try await SessionSleepPreventionTests().idleFailureAndCompactionLifecycle() }),

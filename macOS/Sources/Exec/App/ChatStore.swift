@@ -174,6 +174,9 @@ import Observation
     var readAccountUsage: (@MainActor () async -> AccountUsage?)?
     private var allowanceObservations: [RunAllowanceObservation] = []
     private var sessionActivityDate = Date() { didSet { checkpointRevision += 1 } }
+    // Provider state can change before an async request finishes. Keep the last
+    // completed boundary paired with its history while inference/compaction runs.
+    private var completedForkContext: SessionSnapshot?
     private var activeTurn = false { didSet { checkpointRevision += 1 } }
     private var activeCallID: String? { didSet { checkpointRevision += 1 } }
 
@@ -639,6 +642,9 @@ import Observation
     private func compactContext(_ trigger: Message.Compaction, history: [Message], pending: [Message] = [],
                                 model: ChatModel, instructions: String, tools: [ToolDefinition],
                                 before responseID: UUID? = nil) async throws {
+        let ownsForkContext = completedForkContext == nil
+        if ownsForkContext { completedForkContext = try snapshot() }
+        defer { if ownsForkContext { completedForkContext = nil } }
         var activityID: UUID?
         func start() async throws {
             try Task.checkCancellation()
@@ -676,6 +682,8 @@ import Observation
     }
 
     private func receive(_ input: [Message], completedHistory: [Message], model: ChatModel, effort: String?) async throws -> Message {
+        completedForkContext = try snapshot()
+        defer { completedForkContext = nil }
         let responseID = UUID()
         messages.append(Message(id: responseID, role: .assistant, text: "", status: .streaming))
         var fullText = ""
@@ -707,6 +715,7 @@ import Observation
         let definitions = toolDefinitions
         try await compactContext(.automatic, history: completedHistory, pending: Array(input.dropFirst(completedHistory.count)),
                                  model: model, instructions: instructions, tools: definitions, before: responseID)
+        completedForkContext = try snapshot()
         let index = messages.firstIndex { $0.id == responseID }!
         try Task.checkCancellation()
         for user in input.dropFirst(completedHistory.count) where user.role == .user {
@@ -815,8 +824,31 @@ import Observation
     }
 
     var canFork: Bool {
-        !busy && !isStartupPresentation && loadedSession && !restorationBlocked &&
-            !activeTurn && activeCallID == nil && conversationIdentity == provider.conversationIdentity
+        (!busy || isSending || isCompacting) && !isStartupPresentation && loadedSession && !restorationBlocked &&
+            conversationIdentity == provider.conversationIdentity
+    }
+
+    /// Never copy partial output or queued input. Unanswered calls need explicit
+    /// context-only outcomes so opaque provider output remains valid, without
+    /// suggesting the source operation was cancelled or is safe to repeat.
+    private func forkSnapshot() throws -> SessionSnapshot {
+        var saved = try completedForkContext ?? snapshot()
+        saved.selectedModel = selectedModel
+        saved.effort = selectedEffort
+        saved.autoApproveTools = prefersAutoApproval
+        let pendingIDs = Set(saved.pendingInputIDs ?? [])
+        saved.messages.removeAll { $0.status == .streaming || pendingIDs.contains($0.id) }
+        saved.pendingInputIDs = []
+        if let index = saved.history.lastIndex(where: { $0.role == .assistant }) {
+            let answered = Set(saved.history.suffix(from: index + 1).compactMap { $0.toolResult?.call.id })
+            for call in saved.history[index].toolCalls where !answered.contains(call.id) {
+                let text = "No completed result was available when this conversation was forked. The operation may still be running in the source conversation and may have effects. It was not resumed in this fork. Do not retry without a new user request."
+                saved.history.append(Message(role: .tool, text: text, toolResult: ToolResult(call: call, text: text)))
+            }
+        }
+        saved.activeTurn = false
+        saved.activeCallID = nil
+        return saved
     }
 
     /// Copy completed context into a fresh runner, never share a mutable provider
@@ -824,7 +856,7 @@ import Observation
     func copyConversation(from source: ChatStore) throws {
         guard source !== self, source.canFork, !busy, messages.isEmpty,
               let id = currentSessionID else { throw ExecError("This conversation cannot be forked right now.") }
-        var saved = try source.snapshot()
+        var saved = try source.forkSnapshot()
         if let sourceID = source.currentSessionID {
             saved.inheritedShellLogIDs = Array(Set(source.inheritedShellLogIDs + [sourceID]))
         }
