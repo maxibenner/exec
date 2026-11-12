@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ToolFailure } from "./tool-failure.ts";
 import type {
   Approval, ChatProvider, ContextMessage, ConversationSnapshot, Message, Operation,
   OperationState, RuntimeEvent, Tool, ToolCall, ToolOutcome,
@@ -235,11 +236,13 @@ export class Conversation {
               signal.throwIfAborted();
               outcome = "completed";
             }
-          } catch {
+          } catch (error) {
             outcome = signal.aborted ? (started ? "interrupted" : "not_executed") : "failed";
-            text = started
-              ? "Action failed or was interrupted after execution began; it may have had effects. Do not retry without a new user request."
-              : "Action did not execute. Preparation failed or the operation was interrupted. Do not retry without a new user request.";
+            text = error instanceof ToolFailure
+              ? `${error.message}\nDo not retry without a new user request.`
+              : started
+                ? "Action failed or was interrupted after execution began; it may have had effects. Do not retry without a new user request."
+                : "Action did not execute. Preparation failed or the operation was interrupted. Do not retry without a new user request.";
           }
         }
       }
