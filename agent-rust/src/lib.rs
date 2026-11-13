@@ -3,7 +3,9 @@
 pub mod client;
 pub mod content_fetch;
 pub mod core;
+pub mod images;
 pub mod manager;
+pub mod native;
 pub mod providers;
 pub mod service;
 pub mod shell_logs;

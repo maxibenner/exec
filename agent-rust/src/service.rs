@@ -74,7 +74,22 @@ pub async fn start_persistent_service(
     provider: Arc<dyn ChatProvider>,
     workspace_tools: bool,
 ) -> Result<Service> {
+    start_persistent_service_with_native(
+        profile,
+        provider,
+        workspace_tools,
+        Arc::new(crate::native::NativeHub::default()),
+    )
+    .await
+}
+pub async fn start_persistent_service_with_native(
+    profile: &Path,
+    provider: Arc<dyn ChatProvider>,
+    workspace_tools: bool,
+    native: Arc<crate::native::NativeHub>,
+) -> Result<Service> {
     let profile = private_directory(profile).await?;
+    let images = crate::images::ImageStore::open(profile.join("images")).await?;
     let logs = crate::shell_logs::ShellLogStore::open(profile.join("shell-logs")).await?;
     let mut tools = if workspace_tools {
         let mut tools = crate::tools::create_file_tools();
@@ -85,9 +100,19 @@ pub async fn start_persistent_service(
     };
     tools.extend(crate::tools::create_provider_tools(provider.clone()));
     tools.push(crate::tools::create_fetch_tool());
+    tools.extend(crate::tools::create_image_tools(
+        provider.clone(),
+        images.clone(),
+    ));
+    tools.push(crate::tools::create_screenshot_tool(
+        native.clone(),
+        images.clone(),
+    ));
     let store = JsonConversationStore::open(profile.join("conversations")).await?;
     let manager = AgentManager::open(store, |_| (provider.clone(), tools.clone())).await?;
     manager.attach_logs(logs);
+    manager.attach_images(images);
+    manager.attach_native(native);
     match start_service(ServiceOptions {
         manager: manager.clone(),
         provider,
@@ -148,6 +173,7 @@ pub async fn start_service(options: ServiceOptions) -> Result<Service> {
         host.handlers.close();
         host.handlers.wait().await;
         host.options.manager.cancel_and_wait().await?;
+        host.options.provider.settle().await;
         let closed = host.options.manager.close().await;
         if fs::symlink_metadata(&host.options.socket_path)
             .is_ok_and(|m| crate::storage::same_file(&m, &identity))
@@ -166,6 +192,7 @@ async fn serve_connection(
     socket: tokio::net::UnixStream,
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
+    let peer_pid = crate::native::peer_pid(&socket);
     let handler_host = host.clone();
     let handler = hyper::service::service_fn(move |request: Request<hyper::body::Incoming>| {
         let host = handler_host.clone();
@@ -176,7 +203,9 @@ async fn serve_connection(
             // catalog mutations finish instead of dropping a durable write.
             let _guard = cancel.clone().drop_guard();
             let response = handlers
-                .spawn(async move { dispatch(host, request.map(Body::new), cancel).await })
+                .spawn(
+                    async move { dispatch(host, request.map(Body::new), cancel, peer_pid).await },
+                )
                 .await
                 .unwrap_or_else(|_| json_response(500, json!({"error":"Service request failed."})));
             Ok::<_, std::convert::Infallible>(response)
@@ -196,13 +225,14 @@ struct ApiError(u16, &'static str);
 type ApiResult<T> = std::result::Result<T, ApiError>;
 impl From<Error> for ApiError {
     fn from(error: Error) -> Self {
-        if error == Error::Busy {
-            return Self(409, "Conversation is busy.");
+        match error {
+            Error::Busy => Self(409, "Conversation is busy."),
+            Error::Invalid(message) => Self(400, message),
+            _ => Self(
+                500,
+                "Service request failed. Inspect conversation state before continuing.",
+            ),
         }
-        Self(
-            500,
-            "Service request failed. Inspect conversation state before continuing.",
-        )
     }
 }
 fn json_response(status: u16, value: impl serde::Serialize) -> Response<Body> {
@@ -217,8 +247,9 @@ async fn dispatch(
     host: Arc<Host>,
     request: Request<Body>,
     cancel: CancellationToken,
+    peer_pid: Option<u32>,
 ) -> Response<Body> {
-    match handle(host, request, cancel).await {
+    match handle(host, request, cancel, peer_pid).await {
         Ok(response) => response,
         Err(ApiError(status, error)) => json_response(status, json!({"error":error})),
     }
@@ -234,7 +265,7 @@ async fn body<T: serde::de::DeserializeOwned>(request: Request<Body>) -> ApiResu
     }
     let bytes = tokio::time::timeout(
         Duration::from_secs(15),
-        to_bytes(request.into_body(), 256 * 1024),
+        to_bytes(request.into_body(), 12 * 1024 * 1024),
     )
     .await
     .map_err(|_| ApiError(408, "Request timed out."))?
@@ -300,8 +331,16 @@ struct SelectModel {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct UploadImage {
+    name: String,
+    base64: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Submit {
     text: String,
+    #[serde(default)]
+    images: Vec<ImageRef>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -329,6 +368,7 @@ async fn handle(
     host: Arc<Host>,
     request: Request<Body>,
     request_cancel: CancellationToken,
+    peer_pid: Option<u32>,
 ) -> ApiResult<Response<Body>> {
     if request.headers().contains_key("origin") || request.headers().contains_key("sec-fetch-site")
     {
@@ -345,11 +385,83 @@ async fn handle(
         .to_owned();
     let method = request.method().as_str().to_owned();
     let options = &host.options;
+    if method == "POST" && route == "/v1/native/events" {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Register {
+            os_screen_permission: bool,
+        }
+        let input: Register = body(request).await?;
+        let mut connection = options
+            .manager
+            .native()
+            .register(
+                peer_pid.ok_or(ApiError(
+                    403,
+                    "Kernel-attested local peer identity is required.",
+                ))?,
+                input.os_screen_permission,
+            )
+            .map_err(|_| {
+                ApiError(
+                    403,
+                    "The host has not authorized this local native frontend.",
+                )
+            })?;
+        let stop = host.stop.clone();
+        let frames = async_stream::stream! {
+            let line=serde_json::to_vec(&crate::native::NativeEvent::Registered{frontend_id:connection.id.clone()}).unwrap();yield Ok::<_,std::io::Error>(bytes::Bytes::from([line,b"\n".to_vec()].concat()));
+            let mut interval=tokio::time::interval(Duration::from_secs(15));interval.tick().await;
+            loop{let event=tokio::select!{biased;_=stop.cancelled()=>break,request=connection.requests.recv()=>{let Some(request)=request else{break;};request},_=interval.tick()=>crate::native::NativeEvent::Ping};let mut line=serde_json::to_vec(&event).unwrap();line.push(b'\n');yield Ok(bytes::Bytes::from(line));}
+        };
+        return Ok(Response::builder()
+            .status(200)
+            .header("Content-Type", "application/x-ndjson")
+            .header("Cache-Control", "no-store")
+            .body(Body::from_stream(frames))
+            .unwrap());
+    }
+    if method == "PUT" && route == "/v1/native/permission" {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Permission {
+            #[serde(rename = "frontendID")]
+            frontend_id: String,
+            granted: bool,
+        }
+        let input: Permission = body(request).await?;
+        options.manager.native().update_os_permission(
+            peer_pid.ok_or(ApiError(403, "Local peer identity is required."))?,
+            &input.frontend_id,
+            input.granted,
+        )?;
+        return Ok(json_response(200, json!({"accepted":true})));
+    }
+    if method == "POST" && route == "/v1/native/results" {
+        let input: crate::native::NativeReply = body(request).await?;
+        options
+            .manager
+            .native()
+            .reply(
+                peer_pid.ok_or(ApiError(403, "Local peer identity is required."))?,
+                input,
+            )
+            .map_err(|_| {
+                ApiError(
+                    409,
+                    "Native request is no longer active or does not match this peer and action.",
+                )
+            })?;
+        return Ok(json_response(200, json!({"accepted":true})));
+    }
     if method == "GET" && route == "/v1/health" {
         return Ok(json_response(
             200,
-            json!({"version":1,"toolsEnabled":options.tools.iter().any(|tool| !["web_search", "fetch_content"].contains(&tool.definition().name.as_str()))}),
+            json!({"version":1,"toolsEnabled":options.tools.iter().any(|tool| !["web_search", "fetch_content","generate_image","take_screenshot"].contains(&tool.definition().name.as_str()))}),
         ));
+    }
+    if method == "GET" && route == "/v1/metadata" {
+        return Ok(json_response(200, options.provider.metadata_freshness()));
     }
     if method == "GET" && route == "/v1/model-warnings" {
         return Ok(json_response(200, options.provider.model_warnings()));
@@ -359,6 +471,12 @@ async fn handle(
         let _guard = cancel.clone().drop_guard();
         let models = tokio::select! {biased;_=cancel.cancelled()=>return Err(ApiError(503,"Service is stopping.")),value=tokio::time::timeout(Duration::from_secs(120),options.manager.discover_models(options.provider.clone(), cancel.clone()))=>value.map_err(|_|ApiError(500,"Model discovery failed."))??};
         return Ok(json_response(200, models));
+    }
+    if method == "GET"
+        && let Some(id) = route.strip_prefix("/v1/images/")
+    {
+        identifier(id)?;
+        return Ok(json_response(200, options.manager.read_image(id).await?));
     }
     if method == "POST"
         && let Some(id) = route.strip_prefix("/v1/logs/")
@@ -425,6 +543,42 @@ async fn handle(
             options
                 .manager
                 .account_balances(options.provider.clone(), id, request_cancel)
+                .await?,
+        ));
+    }
+    if method == "GET" && route == "/v1/connection-attempt" {
+        return Ok(json_response(200, options.manager.connection_attempt()));
+    }
+    if method == "POST" && route == "/v1/connection-attempt/cancel" {
+        let input: Cancel = body(request).await?;
+        identifier(&input.operation_id)?;
+        options.manager.cancel_connection(&input.operation_id)?;
+        return Ok(json_response(202, json!({"accepted":true})));
+    }
+    if method == "POST"
+        && let Some(id) = route
+            .strip_prefix("/v1/providers/")
+            .and_then(|s| s.strip_suffix("/connect"))
+    {
+        let _: Empty = body(request).await?;
+        return Ok(json_response(
+            202,
+            options
+                .manager
+                .connect(options.provider.clone(), id)
+                .await?,
+        ));
+    }
+    if method == "GET"
+        && let Some(id) = route
+            .strip_prefix("/v1/providers/")
+            .and_then(|s| s.strip_suffix("/usage"))
+    {
+        return Ok(json_response(
+            200,
+            options
+                .manager
+                .account_usage(options.provider.clone(), id, request_cancel)
                 .await?,
         ));
     }
@@ -527,6 +681,20 @@ async fn handle(
         return Err(ApiError(404, "Route not found."));
     };
     let parts: Vec<_> = tail.split('/').collect();
+    if method == "DELETE" && parts.len() == 3 && parts[1] == "images" {
+        identifier(parts[0])?;
+        identifier(parts[2])?;
+        options
+            .manager
+            .release_image(parts[0], parts[2])
+            .await
+            .map_err(|e| match e {
+                Error::Invalid(message) => ApiError(409, message),
+                other => other.into(),
+            })?;
+        return Ok(json_response(200, json!({"released":true})));
+    }
+
     if parts.is_empty()
         || parts.len() > 2
         || parts.get(1).is_some_and(|s| {
@@ -540,6 +708,9 @@ async fn handle(
                 "title",
                 "model",
                 "fork",
+                "compact",
+                "images",
+                "desktop",
             ]
             .contains(s)
         })
@@ -652,13 +823,17 @@ async fn handle(
         }
         ("POST", Some("turns")) => {
             let submit: Submit = body(request).await?;
-            text(&submit.text, 128 * 1024)?;
+            if submit.images.is_empty() {
+                text(&submit.text, 128 * 1024)?;
+            } else if submit.text.len() > 128 * 1024 || submit.text.contains('\0') {
+                return Err(ApiError(400, "Invalid message."));
+            }
             if host.stop.is_cancelled() {
                 return Err(ApiError(503, "Service is stopping."));
             }
             let run = options
                 .manager
-                .submit(parts[0], submit.text)
+                .submit_images(parts[0], submit.text, submit.images)
                 .await
                 .map_err(|error| match error {
                     Error::Invalid(message) => ApiError(400, message),
@@ -666,6 +841,32 @@ async fn handle(
                     other => ApiError::from(other),
                 })?;
             Ok(json_response(202, json!({"operationID":run.operation_id})))
+        }
+        ("POST", Some("compact")) => {
+            let _: Empty = body(request).await?;
+            let run = options.manager.compact(parts[0])?;
+            Ok(json_response(202, json!({"operationID":run.operation_id})))
+        }
+        ("GET", Some("desktop")) => Ok(json_response(
+            200,
+            options.manager.desktop_permission(parts[0])?,
+        )),
+        ("PUT", Some("desktop")) => {
+            let input: crate::native::DesktopPermission = body(request).await?;
+            Ok(json_response(
+                200,
+                options.manager.set_desktop_permission(parts[0], input)?,
+            ))
+        }
+        ("POST", Some("images")) => {
+            let input: UploadImage = body(request).await?;
+            let bytes = crate::images::decode_base64(&input.base64)
+                .map_err(|_| ApiError(400, "Invalid image data."))?;
+            let image = options
+                .manager
+                .upload_image(parts[0], input.name, bytes)
+                .await?;
+            Ok(json_response(201, image))
         }
         ("POST", Some("steer")) => {
             let input: Steer = body(request).await?;

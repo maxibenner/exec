@@ -49,7 +49,7 @@ impl ConversationRecord {
             return Err(Error::Invalid("Invalid provider state."));
         }
         let bad = Error::Invalid("Invalid or unsupported conversation record.");
-        if !matches!(self.version, 1..=6)
+        if !matches!(self.version, 1..=7)
             || (self.version >= 2 && self.configuration.is_none())
             || (self.version == 1 && self.configuration.is_some())
             || !valid_id(&self.id)
@@ -78,7 +78,19 @@ impl ConversationRecord {
                 return Err(bad);
             }
             match message {
-                Message::User { .. } => {
+                Message::User { images, .. } => {
+                    if images.len() > 8
+                        || images.iter().any(|i| i.validate().is_err())
+                        || images.iter().map(|i| i.byte_count).sum::<usize>() > 16 * 1024 * 1024
+                        || images.iter().any(|i| {
+                            !self
+                                .resources
+                                .iter()
+                                .any(|r| r.id == i.id && r.kind == ResourceKind::Image)
+                        })
+                    {
+                        return Err(bad);
+                    }
                     if !pending.is_empty() {
                         return Err(bad);
                     }
@@ -120,6 +132,32 @@ impl ConversationRecord {
                     details,
                     ..
                 } => {
+                    if let Some(ToolDetails::Windows { windows }) = details {
+                        let mut ids = HashSet::new();
+                        if windows.len() > 256
+                            || windows.iter().any(|w| {
+                                w.id == 0
+                                    || w.title.len() > 1024
+                                    || w.title.contains('\0')
+                                    || !ids.insert(w.id)
+                            })
+                        {
+                            return Err(bad);
+                        }
+                    }
+                    if let Some(ToolDetails::Image { image, origin }) = details {
+                        if !["generated", "screenshot"].contains(&origin.as_str()) {
+                            return Err(bad);
+                        }
+                        image.validate()?;
+                        if !self.resources.iter().any(|r| {
+                            r.id == image.id
+                                && r.kind == ResourceKind::Image
+                                && r.call_id == *call_id
+                        }) {
+                            return Err(bad);
+                        }
+                    }
                     if details.is_some() && *outcome != ToolOutcome::Completed {
                         return Err(bad);
                     }
@@ -143,7 +181,10 @@ impl ConversationRecord {
         let mut resources = HashSet::new();
         if self.resources.len() > 4096
             || self.resources.iter().any(|r| {
-                !valid_id(&r.id) || !calls.contains(r.call_id.as_str()) || !resources.insert(&r.id)
+                !valid_id(&r.id)
+                    || !(calls.contains(r.call_id.as_str())
+                        || (r.kind == ResourceKind::Image && r.call_id.is_empty()))
+                    || !resources.insert(&r.id)
             })
         {
             return Err(bad);
@@ -179,7 +220,7 @@ impl ConversationRecord {
             self.version = 2;
             self.configuration = Some(ConversationConfiguration::legacy());
         }
-        self.version = 6;
+        self.version = 7;
         if let Some(op) = &mut self.operation
             && op.state.active()
         {

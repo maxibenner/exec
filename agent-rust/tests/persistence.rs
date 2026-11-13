@@ -342,6 +342,7 @@ fn validation_rejects_orphan_duplicate_and_unpaired_terminal_results() {
     });
     record.messages = vec![
         Message::User {
+            images: vec![],
             id: new_id(),
             text: "Hi".into(),
         },

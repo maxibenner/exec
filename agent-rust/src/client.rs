@@ -65,6 +65,109 @@ impl AgentClient {
         .await
         .map_err(|_| Error::Invalid(INVALID))?
     }
+    pub async fn metadata(&self) -> Result<Vec<MetadataFreshness>> {
+        decode(self.call("GET", "/v1/metadata", None).await?)
+    }
+    pub async fn upload_image(&self, id: &str, name: &str, bytes: &[u8]) -> Result<ImageRef> {
+        use base64::Engine;
+        decode(self.call("POST",&format!("{}/images",path(id)),Some(json!({"name":name,"base64":base64::engine::general_purpose::STANDARD.encode(bytes)}))).await?)
+    }
+    pub async fn release_image(&self, id: &str, asset: &str) -> Result<()> {
+        if !valid_id(asset) {
+            return Err(Error::Invalid("Invalid image ID."));
+        }
+        self.call("DELETE", &format!("{}/images/{asset}", path(id)), None)
+            .await?;
+        Ok(())
+    }
+    pub async fn read_image(&self, id: &str) -> Result<ImageData> {
+        if !valid_id(id) {
+            return Err(Error::Invalid("Invalid image ID."));
+        }
+        decode(self.call("GET", &format!("/v1/images/{id}"), None).await?)
+    }
+    pub async fn submit_images(&self, id: &str, text: &str, images: &[ImageRef]) -> Result<String> {
+        let value = self
+            .call(
+                "POST",
+                &format!("{}/turns", path(id)),
+                Some(json!({"text":text,"images":images})),
+            )
+            .await?;
+        value["operationID"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or(Error::Invalid(INVALID))
+    }
+    pub async fn desktop_permission(&self, id: &str) -> Result<crate::native::DesktopPermission> {
+        decode(
+            self.call("GET", &format!("{}/desktop", path(id)), None)
+                .await?,
+        )
+    }
+    pub async fn set_desktop_permission(
+        &self,
+        id: &str,
+        permission: &crate::native::DesktopPermission,
+    ) -> Result<crate::native::DesktopPermission> {
+        decode(
+            self.call(
+                "PUT",
+                &format!("{}/desktop", path(id)),
+                Some(serde_json::to_value(permission)?),
+            )
+            .await?,
+        )
+    }
+    pub fn native_events(
+        &self,
+        os_screen_permission: bool,
+        cancel: CancellationToken,
+    ) -> BoxStream<'static, Result<crate::native::NativeEvent>> {
+        self.ndjson(
+            "POST",
+            "/v1/native/events".into(),
+            Some(json!({"osScreenPermission":os_screen_permission})),
+            cancel,
+        )
+    }
+    pub async fn native_os_permission(&self, id: &str, granted: bool) -> Result<()> {
+        if !valid_id(id) {
+            return Err(Error::Invalid("Invalid frontend ID."));
+        }
+        self.call(
+            "PUT",
+            "/v1/native/permission",
+            Some(json!({"frontendID":id,"granted":granted})),
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn native_reply(&self, reply: &crate::native::NativeReply) -> Result<()> {
+        self.call(
+            "POST",
+            "/v1/native/results",
+            Some(serde_json::to_value(reply)?),
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn compact(&self, id: &str) -> Result<String> {
+        if !valid_id(id) {
+            return Err(Error::Invalid("Invalid conversation ID."));
+        }
+        let value = self
+            .call(
+                "POST",
+                &format!("/v1/conversations/{id}/compact"),
+                Some(json!({})),
+            )
+            .await?;
+        value["operationID"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or(Error::Invalid(INVALID))
+    }
     pub async fn read_log(
         &self,
         id: &str,
@@ -108,6 +211,43 @@ impl AgentClient {
         }
         decode(
             self.call("GET", &format!("/v1/providers/{provider}/balance"), None)
+                .await?,
+        )
+    }
+    pub async fn connect_browser(&self, provider: &str) -> Result<ConnectionChallenge> {
+        if provider != "openai" {
+            return Err(Error::Invalid("Browser sign-in is supported for OpenAI."));
+        }
+        decode(
+            self.call(
+                "POST",
+                &format!("/v1/providers/{provider}/connect"),
+                Some(json!({})),
+            )
+            .await?,
+        )
+    }
+    pub async fn connection_attempt(&self) -> Result<Option<ConnectionAttempt>> {
+        decode(self.call("GET", "/v1/connection-attempt", None).await?)
+    }
+    pub async fn cancel_connection(&self, id: &str) -> Result<()> {
+        if !valid_id(id) {
+            return Err(Error::Invalid("Invalid attempt ID."));
+        }
+        self.call(
+            "POST",
+            "/v1/connection-attempt/cancel",
+            Some(json!({"operationID":id})),
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn account_usage(&self, provider: &str) -> Result<AccountUsage> {
+        if provider != "openai" {
+            return Err(Error::Invalid("Unsupported usage provider."));
+        }
+        decode(
+            self.call("GET", &format!("/v1/providers/{provider}/usage"), None)
                 .await?,
         )
     }
@@ -294,10 +434,18 @@ impl AgentClient {
         id: &str,
         cancel: CancellationToken,
     ) -> BoxStream<'static, Result<ServiceEvent>> {
+        self.ndjson("GET", format!("{}/events", path(id)), None, cancel)
+    }
+    fn ndjson<T: serde::de::DeserializeOwned + Send + 'static>(
+        &self,
+        method: &'static str,
+        route: String,
+        value: Option<Value>,
+        cancel: CancellationToken,
+    ) -> BoxStream<'static, Result<T>> {
         let client = self.clone();
-        let route = format!("{}/events", path(id));
         Box::pin(async_stream::try_stream! {
-            let response=tokio::select!{biased;_=cancel.cancelled()=>return,result=tokio::time::timeout(Duration::from_secs(15),client.open("GET",&route,None))=>result.map_err(|_|Error::Invalid(INTERRUPTED))}??;
+            let response=tokio::select!{biased;_=cancel.cancelled()=>return,result=tokio::time::timeout(Duration::from_secs(15),client.open(method,&route,value))=>result.map_err(|_|Error::Invalid(INTERRUPTED))}??;
             if response.status().as_u16()!=200{Err(Error::Api(response.status().as_u16()))?;}
             if response.headers().get("content-type").and_then(|s|s.to_str().ok())!=Some("application/x-ndjson"){Err(Error::Invalid(INTERRUPTED))?;}
             let mut bytes=response.bytes_stream();let mut pending=Vec::new();
@@ -307,7 +455,7 @@ impl AgentClient {
                 if pending.len()+chunk.len()>MAX_RESPONSE{Err(Error::Invalid(INTERRUPTED))?;}pending.extend_from_slice(&chunk);
                 let mut consumed=0;
                 while let Some(index)=pending[consumed..].iter().position(|b|*b==b'\n'){
-                    let end=consumed+index;let frame:ServiceEvent=serde_json::from_slice(&pending[consumed..end]).map_err(|_|Error::Invalid(INTERRUPTED))?;
+                    let end=consumed+index;let frame:T=serde_json::from_slice(&pending[consumed..end]).map_err(|_|Error::Invalid(INTERRUPTED))?;
                     consumed=end+1;yield frame;
                 }
                 pending.drain(..consumed);

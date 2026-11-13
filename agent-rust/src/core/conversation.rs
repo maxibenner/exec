@@ -24,6 +24,7 @@ pub struct ConversationOptions {
     pub max_steps: usize,
     pub settings: SessionSettings,
     pub checkpoint: Option<Arc<dyn Checkpoint>>,
+    pub images: Option<Arc<dyn ImageReader>>,
 }
 impl ConversationOptions {
     pub fn new(
@@ -39,12 +40,14 @@ impl ConversationOptions {
             max_steps: 32,
             settings: SessionSettings::default(),
             checkpoint: None,
+            images: None,
         }
     }
 }
 struct Active {
     cancel: CancellationToken,
     finishing: bool,
+    compact_only: bool,
 }
 struct Pending {
     approval: Approval,
@@ -60,7 +63,7 @@ struct State {
     updating: bool,
 }
 impl State {
-    fn snapshot(&self) -> ConversationSnapshot {
+    fn snapshot(&self, provider: &dyn ChatProvider) -> ConversationSnapshot {
         ConversationSnapshot {
             id: self.record.id.clone(),
             configuration: self
@@ -74,6 +77,15 @@ impl State {
             pending_input: self.record.pending_input.clone(),
             metadata: self.record.metadata.clone(),
             usage: self.record.usage.clone(),
+            context_usage: provider
+                .context_window(&self.record.model)
+                .zip(
+                    self.record
+                        .usage
+                        .as_ref()
+                        .and_then(|u| u.total_tokens.or(u.input_tokens)),
+                )
+                .map(|(limit, tokens)| ContextUsage { tokens, limit }),
             resources: self.record.resources.clone(),
             operation: self.record.operation.clone(),
             approval: self.pending.as_ref().map(|p| p.approval.clone()),
@@ -89,6 +101,7 @@ pub struct Conversation {
     tools: HashMap<String, Arc<dyn Tool>>,
     definitions: Vec<ToolDefinition>,
     persist: Option<Arc<dyn Checkpoint>>,
+    images: Mutex<Option<Arc<dyn ImageReader>>>,
     events: EventHub,
     input_arrived: Notify,
 }
@@ -112,7 +125,7 @@ impl Conversation {
             record
         } else {
             ConversationRecord {
-                version: 6,
+                version: 7,
                 resources: vec![],
                 provider_state: None,
                 usage: None,
@@ -157,6 +170,7 @@ impl Conversation {
             tools,
             definitions,
             persist: options.checkpoint,
+            images: Mutex::new(options.images),
             events,
             input_arrived: Notify::new(),
         }))
@@ -165,7 +179,10 @@ impl Conversation {
         self.state.lock().expect("conversation state lock poisoned")
     }
     pub fn snapshot(&self) -> ConversationSnapshot {
-        self.state().snapshot()
+        self.state().snapshot(self.provider.as_ref())
+    }
+    pub(crate) fn attach_images(&self, images: Arc<dyn ImageReader>) {
+        *self.images.lock().unwrap() = Some(images);
     }
     pub fn resources(&self) -> Vec<ResourceRef> {
         self.state().record.resources.clone()
@@ -237,7 +254,7 @@ impl Conversation {
             } else {
                 state.storage_error = Some(Error::Storage.to_string());
             }
-            let snapshot = state.snapshot();
+            let snapshot = state.snapshot(conversation.provider.as_ref());
             conversation.events.send(Arc::new(ServiceEvent::Snapshot {
                 snapshot: snapshot.clone(),
             }));
@@ -252,7 +269,7 @@ impl Conversation {
     pub fn subscribe(&self) -> (ConversationSnapshot, EventReceiver) {
         let s = self.state();
         let receiver = self.events.subscribe();
-        (s.snapshot(), receiver)
+        (s.snapshot(self.provider.as_ref()), receiver)
     }
     fn emit(&self, s: &State, kind: EventKind) {
         let Some(op) = &s.record.operation else {
@@ -261,7 +278,7 @@ impl Conversation {
         let snapshot = if matches!(kind, EventKind::Text { .. }) {
             None
         } else {
-            Some(s.snapshot())
+            Some(s.snapshot(self.provider.as_ref()))
         };
         self.events.send(Arc::new(ServiceEvent::Runtime {
             event: RuntimeEvent {
@@ -339,6 +356,25 @@ impl Conversation {
         text: String,
         instructions: Option<String>,
     ) -> Result<Submission> {
+        self.submit_images(text, vec![], instructions)
+    }
+    pub fn submit_images(
+        self: &Arc<Self>,
+        text: String,
+        images: Vec<ImageRef>,
+        instructions: Option<String>,
+    ) -> Result<Submission> {
+        if images.len() > 8
+            || images.iter().any(|i| i.validate().is_err())
+            || images.iter().map(|i| i.byte_count).sum::<usize>() > 16 * 1024 * 1024
+        {
+            return Err(Error::Invalid(
+                "At most eight images and 16 MiB per message are allowed.",
+            ));
+        }
+        for image in &images {
+            image.validate()?;
+        }
         let mut s = self.state();
         if s.disposed {
             return Err(Error::Invalid("Conversation is closed."));
@@ -349,11 +385,24 @@ impl Conversation {
         if s.active.is_some() || s.updating {
             return Err(Error::Busy);
         }
-        if !valid_input(&text) {
-            return Err(Error::Invalid("Message must not be empty."));
+        if (!valid_input(&text) && images.is_empty())
+            || text.len() > 128 * 1024
+            || text.contains('\0')
+        {
+            return Err(Error::Invalid(
+                "Message must contain text or images within the input bounds.",
+            ));
         }
         if let Some(value) = &instructions {
             validate_instructions(value)?;
+        }
+        if images.iter().any(|image| {
+            !s.record
+                .resources
+                .iter()
+                .any(|r| r.id == image.id && r.kind == ResourceKind::Image)
+        }) {
+            return Err(Error::Invalid("Image is not owned by this conversation."));
         }
         let config = s.record.configuration.as_mut().unwrap();
         if !config.instructions_frozen {
@@ -361,6 +410,9 @@ impl Conversation {
             config.instructions_frozen = true;
         }
         s.record.metadata.activity_at = SessionMetadata::activity();
+        if s.record.metadata.title.is_none() && text.trim().is_empty() {
+            s.record.metadata.title = Some("Image".into());
+        }
         if s.record.metadata.title.is_none() {
             s.record.metadata.title = Some(
                 text.split_whitespace()
@@ -376,6 +428,7 @@ impl Conversation {
         s.active = Some(Active {
             cancel: cancel.clone(),
             finishing: false,
+            compact_only: false,
         });
         s.record.operation = Some(Operation {
             id: operation_id.clone(),
@@ -384,18 +437,140 @@ impl Conversation {
         });
         let pending = std::mem::take(&mut s.record.pending_input);
         s.record.messages.extend(pending);
-        s.record.messages.push(Message::User { id: new_id(), text });
+        s.record.messages.push(Message::User {
+            id: new_id(),
+            text,
+            images,
+        });
         let runner = self.clone();
         let (settled, completion) = oneshot::channel();
         tokio::spawn(async move {
             tokio::task::yield_now().await;
-            let operation = runner.run(cancel).await;
+            let operation = runner.run(cancel, false).await;
             let _ = settled.send(operation);
         });
         Ok(Submission {
             operation_id,
             completion,
         })
+    }
+    pub fn compact(self: &Arc<Self>) -> Result<Submission> {
+        let mut s = self.state();
+        if s.disposed || s.storage_error.is_some() {
+            return Err(Error::Storage);
+        }
+        if s.active.is_some() || s.updating || !s.record.pending_input.is_empty() {
+            return Err(Error::Busy);
+        }
+        if !self.provider.supports_compaction(&s.record.model) || s.record.messages.is_empty() {
+            return Err(Error::Invalid("This model has no compactable history."));
+        }
+        let operation_id = new_id();
+        let cancel = CancellationToken::new();
+        s.active = Some(Active {
+            cancel: cancel.clone(),
+            finishing: false,
+            compact_only: true,
+        });
+        s.record.operation = Some(Operation {
+            id: operation_id.clone(),
+            state: OperationState::Running,
+            error: None,
+        });
+        let runner = self.clone();
+        let (settled, completion) = oneshot::channel();
+        tokio::spawn(async move {
+            let op = runner.run(cancel, true).await;
+            let _ = settled.send(op);
+        });
+        Ok(Submission {
+            operation_id,
+            completion,
+        })
+    }
+    async fn compact_history(&self, cancel: &CancellationToken, automatic: bool) -> Result<()> {
+        check_cancel(cancel)?;
+        let mut request = {
+            let s = self.state();
+            if !self.provider.supports_compaction(&s.record.model) {
+                return if automatic {
+                    Ok(())
+                } else {
+                    Err(Error::Provider(crate::ProviderFailure::Unsupported))
+                };
+            }
+            if automatic {
+                let Some(tokens) = s
+                    .record
+                    .usage
+                    .as_ref()
+                    .and_then(|u| u.total_tokens.or(u.input_tokens))
+                else {
+                    return Ok(());
+                };
+                let Some(window) = self.provider.context_window(&s.record.model) else {
+                    return Ok(());
+                };
+                if tokens < window.saturating_mul(95).div_ceil(100) {
+                    return Ok(());
+                }
+            }
+            let mut end = s.record.messages.len();
+            if automatic {
+                while end > 0 && matches!(&s.record.messages[end - 1], Message::User { .. }) {
+                    end -= 1;
+                }
+            }
+            let history = &s.record.messages[..end];
+            if history.is_empty() {
+                return if automatic {
+                    Ok(())
+                } else {
+                    Err(Error::Invalid("There is no completed history to compact."))
+                };
+            }
+            let messages = context(history);
+            let message_ids=history.iter().filter(|m|!matches!(m,Message::Assistant{status,..} if *status!=MessageStatus::Completed)).map(|m|m.id().to_owned()).collect();
+            ProviderRequest {
+                images: Default::default(),
+                model: s.record.model.clone(),
+                message_ids,
+                messages,
+                instructions: s
+                    .record
+                    .configuration
+                    .as_ref()
+                    .unwrap()
+                    .instructions(&s.record.workspace, !self.definitions.is_empty()),
+                effort: None,
+                provider_state: s.record.provider_state.clone(),
+                tools: self.definitions.clone(),
+                cancel: cancel.clone(),
+            }
+        };
+        self.checkpoint(None).await?;
+        let history = self.state().record.messages.clone();
+        self.resolve_images(&mut request, &history).await?;
+        let mut compaction = Box::pin(self.provider.compact(request));
+        let state = loop {
+            tokio::select! {biased;
+                _=self.input_arrived.notified()=>{if self.checkpoint(None).await.is_err(){cancel.cancel();}}
+                result=&mut compaction=>break result,
+            }
+        }?;
+        if self.state().storage_error.is_some() {
+            return Err(Error::Storage);
+        }
+        check_cancel(cancel)?;
+        if !valid_json_depth(&state, 0) || serde_json::to_vec(&state)?.len() > 8 * 1024 * 1024 {
+            return Err(Error::Internal);
+        }
+        {
+            let mut s = self.state();
+            s.record.provider_state = Some(state);
+            s.record.usage = None;
+        }
+        self.checkpoint(None).await
     }
     /// In-memory acceptance, like submit. The runner checkpoints pending input;
     /// no client-side queue or competing execution loop is involved.
@@ -414,7 +589,7 @@ impl Conversation {
                 .is_none_or(|op| op.id != operation_id)
             || s.active
                 .as_ref()
-                .is_none_or(|a| a.finishing || a.cancel.is_cancelled())
+                .is_none_or(|a| a.finishing || a.compact_only || a.cancel.is_cancelled())
         {
             return Err(Error::Busy);
         }
@@ -424,6 +599,7 @@ impl Conversation {
         let id = new_id();
         s.record.metadata.activity_at = SessionMetadata::activity();
         s.record.pending_input.push(Message::User {
+            images: vec![],
             id: id.clone(),
             text,
         });
@@ -509,11 +685,18 @@ impl Conversation {
         }
         Ok(())
     }
-    async fn run(&self, cancel: CancellationToken) -> Operation {
-        let result = AssertUnwindSafe(self.steps(&cancel))
-            .catch_unwind()
-            .await
-            .unwrap_or(Err(Error::Internal));
+    async fn run(&self, cancel: CancellationToken, compact_only: bool) -> Operation {
+        let result = AssertUnwindSafe(async {
+            if compact_only {
+                self.checkpoint(None).await?;
+                self.compact_history(&cancel, false).await
+            } else {
+                self.steps(&cancel).await
+            }
+        })
+        .catch_unwind()
+        .await
+        .unwrap_or(Err(Error::Internal));
         let mut terminal = match &result {
             Ok(()) => OperationState::Completed,
             Err(_) if cancel.is_cancelled() => OperationState::Interrupted,
@@ -567,10 +750,13 @@ impl Conversation {
             let mut s = self.state();
             self.set_state(&mut s, OperationState::Running);
         }
+        let model = self.state().record.model.clone();
+        self.provider.prepare_model(&model, cancel.clone()).await?;
         let max_steps = self.state().record.max_steps;
         for _ in 0..max_steps {
             check_cancel(cancel)?;
             self.inject_pending_input();
+            self.compact_history(cancel, true).await?;
             let calls = self.respond(cancel).await?;
             self.checkpoint(None).await?;
             self.execute_calls(&calls, cancel).await?;
@@ -589,7 +775,7 @@ impl Conversation {
         ))
     }
     async fn respond(&self, cancel: &CancellationToken) -> Result<Vec<ToolCall>> {
-        let (request, index, mut known) = {
+        let (mut request, index, mut known) = {
             let mut s = self.state();
             s.record.usage = None;
             let messages = context(&s.record.messages);
@@ -614,6 +800,8 @@ impl Conversation {
             self.changed(&s, index);
             (
                 ProviderRequest {
+                    images:Default::default(),
+                    message_ids: s.record.messages[..index].iter().filter(|m|!matches!(m, Message::Assistant{status,..} if *status!=MessageStatus::Completed)).map(|m|m.id().to_owned()).collect(),
                     model: s.record.model.clone(),
                     effort: s
                         .record
@@ -631,7 +819,7 @@ impl Conversation {
                         .unwrap()
                         .instructions(&s.record.workspace, !self.definitions.is_empty()),
                     messages,
-                    tools: self.definitions.clone(),
+                    tools: {let context=ToolContext{conversation_id:self.id.clone(),operation_id:s.record.operation.as_ref().unwrap().id.clone(),call_id:String::new(),model:s.record.model.clone(),search_model:s.record.configuration.as_ref().unwrap().settings.search_model.clone(),workspace:s.record.workspace.clone(),cancel:cancel.clone()};self.definitions.iter().filter(|d|self.tools.get(&d.name).is_some_and(|t|t.available(&context))).cloned().collect()},
                     cancel: cancel.clone(),
                 },
                 index,
@@ -641,6 +829,8 @@ impl Conversation {
         let response: Result<Vec<ToolCall>> = async {
             self.checkpoint(None).await?;
             check_cancel(cancel)?;
+            let history = self.state().record.messages[..index].to_vec();
+            self.resolve_images(&mut request, &history).await?;
             let mut stream = self.provider.stream(request);
             let mut calls = vec![];
             let mut metadata = None;
@@ -656,6 +846,14 @@ impl Conversation {
                 };
                 check_cancel(cancel)?;
                 match event? {
+                    ProviderEvent::TextSnapshot(value) => {
+                        let mut s = self.state();
+                        let Message::Assistant { text, .. } = &mut s.record.messages[index] else {
+                            unreachable!()
+                        };
+                        *text = value;
+                        self.changed(&s, index);
+                    }
                     ProviderEvent::Text(delta) => {
                         {
                             let mut s = self.state();
@@ -733,6 +931,63 @@ impl Conversation {
         }
         response
     }
+    async fn resolve_images(
+        &self,
+        request: &mut ProviderRequest,
+        history: &[Message],
+    ) -> Result<()> {
+        let reader = self.images.lock().unwrap().clone();
+        let mut total_bytes = 0usize;
+        for (index, id) in request.message_ids.iter().enumerate() {
+            let refs = match history.iter().find(|m| m.id() == id) {
+                Some(Message::User { images, .. }) => images.clone(),
+                Some(Message::Tool {
+                    outcome: ToolOutcome::Completed,
+                    details: Some(ToolDetails::Image { image, .. }),
+                    ..
+                }) => vec![image.clone()],
+                _ => vec![],
+            };
+            if refs.is_empty() {
+                continue;
+            }
+            if !self
+                .provider
+                .accepts_images(&request.model, request.cancel.clone())
+                .await?
+            {
+                if matches!(
+                    history.iter().find(|m| m.id() == id),
+                    Some(Message::Tool { .. })
+                ) {
+                    if let Some(ContextMessage::Tool { text, .. }) = request.messages.get_mut(index)
+                    {
+                        text.push_str("\n[Image contents are unavailable to this model. Do not claim to have inspected them.]");
+                    }
+                    continue;
+                }
+                return Err(Error::Invalid(
+                    "The selected model does not accept image input.",
+                ));
+            }
+            let reader = reader
+                .as_ref()
+                .ok_or(Error::Invalid("Image storage is unavailable."))?;
+            let mut inputs = Vec::new();
+            for image in refs {
+                check_cancel(&request.cancel)?;
+                total_bytes = total_bytes.saturating_add(image.byte_count);
+                if total_bytes > 16 * 1024 * 1024 {
+                    return Err(Error::Invalid(
+                        "Active image context exceeds 16 MiB. Compact or start a new conversation.",
+                    ));
+                }
+                inputs.push(reader.load(&image).await?);
+            }
+            request.images.insert(index, inputs);
+        }
+        Ok(())
+    }
     async fn ask(
         &self,
         call: &ToolCall,
@@ -797,7 +1052,8 @@ impl Conversation {
                         let workspace = self.state().record.workspace.clone();
                         let model = self.state().record.model.clone();
                         let search_model = self.state().record.configuration.as_ref().unwrap().settings.search_model.clone();
-                        let prepared = tool.prepare(call.arguments.clone(),ToolContext{search_model,call_id:call.id.clone(),model,workspace,cancel:cancel.clone()}).await?;
+                        let operation_id=self.state().record.operation.as_ref().unwrap().id.clone();
+                        let prepared = tool.prepare(call.arguments.clone(),ToolContext{conversation_id:self.id.clone(),operation_id,search_model,call_id:call.id.clone(),model,workspace,cancel:cancel.clone()}).await?;
                         check_cancel(cancel)?;
                         let auto_approve = self.state().record.configuration.as_ref().unwrap().settings.auto_approve;
                         let approved = if let Some(description) = prepared.approval().filter(|_| !auto_approve) { self.ask(call,description.into(),prepared.details(),cancel).await? } else { true };

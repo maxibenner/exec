@@ -8,6 +8,7 @@ use std::{
 
 #[derive(Default)]
 struct Catalog {
+    native: Arc<crate::native::NativeHub>,
     conversations: BTreeMap<String, Arc<Conversation>>,
     mutating: HashSet<String>,
     closed: bool,
@@ -16,9 +17,12 @@ struct Catalog {
     library_error: bool,
     account_busy: bool,
     account_epoch: u64,
+    connection_attempt: Option<ConnectionAttempt>,
+    connection_cancel: Option<tokio_util::sync::CancellationToken>,
     unreadable: HashSet<String>,
     logs: Option<Arc<crate::shell_logs::ShellLogStore>>,
     forking: usize,
+    images: Option<Arc<crate::images::ImageStore>>,
 }
 pub struct AgentManager {
     catalog: Mutex<Catalog>,
@@ -79,6 +83,13 @@ impl AgentManager {
         Ok(manager)
     }
     pub async fn create(&self, mut options: ConversationOptions) -> Result<Arc<Conversation>> {
+        options.images = self
+            .catalog
+            .lock()
+            .unwrap()
+            .images
+            .clone()
+            .map(|s| s as Arc<dyn ImageReader>);
         if let Some(store) = &self.store {
             options.checkpoint = Some(store.clone());
         }
@@ -176,6 +187,91 @@ impl AgentManager {
         let result = provider.account_balances(id, cancel).await?;
         self.check_provider_epoch(epoch)?;
         Ok(result)
+    }
+    pub async fn account_usage(
+        &self,
+        provider: Arc<dyn ChatProvider>,
+        id: &str,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<AccountUsage> {
+        let epoch = self.provider_epoch()?;
+        let result = provider.account_usage(id, cancel).await?;
+        self.check_provider_epoch(epoch)?;
+        Ok(result)
+    }
+    pub fn connection_attempt(&self) -> Option<ConnectionAttempt> {
+        self.catalog.lock().unwrap().connection_attempt.clone()
+    }
+    pub fn cancel_connection(&self, id: &str) -> Result<()> {
+        let c = self.catalog.lock().unwrap();
+        if c.connection_attempt
+            .as_ref()
+            .is_none_or(|a| a.id != id || a.state != "running")
+        {
+            return Err(Error::Invalid("Connection attempt is no longer active."));
+        }
+        c.connection_cancel.as_ref().ok_or(Error::Busy)?.cancel();
+        Ok(())
+    }
+    pub async fn connect(
+        self: &Arc<Self>,
+        provider: Arc<dyn ChatProvider>,
+        id: &str,
+    ) -> Result<ConnectionChallenge> {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let attempt = ConnectionAttempt {
+            id: new_id(),
+            provider: id.into(),
+            state: "running".into(),
+            error: None,
+        };
+        {
+            let mut c = self.catalog.lock().unwrap();
+            if c.closed
+                || c.account_busy
+                || !c.mutating.is_empty()
+                || c.conversations.values().any(|c| c.busy())
+            {
+                return Err(Error::Busy);
+            }
+            c.account_busy = true;
+            c.connection_attempt = Some(attempt.clone());
+            c.connection_cancel = Some(cancel.clone());
+            c.account_epoch = c.account_epoch.wrapping_add(1);
+        }
+        let (challenge, receiver) = tokio::sync::oneshot::channel();
+        let manager = self.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            let result = AssertUnwindSafe(provider.connect(&id, challenge, cancel.clone()))
+                .catch_unwind()
+                .await
+                .unwrap_or(Err(Error::Internal));
+            let mut c = manager.catalog.lock().unwrap();
+            c.account_busy = false;
+            c.account_epoch = c.account_epoch.wrapping_add(1);
+            c.connection_cancel = None;
+            if let Some(attempt) = &mut c.connection_attempt {
+                attempt.state = if result.is_ok() {
+                    "completed"
+                } else if cancel.is_cancelled() {
+                    "interrupted"
+                } else {
+                    "failed"
+                }
+                .into();
+                attempt.error = result.err().map(|e| e.to_string());
+            }
+        });
+        let authorization_url = receiver.await.map_err(|_| {
+            Error::Invalid(
+                "Could not start browser authentication. Inspect connection-attempt status.",
+            )
+        })?;
+        Ok(ConnectionChallenge {
+            attempt,
+            authorization_url,
+        })
     }
     pub fn connections(&self, provider: &dyn ChatProvider) -> Vec<ProviderConnection> {
         provider.connections()
@@ -337,6 +433,13 @@ impl AgentManager {
         let mut options =
             ConversationOptions::new(provider, record.model.clone(), record.workspace.clone());
         options.tools = tools;
+        options.images = self
+            .catalog
+            .lock()
+            .unwrap()
+            .images
+            .clone()
+            .map(|s| s as Arc<dyn ImageReader>);
         options.checkpoint = self.store.clone().map(|s| s as Arc<dyn Checkpoint>);
         let result = match Conversation::new(options, Some(record)) {
             Ok(conversation) => self.insert_conversation(conversation).await,
@@ -349,6 +452,14 @@ impl AgentManager {
     /// Load project instructions only for the first accepted turn, then freeze them.
     /// The runner atomically accepts input and persists the snapshot before inference.
     pub async fn submit(&self, id: &str, text: String) -> Result<Submission> {
+        self.submit_images(id, text, vec![]).await
+    }
+    pub async fn submit_images(
+        &self,
+        id: &str,
+        text: String,
+        images: Vec<ImageRef>,
+    ) -> Result<Submission> {
         if self.catalog.lock().unwrap().account_busy {
             return Err(Error::Busy);
         }
@@ -366,7 +477,18 @@ impl AgentManager {
         if catalog.closed || catalog.account_busy {
             return Err(Error::Busy);
         }
-        conversation.submit_with_instructions(text, instructions)
+        conversation.submit_images(text, images, instructions)
+    }
+    pub fn compact(&self, id: &str) -> Result<Submission> {
+        let catalog = self.catalog.lock().unwrap();
+        if catalog.closed || catalog.account_busy {
+            return Err(Error::Busy);
+        }
+        catalog
+            .conversations
+            .get(id)
+            .ok_or(Error::Invalid("Conversation not found."))?
+            .compact()
     }
     pub fn steer(&self, id: &str, operation_id: &str, text: String) -> Result<String> {
         self.get(id)?.steer(operation_id, text)
@@ -391,6 +513,122 @@ impl AgentManager {
             .cloned()
             .ok_or(Error::Invalid("Conversation not found."))
     }
+    pub fn native(&self) -> Arc<crate::native::NativeHub> {
+        self.catalog.lock().unwrap().native.clone()
+    }
+    pub(crate) fn attach_native(&self, native: Arc<crate::native::NativeHub>) {
+        self.catalog.lock().unwrap().native = native;
+    }
+    pub fn desktop_permission(&self, id: &str) -> Result<crate::native::DesktopPermission> {
+        self.get(id)?;
+        Ok(self.native().permission(id))
+    }
+    pub fn set_desktop_permission(
+        &self,
+        id: &str,
+        permission: crate::native::DesktopPermission,
+    ) -> Result<crate::native::DesktopPermission> {
+        self.get(id)?;
+        let native = self.native();
+        native.set_permission(id, permission)?;
+        Ok(native.permission(id))
+    }
+    pub(crate) fn attach_images(&self, images: Arc<crate::images::ImageStore>) {
+        let mut c = self.catalog.lock().unwrap();
+        for conversation in c.conversations.values() {
+            conversation.attach_images(images.clone());
+        }
+        c.images = Some(images);
+    }
+    pub async fn upload_image(
+        self: &Arc<Self>,
+        id: &str,
+        name: String,
+        bytes: Vec<u8>,
+    ) -> Result<ImageRef> {
+        let conversation = self.get(id)?;
+        let images = {
+            let mut c = self.catalog.lock().unwrap();
+            if c.closed || c.account_busy || c.mutating.contains(id) || conversation.busy() {
+                return Err(Error::Busy);
+            }
+            let images = c
+                .images
+                .clone()
+                .ok_or(Error::Invalid("Image storage is unavailable."))?;
+            c.mutating.insert(id.into());
+            images
+        };
+        let manager = self.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            let asset_id = new_id();
+            let resource = ResourceRef {
+                id: asset_id.clone(),
+                call_id: String::new(),
+                kind: ResourceKind::Image,
+            };
+            let result = async {
+                conversation
+                    .mutate_record(move |record| {
+                        record.resources.push(resource);
+                        Ok(())
+                    })
+                    .await?;
+                images.put(asset_id, name, bytes).await
+            }
+            .await;
+            manager.catalog.lock().unwrap().mutating.remove(&id);
+            result
+        })
+        .await
+        .map_err(|_| Error::Internal)?
+    }
+    pub async fn release_image(self: &Arc<Self>, id: &str, asset: &str) -> Result<()> {
+        if !valid_id(asset) {
+            return Err(Error::Invalid("Invalid image ID."));
+        }
+        let conversation = self.get(id)?;
+        {
+            let mut c = self.catalog.lock().unwrap();
+            if c.closed || c.forking > 0 || c.mutating.contains(id) || conversation.busy() {
+                return Err(Error::Busy);
+            }
+            c.mutating.insert(id.into());
+        }
+        let manager = self.clone();
+        let id = id.to_owned();
+        let asset = asset.to_owned();
+        tokio::spawn(async move{
+            let remove=asset.clone();let result=async{conversation.mutate_record(move|record|{
+                if record.messages.iter().chain(&record.pending_input).any(|m|match m{Message::User{images,..}=>images.iter().any(|i|i.id==remove),Message::Tool{details:Some(ToolDetails::Image{image,..}),..}=>image.id==remove,_=>false}){return Err(Error::Invalid("Images in conversation history cannot be removed independently. Delete the conversation instead."));}
+                let before=record.resources.len();record.resources.retain(|r|!(r.id==remove&&r.kind==ResourceKind::Image&&r.call_id.is_empty()));if before==record.resources.len(){return Err(Error::Invalid("Unused uploaded image not found."));}Ok(())
+            }).await?;
+            let images={let c=manager.catalog.lock().unwrap();if !c.unreadable.is_empty()||c.conversations.values().any(|conv|conv.resources().iter().any(|r|r.id==asset)){None}else{c.images.clone()}};
+            if let Some(images)=images{images.delete(vec![asset]).await?;}Ok(())}.await;
+            manager.catalog.lock().unwrap().mutating.remove(&id);result
+        }).await.map_err(|_|Error::Internal)?
+    }
+    pub async fn read_image(&self, id: &str) -> Result<ImageData> {
+        let images = {
+            let c = self.catalog.lock().unwrap();
+            if c.closed
+                || !c.conversations.values().any(|conv| {
+                    conv.resources()
+                        .iter()
+                        .any(|r| r.id == id && r.kind == ResourceKind::Image)
+                })
+            {
+                return Err(Error::Invalid(
+                    "Image is not referenced by an available conversation.",
+                ));
+            }
+            c.images
+                .clone()
+                .ok_or(Error::Invalid("Image storage is unavailable."))?
+        };
+        images.read(id).await
+    }
     pub(crate) fn attach_logs(&self, logs: Arc<crate::shell_logs::ShellLogStore>) {
         self.catalog.lock().unwrap().logs = Some(logs);
     }
@@ -403,10 +641,11 @@ impl AgentManager {
         let logs = {
             let catalog = self.catalog.lock().unwrap();
             if catalog.closed
-                || !catalog
-                    .conversations
-                    .values()
-                    .any(|c| c.resources().iter().any(|r| r.id == id))
+                || !catalog.conversations.values().any(|c| {
+                    c.resources()
+                        .iter()
+                        .any(|r| r.id == id && r.kind == ResourceKind::ShellLog)
+                })
             {
                 return Err(Error::Invalid(
                     "Log is not referenced by an available conversation.",
@@ -472,6 +711,7 @@ impl AgentManager {
         let cleanup = {
             let mut catalog = self.catalog.lock().unwrap();
             catalog.conversations.remove(id);
+            catalog.native.remove_session(id);
             catalog.unreadable.remove(id);
             let referenced: HashSet<_> = catalog
                 .conversations
@@ -479,22 +719,42 @@ impl AgentManager {
                 .flat_map(|c| c.resources().into_iter().map(|r| r.id))
                 .collect();
             if catalog.unreadable.is_empty() {
-                catalog.logs.clone().map(|logs| {
-                    (
-                        logs,
-                        resources
-                            .into_iter()
-                            .filter(|r| !referenced.contains(&r.id))
-                            .map(|r| r.id)
-                            .collect(),
-                    )
-                })
+                let unreferenced: Vec<_> = resources
+                    .into_iter()
+                    .filter(|r| !referenced.contains(&r.id))
+                    .collect();
+                Some((catalog.logs.clone(), catalog.images.clone(), unreferenced))
             } else {
                 None
             }
         };
-        let result = if let Some((logs, ids)) = cleanup {
-            logs.delete(ids).await
+        let result = if let Some((logs, images, resources)) = cleanup {
+            let logs_result = if let Some(logs) = logs {
+                logs.delete(
+                    resources
+                        .iter()
+                        .filter(|r| r.kind == ResourceKind::ShellLog)
+                        .map(|r| r.id.clone())
+                        .collect(),
+                )
+                .await
+            } else {
+                Ok(())
+            };
+            let image_result = if let Some(images) = images {
+                images
+                    .delete(
+                        resources
+                            .into_iter()
+                            .filter(|r| r.kind == ResourceKind::Image)
+                            .map(|r| r.id)
+                            .collect(),
+                    )
+                    .await
+            } else {
+                Ok(())
+            };
+            logs_result.and(image_result)
         } else {
             Ok(())
         };
@@ -529,6 +789,16 @@ impl AgentManager {
         Ok(())
     }
     pub async fn cancel_and_wait(&self) -> Result<()> {
+        {
+            let c = self.catalog.lock().unwrap();
+            if let Some(cancel) = &c.connection_cancel {
+                cancel.cancel();
+            }
+        }
+        while self.catalog.lock().unwrap().account_busy {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
         let conversations: Vec<_> = self
             .catalog
             .lock()

@@ -3,7 +3,7 @@ use exec_agent::{
     client::AgentClient,
     core::*,
     providers::credentials::configured_deepseek_provider,
-    service::{profile_socket, start_persistent_service},
+    service::{profile_socket, start_persistent_service_with_native},
     terminal::{Transcript, terminal_text},
 };
 use futures_util::StreamExt;
@@ -18,7 +18,7 @@ use tokio::{
     sync::mpsc,
 };
 use tokio_util::sync::CancellationToken;
-const HELP: &str = "Exec agent CLI (local service client)\n\nUsage: exec-agent [--profile PATH] COMMAND\n  serve [--credentials PATH] [--workspace-tools]\n                                      Run the service in the foreground (DeepSeek)\n  health                              Show service capabilities\n  models                              Discover provider models\n  providers                           Show credential configuration (never secrets)\n  balance PROVIDER                    Show provider account balances\n  search MODEL QUERY                  Search public web through the provider\n  fetch URL                           Fetch bounded public HTTPS page text\n  log ID OFFSET MAX_BYTES             Read retained shell output (at most 32768 bytes)\n  connect PROVIDER                    Read API key from private piped stdin\n  disconnect PROVIDER                 Remove JSON-backed credentials\n  list                                List saved conversations\n  library                             Show defaults and shared ordering\n  library-set JSON                    Replace defaults and shared ordering\n  rename ID TITLE                     Rename an idle conversation\n  model ID MODEL                      Select a model for subsequent turns\n  effort ID LEVEL                     Set reasoning effort (or default)\n  search-model ID MODEL                Set search model (or default for chat model)\n  fork ID                             Copy an idle conversation\n  new MODEL [WORKSPACE] [--manual]     Create a conversation (auto approval by default)\n  show ID                             Show saved/current conversation state\n  delete ID                           Delete an idle conversation permanently\n  configure ID auto|manual PROMPT      Replace idle session policy and system prompt\n  chat ID                             Interactive chat; requires a terminal\n  send ID MESSAGE                     Submit one message and follow its operation\n  watch ID                            Observe until Ctrl-C; never approves automatically\n  steer ID OPERATION_ID MESSAGE        Add input at the next safe boundary\n  cancel ID OPERATION_ID               Cancel exactly that operation\n  approve ID OPERATION_ID APPROVAL_ID  Approve exactly that pending action\n  deny ID OPERATION_ID APPROVAL_ID     Deny exactly that pending action\n\nDefault profile: ~/.exec-agent\nOnly serve starts a service. There are no automatic request retries.\nserve reads DEEPSEEK_API_KEY, otherwise PROFILE/credentials.json (private mode 0600).\n--credentials selects another JSON file; environment credentials take precedence.\nEnvironment/external-file changes require restart; API JSON changes take effect live. Keys are never accepted as arguments.\nIn chat, /quit or EOF detaches; Ctrl-C cancels an active turn or exits while idle.\nIn send, pending approvals must be resolved explicitly from another client.\n";
+const HELP: &str = "Exec agent CLI (local service client)\n\nUsage: exec-agent [--profile PATH] COMMAND\n  serve [--credentials PATH] [--workspace-tools] [--native-frontend-pid PID]\n                                      Run the service in the foreground\n  health                              Show service capabilities\n  models                              Discover provider models\n  metadata                            Show account/model cache freshness\n  usage openai                        Show allowance windows and reset times\n  auth-status                         Show browser connection attempt\n  auth-cancel ID                      Cancel the exact connection attempt\n  compact ID                          Compact context without replacing history\n  upload-image ID PATH                Store an image in an idle conversation\n  send-image ID ASSET_ID MESSAGE       Submit text and an owned image\n  release-image ID ASSET_ID            Release an unused uploaded image\n  image ASSET_ID PATH                 Copy an image to a new file\n  desktop ID FRONTEND_ID|off           Set explicit session desktop permission\n  providers                           Show credential configuration (never secrets)\n  balance PROVIDER                    Show provider account balances\n  search MODEL QUERY                  Search public web through the provider\n  fetch URL                           Fetch bounded public HTTPS page text\n  log ID OFFSET MAX_BYTES             Read retained shell output (at most 32768 bytes)\n  connect PROVIDER                    Open OpenAI browser sign-in, or read API key from piped stdin\n  disconnect PROVIDER                 Remove JSON-backed credentials\n  list                                List saved conversations\n  library                             Show defaults and shared ordering\n  library-set JSON                    Replace defaults and shared ordering\n  rename ID TITLE                     Rename an idle conversation\n  model ID MODEL                      Select a model for subsequent turns\n  effort ID LEVEL                     Set reasoning effort (or default)\n  search-model ID MODEL                Set search model (or default for chat model)\n  fork ID                             Copy an idle conversation\n  new MODEL [WORKSPACE] [--manual]     Create a conversation (auto approval by default)\n  show ID                             Show saved/current conversation state\n  delete ID                           Delete an idle conversation permanently\n  configure ID auto|manual PROMPT      Replace idle session policy and system prompt\n  chat ID                             Interactive chat; requires a terminal\n  send ID MESSAGE                     Submit one message and follow its operation\n  watch ID                            Observe until Ctrl-C; never approves automatically\n  steer ID OPERATION_ID MESSAGE        Add input at the next safe boundary\n  cancel ID OPERATION_ID               Cancel exactly that operation\n  approve ID OPERATION_ID APPROVAL_ID  Approve exactly that pending action\n  deny ID OPERATION_ID APPROVAL_ID     Deny exactly that pending action\n\nDefault profile: ~/.exec-agent\nOnly serve starts a service. There are no automatic request retries.\nserve reads DEEPSEEK_API_KEY and optional OPENAI_SESSION_JSON, otherwise PROFILE/credentials.json (private mode 0600).\n--credentials selects another JSON file; environment credentials take precedence.\nEnvironment/external-file changes require restart; API JSON changes take effect live. Keys are never accepted as arguments.\nIn chat, /quit or EOF detaches; Ctrl-C cancels an active turn or exits while idle.\nIn send, pending approvals must be resolved explicitly from another client.\n";
 fn main() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -91,10 +91,20 @@ async fn main_async() -> Result<()> {
     if command == "serve" {
         let mut credentials = None;
         let mut tools = false;
+        let native = Arc::new(exec_agent::native::NativeHub::default());
+        let mut native_pid = None;
         let mut index = 0;
         while index < args.len() {
             match args[index].as_str() {
                 "--workspace-tools" if !tools => tools = true,
+                "--native-frontend-pid" if native_pid.is_none() => {
+                    index += 1;
+                    let pid = args.get(index).and_then(|s| s.parse::<u32>().ok()).ok_or(
+                        Error::Invalid("Specify the trusted local Swift frontend PID."),
+                    )?;
+                    native.allow_local_frontend(pid)?;
+                    native_pid = Some(pid);
+                }
                 "--credentials" if credentials.is_none() => {
                     index += 1;
                     if args
@@ -112,12 +122,27 @@ async fn main_async() -> Result<()> {
         let mut interrupt = signal(SignalKind::interrupt())?;
         let mut terminate = signal(SignalKind::terminate())?;
         unblock_shutdown_signals()?;
-        let provider = Arc::new(configured_deepseek_provider(&profile, credentials).await?);
-        let provider = Arc::new(exec_agent::providers::ProviderRegistry::new(
-            "deepseek",
-            vec![("deepseek".into(), provider)],
-        )?);
-        let service=start_persistent_service(&profile,provider,tools).await.map_err(|_|Error::Invalid("Service startup failed. Check profile permissions, socket, and store lock; stale state is never removed automatically."))?;
+        let provider = Arc::new(configured_deepseek_provider(&profile, credentials.clone()).await?);
+        let openai = Arc::new(
+            exec_agent::providers::openai::OpenAIProvider::configured(
+                credentials.unwrap_or_else(|| profile.join("credentials.json")),
+                match std::env::var("OPENAI_SESSION_JSON") {
+                    Ok(value) => Some(value),
+                    Err(std::env::VarError::NotPresent) => None,
+                    Err(_) => return Err(Error::Invalid("Invalid OpenAI session environment.")),
+                },
+            )
+            .await?,
+        );
+        let provider = Arc::new(
+            exec_agent::providers::ProviderRegistry::new(
+                "deepseek",
+                vec![("deepseek".into(), provider), ("openai".into(), openai)],
+            )?
+            .with_cache(profile.join("metadata.json"))
+            .await?,
+        );
+        let service=start_persistent_service_with_native(&profile,provider,tools,native).await.map_err(|_|Error::Invalid("Service startup failed. Check profile permissions, socket, and store lock; stale state is never removed automatically."))?;
         tokio::select! {_=interrupt.recv()=>{},_=terminate.recv()=>{}}
         return service.close().await.map_err(|_| {
             Error::Invalid("Service shutdown failed. Inspect the profile before restarting.")
@@ -128,12 +153,15 @@ async fn main_async() -> Result<()> {
         args.pop();
     }
     let count = match command.as_str() {
-        "health" | "models" | "list" | "library" | "providers" => 0..=0,
+        "health" | "models" | "list" | "library" | "providers" | "metadata" | "auth-status" => {
+            0..=0
+        }
         "new" => 1..=2,
         "show" | "chat" | "watch" | "delete" | "fork" | "library-set" | "connect"
-        | "disconnect" | "balance" | "fetch" => 1..=1,
-        "send" | "cancel" | "rename" | "model" | "search" | "effort" | "search-model" => 2..=2,
-        "approve" | "deny" | "configure" | "steer" | "log" => 3..=3,
+        | "disconnect" | "balance" | "fetch" | "usage" | "auth-cancel" | "compact" => 1..=1,
+        "send" | "cancel" | "rename" | "model" | "search" | "effort" | "search-model"
+        | "upload-image" | "release-image" | "image" | "desktop" => 2..=2,
+        "approve" | "deny" | "configure" | "steer" | "log" | "send-image" => 3..=3,
         _ => return Err(Error::Invalid("Invalid command arguments. Use --help.")),
     };
     if !count.contains(&args.len()) {
@@ -142,6 +170,65 @@ async fn main_async() -> Result<()> {
     let client = AgentClient::new(profile_socket(&profile))?;
     match command.as_str() {
         "health" => return print(client.health().await?),
+        "metadata" => return print(client.metadata().await?),
+        "auth-status" => return print(client.connection_attempt().await?),
+        "auth-cancel" => {
+            client.cancel_connection(&args[0]).await?;
+            return Ok(());
+        }
+        "usage" => return print(client.account_usage(&args[0]).await?),
+        "compact" => return print(client.compact(&args[0]).await?),
+        "upload-image" => {
+            let file = tokio::fs::File::open(&args[1]).await?;
+            let mut bytes = Vec::new();
+            file.take(8 * 1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .await?;
+            if bytes.len() > 8 * 1024 * 1024 {
+                return Err(Error::Invalid("Image exceeds 8 MiB."));
+            }
+            let name = Path::new(&args[1])
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or(Error::Invalid("Invalid image filename."))?;
+            return print(client.upload_image(&args[0], name, &bytes).await?);
+        }
+        "release-image" => {
+            client.release_image(&args[0], &args[1]).await?;
+            return Ok(());
+        }
+        "image" => {
+            let data = client.read_image(&args[0]).await?;
+            let bytes = exec_agent::images::decode_base64(&data.base64)?;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&args[1])?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            return Ok(());
+        }
+        "send-image" => {
+            let data = client.read_image(&args[1]).await?;
+            return print(
+                client
+                    .submit_images(&args[0], &args[2], &[data.image])
+                    .await?,
+            );
+        }
+        "desktop" => {
+            let permission = exec_agent::native::DesktopPermission {
+                enabled: args[1] != "off",
+                frontend_id: if args[1] == "off" {
+                    None
+                } else {
+                    Some(args[1].clone())
+                },
+            };
+            return print(client.set_desktop_permission(&args[0], &permission).await?);
+        }
         "models" => return print(client.models().await?),
         "providers" => return print(client.connections().await?),
         "search" => return print(client.search_web(&args[0], &args[1]).await?),
@@ -158,6 +245,27 @@ async fn main_async() -> Result<()> {
         }
         "disconnect" => return print(client.disconnect(&args[0]).await?),
         "connect" => {
+            if args[0] == "openai" {
+                let challenge = client.connect_browser("openai").await?;
+                let mut browser = std::process::Command::new(if cfg!(target_os = "macos") {
+                    "open"
+                } else {
+                    "xdg-open"
+                });
+                let opened = browser
+                    .arg(&challenge.authorization_url)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if !opened {
+                    return Err(Error::Invalid(
+                        "Browser could not be opened. Inspect auth-status and explicitly cancel the pending attempt before trying again.",
+                    ));
+                }
+                return print(challenge.attempt);
+            }
+
             if std::io::stdin().is_terminal() {
                 return Err(Error::Invalid(
                     "Read the API key from private piped stdin, not terminal input or arguments.",

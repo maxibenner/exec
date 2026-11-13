@@ -17,6 +17,7 @@ pub fn terminal_text(text: &str) -> String {
 #[derive(Default)]
 pub struct Transcript {
     lengths: HashMap<String, usize>,
+    texts: HashMap<String, String>,
     approvals: HashSet<String>,
     terminal_operations: HashSet<String>,
 }
@@ -36,9 +37,14 @@ impl Transcript {
                 output.push_str(&format!("\n[{role}]\n"));
                 0
             });
-            if let Some(tail) = message.text().get(*previous..) {
-                output.push_str(&terminal_text(tail));
+            let prior = self.texts.entry(message.id().into()).or_default();
+            if message.text().starts_with(prior.as_str()) {
+                output.push_str(&terminal_text(&message.text()[prior.len()..]));
+            } else {
+                output.push_str("\n[message revised]\n");
+                output.push_str(&terminal_text(message.text()));
             }
+            *prior = message.text().to_owned();
             *previous = message.text().len();
         }
         if let Some(approval) = &snapshot.approval
@@ -78,6 +84,7 @@ impl Transcript {
         });
         output.push_str(&terminal_text(delta));
         *length += delta.len();
+        self.texts.entry(id.into()).or_default().push_str(delta);
         output
     }
     pub fn frame(&mut self, frame: &ServiceEvent) -> String {

@@ -36,3 +36,50 @@ pub struct FetchedContent {
     pub text: String,
     pub truncated: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowanceWindow {
+    pub duration_seconds: u64,
+    pub used_percent: f64,
+    pub resets_at: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountUsage {
+    pub windows: Vec<AllowanceWindow>,
+    pub fetched_at: u64,
+    pub stale: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    pub tokens: u64,
+    pub limit: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionAttempt {
+    pub id: String,
+    pub provider: String,
+    pub state: String,
+    pub error: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionChallenge {
+    pub attempt: ConnectionAttempt,
+    pub authorization_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataFreshness {
+    pub provider: String,
+    pub models_fetched_at: Option<u64>,
+    pub models_stale: bool,
+    pub usage_fetched_at: Option<u64>,
+    pub usage_stale: bool,
+    pub balance_fetched_at: Option<u64>,
+    pub balance_stale: bool,
+}

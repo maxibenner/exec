@@ -79,3 +79,9 @@ async fn blocking<T: Send + 'static>(
         .await
         .map_err(|_| Error::Internal)?
 }
+
+mod images;
+pub use images::create_image_tools;
+
+mod screenshot;
+pub use screenshot::create_screenshot_tool;

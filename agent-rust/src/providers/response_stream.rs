@@ -6,12 +6,18 @@ fn invalid() -> Error {
     Error::Provider(ProviderFailure::Response)
 }
 /// Bounded framing only. No reconnection, inference retry, or EOF completion.
-pub fn read_sse(mut bytes: ByteStream) -> BoxStream<'static, Result<String>> {
+pub fn read_sse(bytes: ByteStream) -> BoxStream<'static, Result<String>> {
+    read_sse_bounded(bytes, 256 * 1024)
+}
+pub fn read_sse_bounded(
+    mut bytes: ByteStream,
+    event_limit: usize,
+) -> BoxStream<'static, Result<String>> {
     Box::pin(async_stream::try_stream! {
         let mut line=Vec::new();let mut data=Vec::new();let mut event_bytes=0;let mut total=0;let mut skip_lf=false;let mut first=true;
         while let Some(chunk)=bytes.next().await{let chunk=chunk?;total+=chunk.len();if total>16*1024*1024{Err(invalid())?;}
             for byte in chunk{if skip_lf{skip_lf=false;if byte==b'\n'{continue;}}
-                event_bytes+=1;if event_bytes>256*1024{Err(invalid())?;}
+                event_bytes+=1;if event_bytes>event_limit{Err(invalid())?;}
                 if byte!=b'\r'&&byte!=b'\n'{line.push(byte);continue;}
                 skip_lf=byte==b'\r';let mut text=std::str::from_utf8(&line).map_err(|_|invalid())?;
                 if first{first=false;text=text.strip_prefix('\u{feff}').unwrap_or(text);}

@@ -9,3 +9,6 @@ pub use deepseek::{
 
 mod registry;
 pub use registry::ProviderRegistry;
+
+pub mod openai;
+mod private_json;

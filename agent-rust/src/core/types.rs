@@ -19,6 +19,7 @@ pub fn valid_id(id: &str) -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
     ShellLog,
+    Image,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +62,8 @@ pub enum MessageStatus {
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum Message {
     User {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<super::ImageRef>,
         id: String,
         text: String,
     },
@@ -140,6 +143,9 @@ pub fn context(messages: &[Message]) -> Vec<ContextMessage> {
 }
 #[derive(Clone)]
 pub struct ProviderRequest {
+    /// Stable IDs parallel to completed context messages; never provider wire identifiers.
+    pub message_ids: Vec<String>,
+    pub images: std::collections::BTreeMap<usize, Vec<super::ImageInput>>,
     pub model: String,
     pub messages: Vec<ContextMessage>,
     pub instructions: String,
@@ -151,6 +157,7 @@ pub struct ProviderRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProviderEvent {
     Text(String),
+    TextSnapshot(String),
     ToolCall(ToolCall),
     Metadata {
         state: Option<Value>,
@@ -208,6 +215,59 @@ pub struct ProviderConnection {
 }
 #[async_trait]
 pub trait ChatProvider: Send + Sync {
+    async fn prepare_model(&self, _model: &str, _cancel: CancellationToken) -> Result<()> {
+        Ok(())
+    }
+    async fn accepts_images(&self, _model: &str, _cancel: CancellationToken) -> Result<bool> {
+        Ok(false)
+    }
+    fn supports_image_generation(&self) -> bool {
+        false
+    }
+    fn image_generation_available(&self) -> bool {
+        self.supports_image_generation()
+            && (self.connections().is_empty() || self.connections().iter().any(|c| c.connected))
+    }
+    async fn generate_image(
+        &self,
+        _input: super::ImageGeneration,
+        _cancel: CancellationToken,
+    ) -> Result<super::GeneratedImage> {
+        Err(crate::Error::Provider(crate::ProviderFailure::Unsupported))
+    }
+
+    fn metadata_identity(&self, _provider: &str) -> Option<String> {
+        None
+    }
+    async fn connect(
+        &self,
+        _provider: &str,
+        _challenge: tokio::sync::oneshot::Sender<String>,
+        _cancel: CancellationToken,
+    ) -> Result<()> {
+        Err(crate::Error::Provider(crate::ProviderFailure::Unsupported))
+    }
+    async fn settle(&self) {}
+    async fn account_usage(
+        &self,
+        _provider: &str,
+        _cancel: CancellationToken,
+    ) -> Result<super::AccountUsage> {
+        Err(crate::Error::Provider(crate::ProviderFailure::Unsupported))
+    }
+    fn context_window(&self, _model: &str) -> Option<u64> {
+        None
+    }
+    fn supports_compaction(&self, _model: &str) -> bool {
+        false
+    }
+    async fn compact(&self, _request: ProviderRequest) -> Result<Value> {
+        Err(crate::Error::Provider(crate::ProviderFailure::Unsupported))
+    }
+
+    fn metadata_freshness(&self) -> Vec<super::MetadataFreshness> {
+        vec![]
+    }
     fn model_warnings(&self) -> Vec<String> {
         vec![]
     }
@@ -245,6 +305,8 @@ pub trait ChatProvider: Send + Sync {
 }
 #[derive(Clone)]
 pub struct ToolContext {
+    pub conversation_id: String,
+    pub operation_id: String,
     pub search_model: Option<String>,
     pub call_id: String,
     pub model: String,
@@ -258,6 +320,13 @@ pub struct ToolContext {
     rename_all_fields = "camelCase"
 )]
 pub enum ToolDetails {
+    Windows {
+        windows: Vec<super::WindowInfo>,
+    },
+    Image {
+        image: super::ImageRef,
+        origin: String,
+    },
     Edit {
         path: String,
         diff: String,
@@ -293,6 +362,9 @@ pub trait PreparedTool: Send {
 }
 #[async_trait]
 pub trait Tool: Send + Sync {
+    fn available(&self, _context: &ToolContext) -> bool {
+        true
+    }
     fn definition(&self) -> ToolDefinition;
     async fn prepare(
         &self,
@@ -343,6 +415,7 @@ pub struct ConversationSnapshot {
     pub pending_input: Vec<Message>,
     pub metadata: super::SessionMetadata,
     pub usage: Option<TokenUsage>,
+    pub context_usage: Option<super::ContextUsage>,
     pub resources: Vec<ResourceRef>,
     pub model: String,
     pub workspace: String,
