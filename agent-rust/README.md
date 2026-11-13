@@ -2,6 +2,10 @@
 
 Rust migration of [`../agent`](../agent), with the same functionality and API v1. The TypeScript implementation remains unchanged. This is a standalone library and executable, not a wrapper around Node or an agent framework. The Swift app is unchanged and is not connected to this service.
 
+## Guiding principles
+
+See [GUIDING_PRINCIPLES.md](GUIDING_PRINCIPLES.md) for the architectural, execution-safety, persistence, API, security, and verification principles carried forward from the original system.
+
 ## Build and run
 
 Rust 1.93 or newer, macOS or Linux, and `/bin/bash` are required. If rustup is installed but Cargo is not on your PATH, run `source "$HOME/.cargo/env"` first.
