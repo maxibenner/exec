@@ -74,6 +74,9 @@ The checked items below are delivered and verified; unchecked items remain outst
   connect/disconnect via private JSON, provider-neutral status/API/client and stdin-only CLI.
   Environment values remain externally managed; no live validation is claimed.
 
+- [x] Isolated unreadable-conversation summaries and explicit deletion; valid history
+  stays available while unsafe store entries/ownership failures still fail closed.
+
 ### Remaining backend work
 
 - [ ] Provider-neutral capabilities/efforts/image support and effort selection.
@@ -91,7 +94,6 @@ The checked items below are delivered and verified; unchecked items remain outst
 - [ ] Selected search model configuration.
 - [ ] Asset/log deletion and fork reference ownership.
 - [ ] Current account allowances/reset information, balance and freshness metadata.
-- [ ] Isolated unreadable-session presentation without silently discarding data.
 - [ ] Complete API/client coverage for the above, neutral diagnostics and documentation.
 
 ## Verification and delivery

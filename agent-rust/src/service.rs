@@ -379,7 +379,7 @@ async fn handle(
     }
     if route == "/v1/conversations" {
         if method == "GET" {
-            let summaries: Vec<_> = options
+            let mut summaries: Vec<_> = options
                 .manager
                 .list()?
                 .into_iter()
@@ -390,6 +390,22 @@ async fn handle(
                     v
                 })
                 .collect();
+            summaries.extend(
+                options
+                    .manager
+                    .unreadable_sessions()
+                    .into_iter()
+                    .map(|id| json!({"id":id,"unreadable":true,"title":"Unreadable conversation"})),
+            );
+            if let Ok(library) = options.manager.library_configuration() {
+                summaries.sort_by_key(|value| {
+                    library
+                        .order
+                        .iter()
+                        .position(|id| value["id"].as_str() == Some(id))
+                        .unwrap_or(usize::MAX)
+                });
+            }
             return Ok(json_response(200, summaries));
         }
         if method == "POST" {
@@ -439,6 +455,21 @@ async fn handle(
         return Err(ApiError(404, "Route not found."));
     }
     identifier(parts[0])?;
+    if options
+        .manager
+        .unreadable_sessions()
+        .iter()
+        .any(|id| id == parts[0])
+    {
+        if method == "DELETE" && parts.len() == 1 {
+            options.manager.delete(parts[0]).await?;
+            return Ok(json_response(200, json!({"deleted":true})));
+        }
+        return Err(ApiError(
+            409,
+            "Conversation is unreadable. Its file is preserved; inspect it before explicit deletion.",
+        ));
+    }
     let conversation = options
         .manager
         .get(parts[0])

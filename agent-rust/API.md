@@ -227,3 +227,12 @@ The manager rejects account mutations while any conversation/catalog mutation is
 remain owned after client disconnect. Failed write acknowledgements block that credential
 source until reload; no retry or permission repair is performed. Requests containing keys
 must never be logged. Keys never appear in snapshots, events, provider statuses or errors.
+
+## Unreadable conversations
+
+Conversation summaries include `{id,unreadable:true,title:"Unreadable conversation"}` for
+corrupt, unsupported or oversized owned regular records. They are never loaded as runnable
+context or overwritten. GET/turn/configuration requests for those IDs return 409. Explicit
+DELETE removes the retained file durably. Valid conversations remain usable. Symlinks,
+special files, unknown JSON filenames, changing file identities or lost/foreign ownership
+remain whole-store integrity failures. Library metadata corruption also fails startup.

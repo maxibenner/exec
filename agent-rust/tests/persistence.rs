@@ -282,20 +282,21 @@ async fn exclusive_profile_ownership_and_independent_queued_records() {
     reopened.close().await.unwrap();
 }
 #[tokio::test]
-async fn corrupt_and_unsupported_records_fail_closed_without_overwrite() {
+async fn corrupt_and_unsupported_records_are_retained_without_overwrite() {
     let root = directory();
     let record = empty_record();
     let path = root.path().join(format!("{}.json", record.id));
     fs::write(&path, "{invalid JSON").unwrap();
     let p = FakeProvider::new(vec![]);
-    assert!(
-        AgentManager::open(
-            JsonConversationStore::open(root.path()).await.unwrap(),
-            |_| (p.clone(), vec![])
-        )
-        .await
-        .is_err()
-    );
+    let manager = AgentManager::open(
+        JsonConversationStore::open(root.path()).await.unwrap(),
+        |_| (p.clone(), vec![]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(manager.unreadable_sessions(), vec![record.id.clone()]);
+    assert!(manager.get(&record.id).is_err());
+    manager.close().await.unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "{invalid JSON");
     assert_eq!(p.count(), 0);
     let mut record = record;

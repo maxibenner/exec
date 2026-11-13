@@ -15,6 +15,7 @@ struct Catalog {
     library_busy: bool,
     library_error: bool,
     account_busy: bool,
+    unreadable: HashSet<String>,
 }
 pub struct AgentManager {
     catalog: Mutex<Catalog>,
@@ -40,7 +41,9 @@ impl AgentManager {
         let restore = async {
             let library = store.load_library().await?;
             manager.catalog.lock().unwrap().library = library;
-            for record in store.load().await? {
+            let catalog = store.load_catalog().await?;
+            manager.catalog.lock().unwrap().unreadable = catalog.unreadable.into_iter().collect();
+            for record in catalog.records {
                 let (provider, tools) = configure(&record);
                 let mut options = ConversationOptions::new(
                     provider,
@@ -303,6 +306,12 @@ impl AgentManager {
             .cloned()
             .ok_or(Error::Invalid("Conversation not found."))
     }
+    pub fn unreadable_sessions(&self) -> Vec<String> {
+        let catalog = self.catalog.lock().unwrap();
+        let mut ids: Vec<_> = catalog.unreadable.iter().cloned().collect();
+        ids.sort();
+        ids
+    }
     pub fn list(&self) -> Result<Vec<ConversationSnapshot>> {
         let c = self.catalog.lock().unwrap();
         if c.closed {
@@ -327,11 +336,11 @@ impl AgentManager {
             if c.closed || c.mutating.contains(id) {
                 return Err(Error::Internal);
             }
-            let conversation = c
-                .conversations
-                .get(id)
-                .ok_or(Error::Invalid("Conversation not found."))?;
-            conversation.dispose()?;
+            if let Some(conversation) = c.conversations.get(id) {
+                conversation.dispose()?;
+            } else if !c.unreadable.contains(id) {
+                return Err(Error::Invalid("Conversation not found."));
+            }
             c.mutating.insert(id.into());
         }
         let deleted = if let Some(store) = &self.store {
@@ -343,6 +352,7 @@ impl AgentManager {
         c.mutating.remove(id);
         deleted?;
         c.conversations.remove(id);
+        c.unreadable.remove(id);
         Ok(())
     }
     pub async fn close(&self) -> Result<()> {

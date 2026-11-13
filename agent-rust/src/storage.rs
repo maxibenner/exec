@@ -9,9 +9,20 @@ use std::{
 };
 use tokio::sync::Mutex;
 const LIMIT: u64 = 16 * 1024 * 1024;
+#[derive(Default)]
+pub struct LoadedCatalog {
+    pub records: Vec<ConversationRecord>,
+    pub unreadable: Vec<String>,
+}
 #[async_trait]
 pub trait ConversationStore: Checkpoint {
     async fn load(&self) -> Result<Vec<ConversationRecord>>;
+    async fn load_catalog(&self) -> Result<LoadedCatalog> {
+        Ok(LoadedCatalog {
+            records: self.load().await?,
+            unreadable: vec![],
+        })
+    }
     async fn delete(&self, id: String) -> Result<()>;
     async fn close(&self) -> Result<()>;
     async fn load_library(&self) -> Result<LibraryConfiguration> {
@@ -122,20 +133,70 @@ impl Checkpoint for JsonConversationStore {
 #[async_trait]
 impl ConversationStore for JsonConversationStore {
     async fn load(&self) -> Result<Vec<ConversationRecord>> {
-        self.queued(|s| {
-            let mut paths=fs::read_dir(&s.root)?.map(|e|e.map(|e|e.path())).collect::<std::io::Result<Vec<_>>>()?; paths.sort();
-            let mut records=vec![];
-            for path in paths { if path.extension().and_then(|s|s.to_str())!=Some("json") {continue;}
-                if path.file_name().and_then(|s|s.to_str())==Some("library.json") { continue; }
-                let id=path.file_stem().and_then(|s|s.to_str()).ok_or(Error::Internal)?;
-                let file=OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW|libc::O_NONBLOCK).open(s.file(id)?)?;
-                let info=file.metadata()?; if !info.is_file() || info.len()>LIMIT {return Err(Error::Internal);}
-                let mut data=vec![]; (&file).take(LIMIT+1).read_to_end(&mut data)?;
-                if data.len() as u64!=info.len() || !unchanged(&info,&file.metadata()?) {return Err(Error::Internal);}
-                let record:ConversationRecord=serde_json::from_slice(&data)?; record.validate()?;
-                if record.id!=id {return Err(Error::Internal);} records.push(record);
-            } Ok(records)
-        }).await.map_err(|_|Error::Invalid("Could not load conversations. The profile may contain corrupt, unsupported, linked, or oversized data; it was not overwritten."))
+        let catalog = self.load_catalog().await?;
+        if !catalog.unreadable.is_empty() {
+            return Err(Error::Invalid(
+                "Some conversation records are unreadable; use catalog loading to inspect them.",
+            ));
+        }
+        Ok(catalog.records)
+    }
+    async fn load_catalog(&self) -> Result<LoadedCatalog> {
+        self.queued(|state| {
+            let mut paths = fs::read_dir(&state.root)?
+                .map(|e| e.map(|e| e.path()))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            paths.sort();
+            let mut catalog = LoadedCatalog::default();
+            for path in paths {
+                if path.extension().and_then(|s| s.to_str()) != Some("json")
+                    || path.file_name().and_then(|s| s.to_str()) == Some("library.json")
+                {
+                    continue;
+                }
+                let id = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .ok_or(Error::Internal)?;
+                let path = state.file(id)?;
+                let info = fs::symlink_metadata(&path)?;
+                // Links, special files and foreign ownership are store-integrity errors,
+                // not ordinary corrupt transcripts. Never follow or silently quarantine them.
+                if !info.is_file() || info.uid() != unsafe { libc::getuid() } {
+                    return Err(Error::Storage);
+                }
+                if info.len() > LIMIT {
+                    catalog.unreadable.push(id.to_owned());
+                    continue;
+                }
+                let file = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(&path)?;
+                if !unchanged(&info, &file.metadata()?) {
+                    return Err(Error::Storage);
+                }
+                let mut data = Vec::new();
+                (&file).take(LIMIT + 1).read_to_end(&mut data)?;
+                if !unchanged(&info, &file.metadata()?) || data.len() as u64 != info.len() {
+                    return Err(Error::Storage);
+                }
+                match serde_json::from_slice::<ConversationRecord>(&data) {
+                    Ok(record) if record.id == id && record.validate().is_ok() => {
+                        catalog.records.push(record)
+                    }
+                    _ => catalog.unreadable.push(id.to_owned()),
+                }
+            }
+            state.owner()?;
+            Ok(catalog)
+        })
+        .await
+        .map_err(|_| {
+            Error::Invalid(
+                "Conversation store integrity could not be confirmed. No data was overwritten.",
+            )
+        })
     }
     async fn load_library(&self) -> Result<LibraryConfiguration> {
         self.queued(|s| {
