@@ -14,10 +14,10 @@ From `agent-rust/`, run `cargo build --locked --release`, then:
 
 Initial credentials are loaded at startup; API-managed JSON credentials can then change live:
 
-1. `DEEPSEEK_API_KEY`, if present, overrides JSON entirely. Empty/invalid values fail closed.
+1. `DEEPSEEK_API_KEY`, if present, overrides its DeepSeek JSON entry. Empty/invalid values fail closed.
 2. `--credentials PATH`, otherwise `PROFILE/credentials.json` (default `~/.exec-agent/credentials.json`).
 
-The file contains `{"deepseek":{"apiKey":"YOUR_DEEPSEEK_API_KEY"}}`, or `{}` when disconnected. An absent file also means disconnected and does not prevent history access. Provision it privately using a secure editor or secret tool; never commit a real key. The loader requires an owned regular file with no group/other permissions (`0600`), refuses final-component symlinks, bounds reads to 16 KiB, and never repairs insecure permissions. API writes use private same-directory staging, file sync, atomic rename and directory sync. This is plaintext storage, not encryption or Keychain. There is no `.env` parser, implicit sign-in, credential CLI argument, or automatic external-file reload.
+The file can contain `{"deepseek":{"apiKey":"YOUR_DEEPSEEK_API_KEY"},"openai":{...}}`, or `{}` when disconnected. The OpenAI entry is provider-owned; see browser authentication below. Both adapters serialize document updates and preserve the other provider’s fields. An absent file also means disconnected and does not prevent history access. Provision it privately using a secure editor or secret tool; never commit a real key. The loader requires an owned regular file with no group/other permissions (`0600`), refuses final-component symlinks, bounds the shared document to 1 MiB, and never repairs insecure permissions. API writes use private same-directory staging, file sync, atomic rename and directory sync. This is plaintext storage, not encryption or Keychain. There is no `.env` parser, implicit sign-in, credential CLI argument, or automatic external-file reload.
 
 Keep profiles and credential files **outside all model workspaces**. Approved shells are not sandboxed; same-user code can still read same-user files. Client commands do not load credentials. Environment or external-file changes require restart. API JSON changes take effect without restart. Startup performs no model discovery or inference. SIGINT/SIGTERM take the cancellation/checkpoint/close path; repeated signals do not forcibly abandon tools.
 
@@ -38,6 +38,9 @@ service.close().await?;
 ```
 profile/                    owned private directory, mode 0700
   credentials.json          optional private JSON-backed plaintext credentials, mode 0600
+  metadata.json             optional account-scoped model/usage/balance cache, mode 0600
+  images/                   immutable UUID.image PNG/JPEG assets, mode 0700/0600
+  shell-logs/               retained shell output, mode 0700/0600
   service.sock              HTTP Unix socket, mode 0600
   conversations/
     .lock/                  exclusive store ownership
@@ -79,7 +82,7 @@ No client command retries a mutation. A lost response may follow real effects: u
 
 HTTP/1.1 over the private Unix socket, not TCP. No cookies, CORS or remote authentication. Origin/Fetch-Metadata browser requests are rejected. Same-user processes are trusted. **Never forward this socket through a public/network proxy.**
 
-Bodies require `Content-Type: application/json` and reject unknown fields. Request bodies are bounded to 256 KiB, text to 128 Ki UTF-16 code units, model IDs to 128 code units, and workspace paths to 4,096 code units. Workspaces must be existing absolute directories and are canonicalized. Approval/cancellation IDs are UUIDs. Errors are an HTTP status plus `{"error":"safe message"}`, never raw provider exceptions. Exact diagnostic wording is not a machine-readable error code; oversized/interrupted bodies can also reset the connection.
+Bodies require `Content-Type: application/json` and reject unknown fields. Request bodies are bounded to 12 MiB (for encoded images), text to 128 Ki UTF-16 code units with an additional 128 KiB UTF-8 turn bound, model IDs to 128 code units, and workspace paths to 4,096 code units. Workspaces must be existing absolute directories and are canonicalized. Approval/cancellation IDs are UUIDs. Errors are an HTTP status plus `{"error":"safe message"}`, never raw provider exceptions. Exact diagnostic wording is not a machine-readable error code; oversized/interrupted bodies can also reset the connection.
 
 | Method | Path | Body / response |
 |---|---|---|
@@ -99,14 +102,14 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | POST | `/v1/conversations/:id/fork` | `{}` → `201` independent saved copy; source must be idle without pending input |
 | DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after durable deletion; active work returns 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
-| POST | `/v1/conversations/:id/turns` | `{text}` → `202 {operationID}` |
+| POST | `/v1/conversations/:id/turns` | `{text,images?}` → `202 {operationID}` |
 | POST | `/v1/conversations/:id/steer` | `{operationID,text}` → `202 {operationID,messageID}` |
 | POST | `/v1/conversations/:id/cancel` | `{operationID}` → `202 {accepted:true,operationID}` |
 | POST | `/v1/conversations/:id/approvals` | `{operationID,approvalID,approved:boolean}` → `{resolved:true}` |
 
 Missing conversations return 404; invalid requests 400; busy/storage-blocked submissions and stale approvals/cancellations 409. Approval decisions are single use, including races. Cancellation acceptance is not cleanup completion; the acknowledgement echoes the exact operation accepted for cancellation.
 
-A snapshot has `id`, `model`, `workspace`, `configuration`, `messages`, `pendingInput`, `operation`, `approval`, `activeToolCallID`, and `storageError`. Nullable fields are serialized explicitly as null. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in `src/core/types.rs`; command validation is in `src/service.rs`.
+A snapshot has `id`, `model`, `workspace`, `configuration`, `messages`, `pendingInput`, `metadata`, `usage`, `contextUsage`, `resources`, `operation`, `approval`, `activeToolCallID`, and `storageError`. Nullable fields are serialized explicitly as null. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in `src/core/types.rs`; command validation is in `src/service.rs`.
 
 **Turn acceptance is in-memory, not a durable receipt.** A 202 can precede the input checkpoint; a lost response can happen after effects. No idempotent replay mechanism is advertised. Terminal success is published only after its final checkpoint succeeds. Intermediate snapshots/events are not durability receipts.
 
@@ -175,7 +178,7 @@ curl --no-buffer --unix-socket "$HOME/.exec-agent/service.sock" \
 
 Crash recovery never resumes work or steals ownership. Verify the old host and its tool processes have stopped, then explicitly remove only the stale socket and `conversations/.lock` for that profile. See [README.md](README.md#persistence-and-recovery) for interrupted intent, missing results and possible side effects.
 
-Tests cover these contracts with fake providers and real sockets/subprocesses. Live DeepSeek, interactive TTY operation, Linux deployment and Swift UI integration are not claimed verified.
+Tests cover these contracts with fake providers/transports and real sockets/subprocesses. Live OpenAI/DeepSeek, interactive TTY operation, Linux deployment, browser OAuth, native OS permission behavior and Swift UI integration are not claimed verified.
 
 ## Steering
 
@@ -200,7 +203,7 @@ Version-3 checkpoints retain pending input; older versions are read conservative
 (Unix milliseconds). The first prompt supplies a fallback title; manual names are retained.
 Rename/model changes are idle-only and checkpointed before publication. Forks preserve
 transcript IDs and frozen instructions in an independent conversation; they never resume
-work or mutate the source. Resource references will be managed when assets/logs are added.
+work or mutate the source. Shell/image resource references are shared until the last referencing fork is deleted; transient native permissions are never forked.
 
 `GET/PUT /v1/library` owns shared `defaultModel` (nullable), new-session `settings`, and
 `order` (up to 10,000 unique conversation UUIDs). Omitted creation model/settings use these
@@ -240,7 +243,7 @@ remain whole-store integrity failures. Library metadata corruption also fails st
 ## Provider services
 
 `POST /v1/search` accepts `{model,query}` and returns `{query,answer,sources:[{title,url}]}`.
-The standalone DeepSeek service also registers `web_search` as a runner tool, independently
+The standalone registry also registers `web_search` as a runner tool, independently
 of workspace file/shell opt-in. Queries are public single-line text (DeepSeek: at most 128
 characters); results contain up to ten unique credential-free HTTPS source URLs and bounded
 excerpts. Sources and excerpts remain untrusted evidence. This is not URL fetching and
@@ -251,7 +254,7 @@ amounts as strings rather than floating point. These services use bounded JSON b
 provider deadlines and explicit cancellation. Read-only results started before a credential
 change are rejected instead of being presented under the new account. They do not mutate
 conversation context unless invoked as a runner tool. `toolsEnabled` in health describes
-non-search tools; standalone search can be available while it is false.
+workspace file/shell tools only; search, fetch, image generation and optional native capture are independent.
 
 CLI: `search MODEL QUERY`, `balance PROVIDER`. Live provider compatibility is unverified;
 tests use synthetic credentials and fake transports, not the live service.
@@ -283,18 +286,18 @@ supports explicit `none` (thinking disabled), `low`, `high`, `max` (thinking ena
 Unknown DeepSeek effort IDs fail before transport; actual model availability is still
 provider-dependent. `effort ID LEVEL` or `effort ID default` updates an idle session.
 Models may return `efforts:[{id,name}]`, `defaultEffort` and `acceptsImages` metadata. Image
-metadata describes the model, not yet-supported image upload functionality in this API.
+metadata gates image upload delivery to the selected provider; unsupported user image input fails without sending inference.
 
 Successful responses may publish `usage:{inputTokens,outputTokens,totalTokens}` in snapshots.
 Counts are optional provider measurements, not estimates or attributable account cost.
 Usage is cleared for a new response/model selection rather than presenting stale values.
-Context-window percentage/compaction integration remains outstanding.
+Snapshots additionally expose nullable `contextUsage:{tokens,limit}` from provider measurements and model metadata; clients may calculate a display percentage. See runner-owned compaction below.
 
 Opaque per-conversation provider state is stored in version-4 checkpoints, never in API
 snapshots or user/model transcript text. DeepSeek retains reasoning only as needed to echo
 completed assistant tool calls in later requests. Reasoning streams are bounded at 4 MiB;
 combined opaque state is bounded at 8 MiB. Partial/failed streams cannot commit staged
-provider state or measurements. Version 1–3 records remain readable; writes use version 4.
+provider state or measurements. Version 1–3 records remain readable; writes use version 7.
 Thinking and non-thinking responses still require supported completion and `[DONE]`; no
 inference or rotating-token retries are introduced. Mock transport tests do not verify
 live model effort availability or service compatibility.
@@ -311,13 +314,12 @@ The registry owns per-provider opaque context envelopes. Switching models/provid
 idle-only; each provider receives only its own saved state while generic completed history
 remains conversation-owned. No mutable response context is shared across conversations.
 Embedding can register additional ChatProvider implementations; the standalone service
-currently registers only DeepSeek, not OpenAI.
+registers DeepSeek and OpenAI subscription adapters. Concrete wire models remain inside their adapters.
 
-Discovery keeps last-successful catalogs in memory, falls back with explicit warnings on
+Discovery keeps last-successful catalogs in memory and private JSON, falls back with explicit warnings on
 refresh failure, and invalidates cached data around credential changes. Read
 `GET /v1/model-warnings` after discovery to inspect safe diagnostics; no provider bodies or
-account identifiers are exposed. Disconnected providers are excluded. Durable startup
-model/account metadata caches remain outstanding. Discovery does not retry automatically.
+account identifiers are exposed. Disconnected providers are excluded. Account-scoped model/account metadata is persisted privately in `metadata.json` and restored conservatively as stale. Unreadable/insecure optional caches are not repaired and do not block history. Discovery does not retry automatically.
 
 ## Retained shell logs and resource references
 
@@ -374,3 +376,198 @@ model/provider accurately. There is no implicit cross-provider fallback on failu
 
 `configure` updates prompt/approval policy while preserving effort/search selection.
 Version-6 records persist this setting; versions 1–5 remain readable with no search override.
+
+## OpenAI subscription authentication
+
+Standalone startup registers `openai` alongside `deepseek`. OpenAI is ChatGPT/Codex
+subscription access, not public API-key authentication. An absent OpenAI entry is disconnected
+and never prevents local history access. `OPENAI_SESSION_JSON`, when explicitly supplied,
+overrides only the OpenAI JSON entry and remains externally managed: expired environment
+sessions cannot be rotated or disconnected through the API. Malformed credentials fail
+closed; the service never repairs an insecure credential file.
+
+| Method | Path | Contract |
+|---|---|---|
+| POST | `/v1/providers/openai/connect` | `{}` → `202 {attempt,authorizationUrl}` |
+| GET | `/v1/connection-attempt` | Nullable `{id,provider,state,error}`; never includes the authorization URL |
+| POST | `/v1/connection-attempt/cancel` | `{operationID:attemptID}` → `202 {accepted:true}` |
+| DELETE | `/v1/providers/openai` | Local disconnect after one remote revocation attempt; failed revocation may follow successful local removal |
+
+The manager owns one connection attempt, excludes account changes/new turns during it,
+and keeps history readable. Attempt states are `running`, `completed`, `failed`, and
+`interrupted`. Authentication continues independently of a dropped HTTP caller; an explicit
+cancel targets its exact attempt. Shutdown cancels the attempt and awaits its settlement.
+The challenge URL is returned only to the initiating trusted local client, never logged or
+included in provider status. Do not log this response. `connect openai` opens the system
+browser without printing the URL; `auth-status` and `auth-cancel ID` observe/control it.
+DeepSeek `connect` still accepts keys only through bounded piped stdin.
+
+OpenAI authentication uses random state/nonce, S256 PKCE, an IPv4 loopback-only callback on
+port 1455 at `/auth/callback`, bounded HTTP parsing, exact Host/state validation, unique query
+fields and a five-minute callback deadline. No public OAuth callback or remote login proxy
+is provided. Identity acceptance requires RS256 verification against the fixed OpenAI JWKS
+origin, exact issuer, audience/authorized-party, expiration/not-before, nonce and subject.
+The access-token account claim is read only for routing after an authenticated HTTPS token
+exchange; locally decoded JWT claims are not treated as proof of authorization.
+
+The provider-owned JSON session has `accessToken`, `refreshToken`, `accountId`, `subject`,
+`expiresAt` (Unix seconds), and `requiresReconnect`. Never expose it in UI, logs, tools or
+conversation state. Credential updates serialize across both providers and preserve the
+other entry. Refresh is single-flight across conversations. Before sending a rotating
+exchange, persist `requiresReconnect:true`; only after a valid replacement is durably saved
+may credentials be released. A lost response, changed account, invalid replacement or failed
+save leaves the session blocked. Restart cannot reuse that consumed token. Cancellation of
+one inference detaches from refresh; shutdown waits for rotation/persistence to settle.
+There is no automatic token-exchange retry. Reconnect explicitly after inspecting status.
+
+OpenAI Responses requests disable storage, request encrypted reasoning, use strict tool
+schemas and preserve complete output in provider-owned per-conversation state. Deltas are
+provisional: terminal text snapshots replace them, and calls/state/usage become valid only
+on terminal success. Completed output items omitted from terminal output are retained;
+failed/incomplete responses release no calls. Opaque context is account-bound and checked
+against completed transcript text/calls. The runner does not interpret Responses JSON.
+Redirects, cookies, ambient proxies and retries are disabled. JSON account/auth requests
+have a 30-second deadline; image responses and complete Responses streams have a 600-second
+bound (Responses headers: 120 seconds). SSE output is bounded to 16 MiB total, 5 MiB per
+frame, and 4 MiB retained output/text. OpenAI chat requests are capped at 32 MiB.
+
+## Account observations and metadata caches
+
+`GET /v1/providers/openai/usage` returns
+`{windows:[{durationSeconds,usedPercent,resetsAt}],fetchedAt,stale}`. Reset times use Unix
+seconds; `fetchedAt` uses Unix milliseconds. Empty windows mean no valid allowance windows
+were supplied, not unlimited quota. Percentages are measured values, not forecasts.
+`usage openai` exposes this through the CLI. No per-run before/after observations are added.
+
+`GET /v1/metadata` / CLI `metadata` returns per-provider
+`{provider,modelsFetchedAt,modelsStale,usageFetchedAt,usageStale,balanceFetchedAt,balanceStale}`.
+Nullable timestamps mean unobserved. Account observations use a 30-second cache; model
+freshness ages after five minutes and discovery remains explicitly requested. A failed
+refresh can return a same-account cached observation marked stale; no refresh is retried.
+Use this metadata when displaying DeepSeek's exact-decimal balance array.
+
+`metadata.json` contains bounded private catalogs/observations keyed by a provider-internal
+credential/account fingerprint. Fingerprints are not exposed via the API. Credential
+changes invalidate caches; observations crossing a change are rejected. Restart marks
+restored account/model observations stale. A cache for another account is never used.
+Corrupt, linked or insecure optional cache files are not overwritten/repaired and do not
+block local history. Warnings are safe fixed diagnostics, never raw provider responses. An uncertain cache save
+disables further cache writes until restart; it does not retry or block conversation history.
+
+## Runner-owned context compaction
+
+`POST /v1/conversations/:id/compact` with `{}` returns `202 {operationID}`. CLI: `compact ID`.
+This starts an exclusive runner operation, not a manager/provider side loop. The same
+operation-targeted cancellation and terminal durability guarantees apply. Manual compaction
+rejects pending input/busy sessions and models without compaction support. Steering is for
+turn operations, not manual maintenance operations.
+
+The OpenAI provider supports manual compaction and automatic compaction at 95% of the
+last completed measured context window. Before inference the runner prepares required
+model metadata. Automatic compaction includes completed history/tool outcomes but excludes
+new trailing user input; accepted steering is checkpointed while the request is in flight.
+The provider appends the Responses v2 `compaction_trigger`, accepts exactly one encrypted
+compaction item, and discards incidental text/calls without executing them. There is no
+obsolete `/responses/compact` call and no implicit text-summary fallback for DeepSeek.
+
+The opaque replacement is checkpointed before further inference. Visible messages and
+stable IDs remain unchanged. Failure/cancellation retains the original context; uncertain
+checkpoint acknowledgement blocks work. A successful compaction clears stale token usage
+until the next ordinary response measures it. `contextUsage:{tokens,limit}` is a completed
+provider measurement, not an estimate of newly appended input. Neither compaction usage
+nor stale pre-compaction usage is presented as the replacement context's size.
+
+## Image assets, inputs and generation
+
+| Method | Path | Contract |
+|---|---|---|
+| POST | `/v1/conversations/:id/images` | `{name,base64}` → `201 ImageRef`; idle-only owned upload |
+| GET | `/v1/images/:assetID` | `{image:ImageRef,base64}` for an asset referenced by an available conversation |
+| DELETE | `/v1/conversations/:id/images/:assetID` | Release an unused upload → `{released:true}`; cannot remove history independently |
+| POST | `/v1/conversations/:id/turns` | `{text,images?:[ImageRef]}`; image-only input is accepted |
+
+`ImageRef` is `{id,name,mediaType,width,height,byteCount,sha256}`. Snapshots/checkpoints carry
+references, never encoded image bodies. PNG/JPEG data is fully decoded with allocation and
+dimension bounds: 8 MiB per image, dimensions 1–8192, at most 32 million pixels, no APNG,
+and eight images / 16 MiB per input. At most two asset validations run concurrently. Active provider image context is also capped at 16 MiB;
+provider encoded-request bounds can be stricter. References are validated against immutable
+asset bytes before delivery. Unsupported user image input fails without sending inference.
+Tool images are delivered only to image-capable models; other models receive explicit
+context that image contents were unavailable, never a claim of visual inspection.
+
+Assets live at private `PROFILE/images/UUID.image`. Publication uses synced private staging,
+exclusive no-overwrite linking and directory sync. The runner reserves generated/capture
+resource IDs with execution intent before effects. Upload reservations are durably attached
+before bytes are published. Failed/interrupted work can therefore leave reservations
+without files, or a retained artifact without a completed tool result. Never regenerate to
+resolve that uncertainty. Uploaded images can be released only while unused by history;
+conversation deletion removes remaining references after its durable checkpoint deletion.
+Forks share immutable assets. Last-reference cleanup is excluded from live forks, and
+unreadable sessions cause conservative retention. Orphan files/staging are never replayed
+or promoted automatically. Version 7 adds images; versions 1–6 remain readable.
+
+The `generate_image` tool uses the one image-generation provider selected by composition
+(OpenAI in standalone), not a concrete wire model chosen by a frontend/tool. Ambiguous
+multi-image-provider registry composition is rejected; there is no provider fallback.
+Generation uses the same runner approval/cancellation/intent/result lifecycle as other
+tools. Only request it for an explicit user image request. It consumes subscription quota,
+never writes directly into a workspace, and is never retried automatically. Completed image
+results have `details:{type:"image",image:ImageRef,origin:"generated"|"screenshot"}`.
+A managed source is read-only: copy it explicitly, never regenerate just to save it.
+OpenAI hosted search uses a separate Responses request and does not mutate chat state.
+
+CLI additions: `upload-image ID PATH`, `send-image ID ASSET_ID MESSAGE`,
+`release-image ID ASSET_ID`, `image ASSET_ID NEW_PATH`. Saving uses exclusive file creation
+and never overwrites an existing destination. Native clients use the typed `AgentClient`
+methods; image rendering, draft attachment selection and file-save presentation stay local.
+
+## Optional native screenshot protocol
+
+**There is no backend screen capture.** The later Swift adapter must own screen/window
+capture and OS permission. Merely connecting a frontend, using auto approval, supplying a
+`local` flag, or forwarding the Unix socket never enables this capability.
+
+Trusted host composition nominates its local Swift process with
+`NativeHub::allow_local_frontend(pid)`; standalone accepts the explicit
+`serve --native-frontend-pid PID` option. Nomination records same-user process creation
+identity to reject PID reuse. Registration additionally verifies the kernel Unix peer PID,
+consumes the nomination once, and binds one live channel. No API can nominate a peer.
+After disconnect/restart the host must explicitly authorize a fresh registration; the
+future Swift host integration owns that lifecycle. Unsupported peer-attestation platforms
+fail closed. This is a private same-user local trust boundary, not remote authentication.
+
+| Method | Path | Contract |
+|---|---|---|
+| POST | `/v1/native/events` | `{osScreenPermission:boolean}` → live NDJSON: `registered`, `request`, `cancelled`, `ping` |
+| PUT | `/v1/native/permission` | `{frontendID,granted}`; only that kernel-attested registered peer may report OS permission |
+| POST | `/v1/native/results` | `{request:NativeRequest,result:NativePayload}`; exact, live, single-use correlation required |
+| GET | `/v1/conversations/:id/desktop` | `{frontendID,enabled}`; initially disabled |
+| PUT | `/v1/conversations/:id/desktop` | Explicitly bind/enable one frontend or disable; independent of auto approval |
+
+The registration event supplies `frontendID`. `NativeRequest` is
+`{id,frontendID,conversationID,operationID,callID,action:{target,windowID}}`.
+Targets are `desktop`, `list_windows`, `window`; only `window` takes a positive `windowID`.
+Window capture requires a prior successful enumeration through the same frontend/session.
+Results are `{type:"windows",windows:[{id,title}]}`, `{type:"image",base64}` or
+`{type:"failed"}`. Window lists are bounded to 256 unique positive IDs and 1024-byte titles.
+Window results have typed `details:{type:"windows",windows}`. Titles/screens remain
+untrusted evidence, not instructions. Failed native results expose no arbitrary frontend
+error string.
+
+Capture preparation binds the exact frontend/action without requesting OS access. The
+runner then enforces its approval policy and checkpoints intent before sending the request.
+Results must match every correlation field and the registered peer; stale, wrong-target,
+duplicate or post-cancellation results return 409. A 60-second deadline, disabled/rebound
+session permission, revoked OS permission, disconnect or cancellation invalidates the
+request. Cancellation notifications are best-effort bounded transport messages; acceptance
+of late results never depends on notification delivery. No request is replayed or rerouted.
+The native adapter must cancel its own capture work when notified or disconnected.
+
+OS permission reports are trusted only from the host-nominated adapter; the backend cannot
+verify macOS TCC on behalf of Swift and never grants it. Reporting OS permission restored
+does not re-enable session access. Native permissions/channels are transient, never restored
+or forked. General observer disconnects still only detach; disconnecting the bound native
+capability channel specifically revokes that capability and invalidates its pending calls.
+CLI `desktop ID FRONTEND_ID|off` controls session permission but does not capture screens.
+The Rust `AgentClient` exposes typed native channel/reply/permission methods for the future
+Swift bridge. No Swift adapter, live OS permission check, or headless substitute is claimed.

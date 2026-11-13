@@ -1,6 +1,6 @@
 # Exec agent — Rust
 
-Rust migration of [`../agent`](../agent), now extending API v1 toward [backend parity](PARITY.md). The TypeScript implementation remains unchanged. This is a standalone library and executable, not a wrapper around Node or an agent framework. The Swift app is unchanged and is not connected to this service.
+Rust migration of [`../agent`](../agent), now extending API v1 with the agreed [backend parity](PARITY.md) scope implemented. The TypeScript implementation remains unchanged. This is a standalone library and executable, not a wrapper around Node or an agent framework. The Swift app is unchanged and is not connected to this service.
 
 ## Guiding principles
 
@@ -37,7 +37,9 @@ See [API.md](API.md) for credentials, all CLI commands, HTTP/NDJSON contracts, a
 | `core/events.rs` | Nonblocking, bounded observer delivery; reconnect by snapshot rather than replay |
 | `manager.rs` | Independent concurrent conversations and durable catalog ownership |
 | `storage.rs` | Single-owner JSON profiles, serialized atomic checkpoints, locking and directory sync |
-| `providers/` | DeepSeek HTTP/SSE, request validation, model discovery and private JSON/environment credential lifecycle |
+| `providers/` | DeepSeek and OpenAI wire formats, authentication, discovery, account/search/image services and opaque context |
+| `core/images.rs`, `images.rs` | Neutral image references/reader contract and private validated immutable assets |
+| `native.rs` | Manager-owned optional local frontend capability broker; never captures screens |
 | `tools/` | Revision-checked file operations, literal search, approved bash commands and process-group cleanup |
 | `service.rs` | Private Unix-socket HTTP/NDJSON API, composition and orderly shutdown |
 | `client.rs`, `terminal.rs` | Transport-only client and escaped/reconciled terminal transcript |
@@ -77,7 +79,7 @@ A failed settings-save acknowledgement blocks further mutations/inference until 
 
 Acceptance is not a durable receipt. Dropping the completion receiver or an observer detaches; it does not cancel the runner. Use explicit cancellation, await settlement, then close the manager. As with any async Rust API, await catalog/store operations to completion; do not abort the enclosing task during a durable mutation. Service request handlers remain owned independently of client disconnects for this reason.
 
-A prepared tool is consumed by execution, preventing accidental reuse. Providers and executors must honor their `CancellationToken`; the runtime does not drop an in-flight executor to simulate cleanup. A noncooperative embedded adapter can keep a conversation busy. Observer delivery never calls application code while holding runtime state. Slow observers are disconnected at the byte/event bound and must explicitly subscribe again.
+A prepared tool is consumed by execution, preventing accidental reuse. Providers and executors must honor their `CancellationToken`; the runtime does not drop an in-flight executor to simulate cleanup. A noncooperative embedded adapter can keep a conversation busy. Observer delivery is nonblocking and never calls frontend code while holding runtime state. Optional embedded provider/tool metadata hooks must be fast and non-reentrant. Slow observers are disconnected at the byte/event bound and must explicitly subscribe again.
 
 ## Preserved behavior and limits
 
@@ -85,7 +87,7 @@ A prepared tool is consumed by execution, preventing accidental reuse. Providers
 - Finalized tool calls get paired results for success, denial, failure, interruption, or non-execution. Partial/failed assistant responses stay visible but never become completed provider context. Tool calls are withheld until the entire provider response completes successfully.
 - New conversations default to persisted auto-approval. Manual mode uses exact, single-use approvals and waits even with no client connected. Auto mode still prepares, validates, checkpoints intent and checks cancellation before effects. Cancellation stays possible until final checkpoint commit begins; executor ownership includes cleanup.
 - No automatic inference, credential, mutation, tool, or checkpoint retries. Errors expose safe diagnostics rather than raw provider bodies or transport exceptions.
-- Concrete DeepSeek origin only, text/function calls with model-default or explicit reasoning effort. Explicit `none` disables thinking and rejects unexpected reasoning. Supported finish reason **and** `[DONE]` are required; incomplete state is never committed.
+- DeepSeek adapter: text/function calls and capability-gated images with model-default or explicit reasoning effort. Explicit `none` disables thinking and rejects unexpected reasoning. Supported finish reason **and** `[DONE]` are required; incomplete state is never committed.
 - DeepSeek: 120-second default deadline (configurable up to 900), 16 MiB request/stream bound, 256 KiB SSE frames, 4 MiB text, 64 calls with 32 KiB argument JSON, and 128 KiB model discovery responses. Redirects, cookies, retries and ambient proxies are disabled.
 - File reads: regular UTF-8 files up to 1 MiB, 1–400 numbered lines, SHA-256 full-file revision, 32 KiB output. Listing: one directory, at most 2,000 entries. Search: case-sensitive single-line literal, bounded depth/time/entries/matches/output, hidden/dependency/build entries skipped, incompleteness reported.
 - Edits: exact unique replacement (including overlapping-match rejection), matching revision, approval before effects, revalidation before commit, serialized writes, exclusive no-overwrite creation. POSIX owner/group/mode are preserved; ACLs and extended attributes are not retained. Do not use for metadata-sensitive files.
@@ -95,7 +97,7 @@ File tools check path components and use no-follow file opens. As in the sketch,
 
 ## Persistence and recovery
 
-API v1 names such as `operationID`, `callID`, `activeToolCallID`, and `executingToolID` remain. Checkpoints now use **version 6** (including opaque provider context, token measurements and resource references), requiring execution settings and frozen instruction state. Version-2/3/4/5 records remain readable. Version-1 records are read conservatively with manual approval and no newly loaded AGENTS.md context; their next save writes version 6. The TypeScript sketch cannot read these new records. Never share an active profile or downgrade its writer. This is not a Swift-store migration.
+API v1 names such as `operationID`, `callID`, `activeToolCallID`, and `executingToolID` remain. Checkpoints now use **version 7** (including image references, opaque provider context, token measurements and resource ownership), requiring execution settings and frozen instruction state. Version-2/3/4/5/6 records remain readable. Version-1 records are read conservatively with manual approval and no newly loaded AGENTS.md context; their next save writes version 7. The TypeScript sketch cannot read these new records. Never share an active profile or downgrade its writer. This is not a Swift-store migration.
 
 Profiles use a `.lock` directory, one validated `<UUID>.json` file per conversation, `0700` new directories, `0600` checkpoints, same-directory staging, file sync, atomic rename and directory sync. Corrupt/unsupported/oversized owned regular records appear as unreadable sessions and are preserved; valid sessions remain available. Linked/special/foreign-owned entries, uncertain file identity, lost store ownership and corrupt library metadata still fail startup. The limit is 16 MiB per record. This is local single-owner storage, not a network database or hostile-filesystem sandbox.
 
@@ -107,16 +109,38 @@ Normal service shutdown removes its socket and lock. A crash deliberately leaves
 
 ## Verification and scope
 
-The initial API was smoke-tested with the TypeScript sketch. New settings, default-auto semantics and version-2 records are Rust extensions; cross-implementation parity is no longer claimed.
+The agreed backend checklist in [PARITY.md](PARITY.md) is implemented. The original Swift
+app remains unchanged; its API integration and native capture adapter are a separate phase.
+Remote access, Keychain and Swift-store migration are excluded. Automatic title generation
+and per-run before/after allowance observations remain explicitly deferred.
 
-Verified on macOS with Rust 1.93.1. Live DeepSeek authentication/service compatibility, interactive TTY behavior, Linux deployment, machine power-loss guarantees, remote access and Swift integration remain unverified. Automated mocks do not establish live provider compatibility.
+The standalone registry composes DeepSeek and OpenAI subscription adapters with isolated
+opaque conversation contexts. DeepSeek API-key onboarding uses private JSON or environment
+credentials. OpenAI uses browser PKCE/OIDC sign-in, private rotating credentials, and
+single-flight refresh with a durable consumed-token marker. An uncertain refresh requires
+reconnection, never reuse of the possibly consumed token. Missing credentials do not block
+history. Model/account caches are account-scoped, private, and expose freshness/staleness.
 
-Still absent: OpenAI subscription access, authenticated remote serving, plugins/skills infrastructure and Swift client integration. No agent framework or speculative features were added.
+The runner owns manual/automatic OpenAI compaction without replacing visible history.
+Neutral image references and private immutable assets support uploaded input, generated
+images and optional frontend screenshots. Fork/delete/release preserve shared ownership.
+Native capture requires explicit host nomination of a local Swift process, kernel peer
+identity, a live channel, frontend-owned OS permission and separate session permission.
+There is no headless capture or remote fallback. Registration is single-use, permissions
+are transient, and cancellation/disconnect invalidates exact correlated results.
 
-DeepSeek credential onboarding and disconnection now work through the private API and stdin-only CLI. Missing credentials no longer block local history. This is configuration, not live authentication verification; JSON writes do not contact the provider.
+Search, balances, current allowance/reset information, public-page fetch, images, context
+usage, compaction and native capability transport have typed API/client coverage and CLI
+controls where appropriate. The CLI does not implement native screen capture. `scraper`
+handles bounded HTML parsing; `image` validates PNG/JPEG assets; `ring` verifies OIDC
+signatures; `base64` encodes bounded image/JWT payloads. No agent framework was introduced.
 
-DeepSeek public search (`web_search` and API) and exact-decimal balances are supported with bounded responses, deadlines, cancellation and no retries. Tests verify fake transport contracts, not live provider compatibility.
+Automated verification uses fake providers/transports, synthetic credentials, isolated
+stores, local sockets and subprocesses. OIDC tests generate an ephemeral RSA fixture with
+OpenSSL (test-time prerequisite only). Live OpenAI/DeepSeek compatibility, browser sign-in,
+subscription image quota behavior, native Swift/OS permissions, interactive TTY behavior,
+Linux deployment and machine power-loss guarantees remain unverified. Mocks do not verify
+live services. No Swift files or code-signing settings were changed.
 
-Public-page fetch is available through the runner, API and CLI. It uses a dedicated credential-free, proxy-free HTTPS transport with DNS pinning and bounded HTML parsing. `scraper` is the focused HTML-parsing dependency; no browser or agent framework is introduced.
-
-Standalone composition now uses a provider registry with qualified model IDs and isolated per-provider opaque state. Bare DeepSeek IDs remain compatible aliases. The registry supports additional embedded providers; OpenAI is not yet implemented.
+See [ARCHITECTURE_AUDIT.md](ARCHITECTURE_AUDIT.md) for the final guidance review and
+ownership/verification evidence.

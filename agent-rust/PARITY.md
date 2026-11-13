@@ -23,7 +23,7 @@ remain frontend-owned. Isolate unreadable conversations without silently discard
 fail closed for uncertain store ownership/integrity. Tool bounds need not match Swift's
 exact byte counts, but truncation and full-log access must remain truthful.
 
-This file describes the target and remaining work, not implemented capabilities.
+This file records the agreed target and completed backend implementation.
 README.md and API.md describe current behavior.
 The checked items below are delivered and verified; unchecked items remain outstanding.
 
@@ -89,8 +89,7 @@ The checked items below are delivered and verified; unchecked items remain outst
   only after valid completion and restored per conversation. Opaque state is not in API snapshots.
 
 - [x] Provider registry with namespaced model routing, isolated opaque provider contexts,
-  discovery fallback warnings and credential-generation cache invalidation. Standalone
-  currently registers DeepSeek; a second concrete provider (OpenAI) remains outstanding.
+  discovery fallback warnings and credential-generation cache invalidation. Standalone now registers DeepSeek and OpenAI; each retains isolated opaque context.
 
 - [x] Managed private shell logs, bounded API/client/CLI reads, optional descriptive
   shell titles, execution-intent resource references and last-fork-aware deletion.
@@ -102,20 +101,29 @@ The checked items below are delivered and verified; unchecked items remain outst
 - [x] Persisted explicit search-model selection and CLI control, including neutral
   registry routing without changing the chat model. Default follows the chat provider.
 
-### Remaining backend work
+### Additional backend work delivered
 
-- [ ] Image-input capability integration (model metadata is available).
-- [ ] OpenAI subscription provider, browser OAuth, safe token refresh/persistence,
+- [x] Capability-gated image input with neutral references and bounded provider payloads.
+- [x] OpenAI subscription provider, browser OAuth, safe token refresh/persistence,
   JSON credential management and runtime connect/disconnect.
-- [ ] Provider/account model metadata caches.
-- [ ] Manual/automatic compaction and context-window usage presentation metadata.
-- [ ] Image assets, image inputs and durable image references.
-- [ ] Image generation and OpenAI search support.
-- [ ] Optional frontend screenshot capability protocol, session permission, exact
+- [x] Provider/account model metadata caches.
+- [x] Manual/automatic compaction and context-window usage presentation metadata.
+- [x] Image assets, image inputs and durable image references.
+- [x] Image generation and OpenAI search support.
+- [x] Optional frontend screenshot capability protocol, session permission, exact
   request/result correlation, cancellation/disconnect handling; no headless capture.
-- [ ] Image/other asset deletion and fork reference ownership (shell logs implemented).
-- [ ] OpenAI account allowances/reset information and account/model freshness caches.
-- [ ] Complete API/client coverage for the above, neutral diagnostics and documentation.
+- [x] Image/other asset deletion and fork reference ownership (shell logs implemented).
+- [x] OpenAI account allowances/reset information and account/model freshness caches.
+- [x] Complete API/client coverage for the above, CLI controls, neutral diagnostics,
+  documentation and final architecture audit in ARCHITECTURE_AUDIT.md.
+
+## Completion boundary
+
+No unchecked backend implementation items remain in the agreed scope. Automated verification
+uses fake service/native transports, not live subscription calls or OS permission dialogs.
+The Swift capture adapter/frontend integration, remote access, Keychain and store migration
+remain excluded, not silently substituted with headless behavior. Generated titles and
+per-run before/after allowance observations remain the approved deferrals.
 
 ## Verification and delivery
 

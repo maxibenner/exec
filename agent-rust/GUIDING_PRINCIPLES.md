@@ -11,8 +11,9 @@ It supersedes the initial busy-input rejection policy with explicit safe-boundar
 steering, and individual-only approvals with persisted auto mode (default on).
 Neither behavior may be implemented solely in a frontend. JSON/environment credentials,
 no Keychain, no Swift-store migration, and frontend-only screenshot availability are
-explicit scope decisions. The initial implementation remains unchanged until each
-replacement is implemented and verified.
+explicit scope decisions. The agreed backend replacements are implemented; the original
+Swift frontend remains unchanged pending its separate integration phase. See the completed
+[architecture audit](ARCHITECTURE_AUDIT.md) for the ownership review and verification limits.
 
 ## Architecture and simplicity
 
@@ -148,7 +149,9 @@ These are different guarantees. A `202`, a tool-start event, or a tool-result ev
 
 Clients reconnect to obtain a current snapshot and then follow live events.
 
-Snapshots reconcile authoritative state; text deltas append incremental output. Disconnecting does not cancel work, approve tools, or restart inference. Slow or broken observers must not block execution.
+Snapshots reconcile authoritative state; text deltas append incremental output. Disconnecting does not cancel work, approve tools, or restart inference. Slow or broken observers must not block execution. A bound native capture channel is a
+separate explicitly granted capability, not an ordinary observer: losing it revokes that
+capability and invalidates its exact pending requests, never rerouting or replaying them.
 
 Avoid adding replay logs, cursors, queues, or idempotency mechanisms until a concrete requirement needs them.
 
