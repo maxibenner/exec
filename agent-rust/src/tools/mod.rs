@@ -1,4 +1,6 @@
+mod fetch;
 mod files;
+pub use fetch::{create_fetch_tool, create_fetch_tool_with};
 mod provider_search;
 mod shell;
 mod workspace;

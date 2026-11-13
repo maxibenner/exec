@@ -65,6 +65,12 @@ impl AgentClient {
         .await
         .map_err(|_| Error::Invalid(INVALID))?
     }
+    pub async fn fetch_content(&self, url: &str) -> Result<crate::content_fetch::FetchedContent> {
+        decode(
+            self.call("POST", "/v1/fetch", Some(json!({"url":url})))
+                .await?,
+        )
+    }
     pub async fn search_web(&self, model: &str, query: &str) -> Result<WebSearchResult> {
         decode(
             self.call(

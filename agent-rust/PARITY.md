@@ -81,6 +81,9 @@ The checked items below are delivered and verified; unchecked items remain outst
   web_search tool, API/client/CLI coverage, bounded source decoding, no retries, and
   stale account-observation protection after credential changes. Live service unverified.
 
+- [x] Public HTTPS fetch tool/API/client/CLI with DNS-pinned public destinations,
+  revalidated redirects, bounded UTF-8 text/HTML extraction, cancellation and no retries.
+
 ### Remaining backend work
 
 - [ ] Provider-neutral capabilities/efforts/image support and effort selection.
@@ -91,7 +94,7 @@ The checked items below are delivered and verified; unchecked items remain outst
 - [ ] Provider/account model metadata caches.
 - [ ] Manual/automatic compaction, opaque provider state and context usage.
 - [ ] Typed tool results, assets, image inputs and durable image references.
-- [ ] Public HTTPS content fetching and image generation; OpenAI search support.
+- [ ] Image generation and OpenAI search support.
 - [ ] Optional frontend screenshot capability protocol, session permission, exact
   request/result correlation, cancellation/disconnect handling; no headless capture.
 - [ ] Full shell logs, descriptive shell titles, typed applied-edit diffs.

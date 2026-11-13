@@ -115,6 +115,18 @@ impl AgentManager {
             .insert(conversation.id.clone(), conversation.clone());
         Ok(conversation)
     }
+    pub async fn fetch_content(
+        &self,
+        url: &str,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<crate::content_fetch::FetchedContent> {
+        if self.catalog.lock().unwrap().closed {
+            return Err(Error::Invalid("Agent manager is closed."));
+        }
+        crate::content_fetch::ContentFetcher::default()
+            .fetch(url, cancel)
+            .await
+    }
     fn provider_epoch(&self) -> Result<u64> {
         let catalog = self.catalog.lock().unwrap();
         if catalog.closed || catalog.account_busy {

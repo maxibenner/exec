@@ -84,6 +84,7 @@ pub async fn start_persistent_service(
         vec![]
     };
     tools.extend(crate::tools::create_provider_tools(provider.clone()));
+    tools.push(crate::tools::create_fetch_tool());
     let store = JsonConversationStore::open(profile.join("conversations")).await?;
     let manager = AgentManager::open(store, |_| (provider.clone(), tools.clone())).await?;
     match start_service(ServiceOptions {
@@ -262,6 +263,11 @@ struct Create {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct Fetch {
+    url: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Search {
     model: String,
     query: String,
@@ -334,7 +340,7 @@ async fn handle(
     if method == "GET" && route == "/v1/health" {
         return Ok(json_response(
             200,
-            json!({"version":1,"toolsEnabled":options.tools.iter().any(|tool| tool.definition().name != "web_search")}),
+            json!({"version":1,"toolsEnabled":options.tools.iter().any(|tool| !["web_search", "fetch_content"].contains(&tool.definition().name.as_str()))}),
         ));
     }
     if method == "GET" && route == "/v1/models" {
@@ -342,6 +348,20 @@ async fn handle(
         let _guard = cancel.clone().drop_guard();
         let models = tokio::select! {biased;_=cancel.cancelled()=>return Err(ApiError(503,"Service is stopping.")),value=tokio::time::timeout(Duration::from_secs(120),options.manager.discover_models(options.provider.clone(), cancel.clone()))=>value.map_err(|_|ApiError(500,"Model discovery failed."))??};
         return Ok(json_response(200, models));
+    }
+    if method == "POST" && route == "/v1/fetch" {
+        let input: Fetch = body(request).await?;
+        crate::content_fetch::public_url(&input.url).map_err(|_| {
+            ApiError(
+                400,
+                "Use a public HTTPS URL without credentials on port 443.",
+            )
+        })?;
+        let result = options
+            .manager
+            .fetch_content(&input.url, request_cancel)
+            .await?;
+        return Ok(json_response(200, result));
     }
     if method == "POST" && route == "/v1/search" {
         let search: Search = body(request).await?;

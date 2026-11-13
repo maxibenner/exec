@@ -1,6 +1,7 @@
 //! Provider-neutral agent runtime and private local service. No automatic retries.
 #![cfg(unix)]
 pub mod client;
+pub mod content_fetch;
 pub mod core;
 pub mod manager;
 pub mod providers;

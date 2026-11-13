@@ -255,3 +255,23 @@ non-search tools; standalone search can be available while it is false.
 
 CLI: `search MODEL QUERY`, `balance PROVIDER`. Live provider compatibility is unverified;
 tests use synthetic credentials and fake transports, not the live service.
+
+## Public content fetching
+
+`POST /v1/fetch` accepts `{url}` and returns `{url,contentType,text,truncated}`. The same
+operation is registered as `fetch_content` in the standalone runner and exposed as `fetch URL`
+in the CLI. No provider credentials, website credentials, cookies or ambient proxies are
+used. Public HTTPS port 443 only; all resolved addresses must be public, and the HTTP client
+is pinned to those addresses while retaining ordinary TLS hostname/certificate validation.
+The connected peer must match a validated address. This improves on Swift's DNS preflight,
+which resolved the hostname again at connection time.
+
+At most three redirects are followed with fresh URL/DNS validation. Ordinary HTTP redirects
+are upgraded to HTTPS before requesting them; nonstandard ports and credential-bearing URLs
+are rejected. There is a 30-second overall deadline, 1 MiB download bound, and 24,000-byte
+UTF-8 output bound. HTML is parsed by scraper/html5ever; script/style/template/head content
+is excluded. Plain text, JSON, XML and HTML are supported when UTF-8; invalid encodings,
+binary/PDF content, oversized bodies and empty extracted content fail explicitly. No
+JavaScript execution, browser sessions, login or automatic retries. Returned text is
+untrusted evidence, never a generated summary. Tests use fake DNS/transports; no live
+website compatibility or hostile-network sandbox guarantee is claimed.
