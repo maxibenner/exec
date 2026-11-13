@@ -17,9 +17,10 @@ CLI simulator build:
 ```sh
 cd iOS
 xcodebuild -project ExecRemote.xcodeproj -scheme ExecRemote \
-  -sdk iphonesimulator -configuration Debug -derivedDataPath .build \
-  CODE_SIGNING_ALLOWED=NO build
+  -sdk iphonesimulator -configuration Debug -derivedDataPath .build build
 ```
+
+Keep Xcode's default **Sign to Run Locally** simulator signing enabled. An unsigned simulator build can launch but cannot use its Keychain. In Xcode 27, the simulator UI is **Device Hub** (`Xcode.app/Contents/Applications/DeviceHub.app`).
 
 ## Device / TestFlight
 
