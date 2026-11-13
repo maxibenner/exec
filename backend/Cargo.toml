@@ -11,6 +11,9 @@ axum = "0.8"
 bytes = "1"
 base64 = "0.22"
 ring = "0.17"
+hpke = { version = "0.12", default-features = false, features = ["std", "x25519"] }
+rand = "0.8"
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1"] }

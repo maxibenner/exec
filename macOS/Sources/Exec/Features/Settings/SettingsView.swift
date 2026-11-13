@@ -17,6 +17,9 @@ struct SettingsView: View {
             ProviderSettingsView(store: store)
                 .tabItem { Label("Providers", systemImage: "person.crop.circle") }
                 .tag(ChatLibrary.SettingsTab.accounts)
+            RemoteAccessSettingsView(api: store.remoteAPI)
+                .tabItem { Label("Remote Access", systemImage: "iphone.and.arrow.forward") }
+                .tag(ChatLibrary.SettingsTab.remoteAccess)
             UsageSettingsView(store: store)
                 .tabItem { Label("Usage", systemImage: "chart.bar") }
                 .tag(ChatLibrary.SettingsTab.usage)

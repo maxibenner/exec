@@ -21,6 +21,7 @@ import Observation
                 try await library.restore()
                 try Task.checkCancellation()
                 store = library
+                library.startSynchronization()
                 windows = SessionWindows(library: library)
                 isReadyForPresentation = true
             } catch {

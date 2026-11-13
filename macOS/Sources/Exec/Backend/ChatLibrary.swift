@@ -5,7 +5,7 @@ import Observation
 @MainActor @Observable final class ChatLibrary {
     private(set) var current: ChatStore
     private(set) var models: [ChatModel] = []
-    enum SettingsTab { case modelsAndTools, systemPrompt, accounts, usage, updates }
+    enum SettingsTab { case modelsAndTools, systemPrompt, accounts, usage, updates, remoteAccess }
     var settingsTab = SettingsTab.modelsAndTools
     var connectionError: String?
     private(set) var openingSessionID: UUID?
@@ -32,6 +32,8 @@ import Observation
     private let preferences: UserDefaults
     private let residentLimit: Int
     private var restoringDefaults = false
+    private var synchronization: Task<Void, Never>?
+    var remoteAPI: AgentAPI { provider.api }
     private var cachedUsage: CachedAccountUsage?
     private var balances: [String: [AccountBalance]] = [:]
     var accountUsage: AccountUsage? { cachedUsage?.current() }
@@ -167,7 +169,37 @@ import Observation
         modelTask?.cancel()
         for item in conversations { item.cancelPendingCommands(); if item.busy { item.stop() } }
     }
-    func closePresentations() { for item in conversations { item.closePresentation() } }
+    func closePresentations() { synchronization?.cancel(); synchronization = nil; for item in conversations { item.closePresentation() } }
+    func startSynchronization() {
+        guard synchronization == nil else { return }
+        synchronization = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(2))
+                    try await self?.refreshSharedState()
+                } catch is CancellationError { break }
+                catch { if !Task.isCancelled { self?.connectionError = error.localizedDescription } }
+            }
+        }
+    }
+    private func refreshSharedState() async throws {
+        guard !navigating, defaultsTask == nil else { return }
+        let revision = defaultsRevision
+        try await sessions.restore()
+        guard defaultsTask == nil, revision == defaultsRevision else { return }
+        let config = sessions.configuration
+        restoringDefaults = true
+        defaultModel = config.defaultModel ?? ""
+        defaultEffort = config.settings.effort
+        automaticTitles = config.automaticTitles
+        systemPrompt = config.settings.systemPrompt
+        searchModel = config.settings.searchModel ?? ""
+        defaultAutoApproveTools = config.settings.autoApprove
+        restoringDefaults = false
+        try await refreshCatalog()
+        for conversation in openConversations { conversation.reconnectIfNeeded() }
+        connectionError = nil
+    }
     func connect(providerID: String, credential: String? = nil) {
         accountOperation { try await self.provider.connect(id: providerID, credential: credential) }
     }

@@ -6,6 +6,7 @@ pub mod images;
 pub mod manager;
 pub mod native;
 pub mod providers;
+mod remote;
 pub mod service;
 mod service_auth;
 pub mod shell_logs;

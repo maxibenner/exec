@@ -46,7 +46,8 @@ pub struct ServiceOptions {
     pub address: SocketAddr,
     pub access: HttpAccess,
 }
-struct Host {
+pub(crate) struct Host {
+    remote: Option<Arc<crate::remote::RemoteAccess>>,
     options: ServiceOptions,
     stop: CancellationToken,
     handlers: tokio_util::task::TaskTracker,
@@ -97,6 +98,7 @@ pub async fn start_persistent_service_with_native(
     access: HttpAccess,
 ) -> Result<Service> {
     let profile = private_directory(profile).await?;
+    let remote = crate::remote::RemoteAccess::load(&profile).await?;
     let images = crate::images::ImageStore::open(profile.join("images")).await?;
     let logs = crate::shell_logs::ShellLogStore::open(profile.join("shell-logs")).await?;
     let mut tools = if workspace_tools {
@@ -121,13 +123,16 @@ pub async fn start_persistent_service_with_native(
     manager.attach_logs(logs);
     manager.attach_images(images);
     manager.attach_native(native);
-    match start_service(ServiceOptions {
-        manager: manager.clone(),
-        provider,
-        tools,
-        address,
-        access,
-    })
+    match start_service_with_remote(
+        ServiceOptions {
+            manager: manager.clone(),
+            provider,
+            tools,
+            address,
+            access,
+        },
+        Some(remote),
+    )
     .await
     {
         Ok(service) => Ok(service),
@@ -138,15 +143,25 @@ pub async fn start_persistent_service_with_native(
     }
 }
 pub async fn start_service(options: ServiceOptions) -> Result<Service> {
+    start_service_with_remote(options, None).await
+}
+async fn start_service_with_remote(
+    options: ServiceOptions,
+    remote: Option<Arc<crate::remote::RemoteAccess>>,
+) -> Result<Service> {
     let listener = tokio::net::TcpListener::bind(options.address).await?;
     let address = listener.local_addr()?;
     let stop = CancellationToken::new();
     let host = Arc::new(Host {
+        remote,
         options,
         stop: stop.clone(),
         handlers: tokio_util::task::TaskTracker::new(),
     });
     let task = tokio::spawn(async move {
+        let remote_task = host.remote.as_ref().map(|remote| {
+            tokio::spawn(remote.clone().run(Arc::downgrade(&host), host.stop.clone()))
+        });
         let mut connections = tokio::task::JoinSet::new();
         let capacity = Arc::new(tokio::sync::Semaphore::new(64));
         loop {
@@ -164,6 +179,9 @@ pub async fn start_service(options: ServiceOptions) -> Result<Service> {
             }
         }
         drop(listener);
+        if let Some(task) = remote_task {
+            let _ = task.await;
+        }
         // Handlers finish their catalog mutations before shutdown takes ownership.
         while connections.join_next().await.is_some() {}
         host.handlers.close();
@@ -236,7 +254,7 @@ async fn dispatch(
     request: Request<Body>,
     cancel: CancellationToken,
 ) -> Response<Body> {
-    match handle(host, request, cancel).await {
+    match handle(host, request, cancel, false).await {
         Ok(response) => response,
         Err(ApiError(status, error)) => {
             let mut response = json_response(status, json!({"error":error}));
@@ -368,6 +386,7 @@ async fn handle(
     host: Arc<Host>,
     request: Request<Body>,
     request_cancel: CancellationToken,
+    remote_client: bool,
 ) -> ApiResult<Response<Body>> {
     if request.headers().contains_key("origin") || request.headers().contains_key("sec-fetch-site")
     {
@@ -377,10 +396,24 @@ async fn handle(
         || (request.method() == "PUT"
             && request.uri().path().starts_with("/v1/conversations/")
             && request.uri().path().ends_with("/desktop"));
-    host.options
-        .access
-        .authorize(request.headers(), native)
-        .map_err(|(status, message)| ApiError(status, message))?;
+    if remote_client {
+        let path = request
+            .uri()
+            .path_and_query()
+            .map(|p| p.as_str())
+            .unwrap_or("");
+        if !crate::remote::permits(request.method().as_str(), path) {
+            return Err(ApiError(
+                403,
+                "This operation is unavailable to remote devices.",
+            ));
+        }
+    } else {
+        host.options
+            .access
+            .authorize(request.headers(), native)
+            .map_err(|(status, message)| ApiError(status, message))?;
+    }
     if host.stop.is_cancelled() {
         return Err(ApiError(503, "Service is stopping."));
     }
@@ -391,6 +424,30 @@ async fn handle(
         .unwrap_or("")
         .to_owned();
     let method = request.method().as_str().to_owned();
+    if route.starts_with("/v1/remote") {
+        let remote = host.remote.as_ref().ok_or(ApiError(
+            404,
+            "Remote access requires a persistent profile.",
+        ))?;
+        match (method.as_str(), route.as_str()) {
+            ("GET", "/v1/remote") => return Ok(json_response(200, remote.status().await)),
+            ("PUT", "/v1/remote") => {
+                remote.configure(body(request).await?).await?;
+                return Ok(json_response(200, remote.status().await));
+            }
+            ("POST", "/v1/remote/invitations") => {
+                let _: Empty = body(request).await?;
+                return Ok(json_response(200, remote.invite().await?));
+            }
+            ("DELETE", path) if path.starts_with("/v1/remote/devices/") => {
+                let id = &path["/v1/remote/devices/".len()..];
+                identifier(id)?;
+                remote.revoke(id).await?;
+                return Ok(json_response(200, remote.status().await));
+            }
+            _ => return Err(ApiError(404, "Route not found.")),
+        }
+    }
     let options = &host.options;
     if method == "POST" && route == "/v1/native/events" {
         #[derive(Deserialize)]
@@ -597,6 +654,13 @@ async fn handle(
     if route == "/v1/library" {
         return match method.as_str() {
             "GET" => Ok(json_response(200, options.manager.library_configuration()?)),
+            "PATCH" => {
+                let patch: serde_json::Value = body(request).await?;
+                Ok(json_response(
+                    200,
+                    options.manager.patch_library(patch).await?,
+                ))
+            }
             "PUT" => {
                 let config: LibraryConfiguration = body(request).await?;
                 config
@@ -893,4 +957,20 @@ async fn handle(
         }
         _ => Err(ApiError(405, "Method not allowed.")),
     }
+}
+
+/// Accepted catalog writes outlive the tunnel task; service shutdown awaits them.
+pub(crate) async fn remote_request(host: Arc<Host>, request: Request<Body>) -> Response<Body> {
+    let handlers = host.handlers.clone();
+    let cancel = host.stop.child_token();
+    let _guard = cancel.clone().drop_guard();
+    handlers
+        .spawn(async move {
+            match handle(host, request, cancel, true).await {
+                Ok(response) => response,
+                Err(ApiError(status, message)) => json_response(status, json!({"error":message})),
+            }
+        })
+        .await
+        .unwrap_or_else(|_| json_response(500, json!({"error":"Remote request failed."})))
 }

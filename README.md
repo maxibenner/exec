@@ -32,6 +32,10 @@ The app profile is `~/Library/Application Support/Exec/Agent/`. Credentials are 
 
 See the [architecture guide](docs/architecture.md) for ownership, behavior and limitations, and the [HTTP API guide](docs/api.md) for standalone deployment, authentication and recovery.
 
+## Remote access (preview)
+
+The optional [relay](relay/README.md) and [minimal iOS client](iOS/README.md) let a paired phone control the same headless agent while the Mac app remains open. Configure **Settings → Remote Access** and scan/copy a single-use invitation. The relay has a Dockerfile for deployment behind your own TLS reverse proxy. See [architecture, security and verification](docs/remote-access.md).
+
 ## Keyboard controls
 
 | Action                          | Shortcut            |
@@ -64,6 +68,9 @@ Tests use isolated profiles, fake transports and a local Rust subprocess, not yo
 
 - `backend/` — provider-neutral Rust runtime, HTTP service, providers, tools and tests.
 - `macOS/` — native Swift application, resources, tests and development tools.
+- `iOS/` — minimal native remote client and Xcode project.
+- `relay/` — self-hosted WebSocket relay and Dockerfile.
+- `shared/ExecRemote/` — shared Swift JSON, pairing and encrypted client package.
 - `docs/` — current guides, README images and published update metadata.
 
 Guides: [Development and signing](docs/development.md) · [Architecture](docs/architecture.md) · [HTTP API](docs/api.md) · [Performance tools](docs/performance.md) · [Releasing](docs/releasing.md).

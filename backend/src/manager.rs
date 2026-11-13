@@ -327,7 +327,46 @@ impl AgentManager {
         &self,
         library: LibraryConfiguration,
     ) -> Result<LibraryConfiguration> {
-        library.validate()?;
+        self.modify_library(|_| Ok(library)).await
+    }
+    /// Apply only supplied fields against the latest configuration under the catalog lock.
+    pub async fn patch_library(&self, patch: serde_json::Value) -> Result<LibraryConfiguration> {
+        self.modify_library(|current| {
+            let patch = patch
+                .as_object()
+                .ok_or(Error::Invalid("Expected a settings object."))?;
+            let mut value = serde_json::to_value(current).map_err(|_| Error::Internal)?;
+            for (key, replacement) in patch {
+                match key.as_str() {
+                    "automaticTitles" | "defaultModel" | "order" => {
+                        value[key] = replacement.clone()
+                    }
+                    "settings" => {
+                        let settings = replacement
+                            .as_object()
+                            .ok_or(Error::Invalid("Expected settings fields."))?;
+                        for (key, replacement) in settings {
+                            if !matches!(
+                                key.as_str(),
+                                "systemPrompt" | "autoApprove" | "effort" | "searchModel"
+                            ) {
+                                return Err(Error::Invalid("Unknown settings field."));
+                            }
+                            value["settings"][key] = replacement.clone();
+                        }
+                    }
+                    _ => return Err(Error::Invalid("Unknown library field.")),
+                }
+            }
+            serde_json::from_value(value).map_err(|_| Error::Invalid("Invalid settings value."))
+        })
+        .await
+    }
+    async fn modify_library(
+        &self,
+        change: impl FnOnce(&LibraryConfiguration) -> Result<LibraryConfiguration>,
+    ) -> Result<LibraryConfiguration> {
+        let library;
         {
             let mut c = self.catalog.lock().unwrap();
             if c.closed {
@@ -339,6 +378,8 @@ impl AgentManager {
             if c.library_busy {
                 return Err(Error::Busy);
             }
+            library = change(&c.library)?;
+            library.validate()?;
             c.library_busy = true;
         }
         let saved = if let Some(store) = &self.store {
