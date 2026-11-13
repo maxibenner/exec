@@ -12,10 +12,11 @@ import Observation
     weak var window: NSWindow?
 
     init(library: ChatLibrary, conversation: ChatStore,
-         presentWorkspacePicker: @escaping WorkspacePicker = ChatPanel.presentWorkspacePicker) {
+         presentWorkspacePicker: WorkspacePicker? = nil) {
         self.library = library
         current = conversation
-        self.presentWorkspacePicker = presentWorkspacePicker
+        self.presentWorkspacePicker = presentWorkspacePicker ?? (library.localWorkspaceAccess
+            ? ChatPanel.presentWorkspacePicker : ChatPanel.presentRemoteWorkspacePicker)
     }
 
     var title: String {
@@ -72,12 +73,12 @@ import Observation
     var canChooseWorkspace: Bool { canSelectWorkspace && !isChoosingWorkspace }
 
     func openWorkspaceInFinder() {
-        guard canNavigate, let workspace else { return }
+        guard canNavigate, library.localWorkspaceAccess, let workspace else { return }
         NSWorkspace.shared.open(workspace.root)
     }
 
     func openWorkspaceInTerminal() {
-        guard canNavigate, let workspace,
+        guard canNavigate, library.localWorkspaceAccess, let workspace,
               let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else { return }
         NSWorkspace.shared.open([workspace.root], withApplicationAt: terminal,
                                 configuration: NSWorkspace.OpenConfiguration())
@@ -102,6 +103,23 @@ import Observation
             isChoosingWorkspace = false
             guard let url, canSelectWorkspace else { return }
             selectWorkspace(url)
+        }
+    }
+
+    private static func presentRemoteWorkspacePicker(in window: NSWindow, directory: URL?,
+                                                      completion: @escaping @MainActor (URL?) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "Choose a workspace on the backend host"
+        alert.informativeText = "Tools execute on the backend host. Enter an absolute folder path on that machine, not a folder on this Mac."
+        let field = NSTextField(string: directory?.path ?? "")
+        field.frame = NSRect(x: 0, y: 0, width: 380, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Choose Workspace")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            let path = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            completion(response == .alertFirstButtonReturn && path.hasPrefix("/")
+                ? URL(fileURLWithPath: path) : nil)
         }
     }
 

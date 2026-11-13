@@ -2,7 +2,7 @@
 
 ## Scope and ownership
 
-The macOS app now bundles and automatically launches the existing `exec-agent` executable and connects over its network HTTP/NDJSON API bound to `0.0.0.0:8765` by default. The initial cutover did not change Rust. A separate feature restored backend-owned automatic titles. This follow-up fixes one provider transport compatibility issue (valid OpenAI event streams without a Content-Type header); API contracts and backend ownership are unchanged.
+The macOS app now bundles and automatically launches the existing `exec-agent` executable and connects over its network HTTP/NDJSON API bound to authenticated `127.0.0.1:8765` by default. The initial cutover did not change Rust. A separate feature restored backend-owned automatic titles. This follow-up fixes one provider transport compatibility issue (valid OpenAI event streams without a Content-Type header); API contracts and backend ownership are unchanged.
 
 Rust is the sole owner of:
 - Provider credentials, browser authentication/token refresh, model discovery and account observations.
@@ -66,7 +66,7 @@ The new private profile is:
 ~/Library/Application Support/Exec/Agent/
 ```
 
-Rust owns the profile's `credentials.json`, `service.sock`, `conversations/`, images, logs and caches. Credentials are private **plaintext**, not Keychain-encrypted. The onboarding sheet has no explanatory auth/storage paragraph; this storage contract is documented here. GUI startup removes ambient `DEEPSEEK_API_KEY`/`OPENAI_SESSION_JSON` overrides from the child environment so onboarding manages this profile, not an inherited shell credential.
+Rust owns the profile's `credentials.json`, `conversations/`, images, logs and caches. Credentials are private **plaintext**, not Keychain-encrypted. The onboarding sheet has no explanatory auth/storage paragraph; this storage contract is documented here. GUI startup removes ambient `DEEPSEEK_API_KEY`/`OPENAI_SESSION_JSON` overrides from the child environment so onboarding manages this profile, not an inherited shell credential.
 
 **No legacy Swift data, credentials, sessions, images or defaults are migrated or deleted.** Existing users reconnect providers in the same account UI. The new selected-session preference has a distinct key.
 
@@ -76,7 +76,7 @@ Normal app termination sends SIGTERM to the owned service and waits for it to ex
 
 A crash/forced termination can leave a backend running, or a stale store lock and orphaned tool processes. Startup fails if the configured port is occupied; it never attaches to another server. Follow the Rust recovery procedure in `agent-rust/API.md`: verify the old service **and its tool processes** have stopped before an operator removes stale ownership artifacts. There is no automatic recovery button that deletes them.
 
-There is no socket path limit, endpoint discovery, authentication or port fallback. Every reachable network client can access the API. Configure the network binding with `EXEC_AGENT_HOST` / `EXEC_AGENT_PORT`; standalone flags `--host` / `--port` take precedence. Loopback-only binds are rejected. Wildcard binds accept local connections too; Swift connects locally while external clients target the host’s network address. Firewall/routing/OS permission behavior remains deployment-specific. Profile ownership/permissions and store locking are unchanged.
+There is no socket path limit, endpoint discovery or port fallback. The bundled helper uses ephemeral API/native credentials and defaults to loopback. Explicit network binding requires protected transport and access control. An external endpoint can be configured without starting a helper; external quit detaches rather than cancelling backend work. See [the HTTP review and configuration guide](http-api-review.md) for the exact environment variables, shared administrator-token model and TLS/proxy requirements.
 
 ### Build-toolchain note
 
@@ -100,7 +100,7 @@ Search-model preferences remain within the selected chat provider, preserving th
 
 ## Native screenshots
 
-The Swift frontend registers one live channel over the same unauthenticated HTTP API. There is no host nomination or peer/PID verification. Startup reports existing OS permission but never requests or grants it automatically. In the composer, `/screenshots` explicitly enables or disables screen sharing **for that conversation**. Enabling requests macOS Screen Recording permission if necessary. If macOS requires a restart after a grant, the existing inline error explains that; the app never bypasses TCC.
+The Swift frontend registers one live channel over the same authenticated HTTP API using a separate native capability credential. There is no peer/PID attestation over TCP; native credentials are explicitly provisioned only to trusted adapters. Startup reports existing OS permission but never requests or grants it automatically. In the composer, `/screenshots` explicitly enables or disables screen sharing **for that conversation**. Enabling requests macOS Screen Recording permission if necessary. If macOS requires a restart after a grant, the existing inline error explains that; the app never bypasses TCC.
 
 Only an enabled session with OS permission exposes `take_screenshot` to the model. Swift uses the existing ScreenCaptureKit implementation, returns typed window lists or image bytes, and echoes every backend correlation field unchanged. Window capture requires prior enumeration through the same session/channel, enforced by Rust. Screens and titles remain untrusted evidence. In manual approval mode each capture still needs `Approve Once`; there is no local approval bypass or misleading “Always for This Session” action. Auto mode alone never grants screen access.
 
@@ -128,9 +128,9 @@ Rust requires a model to create a durable session. A workspace/draft can remain 
 
 ## Verification
 
-`./scripts/test.sh` passed **58 checks**. `./scripts/build-app.sh` succeeded with the configured stable signing certificate, including verification of the bundled helper and app.
+`./scripts/test.sh` passed **62 checks**. `./scripts/build-app.sh` succeeded with the configured stable signing certificate, including verification of the bundled helper and app.
 
-Automated checks use isolated stores, synthetic transport fixtures and an actual local Rust subprocess with an empty credential environment. They never read the user's Keychain, configure a live provider, call a live model, open browser sign-in or capture the screen.
+Automated checks use isolated stores, synthetic transport fixtures and an actual local Rust subprocess with synthetic HTTP credentials and no provider credentials. They never read the user's Keychain, configure a live provider, call a live model, open browser sign-in or capture the screen.
 
 Verified:
 - Deferred commands, coalescing, uncertain-settings failure gating, inherited workspace one-choice behavior and Settings-only usage refresh.
@@ -158,3 +158,7 @@ Used the existing configured accounts only for this debugging session, with temp
 Additional manual API checks all completed: OpenAI Unicode/multiline fenced text, follow-up context recall, text plus a synthetic red image (color recognized), image-only input, exact-operation text steering, and one explicitly approved image generation. The generated 1536×1024 image asset was retrieved and its byte count validated. DeepSeek Unicode text also completed. No inference or generation was retried. Temporary conversations and image references were deleted afterward and the service exited cleanly. These verify live backend behavior, not a full interactive Swift UI/TCC walkthrough.
 
 The full isolated Rust test suite passed, including missing-header success, truncated stream failure and incompatible Content-Type rejection. Live credentials are never part of the long-term test suite.
+
+### Authenticated HTTP follow-up
+
+The full Rust suite and 62 macOS checks cover authenticated reads/mutations/NDJSON, independent native authorization, loopback/network binding, conflicting helper startup, external attach/detach, no redirect/replay, untrusted TLS certificate rejection, and existing runtime/UI regressions. One-off live HTTP checks using the already configured providers completed OpenAI/DeepSeek Unicode streaming and an OpenAI synthetic-image turn; protected image bytes/hash matched. Anonymous access returned 401 and ordinary API credentials could not register native capture (403). Temporary conversations/assets were deleted, and the helper shut down cleanly. No live credentials or calls were added to automated tests. Real remote proxy/VPN deployment, successful public-certificate HTTPS and interactive remote OAuth/TCC remain unverified.

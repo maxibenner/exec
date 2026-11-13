@@ -26,9 +26,9 @@ cd macOS
 
 ## Backend integration
 
-The existing native UI and virtualized transcript renderer use the bundled Rust service. It listens on **`0.0.0.0:8765` by default**, accepting connections on all IPv4 interfaces. There is no authentication, discovery or fallback port; loopback-only binding is not supported. Reachable network clients can read/control conversations, execute enabled tools and manage provider settings. Use only on a trusted, appropriately firewalled network. The backend executable has no CLI client. Provider authentication, inference, tools, approvals, persistence and recovery belong to Rust, not a second Swift runner.
+The existing native UI and virtualized transcript renderer use one bundled Rust HTTP API, authenticated on **`127.0.0.1:8765` by default**. Swift provisions ephemeral API and native-capture credentials for its helper. Provider authentication, inference, tools, approvals, persistence and recovery belong to Rust, not a second Swift runner. The backend executable has no CLI client.
 
-Configure the backend with `--host IP --port PORT` or `EXEC_AGENT_HOST` / `EXEC_AGENT_PORT` (flags take precedence). Hosts must be numeric, non-loopback interface or wildcard addresses. The macOS app reads the same environment variables when launching its helper. It connects locally when the helper binds a wildcard; external clients use the machine’s actual network address, e.g. `http://SERVER_IP:8765/v1/health`. Binding does not bypass OS firewall, routing or local-network permissions.
+Network binding is explicit (`--host IP --port PORT`, or `EXEC_AGENT_HOST` / `EXEC_AGENT_PORT`). Arbitrary trusted clients send `Authorization: Bearer <EXEC_AGENT_TOKEN>`; use HTTPS termination or an encrypted tunnel for remote access. The Swift app can attach to an external backend using `EXEC_AGENT_URL` and `EXEC_AGENT_TOKEN`, without launching or terminating that server. See [HTTP deployment and client configuration](docs/http-api-review.md) for setup, capability boundaries and verification limits.
 
 The app uses a fresh profile at `~/Library/Application Support/Exec/Agent/`. Credentials are stored in a private plaintext file. No old Swift conversations or Keychain entries are imported or removed; reconnect providers in Settings.
 

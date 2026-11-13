@@ -41,3 +41,13 @@ Final verification and unresolved decisions are recorded in `docs/swift-rust-mig
 - [x] Run authorized one-off live text, Unicode, context, steering, vision and image-generation checks, then clean up temporary conversations. No live fixtures were added to tests.
 
 See the updated migration report for the verification boundaries and remaining manual TCC/UI checks.
+
+## HTTP API review
+
+- [x] Keep one HTTP dispatcher over the existing manager/runtime; no second API or agent loop.
+- [x] Require bearer auth by default, restore loopback, permit explicit network binding and external-auth opt-out.
+- [x] Separate native capability credentials from ordinary API access; preserve explicit grants/cancellation.
+- [x] Align Swift owned/external connections, TLS, remote workspace paths and detach-only external shutdown.
+- [x] Verify authenticated HTTP and no replay with isolated tests and one-off stored-provider smoke checks.
+
+Configuration and deployment boundaries are documented in `docs/http-api-review.md`.

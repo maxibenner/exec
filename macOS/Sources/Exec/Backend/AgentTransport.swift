@@ -12,8 +12,11 @@ struct HTTPAgentTransport: AgentTransport {
     static let defaultPort: UInt16 = 8765
     var host: String = "127.0.0.1"
     var port: UInt16 = Self.defaultPort
+    var usesTLS = false
+    var token: String?
+    var nativeToken: String?
     func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
-        let connection = AgentHTTPConnection(host: host, port: port)
+        let connection = AgentHTTPConnection(host: host, port: port, usesTLS: usesTLS, token: token, nativeToken: nativeToken)
         return try await withTaskCancellationHandler {
             let timeout = Task {
                 try await Task.sleep(for: .seconds(120))
@@ -32,7 +35,7 @@ struct HTTPAgentTransport: AgentTransport {
     }
 
     func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
-        let connection = AgentHTTPConnection(host: host, port: port)
+        let connection = AgentHTTPConnection(host: host, port: port, usesTLS: usesTLS, token: token, nativeToken: nativeToken)
         let events = AgentEventReader(connection: connection, method: method, path: path, body: body)
         // Consumer-driven reads: never accumulate a queue of large full snapshots,
         // and never drop token deltas merely because several arrive in one packet.
@@ -69,6 +72,11 @@ private actor AgentEventReader {
             var reader: HTTPBodyReader
             if let existing = self.reader { reader = existing }
             else {
+                let timeout = Task {
+                    try await Task.sleep(for: .seconds(120))
+                    connection.cancel()
+                }
+                defer { timeout.cancel() }
                 reader = try await connection.open(method, path, body: body)
                 if !(200..<300).contains(reader.status) {
                     var failure = Data()
@@ -106,18 +114,30 @@ private actor AgentEventReader {
 private final class AgentHTTPConnection: @unchecked Sendable {
     let connection: NWConnection
     let authority: String
-    init(host: String, port: UInt16) {
+    let token: String?
+    let nativeToken: String?
+    init(host: String, port: UInt16, usesTLS: Bool, token: String?, nativeToken: String?) {
         authority = "\(host.contains(":") ? "[\(host)]" : host):\(port)"
-        connection = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+        self.token = token
+        self.nativeToken = nativeToken
+        // Network.framework supplies standard TLS certificate/hostname validation.
+        // Fresh connections do not follow redirects, use proxies, or replay HTTP requests.
+        connection = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: usesTLS ? .tls : .tcp)
     }
     deinit { connection.cancel() }
     func cancel() { connection.cancel() }
     func open(_ method: String, _ path: String, body: Data?) async throws -> HTTPBodyReader {
         guard path.hasPrefix("/v1/"), !path.contains("\r"), !path.contains("\n"),
               !authority.contains("\r"), !authority.contains("\n") else { throw ExecError("Invalid backend request.") }
+        var authorization = ""
+        if let token { authorization += "Authorization: Bearer \(try AgentHTTPConfiguration.validateToken(token))\r\n" }
+        if let nativeToken, path.hasPrefix("/v1/native/") || (method == "PUT" && path.hasSuffix("/desktop")) {
+            authorization += "X-Exec-Native-Token: \(try AgentHTTPConfiguration.validateToken(nativeToken))\r\n"
+        }
+        try Task.checkCancellation()
         connection.start(queue: DispatchQueue(label: "Exec.agent.http"))
         let body = body ?? Data()
-        var request = Data("\(method) \(path) HTTP/1.1\r\nHost: \(authority)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
+        var request = Data("\(method) \(path) HTTP/1.1\r\nHost: \(authority)\r\n\(authorization)Content-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
         request.append(body)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             connection.send(content: request, completion: .contentProcessed { error in

@@ -45,9 +45,9 @@ struct ChatComposer: View {
                      Choice(id: "compact", title: "compact", enabled: store.canCompact),
                      Choice(id: "fork", title: "fork", enabled: store.library.canRequestFork(store.current)),
                      Choice(id: "workspace", title: "workspace", detail: "Change workspace…", enabled: store.canChooseWorkspace),
-                     Choice(id: "finder", title: "finder", detail: "Open workspace in Finder", enabled: store.workspace != nil),
-                     Choice(id: "terminal", title: "terminal", detail: "Open workspace in Terminal", enabled: store.workspace != nil),
-                     Choice(id: "screenshots", title: "screenshots", detail: store.current.screenshotsEnabled ? "Disable screen access" : "Allow screen sharing for this conversation…", enabled: store.workspace != nil && !store.current.changingScreenshots)]
+                     Choice(id: "finder", title: "finder", detail: "Open workspace in Finder", enabled: store.workspace != nil && store.library.localWorkspaceAccess),
+                     Choice(id: "terminal", title: "terminal", detail: "Open workspace in Terminal", enabled: store.workspace != nil && store.library.localWorkspaceAccess),
+                     Choice(id: "screenshots", title: "screenshots", detail: store.current.screenshotsEnabled ? "Disable screen access" : "Share this Mac's screen for this conversation…", enabled: store.workspace != nil && store.current.desktop.frontendID != nil && !store.current.changingScreenshots)]
         case .model:
             items = store.models.map {
                 Choice(id: $0.id, title: $0.name, detail: store.library.modelGroups.count > 1 ? store.library.providerName(for: $0.id) : "",

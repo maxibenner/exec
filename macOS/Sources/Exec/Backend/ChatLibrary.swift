@@ -128,6 +128,8 @@ import Observation
     var canNavigate: Bool { !authenticating && (!navigating || openingSessionID != nil) }
     private var canModify: Bool { !navigating && !authenticating }
     var canReorderSessions: Bool { canModify }
+    var ownsBackend: Bool { provider.api.ownsBackend }
+    var localWorkspaceAccess: Bool { ownsBackend }
     var accountBusy: Bool { authenticating || defaultsTask != nil || conversations.contains { $0.busy || $0.isSaving } }
     var hasUnsavedChanges: Bool { conversations.contains { $0.hasUnsavedChanges } }
     var hasUnsentDrafts: Bool { conversations.contains { $0.hasUnsentDraft } }

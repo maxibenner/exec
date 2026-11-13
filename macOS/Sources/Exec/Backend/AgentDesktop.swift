@@ -1,7 +1,7 @@
 import AppKit
 import Observation
 
-/// Local HTTP native channel. No reconnect, capture retry, or implicit grant.
+/// Independently authorized HTTP native channel. No reconnect, capture retry, or implicit grant.
 @MainActor @Observable final class AgentDesktop {
     private let api: AgentAPI
     private let preflight: () -> Bool
@@ -18,7 +18,7 @@ import Observation
     init(api: AgentAPI, preflight: @escaping () -> Bool = { CGPreflightScreenCaptureAccess() },
          requestPermission: @escaping () -> Bool = { CGRequestScreenCaptureAccess() },
          capture: @escaping (ScreenshotTool.Request) async throws -> ScreenshotTool.Output = ScreenshotCapture.capture) {
-        self.api = AgentAPI(transport: api.transport)
+        self.api = AgentAPI(transport: api.transport, ownsBackend: api.ownsBackend)
         self.preflight = preflight
         self.requestPermission = requestPermission
         self.capture = capture

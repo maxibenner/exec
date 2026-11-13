@@ -30,7 +30,10 @@ import AppKit
         let alert = NSAlert()
         alert.messageText = "Quit Exec?"
         var reasons: [String] = []
-        if store.hasRunningOperations { reasons.append("Active operations in all conversations will be stopped.") }
+        if store.hasRunningOperations {
+            reasons.append(store.ownsBackend ? "Active operations in all conversations will be stopped."
+                : "Active operations on the external backend will continue.")
+        }
         if store.hasUnsavedChanges { reasons.append("Changes that could not be saved will be discarded.") }
         reasons.append("Saved conversations will be kept.")
         alert.informativeText = reasons.joined(separator: " ")
@@ -52,11 +55,11 @@ import AppKit
                 waitingToQuit = false
                 return
             }
-            if store.hasRunningOperations { store.stopAll() }
+            if store.ownsBackend && store.hasRunningOperations { store.stopAll() }
             if let shutdownBackend {
                 // Rust owns cancellation, process reaping, checkpoint settlement and lock removal.
                 await shutdownBackend()
-            } else {
+            } else if store.ownsBackend {
                 while store.hasRunningOperations { try? await Task.sleep(for: .milliseconds(50)) }
             }
             replyToTermination(sender, true)
