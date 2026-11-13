@@ -129,6 +129,8 @@ pub struct ProviderRequest {
     pub model: String,
     pub messages: Vec<ContextMessage>,
     pub instructions: String,
+    pub effort: Option<String>,
+    pub provider_state: Option<Value>,
     pub tools: Vec<ToolDefinition>,
     pub cancel: CancellationToken,
 }
@@ -136,7 +138,31 @@ pub struct ProviderRequest {
 pub enum ProviderEvent {
     Text(String),
     ToolCall(ToolCall),
+    Metadata {
+        state: Option<Value>,
+        usage: Option<TokenUsage>,
+    },
     Done,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+}
+impl TokenUsage {
+    pub fn valid(&self) -> bool {
+        [self.input_tokens, self.output_tokens, self.total_tokens]
+            .into_iter()
+            .flatten()
+            .all(|n| n <= 1_000_000_000)
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatEffort {
+    pub id: String,
+    pub name: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -147,6 +173,12 @@ pub struct ChatModel {
     pub context_window: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<ChatEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepts_images: Option<bool>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -254,6 +286,7 @@ pub struct ConversationSnapshot {
     pub configuration: super::ConversationConfiguration,
     pub pending_input: Vec<Message>,
     pub metadata: super::SessionMetadata,
+    pub usage: Option<TokenUsage>,
     pub model: String,
     pub workspace: String,
     pub messages: Vec<Message>,

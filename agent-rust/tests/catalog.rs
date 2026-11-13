@@ -44,6 +44,7 @@ async fn defaults_order_rename_model_and_fork_survive_restart_without_mutating_s
         default_model: Some("first-model".into()),
         settings: SessionSettings {
             system_prompt: "default prompt".into(),
+            effort: None,
             auto_approve: false,
         },
         order: vec![],

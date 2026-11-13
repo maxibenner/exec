@@ -2,6 +2,7 @@ use super::response_stream::{ByteStream, read_json, read_sse};
 use crate::{Error, ProviderFailure as Failure, Result, check_cancel, core::*};
 use async_trait::async_trait;
 use futures_util::{StreamExt, future::BoxFuture, stream::BoxStream};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -109,6 +110,40 @@ fn valid_tool(s: &str) -> bool {
         && s.bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConversationState {
+    provider: String,
+    version: u32,
+    reasoning: BTreeMap<String, String>,
+}
+impl Default for ConversationState {
+    fn default() -> Self {
+        Self {
+            provider: "deepseek".into(),
+            version: 1,
+            reasoning: BTreeMap::new(),
+        }
+    }
+}
+fn conversation_state(value: Option<&Value>) -> Result<ConversationState> {
+    let state: ConversationState = value
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|_| error(Failure::Request))?
+        .unwrap_or_default();
+    if state.provider != "deepseek"
+        || state.version != 1
+        || state.reasoning.len() > 256
+        || state
+            .reasoning
+            .iter()
+            .any(|(id, text)| id.is_empty() || id.len() > 256 || text.len() > 4 * 1024 * 1024)
+    {
+        return Err(error(Failure::Request));
+    }
+    Ok(state)
+}
 #[derive(Default)]
 struct Fragment {
     id: String,
@@ -121,6 +156,9 @@ struct Decoder {
     finish: Option<String>,
     text_bytes: usize,
     has_text: bool,
+    allow_thinking: bool,
+    reasoning: String,
+    usage: Option<TokenUsage>,
 }
 impl Decoder {
     fn decode(&mut self, data: &str) -> Result<Vec<ProviderEvent>> {
@@ -158,6 +196,28 @@ impl Decoder {
         }
         let chunk: Value = serde_json::from_str(data).map_err(|_| invalid.clone())?;
         let chunk = object(&chunk)?;
+        if let Some(usage) = chunk.get("usage").filter(|v| !v.is_null()) {
+            let usage = object(usage)?;
+            let tokens = |key| -> Result<Option<u64>> {
+                usage
+                    .get(key)
+                    .map(|value| {
+                        value
+                            .as_u64()
+                            .filter(|n| *n <= 1_000_000_000)
+                            .ok_or_else(|| invalid.clone())
+                    })
+                    .transpose()
+            };
+            let measurement = TokenUsage {
+                input_tokens: tokens("prompt_tokens")?,
+                output_tokens: tokens("completion_tokens")?,
+                total_tokens: tokens("total_tokens")?,
+            };
+            if measurement != TokenUsage::default() {
+                self.usage = Some(measurement);
+            }
+        }
         let choices = chunk
             .get("choices")
             .and_then(Value::as_array)
@@ -180,8 +240,13 @@ impl Decoder {
         if delta.get("role").is_some_and(|v| v != "assistant") {
             return Err(invalid);
         }
-        if !optional_text(delta.get("reasoning_content"))?.is_empty() {
+        let reasoning = optional_text(delta.get("reasoning_content"))?;
+        if !reasoning.is_empty() && !self.allow_thinking {
             return Err(error(Failure::Unsupported));
+        }
+        self.reasoning.push_str(reasoning);
+        if self.reasoning.len() > 4 * 1024 * 1024 {
+            return Err(invalid);
         }
         let content = optional_text(delta.get("content"))?;
         self.text_bytes += content.len();
@@ -236,6 +301,11 @@ pub fn request_body(request: &ProviderRequest) -> Result<String> {
     if !valid_model(&request.model) || request.messages.is_empty() || request.tools.len() > 64 {
         return Err(error(Failure::Request));
     }
+    let state = conversation_state(request.provider_state.as_ref())?;
+    let effort = request.effort.as_deref();
+    if effort.is_some_and(|effort| !["none", "low", "high", "max"].contains(&effort)) {
+        return Err(error(Failure::Request));
+    }
     let mut names = HashSet::new();
     for tool in &request.tools {
         if !valid_tool(&tool.name) || !names.insert(&tool.name) {
@@ -247,13 +317,25 @@ pub fn request_body(request: &ProviderRequest) -> Result<String> {
         ContextMessage::Tool{call_id,text,outcome}=>json!({"role":"tool","tool_call_id":call_id,"content":if *outcome==ToolOutcome::Completed{text.clone()}else{format!("[Tool outcome: {}]\n{text}",serde_json::to_value(outcome).unwrap().as_str().unwrap())}}),
         ContextMessage::Assistant{text,calls}=>{let mut value=json!({"role":"assistant","content":text});if !calls.is_empty(){value["tool_calls"]=json!(calls.iter().map(|call|json!({"id":call.id,"type":"function","function":{"name":call.name,"arguments":serde_json::to_string(&call.arguments).unwrap()}})).collect::<Vec<_>>());}value},
     }).collect();
+    for (message, value) in request.messages.iter().zip(messages.iter_mut()) {
+        if let ContextMessage::Assistant { calls, .. } = message
+            && let Some(call) = calls.first()
+            && let Some(reasoning) = state.reasoning.get(&call.id)
+        {
+            value["reasoning_content"] = json!(reasoning);
+        }
+    }
     if !request.instructions.is_empty() {
         if request.instructions.len() > 3 * 64 * 1024 || request.instructions.contains('\0') {
             return Err(error(Failure::Request));
         }
         messages.insert(0, json!({"role":"system", "content":request.instructions}));
     }
-    let mut value = json!({"model":request.model,"stream":true,"thinking":{"type":"disabled"},"reasoning_effort":"none","messages":messages});
+    let mut value = json!({"model":request.model,"stream":true,"stream_options":{"include_usage":true},"messages":messages});
+    if let Some(effort) = effort {
+        value["thinking"] = json!({"type":if effort == "none" { "disabled" } else { "enabled" }});
+        value["reasoning_effort"] = json!(effort);
+    }
     if !request.tools.is_empty() {
         value["tools"]=json!(request.tools.iter().map(|t|json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect::<Vec<_>>());
     }
@@ -442,13 +524,26 @@ impl ChatProvider for DeepSeekProvider {
         let provider = self.clone();
         Box::pin(async_stream::try_stream! {
             check_cancel(&request.cancel)?;let body=request_body(&request)?;
+            let state = conversation_state(request.provider_state.as_ref())?;
+            let thinking = request.effort.as_deref() != Some("none");
             let cancel=request.cancel.child_token();let _guard=cancel.clone().drop_guard();
             let source_cancel=cancel.clone();
             let deadline=tokio::time::sleep(provider.timeout);tokio::pin!(deadline);
             let source=async_stream::try_stream!{
                 let response=provider.request("chat/completions",source_cancel,Some(body)).await?;content_type(&response,"text/event-stream")?;
-                let mut frames=read_sse(response.body);let mut decoder=Decoder::default();
-                while let Some(frame)=frames.next().await{for event in decoder.decode(&frame?)?{let done=matches!(event,ProviderEvent::Done);yield event;if done{return;}}}
+                let mut frames=read_sse(response.body);let mut decoder=Decoder { allow_thinking: thinking, ..Decoder::default() }; let mut state = state;
+                while let Some(frame)=frames.next().await {
+                    for event in decoder.decode(&frame?)? {
+                        let done=matches!(event,ProviderEvent::Done);
+                        if done && (!decoder.reasoning.is_empty() || decoder.usage.is_some()) {
+                            if let Some(call) = decoder.calls.values().next() && !decoder.reasoning.is_empty() { state.reasoning.insert(call.id.clone(), decoder.reasoning.clone()); }
+                            let state = serde_json::to_value(&state).map_err(|_| error(Failure::Response))?;
+                            if serde_json::to_vec(&state).map_err(|_| error(Failure::Response))?.len() > 8 * 1024 * 1024 { Err(error(Failure::Response))?; }
+                            yield ProviderEvent::Metadata { state: Some(state), usage: decoder.usage.clone() };
+                        }
+                        yield event;if done{return;}
+                    }
+                }
                 Err(error(Failure::Response))?;
             };
             futures_util::pin_mut!(source);
@@ -507,11 +602,52 @@ impl ChatProvider for DeepSeekProvider {
                         )),
                     }
                 };
+                let levels = model
+                    .get("effort")
+                    .and_then(|v| v.get("supported_levels"))
+                    .and_then(Value::as_array);
+                let mut efforts = Vec::new();
+                if let Some(levels) = levels {
+                    let mut seen = HashSet::new();
+                    for level in levels
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .filter(|s| ["low", "high", "max"].contains(s))
+                    {
+                        if seen.insert(level) {
+                            efforts.push(ChatEffort {
+                                id: level.into(),
+                                name: level.into(),
+                            });
+                        }
+                    }
+                    if !efforts.is_empty() {
+                        efforts.insert(
+                            0,
+                            ChatEffort {
+                                id: "none".into(),
+                                name: "Off".into(),
+                            },
+                        );
+                    }
+                }
+                let default_effort = model
+                    .get("effort")
+                    .and_then(|v| v.get("default_level"))
+                    .and_then(Value::as_str)
+                    .filter(|id| efforts.iter().any(|e| e.id == *id))
+                    .map(str::to_owned);
                 models.push(ChatModel {
                     id: id.into(),
                     name: name.into(),
                     context_window: limit("context_window")?,
                     max_output_tokens: limit("max_output_tokens")?,
+                    efforts,
+                    default_effort,
+                    accepts_images: model
+                        .get("input_modalities")
+                        .and_then(Value::as_array)
+                        .map(|a| a.iter().any(|v| v.as_str() == Some("image"))),
                 });
             }
             Ok(models)

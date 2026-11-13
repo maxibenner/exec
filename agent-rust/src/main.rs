@@ -18,7 +18,7 @@ use tokio::{
     sync::mpsc,
 };
 use tokio_util::sync::CancellationToken;
-const HELP: &str = "Exec agent CLI (local service client)\n\nUsage: exec-agent [--profile PATH] COMMAND\n  serve [--credentials PATH] [--workspace-tools]\n                                      Run the service in the foreground (DeepSeek)\n  health                              Show service capabilities\n  models                              Discover provider models\n  providers                           Show credential configuration (never secrets)\n  balance PROVIDER                    Show provider account balances\n  search MODEL QUERY                  Search public web through the provider\n  fetch URL                           Fetch bounded public HTTPS page text\n  connect PROVIDER                    Read API key from private piped stdin\n  disconnect PROVIDER                 Remove JSON-backed credentials\n  list                                List saved conversations\n  library                             Show defaults and shared ordering\n  library-set JSON                    Replace defaults and shared ordering\n  rename ID TITLE                     Rename an idle conversation\n  model ID MODEL                      Select a model for subsequent turns\n  fork ID                             Copy an idle conversation\n  new MODEL [WORKSPACE] [--manual]     Create a conversation (auto approval by default)\n  show ID                             Show saved/current conversation state\n  delete ID                           Delete an idle conversation permanently\n  configure ID auto|manual PROMPT      Replace idle session policy and system prompt\n  chat ID                             Interactive chat; requires a terminal\n  send ID MESSAGE                     Submit one message and follow its operation\n  watch ID                            Observe until Ctrl-C; never approves automatically\n  steer ID OPERATION_ID MESSAGE        Add input at the next safe boundary\n  cancel ID OPERATION_ID               Cancel exactly that operation\n  approve ID OPERATION_ID APPROVAL_ID  Approve exactly that pending action\n  deny ID OPERATION_ID APPROVAL_ID     Deny exactly that pending action\n\nDefault profile: ~/.exec-agent\nOnly serve starts a service. There are no automatic request retries.\nserve reads DEEPSEEK_API_KEY, otherwise PROFILE/credentials.json (private mode 0600).\n--credentials selects another JSON file; environment credentials take precedence.\nEnvironment/external-file changes require restart; API JSON changes take effect live. Keys are never accepted as arguments.\nIn chat, /quit or EOF detaches; Ctrl-C cancels an active turn or exits while idle.\nIn send, pending approvals must be resolved explicitly from another client.\n";
+const HELP: &str = "Exec agent CLI (local service client)\n\nUsage: exec-agent [--profile PATH] COMMAND\n  serve [--credentials PATH] [--workspace-tools]\n                                      Run the service in the foreground (DeepSeek)\n  health                              Show service capabilities\n  models                              Discover provider models\n  providers                           Show credential configuration (never secrets)\n  balance PROVIDER                    Show provider account balances\n  search MODEL QUERY                  Search public web through the provider\n  fetch URL                           Fetch bounded public HTTPS page text\n  connect PROVIDER                    Read API key from private piped stdin\n  disconnect PROVIDER                 Remove JSON-backed credentials\n  list                                List saved conversations\n  library                             Show defaults and shared ordering\n  library-set JSON                    Replace defaults and shared ordering\n  rename ID TITLE                     Rename an idle conversation\n  model ID MODEL                      Select a model for subsequent turns\n  effort ID LEVEL                     Set reasoning effort (or default)\n  fork ID                             Copy an idle conversation\n  new MODEL [WORKSPACE] [--manual]     Create a conversation (auto approval by default)\n  show ID                             Show saved/current conversation state\n  delete ID                           Delete an idle conversation permanently\n  configure ID auto|manual PROMPT      Replace idle session policy and system prompt\n  chat ID                             Interactive chat; requires a terminal\n  send ID MESSAGE                     Submit one message and follow its operation\n  watch ID                            Observe until Ctrl-C; never approves automatically\n  steer ID OPERATION_ID MESSAGE        Add input at the next safe boundary\n  cancel ID OPERATION_ID               Cancel exactly that operation\n  approve ID OPERATION_ID APPROVAL_ID  Approve exactly that pending action\n  deny ID OPERATION_ID APPROVAL_ID     Deny exactly that pending action\n\nDefault profile: ~/.exec-agent\nOnly serve starts a service. There are no automatic request retries.\nserve reads DEEPSEEK_API_KEY, otherwise PROFILE/credentials.json (private mode 0600).\n--credentials selects another JSON file; environment credentials take precedence.\nEnvironment/external-file changes require restart; API JSON changes take effect live. Keys are never accepted as arguments.\nIn chat, /quit or EOF detaches; Ctrl-C cancels an active turn or exits while idle.\nIn send, pending approvals must be resolved explicitly from another client.\n";
 fn main() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -128,7 +128,7 @@ async fn main_async() -> Result<()> {
         "new" => 1..=2,
         "show" | "chat" | "watch" | "delete" | "fork" | "library-set" | "connect"
         | "disconnect" | "balance" | "fetch" => 1..=1,
-        "send" | "cancel" | "rename" | "model" | "search" => 2..=2,
+        "send" | "cancel" | "rename" | "model" | "search" | "effort" => 2..=2,
         "approve" | "deny" | "configure" | "steer" => 3..=3,
         _ => return Err(Error::Invalid("Invalid command arguments. Use --help.")),
     };
@@ -169,6 +169,15 @@ async fn main_async() -> Result<()> {
         }
         "rename" => return print(client.rename(&args[0], &args[1]).await?),
         "model" => return print(client.select_model(&args[0], &args[1]).await?),
+        "effort" => {
+            let mut settings = client.get(&args[0]).await?.configuration.settings;
+            settings.effort = if args[1] == "default" {
+                None
+            } else {
+                Some(args[1].clone())
+            };
+            return print(client.update_settings(&args[0], settings).await?);
+        }
         "fork" => return print(client.fork(&args[0]).await?),
         "new" => {
             let workspace = absolute(args.get(1).map(String::as_str).unwrap_or("."))?;
@@ -197,6 +206,7 @@ async fn main_async() -> Result<()> {
                         SessionSettings {
                             auto_approve,
                             system_prompt: args[2].clone(),
+                            effort: None,
                         },
                     )
                     .await?,

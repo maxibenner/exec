@@ -308,6 +308,7 @@ impl AgentManager {
         self.get(id)?
             .mutate_record(move |record| {
                 record.model = model;
+                record.usage = None;
                 Ok(())
             })
             .await

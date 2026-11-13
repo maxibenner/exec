@@ -84,15 +84,18 @@ The checked items below are delivered and verified; unchecked items remain outst
 - [x] Public HTTPS fetch tool/API/client/CLI with DNS-pinned public destinations,
   revalidated redirects, bounded UTF-8 text/HTML extraction, cancellation and no retries.
 
+- [x] Provider-neutral effort/model metadata, persisted effort selection and token usage;
+  DeepSeek thinking/default/off modes with opaque tool-continuation state checkpointed
+  only after valid completion and restored per conversation. Opaque state is not in API snapshots.
+
 ### Remaining backend work
 
-- [ ] Provider-neutral capabilities/efforts/image support and effort selection.
+- [ ] Image-input capability integration (model metadata is available).
 - [ ] Multi-provider registry and isolated conversation contexts.
 - [ ] OpenAI subscription provider, browser OAuth, safe token refresh/persistence,
   JSON credential management and runtime connect/disconnect.
-- [ ] DeepSeek thinking/effort, reasoning context and token measurements.
 - [ ] Provider/account model metadata caches.
-- [ ] Manual/automatic compaction, opaque provider state and context usage.
+- [ ] Manual/automatic compaction and context-window usage presentation metadata.
 - [ ] Typed tool results, assets, image inputs and durable image references.
 - [ ] Image generation and OpenAI search support.
 - [ ] Optional frontend screenshot capability protocol, session permission, exact

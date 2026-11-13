@@ -10,6 +10,10 @@ pub struct ConversationRecord {
     #[serde(default)]
     pub metadata: SessionMetadata,
     #[serde(default)]
+    pub provider_state: Option<serde_json::Value>,
+    #[serde(default)]
+    pub usage: Option<TokenUsage>,
+    #[serde(default)]
     pub configuration: Option<ConversationConfiguration>,
     pub id: String,
     pub model: String,
@@ -33,8 +37,17 @@ pub(super) fn required_option<'de, T: Deserialize<'de>, D: serde::Deserializer<'
 impl ConversationRecord {
     pub fn validate(&self) -> Result<()> {
         self.metadata.validate()?;
+        if self.usage.as_ref().is_some_and(|usage| !usage.valid()) {
+            return Err(Error::Invalid("Invalid usage measurement."));
+        }
+        if self.provider_state.as_ref().is_some_and(|state| {
+            !valid_json_depth(state, 0)
+                || serde_json::to_vec(state).map_or(true, |bytes| bytes.len() > 8 * 1024 * 1024)
+        }) {
+            return Err(Error::Invalid("Invalid provider state."));
+        }
         let bad = Error::Invalid("Invalid or unsupported conversation record.");
-        if !matches!(self.version, 1..=3)
+        if !matches!(self.version, 1..=4)
             || (self.version >= 2 && self.configuration.is_none())
             || (self.version == 1 && self.configuration.is_some())
             || !valid_id(&self.id)
@@ -148,7 +161,7 @@ impl ConversationRecord {
             self.version = 2;
             self.configuration = Some(ConversationConfiguration::legacy());
         }
-        self.version = 3;
+        self.version = 4;
         if let Some(op) = &mut self.operation
             && op.state.active()
         {

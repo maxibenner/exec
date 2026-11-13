@@ -42,18 +42,17 @@ async fn concrete_non_thinking_requests_and_split_utf8_sse_framing() {
             assert_eq!(r.key, "synthetic-test-key");
             assert_eq!(
                 serde_json::from_str::<serde_json::Value>(&r.body.unwrap()).unwrap(),
-                json!({"model":"deepseek-flash","stream":true,"thinking":{"type":"disabled"},"reasoning_effort":"none","messages":[{"role":"user","content":"Hello"}]})
+                json!({"model":"deepseek-flash","stream":true,"thinking":{"type":"disabled"},"reasoning_effort":"none","stream_options":{"include_usage":true},"messages":[{"role":"user","content":"Hello"}]})
             );
             Ok(response(data, 1, true, dropped))
         }
     });
-    assert_eq!(
-        collect(&provider(t.clone()), request()).await.unwrap(),
-        vec![
-            ProviderEvent::Text("Hello λ 🥑".into()),
-            ProviderEvent::Done
-        ]
+    let events = collect(&provider(t.clone()), request()).await.unwrap();
+    assert_eq!(events[0], ProviderEvent::Text("Hello λ 🥑".into()));
+    assert!(
+        matches!(&events[1], ProviderEvent::Metadata { usage: Some(usage), .. } if usage.total_tokens == Some(10))
     );
+    assert_eq!(events.last(), Some(&ProviderEvent::Done));
     assert_eq!(t.count(), 1);
     assert!(dropped.load(Ordering::SeqCst));
 }
@@ -414,7 +413,7 @@ async fn model_discovery_only_bounded_neutral_metadata() {
         .unwrap();
     assert_eq!(
         serde_json::to_value(models).unwrap(),
-        json!([{"id":"deepseek-flash","name":"DeepSeek Flash","contextWindow":1048576,"maxOutputTokens":393216},{"id":"deepseek-v4-pro","name":"deepseek-v4-pro"}])
+        json!([{"id":"deepseek-flash","name":"DeepSeek Flash","contextWindow":1048576,"maxOutputTokens":393216,"efforts":[{"id":"none","name":"Off"},{"id":"high","name":"high"}]},{"id":"deepseek-v4-pro","name":"deepseek-v4-pro"}])
     );
     assert_eq!(t.count(), 1);
     let t = Transport::new(|_| async {

@@ -73,6 +73,7 @@ impl State {
             messages: self.record.messages.clone(),
             pending_input: self.record.pending_input.clone(),
             metadata: self.record.metadata.clone(),
+            usage: self.record.usage.clone(),
             operation: self.record.operation.clone(),
             approval: self.pending.as_ref().map(|p| p.approval.clone()),
             active_tool_call_id: self.active_tool.clone(),
@@ -110,7 +111,9 @@ impl Conversation {
             record
         } else {
             ConversationRecord {
-                version: 3,
+                version: 4,
+                provider_state: None,
+                usage: None,
                 metadata: SessionMetadata {
                     activity_at: SessionMetadata::activity(),
                     ..SessionMetadata::default()
@@ -583,6 +586,7 @@ impl Conversation {
     async fn respond(&self, cancel: &CancellationToken) -> Result<Vec<ToolCall>> {
         let (request, index, mut known) = {
             let mut s = self.state();
+            s.record.usage = None;
             let messages = context(&s.record.messages);
             let known: HashSet<String> = s
                 .record
@@ -606,6 +610,15 @@ impl Conversation {
             (
                 ProviderRequest {
                     model: s.record.model.clone(),
+                    effort: s
+                        .record
+                        .configuration
+                        .as_ref()
+                        .unwrap()
+                        .settings
+                        .effort
+                        .clone(),
+                    provider_state: s.record.provider_state.clone(),
                     instructions: s
                         .record
                         .configuration
@@ -625,6 +638,7 @@ impl Conversation {
             check_cancel(cancel)?;
             let mut stream = self.provider.stream(request);
             let mut calls = vec![];
+            let mut metadata = None;
             let mut last_save: Option<Instant> = None;
             loop {
                 let event = tokio::select! {
@@ -663,8 +677,28 @@ impl Conversation {
                         }
                         calls.push(call);
                     }
+                    ProviderEvent::Metadata { state, usage } => {
+                        if usage.as_ref().is_some_and(|usage| !usage.valid()) {
+                            return Err(Error::Internal);
+                        }
+                        if metadata.is_some()
+                            || state.as_ref().is_some_and(|state| {
+                                !valid_json_depth(state, 0)
+                                    || serde_json::to_vec(state)
+                                        .map_or(true, |bytes| bytes.len() > 8 * 1024 * 1024)
+                            })
+                        {
+                            return Err(Error::Internal);
+                        }
+                        metadata = Some((state, usage));
+                    }
                     ProviderEvent::Done => {
                         check_cancel(cancel)?;
+                        if let Some((state, usage)) = metadata {
+                            let mut s = self.state();
+                            s.record.provider_state = state;
+                            s.record.usage = usage;
+                        }
                         return Ok(calls);
                     }
                 }

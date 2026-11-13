@@ -275,3 +275,26 @@ binary/PDF content, oversized bodies and empty extracted content fail explicitly
 JavaScript execution, browser sessions, login or automatic retries. Returned text is
 untrusted evidence, never a generated summary. Tests use fake DNS/transports; no live
 website compatibility or hostile-network sandbox guarantee is claimed.
+
+## Effort, provider context and token usage
+
+Session settings accept optional `effort`: null means the provider/model default. DeepSeek
+supports explicit `none` (thinking disabled), `low`, `high`, `max` (thinking enabled).
+Unknown DeepSeek effort IDs fail before transport; actual model availability is still
+provider-dependent. `effort ID LEVEL` or `effort ID default` updates an idle session.
+Models may return `efforts:[{id,name}]`, `defaultEffort` and `acceptsImages` metadata. Image
+metadata describes the model, not yet-supported image upload functionality in this API.
+
+Successful responses may publish `usage:{inputTokens,outputTokens,totalTokens}` in snapshots.
+Counts are optional provider measurements, not estimates or attributable account cost.
+Usage is cleared for a new response/model selection rather than presenting stale values.
+Context-window percentage/compaction integration remains outstanding.
+
+Opaque per-conversation provider state is stored in version-4 checkpoints, never in API
+snapshots or user/model transcript text. DeepSeek retains reasoning only as needed to echo
+completed assistant tool calls in later requests. Reasoning streams are bounded at 4 MiB;
+combined opaque state is bounded at 8 MiB. Partial/failed streams cannot commit staged
+provider state or measurements. Version 1–3 records remain readable; writes use version 4.
+Thinking and non-thinking responses still require supported completion and `[DONE]`; no
+inference or rotating-token retries are introduced. Mock transport tests do not verify
+live model effort availability or service compatibility.

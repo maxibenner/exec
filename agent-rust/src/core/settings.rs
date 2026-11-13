@@ -12,17 +12,27 @@ pub fn valid_input(text: &str) -> bool {
 pub struct SessionSettings {
     pub system_prompt: String,
     pub auto_approve: bool,
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 impl Default for SessionSettings {
     fn default() -> Self {
         Self {
             system_prompt: String::new(),
             auto_approve: true,
+            effort: None,
         }
     }
 }
 impl SessionSettings {
     pub fn validate(&self) -> Result<()> {
+        if self.effort.as_ref().is_some_and(|s| {
+            s.is_empty()
+                || s.len() > 32
+                || !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        }) {
+            return Err(Error::Invalid("Invalid reasoning effort."));
+        }
         validate_instructions(&self.system_prompt)
     }
 }
