@@ -4,7 +4,7 @@ Build a small, authoritative, provider-neutral execution engine with thin client
 
 These principles consolidate the design of the original TypeScript system, documented in the [architecture plan](../docs/cross-platform-agent-plan.md), [runtime documentation](../agent/README.md), and [API design](../agent/API.md). They carry forward into the Rust implementation. The design drew in part on learnings from the OpenAI Codex repository; this document records our project's choices, not quotations or individually attributed Codex rules.
 
-These are design constraints and development guidance, not a claim that every planned capability is implemented. See [README.md](README.md), [API.md](API.md), and [TEST_PARITY.md](TEST_PARITY.md) for current behavior, scope, and verification limits.
+These are design constraints and development guidance, not a claim that every planned capability is implemented. See [README.md](README.md) and [API.md](API.md) for current behavior, scope, and verification limits.
 
 ## Architecture and simplicity
 

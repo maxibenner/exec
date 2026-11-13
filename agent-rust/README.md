@@ -97,7 +97,7 @@ Normal service shutdown removes its socket and lock. A crash deliberately leaves
 
 ## Verification and scope
 
-[TEST_PARITY.md](TEST_PARITY.md) maps the original test groups to the Rust suite and explains the test counts. The API was also smoke-tested in both directions with the original TypeScript client/service, using a fake provider and isolated profiles.
+The API was smoke-tested in both directions with the original TypeScript client/service, using a fake provider and isolated profiles.
 
 Verified on macOS with Rust 1.93.1. Live DeepSeek authentication/service compatibility, interactive TTY behavior, Linux deployment, machine power-loss guarantees, remote access and Swift integration remain unverified. Automated mocks do not establish live provider compatibility.
 
