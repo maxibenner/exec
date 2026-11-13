@@ -17,12 +17,20 @@ Exec is not meant to be the everything-app. It is purposefully kept minimal to s
 
 ## Get started
 
-To build from source, use Xcode 26 or later (including the Swift toolchain and Icon Composer asset compiler):
+To build from source, use Xcode 26 or later (including the Swift toolchain and Icon Composer asset compiler) and Rust/Cargo 1.93 or later. The build bundles the Rust backend; installed apps launch it automatically and do not require Cargo.
 
 ```sh
 cd macOS
 ./scripts/build-app.sh
 ```
+
+## Backend integration
+
+The existing native UI and virtualized transcript renderer now use the bundled Rust service over a private Unix socket. Provider authentication, inference, tools, approvals, persistence and recovery belong to Rust, not a second Swift runner.
+
+The app uses a fresh profile at `~/Library/Application Support/Exec/Agent/`. Credentials are stored in a private plaintext file. No old Swift conversations or Keychain entries are imported or removed; reconnect providers in Settings.
+
+See [the migration report](docs/swift-rust-migration.md) for the exact compatibility adjustments, unsupported flows and verification boundaries. In particular, automatic titles are removed, and the old screenshot permission flow and compaction activity rows remain deferred rather than silently replaced.
 
 ## Keyboard controls
 
@@ -50,9 +58,9 @@ Open `macOS/Package.swift` in Xcode, or run from `macOS/`:
 ./scripts/build-app.sh
 ```
 
-Tests use isolated stores and fake transports, not your Keychain or live model calls.
+Tests use isolated profiles, fake transports and a local Rust subprocess, not your Keychain or live model calls.
 
-For consistent Keychain access across rebuilds, configure a stable signing certificate:
+For consistent app/helper identity across rebuilds, configure a stable signing certificate:
 
 ```sh
 security find-identity -v -p codesigning

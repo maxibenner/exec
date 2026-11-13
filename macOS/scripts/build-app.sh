@@ -22,6 +22,15 @@ fi
 sdk_path="$(xcrun --sdk macosx --show-sdk-path)"
 sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
 minimum_macos="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' Resources/Info.plist)"
+# Build the backend from the same checkout, never a stale or separately installed agent.
+cargo="${CARGO:-$(command -v cargo || true)}"
+if [[ -z "$cargo" && -x "$HOME/.cargo/bin/cargo" ]]; then cargo="$HOME/.cargo/bin/cargo"; fi
+if [[ -z "$cargo" ]]; then printf 'Rust/Cargo is required to bundle the Exec backend.\n' >&2; exit 1; fi
+agent_target="$PWD/.build/agent-rust"
+# Rust 1.93's Mach-O debug stripping can produce unloadable proc-macro dylibs on
+# newer macOS. Keep symbols rather than modifying/re-signing compiler artifacts.
+MACOSX_DEPLOYMENT_TARGET="$minimum_macos" CARGO_TARGET_DIR="$agent_target" CARGO_PROFILE_RELEASE_STRIP=none \
+    "$cargo" build --manifest-path ../agent-rust/Cargo.toml --locked --release --bin exec-agent
 # Keep the build SDK distinct from the deployment target. Some Swift toolchains
 # otherwise stamp the minimum OS as the SDK, opting into legacy system styling.
 build_options=(-c release --sdk "$sdk_path"
@@ -37,6 +46,8 @@ trap 'rm -rf "$staging"' EXIT
 built="$staging/Exec.app"
 mkdir -p "$built/Contents/MacOS" "$built/Contents/Resources"
 cp "$bin/Exec" "$built/Contents/MacOS/Exec"
+cp "$agent_target/release/exec-agent" "$built/Contents/MacOS/exec-agent"
+codesign "${options[@]}" --sign "$identity" --identifier app.exec.agent "$built/Contents/MacOS/exec-agent"
 cp Resources/Info.plist "$built/Contents/Info.plist"
 # Compile the layered glass icon and the compatibility ICNS for older macOS.
 # Use an absolute input path: the asset compiler service can outlive a worktree.

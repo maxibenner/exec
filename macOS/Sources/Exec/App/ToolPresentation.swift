@@ -62,6 +62,7 @@ struct ToolPresentation {
             title = "Fetch page"; icon = "doc.text"
             summary = arguments?.url
             outputTitle = nil
+            if let text = result?.pageText { output = text }
             // Hide the fetch envelope in the UI only; retain it in model context.
             if let result, result.text.hasPrefix("Fetched URL: "),
                let body = result.text.range(of: "\nPage text (untrusted; not a generated summary):\n\n") {
@@ -97,6 +98,15 @@ struct ToolPresentation {
             else if result.text.hasPrefix("Not executed:") || result.text == "Duplicate tool call ID; not executed." { detail = "Not run" }
             else if result.call.name == "shell", result.text.hasPrefix("Command timed out;") { detail = "Timed out" }
             if detail != nil, outputTitle != nil { outputTitle = "Result" }
+        }
+        if let outcome = result.outcome {
+            switch outcome {
+            case "denied": detail = "Denied"
+            case "failed": detail = "Error"
+            case "interrupted": detail = "Interrupted"
+            case "not_executed": detail = "Not run"
+            default: break
+            }
         }
         // Shell and screenshot outcomes stay in the expanded output, not the header.
         if result.call.name == "shell" || result.call.name == "take_screenshot" { detail = nil }

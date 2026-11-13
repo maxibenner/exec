@@ -358,7 +358,7 @@ import SwiftUI
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let library = try ChatLibrary(provider: FakeProvider(), sessions: SessionStore(directory: root))
+        let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: FakeAgentTransport())))
         let panel = ChatPanel(library: library, conversation: library.current)
         let state = TranscriptState()
         let view = TranscriptScrollView(state: state)

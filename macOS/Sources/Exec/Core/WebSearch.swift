@@ -27,25 +27,5 @@ struct WebSearchResult: Codable, Sendable, Equatable {
 }
 
 enum WebSearchTool {
-    static let definition = ToolDefinition(
-        name: "web_search",
-        description: "Search the public web for current or external information. Returns a bounded answer and source URLs. Use only necessary public search terms; never include credentials or private project contents. Search failures are returned as tool errors so you can continue the task; do not retry the failed operation without a new user request.",
-        parameters: [.init(name: "query", type: "string", description: "Public web search question or keywords; at most 2,048 UTF-8 bytes")]
-    )
-
-    static func query(_ call: ToolCall) throws -> String {
-        struct Arguments: Decodable { let query: String }
-        return try validatedQuery(CodingTools.decode(Arguments.self, call).query)
-    }
-
-    static func validatedQuery(_ query: String) throws -> String {
-        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty, query.utf8.count <= 2_048,
-              query.rangeOfCharacter(from: .controlCharacters.union(.newlines)) == nil else {
-            throw ExecError("Use a nonempty, single-line web search query of at most 2,048 bytes.")
-        }
-        return query
-    }
-
     static let interrupted = "Web search did not complete. No complete search result was saved. It was not resumed or automatically retried."
 }

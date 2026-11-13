@@ -149,7 +149,7 @@ struct ProviderConnectionSheet: View {
             } else {
                 Text("Continue in your browser to sign in to \(providerName).")
             }
-            Text("Exec stores your provider sign-ins and API keys securely in macOS Keychain so you can stay connected. macOS may ask for permission to save or access these credentials. Exec does not request passwords saved by other apps.")
+            Text("Exec stores your provider sign-ins and API keys in a private plaintext file in its backend profile so you can stay connected. These credentials are not stored in macOS Keychain.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

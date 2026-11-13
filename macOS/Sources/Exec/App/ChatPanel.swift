@@ -45,7 +45,7 @@ import Observation
     var workspace: Workspace? { current.workspace }
     var autoApproveTools: Bool { current.autoApproveTools }
     var canCompact: Bool { canNavigate && current.canCompact }
-    var canSelectWorkspace: Bool { canNavigate && !current.busy && current.messages.isEmpty }
+    var canSelectWorkspace: Bool { canNavigate && current.canSelectWorkspace }
     var draft: String {
         get { current.draft }
         set { if canNavigate { current.draft = newValue } }
@@ -53,7 +53,7 @@ import Observation
     var selectedModel: String {
         get { models.contains(where: { $0.id == current.selectedModel }) ? current.selectedModel : "" }
         set {
-            guard canNavigate, models.contains(where: { $0.id == newValue }), newValue != current.selectedModel else { return }
+            guard canNavigate, !current.busy, models.contains(where: { $0.id == newValue }), newValue != current.selectedModel else { return }
             current.selectedModel = newValue
             current.scheduleSave()
         }
@@ -61,7 +61,7 @@ import Observation
     var selectedEffort: String? {
         get { current.effectiveEffort }
         set {
-            guard canNavigate, newValue == nil || current.model?.efforts.contains(where: { $0.id == newValue }) == true else { return }
+            guard canNavigate, !current.busy, newValue == nil || current.model?.efforts.contains(where: { $0.id == newValue }) == true else { return }
             current.selectedEffort = newValue
             current.scheduleSave()
         }

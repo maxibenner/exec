@@ -16,7 +16,7 @@ struct SessionSidebar: View {
                     SessionRow(session: session, store: store,
                                shortcut: shortcuts.first { $0.session.id == session.id }?.number,
                                rename: {
-                                   guard store.canNavigate else { return }
+                                   guard store.canNavigate, !store.isSessionRunning(session.id) else { return }
                                    renameID = session.id; renameTitle = session.title; renaming = true
                                }, delete: { delete(session) })
                         // A row-wide Button consumes the mouse tracking needed by onMove.
@@ -103,7 +103,7 @@ struct SessionRow: View {
         .padding(.vertical, 5)
         .contentShape(Rectangle())
         .contextMenu {
-            Button("Rename…", action: rename).disabled(session.unreadable || store.navigating)
+            Button("Rename…", action: rename).disabled(session.unreadable || store.navigating || running)
             Divider()
             Button("Delete Conversation", role: .destructive, action: delete).disabled(running)
         }

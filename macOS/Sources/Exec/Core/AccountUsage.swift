@@ -28,12 +28,3 @@ struct CachedAccountUsage: Codable, Sendable {
         return usage
     }
 }
-
-/// Account-wide observations, not an attribution of quota cost to this session.
-struct RunAllowanceObservation: Codable, Sendable {
-    enum Phase: String, Codable { case before, after }
-    let runID: UUID
-    let phase: Phase
-    let observedAt: Date
-    let usage: AccountUsage?
-}

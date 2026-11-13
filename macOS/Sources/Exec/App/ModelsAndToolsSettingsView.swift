@@ -45,19 +45,6 @@ struct ModelsAndToolsSettingsView: View {
             } header: {
                 Text("New Chats")
             }
-            Section("Session Titles") {
-                Toggle("Generate session titles", isOn: $settings.generatedTitlesEnabled)
-                    .disabled(connected.isEmpty || store.models.isEmpty)
-                if !connected.isEmpty {
-                    Picker("Title model", selection: Binding(
-                        get: { store.effectiveTitleModel }, set: { store.titleModel = $0 }
-                    )) {
-                        Text("Same as chat model").tag("")
-                        ModelPickerOptions(groups: store.modelGroups)
-                    }
-                    .disabled(!store.generatedTitlesEnabled || store.models.isEmpty)
-                }
-            }
             if !connected.isEmpty {
                 Section {
                     ForEach(connected) { connection in
@@ -76,7 +63,7 @@ struct ModelsAndToolsSettingsView: View {
                 } header: {
                     Text("Image Generation")
                 } footer: {
-                    Text("Uses the provider selected in each chat.")
+                    Text("Uses the connected OpenAI subscription.")
                 }
             }
         }

@@ -3,6 +3,7 @@ import AppKit
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var store: ChatLibrary?
     private var waitingToQuit = false
+    var shutdownBackend: (@MainActor () async -> Void)?
 
     // Keep presentation and the final AppKit reply injectable so tests never quit
     // the test process or interact with the user's windows.
@@ -20,7 +21,12 @@ import AppKit
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if waitingToQuit { return .terminateLater }
-        guard let store, store.hasRunningOperations || store.hasUnsavedChanges else { return .terminateNow }
+        guard let store, store.hasRunningOperations || store.hasUnsavedChanges else {
+            guard let shutdownBackend else { return .terminateNow }
+            waitingToQuit = true
+            Task { await shutdownBackend(); replyToTermination(sender, true) }
+            return .terminateLater
+        }
         let alert = NSAlert()
         alert.messageText = "Quit Exec?"
         var reasons: [String] = []
@@ -47,8 +53,12 @@ import AppKit
                 return
             }
             if store.hasRunningOperations { store.stopAll() }
-            // Let cancellation reap shell children and checkpoint outcomes before exiting.
-            while store.hasRunningOperations { try? await Task.sleep(for: .milliseconds(50)) }
+            if let shutdownBackend {
+                // Rust owns cancellation, process reaping, checkpoint settlement and lock removal.
+                await shutdownBackend()
+            } else {
+                while store.hasRunningOperations { try? await Task.sleep(for: .milliseconds(50)) }
+            }
             replyToTermination(sender, true)
         }
         return .terminateLater

@@ -33,14 +33,14 @@ struct ChatComposer: View {
         return model?.efforts.first { $0.id == (store.selectedEffort ?? model?.defaultEffort) }?.name ?? "Default"
     }
     private var canApprove: Bool {
-        store.canNavigate && store.workspace != nil && store.account != nil && (!store.isWorking || store.isSending)
+        store.canNavigate && store.workspace != nil && store.account != nil && !store.current.busy
     }
     private var choices: [Choice] {
         let items: [Choice]
         switch page {
         case nil:
-            items = [Choice(id: "model", title: "model", detail: modelName, enabled: !store.models.isEmpty),
-                     Choice(id: "effort", title: "reasoning", detail: effortName, enabled: store.current.model?.efforts.isEmpty == false),
+            items = [Choice(id: "model", title: "model", detail: modelName, enabled: !store.current.busy && !store.models.isEmpty),
+                     Choice(id: "effort", title: "reasoning", detail: effortName, enabled: !store.current.busy && store.current.model?.efforts.isEmpty == false),
                      Choice(id: "approve", title: "auto-approve", detail: store.autoApproveTools ? "On" : "Off", enabled: canApprove),
                      Choice(id: "compact", title: "compact", enabled: store.canCompact),
                      Choice(id: "fork", title: "fork", enabled: store.library.canForkConversation(store.current)),
@@ -50,10 +50,10 @@ struct ChatComposer: View {
         case .model:
             items = store.models.map {
                 Choice(id: $0.id, title: $0.name, detail: store.library.modelGroups.count > 1 ? store.library.providerName(for: $0.id) : "",
-                       selected: $0.id == store.selectedModel, enabled: store.canNavigate)
+                       selected: $0.id == store.selectedModel, enabled: store.canNavigate && !store.current.busy)
             }
         case .effort:
-            let available = store.canNavigate && store.current.model?.efforts.isEmpty == false
+            let available = store.canNavigate && !store.current.busy && store.current.model?.efforts.isEmpty == false
             items = [Choice(id: "", title: "Default", selected: store.current.selectedEffort == nil, enabled: available)] + (store.current.model?.efforts ?? []).map {
                 Choice(id: $0.id, title: $0.name, selected: store.current.selectedEffort == $0.id, enabled: available)
             }

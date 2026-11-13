@@ -2,7 +2,7 @@ import SwiftUI
 
 @main struct ExecApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    private let initiallyHasSavedSessions = SessionStore.applicationHasSavedSessions()
+    private let initiallyHasSavedSessions = AgentService.hasSavedSessions
     @State private var startup = ChatStartup()
     @StateObject private var updater = SparkleUpdater()
     @State private var windowGeometry = MainWindowGeometry()
@@ -121,12 +121,7 @@ import SwiftUI
     }
 
     private func start() {
-        let cache = AccountMetadataCache.applicationCache()
-        startup.start(makeSessions: SessionStore.applicationStore, cache: cache,
-                      localPresentation: ProviderRegistry.localPresentation()) {
-            let cachedAccount = await cache?.startupAccount()
-            return try await MultiProvider(registry: ProviderRegistry.restored(
-                hasLegacyAccount: initiallyHasSavedSessions || cachedAccount != nil))
-        }
+        delegate.shutdownBackend = { await startup.shutdown() }
+        startup.start()
     }
 }

@@ -2,13 +2,13 @@ import AppKit
 import SwiftUI
 
 struct ToolApprovalView: View {
-    let approval: ToolExecutor.Approval
-    let executor: ToolExecutor
+    let approval: ToolApprovalState.Approval
+    let executor: ToolApprovalState
     var canResolve: () -> Bool = { true }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(approval.kind == .screenshot ? "Share a screenshot?" : approval.kind == .shell ? "Run shell command?" : "Apply file edit?").font(.headline)
+            Text(approval.kind == .screenshot ? "Share a screenshot?" : approval.kind == .shell ? "Run shell command?" : approval.kind == .edit ? "Apply file edit?" : "Approve tool action?").font(.headline)
             if approval.kind != .screenshot {
                 Text(verbatim: approval.directory.path).font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle).help(approval.directory.path).textSelection(.enabled)

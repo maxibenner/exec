@@ -1,11 +1,6 @@
 import Foundation
 
 enum ScreenshotTool {
-    static let definition = ToolDefinition(name: "take_screenshot", description: "Capture the main desktop or a specific window without a picker. Use list_windows first to discover window IDs. Subject to auto mode or screenshot permission for this session; otherwise asks for approval. Captures and window titles are shared with the model and saved in the conversation. Never retry denied, failed, or interrupted operations without a new user request.", parameters: [
-        .init(name: "target", type: "string", description: "desktop (main display), list_windows (visible window IDs and titles), or window"),
-        .init(name: "window_id", type: "integer", description: "Window ID from list_windows for window capture; use 0 for desktop or list_windows")
-    ])
-
     enum Target: String, Decodable, Sendable { case desktop, window, listWindows = "list_windows" }
 
     struct Request: Decodable, Sendable {
