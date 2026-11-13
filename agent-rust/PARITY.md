@@ -67,11 +67,12 @@ The checked items below are delivered and verified; unchecked items remain outst
 - [x] Operation-targeted steering, checkpointed pending input, safe-boundary injection,
   approval withdrawal and explicit superseded results; restart never resumes input.
 
+- [x] Session titles/manual naming, activity timestamps, idle model changes, forks,
+  shared ordering and configurable new-session defaults through manager/API/client/CLI.
+
 ### Remaining backend work
 
-- [ ] Remaining session configuration/metadata: titles/manual-title flag, activity,
-  order, model/effort, configurable new-session defaults.
-- [ ] Model updates and provider-neutral capabilities/efforts/image support.
+- [ ] Provider-neutral capabilities/efforts/image support and effort selection.
 - [ ] Multi-provider registry and isolated conversation contexts.
 - [ ] OpenAI subscription provider, browser OAuth, safe token refresh/persistence,
   JSON credential management and runtime connect/disconnect.
@@ -83,7 +84,7 @@ The checked items below are delivered and verified; unchecked items remain outst
 - [ ] Optional frontend screenshot capability protocol, session permission, exact
   request/result correlation, cancellation/disconnect handling; no headless capture.
 - [ ] Full shell logs, descriptive shell titles, typed applied-edit diffs.
-- [ ] Rename/reorder/fork APIs, prompt-derived titles and selected search model.
+- [ ] Selected search model configuration.
 - [ ] Asset/log deletion and fork reference ownership.
 - [ ] Current account allowances/reset information, balance and freshness metadata.
 - [ ] Isolated unreadable-session presentation without silently discarding data.

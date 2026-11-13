@@ -81,11 +81,16 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | Method | Path | Body / response |
 |---|---|---|
 | GET | `/v1/health` | `{version:1, toolsEnabled:boolean}` |
+| GET | `/v1/library` | Shared defaults and ordering |
+| PUT | `/v1/library` | `{defaultModel,settings,order}` → saved configuration |
 | GET | `/v1/models` | Neutral model array: `id`, `name`, optional `contextWindow`, `maxOutputTokens` |
 | GET | `/v1/conversations` | Summary array, omitting `messages` and `approval` |
 | POST | `/v1/conversations` | `{model,workspace,settings?}` → `201 ConversationSnapshot`, after durable creation |
 | PUT | `/v1/conversations/:id/settings` | `{systemPrompt,autoApprove}` → `200 ConversationSnapshot`, after durable idle-only replacement |
 | GET | `/v1/conversations/:id` | `ConversationSnapshot` |
+| PUT | `/v1/conversations/:id/title` | `{title}` → saved idle snapshot |
+| PUT | `/v1/conversations/:id/model` | `{model}` → saved idle snapshot |
+| POST | `/v1/conversations/:id/fork` | `{}` → `201` independent saved copy; source must be idle without pending input |
 | DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after durable deletion; active work returns 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
 | POST | `/v1/conversations/:id/turns` | `{text}` → `202 {operationID}` |
@@ -182,3 +187,22 @@ its checkpoint can lose newly accepted input. Checkpointed pending input survive
 but never starts inference itself; the next explicit turn incorporates it before new input.
 Cancellation or step-limit failure can retain pending input for that next explicit turn.
 Version-3 checkpoints retain pending input; older versions are read conservatively.
+
+## Session library
+
+`metadata` contains `title` (nullable before first input), `manuallyNamed` and `activityAt`
+(Unix milliseconds). The first prompt supplies a fallback title; manual names are retained.
+Rename/model changes are idle-only and checkpointed before publication. Forks preserve
+transcript IDs and frozen instructions in an independent conversation; they never resume
+work or mutate the source. Resource references will be managed when assets/logs are added.
+
+`GET/PUT /v1/library` owns shared `defaultModel` (nullable), new-session `settings`, and
+`order` (up to 10,000 unique conversation UUIDs). Omitted creation model/settings use these
+defaults; workspace remains explicit. Order IDs missing from the catalog are harmless and
+ignored. Unlisted sessions follow in stable ID order. `library.json` is atomically saved in
+the private conversation store. Failed library writes block library mutations/default-based
+creation until reload; existing conversation execution is independent. Corrupt library data
+fails startup rather than silently resetting preferences. Clients retain their own selected
+session, drafts, windows and scroll state.
+
+CLI commands: `library`, `library-set JSON`, `rename ID TITLE`, `model ID MODEL`, `fork ID`.

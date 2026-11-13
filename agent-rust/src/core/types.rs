@@ -215,6 +215,7 @@ pub struct ConversationSnapshot {
     pub id: String,
     pub configuration: super::ConversationConfiguration,
     pub pending_input: Vec<Message>,
+    pub metadata: super::SessionMetadata,
     pub model: String,
     pub workspace: String,
     pub messages: Vec<Message>,

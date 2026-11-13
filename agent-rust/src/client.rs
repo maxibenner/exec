@@ -65,6 +65,44 @@ impl AgentClient {
         .await
         .map_err(|_| Error::Invalid(INVALID))?
     }
+    pub async fn library(&self) -> Result<LibraryConfiguration> {
+        decode(self.call("GET", "/v1/library", None).await?)
+    }
+    pub async fn update_library(
+        &self,
+        config: LibraryConfiguration,
+    ) -> Result<LibraryConfiguration> {
+        decode(
+            self.call("PUT", "/v1/library", Some(serde_json::to_value(config)?))
+                .await?,
+        )
+    }
+    pub async fn rename(&self, id: &str, title: &str) -> Result<ConversationSnapshot> {
+        decode(
+            self.call(
+                "PUT",
+                &format!("{}/title", path(id)),
+                Some(json!({"title":title})),
+            )
+            .await?,
+        )
+    }
+    pub async fn select_model(&self, id: &str, model: &str) -> Result<ConversationSnapshot> {
+        decode(
+            self.call(
+                "PUT",
+                &format!("{}/model", path(id)),
+                Some(json!({"model":model})),
+            )
+            .await?,
+        )
+    }
+    pub async fn fork(&self, id: &str) -> Result<ConversationSnapshot> {
+        decode(
+            self.call("POST", &format!("{}/fork", path(id)), Some(json!({})))
+                .await?,
+        )
+    }
     pub async fn health(&self) -> Result<Value> {
         self.call("GET", "/v1/health", None).await
     }

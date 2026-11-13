@@ -255,10 +255,22 @@ fn text(value: &str, max: usize) -> ApiResult<()> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Create {
-    model: String,
+    model: Option<String>,
     workspace: String,
-    #[serde(default)]
-    settings: SessionSettings,
+    settings: Option<SessionSettings>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Rename {
+    title: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SelectModel {
+    model: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -319,6 +331,22 @@ async fn handle(
         let models = tokio::select! {biased;_=cancel.cancelled()=>return Err(ApiError(503,"Service is stopping.")),value=tokio::time::timeout(Duration::from_secs(120),options.provider.models(cancel.clone()))=>value.map_err(|_|ApiError(500,"Model discovery failed."))??};
         return Ok(json_response(200, models));
     }
+    if route == "/v1/library" {
+        return match method.as_str() {
+            "GET" => Ok(json_response(200, options.manager.library_configuration()?)),
+            "PUT" => {
+                let config: LibraryConfiguration = body(request).await?;
+                config
+                    .validate()
+                    .map_err(|_| ApiError(400, "Invalid library configuration."))?;
+                Ok(json_response(
+                    200,
+                    options.manager.update_library(config).await?,
+                ))
+            }
+            _ => Err(ApiError(404, "Route not found.")),
+        };
+    }
     if route == "/v1/conversations" {
         if method == "GET" {
             let summaries: Vec<_> = options
@@ -336,39 +364,25 @@ async fn handle(
         }
         if method == "POST" {
             let create: Create = body(request).await?;
-            create
-                .settings
-                .validate()
-                .map_err(|_| ApiError(400, "Invalid session settings."))?;
-            text(&create.model, 128)?;
+            if let Some(model) = &create.model {
+                text(model, 128)?;
+            }
             text(&create.workspace, 4096)?;
-            if !Path::new(&create.workspace).is_absolute() {
-                return Err(ApiError(400, "Workspace must be absolute."));
-            }
-            let workspace = tokio::fs::canonicalize(&create.workspace)
+            let created = options
+                .manager
+                .create_session(
+                    options.provider.clone(),
+                    options.tools.clone(),
+                    create.model,
+                    create.workspace,
+                    create.settings,
+                )
                 .await
-                .map_err(|_| ApiError(400, "Workspace must be an existing directory."))?;
-            if !tokio::fs::metadata(&workspace)
-                .await
-                .map_err(|_| ApiError(400, "Workspace must be an existing directory."))?
-                .is_dir()
-            {
-                return Err(ApiError(400, "Workspace must be an existing directory."));
-            }
-            if host.stop.is_cancelled() {
-                return Err(ApiError(503, "Service is stopping."));
-            }
-            let mut config = ConversationOptions::new(
-                options.provider.clone(),
-                create.model,
-                workspace.to_string_lossy(),
-            );
-            config.tools = options.tools.clone();
-            config.settings = create.settings;
-            return Ok(json_response(
-                201,
-                options.manager.create(config).await?.snapshot(),
-            ));
+                .map_err(|error| match error {
+                    Error::Invalid(message) => ApiError(400, message),
+                    other => ApiError::from(other),
+                })?;
+            return Ok(json_response(201, created.snapshot()));
         }
     }
     let Some(tail) = route.strip_prefix("/v1/conversations/") else {
@@ -385,6 +399,9 @@ async fn handle(
                 "approvals",
                 "settings",
                 "steer",
+                "title",
+                "model",
+                "fork",
             ]
             .contains(s)
         })
@@ -411,6 +428,40 @@ async fn handle(
             }
             options.manager.delete(parts[0]).await?;
             Ok(json_response(200, json!({"deleted":true})))
+        }
+        ("PUT", Some("title")) => {
+            let input: Rename = body(request).await?;
+            let metadata = SessionMetadata {
+                title: Some(input.title.clone()),
+                manually_named: true,
+                activity_at: 0,
+            };
+            metadata
+                .validate()
+                .map_err(|_| ApiError(400, "Invalid title."))?;
+            Ok(json_response(
+                200,
+                options.manager.rename(parts[0], input.title).await?,
+            ))
+        }
+        ("PUT", Some("model")) => {
+            let input: SelectModel = body(request).await?;
+            text(&input.model, 128)?;
+            Ok(json_response(
+                200,
+                options.manager.select_model(parts[0], input.model).await?,
+            ))
+        }
+        ("POST", Some("fork")) => {
+            let _: Empty = body(request).await?;
+            Ok(json_response(
+                201,
+                options
+                    .manager
+                    .fork(parts[0], options.provider.clone(), options.tools.clone())
+                    .await?
+                    .snapshot(),
+            ))
         }
         ("PUT", Some("settings")) => {
             let settings: SessionSettings = body(request).await?;

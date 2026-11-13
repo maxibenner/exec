@@ -72,6 +72,7 @@ impl State {
             workspace: self.record.workspace.clone(),
             messages: self.record.messages.clone(),
             pending_input: self.record.pending_input.clone(),
+            metadata: self.record.metadata.clone(),
             operation: self.record.operation.clone(),
             approval: self.pending.as_ref().map(|p| p.approval.clone()),
             active_tool_call_id: self.active_tool.clone(),
@@ -110,6 +111,10 @@ impl Conversation {
         } else {
             ConversationRecord {
                 version: 3,
+                metadata: SessionMetadata {
+                    activity_at: SessionMetadata::activity(),
+                    ..SessionMetadata::default()
+                },
                 configuration: Some(ConversationConfiguration::new(options.settings)),
                 id: new_id(),
                 model: options.model,
@@ -179,7 +184,17 @@ impl Conversation {
         settings: SessionSettings,
     ) -> Result<ConversationSnapshot> {
         settings.validate()?;
-        let mut record = {
+        self.mutate_record(move |record| {
+            record.configuration.as_mut().unwrap().settings = settings;
+            Ok(())
+        })
+        .await
+    }
+    pub(crate) async fn mutate_record(
+        self: &Arc<Self>,
+        mutate: impl FnOnce(&mut ConversationRecord) -> Result<()>,
+    ) -> Result<ConversationSnapshot> {
+        let record = {
             let mut s = self.state();
             if s.disposed {
                 return Err(Error::Invalid("Conversation is closed."));
@@ -190,10 +205,12 @@ impl Conversation {
             if s.active.is_some() || s.updating {
                 return Err(Error::Busy);
             }
+            let mut record = s.record.clone();
+            mutate(&mut record)?;
+            record.validate()?;
             s.updating = true;
-            s.record.clone()
+            record
         };
-        record.configuration.as_mut().unwrap().settings = settings;
         let conversation = self.clone();
         tokio::spawn(async move {
             let saved = AssertUnwindSafe(async {
@@ -278,6 +295,33 @@ impl Conversation {
             );
         }
     }
+    pub(crate) fn fork_record(&self) -> Result<ConversationRecord> {
+        let state = self.state();
+        if state.active.is_some() || state.updating || !state.record.pending_input.is_empty() {
+            return Err(Error::Busy);
+        }
+        if state.storage_error.is_some() {
+            return Err(Error::Storage);
+        }
+        if state.disposed {
+            return Err(Error::Invalid("Conversation is closed."));
+        }
+        let mut record = state.record.clone();
+        record.id = new_id();
+        record.metadata.activity_at = SessionMetadata::activity();
+        record.metadata.title = Some(format!(
+            "{} (fork)",
+            record
+                .metadata
+                .title
+                .as_deref()
+                .unwrap_or("Untitled")
+                .chars()
+                .take(100)
+                .collect::<String>()
+        ));
+        Ok(record)
+    }
     pub fn submit(self: &Arc<Self>, text: String) -> Result<Submission> {
         self.submit_with_instructions(text, None)
     }
@@ -307,6 +351,17 @@ impl Conversation {
         if !config.instructions_frozen {
             config.workspace_instructions = instructions;
             config.instructions_frozen = true;
+        }
+        s.record.metadata.activity_at = SessionMetadata::activity();
+        if s.record.metadata.title.is_none() {
+            s.record.metadata.title = Some(
+                text.split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(80)
+                    .collect(),
+            );
         }
         let operation_id = new_id();
         let cancel = CancellationToken::new();
@@ -359,6 +414,7 @@ impl Conversation {
             return Err(Error::Busy);
         }
         let id = new_id();
+        s.record.metadata.activity_at = SessionMetadata::activity();
         s.record.pending_input.push(Message::User {
             id: id.clone(),
             text,

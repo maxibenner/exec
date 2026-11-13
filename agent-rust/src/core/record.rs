@@ -8,6 +8,8 @@ use std::collections::{HashSet, VecDeque};
 pub struct ConversationRecord {
     pub version: u32,
     #[serde(default)]
+    pub metadata: SessionMetadata,
+    #[serde(default)]
     pub configuration: Option<ConversationConfiguration>,
     pub id: String,
     pub model: String,
@@ -30,6 +32,7 @@ pub(super) fn required_option<'de, T: Deserialize<'de>, D: serde::Deserializer<'
 }
 impl ConversationRecord {
     pub fn validate(&self) -> Result<()> {
+        self.metadata.validate()?;
         let bad = Error::Invalid("Invalid or unsupported conversation record.");
         if !matches!(self.version, 1..=3)
             || (self.version >= 2 && self.configuration.is_none())

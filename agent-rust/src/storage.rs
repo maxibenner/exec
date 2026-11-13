@@ -14,6 +14,12 @@ pub trait ConversationStore: Checkpoint {
     async fn load(&self) -> Result<Vec<ConversationRecord>>;
     async fn delete(&self, id: String) -> Result<()>;
     async fn close(&self) -> Result<()>;
+    async fn load_library(&self) -> Result<LibraryConfiguration> {
+        Ok(LibraryConfiguration::default())
+    }
+    async fn save_library(&self, _: LibraryConfiguration) -> Result<()> {
+        Err(Error::Storage)
+    }
 }
 struct StoreState {
     root: PathBuf,
@@ -120,6 +126,7 @@ impl ConversationStore for JsonConversationStore {
             let mut paths=fs::read_dir(&s.root)?.map(|e|e.map(|e|e.path())).collect::<std::io::Result<Vec<_>>>()?; paths.sort();
             let mut records=vec![];
             for path in paths { if path.extension().and_then(|s|s.to_str())!=Some("json") {continue;}
+                if path.file_name().and_then(|s|s.to_str())==Some("library.json") { continue; }
                 let id=path.file_stem().and_then(|s|s.to_str()).ok_or(Error::Internal)?;
                 let file=OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW|libc::O_NONBLOCK).open(s.file(id)?)?;
                 let info=file.metadata()?; if !info.is_file() || info.len()>LIMIT {return Err(Error::Internal);}
@@ -129,6 +136,64 @@ impl ConversationStore for JsonConversationStore {
                 if record.id!=id {return Err(Error::Internal);} records.push(record);
             } Ok(records)
         }).await.map_err(|_|Error::Invalid("Could not load conversations. The profile may contain corrupt, unsupported, linked, or oversized data; it was not overwritten."))
+    }
+    async fn load_library(&self) -> Result<LibraryConfiguration> {
+        self.queued(|s| {
+            let path = s.root.join("library.json");
+            let file = match OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(path)
+            {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(LibraryConfiguration::default());
+                }
+                Err(_) => return Err(Error::Storage),
+            };
+            let metadata = file.metadata()?;
+            if !metadata.is_file() || metadata.len() > 1024 * 1024 {
+                return Err(Error::Storage);
+            }
+            let mut data = Vec::new();
+            (&file).take(1024 * 1024 + 1).read_to_end(&mut data)?;
+            if data.len() > 1024 * 1024 || !unchanged(&metadata, &file.metadata()?) {
+                return Err(Error::Storage);
+            }
+            let config: LibraryConfiguration = serde_json::from_slice(&data)?;
+            config.validate()?;
+            Ok(config)
+        })
+        .await
+    }
+    async fn save_library(&self, config: LibraryConfiguration) -> Result<()> {
+        config.validate()?;
+        let data = serde_json::to_vec(&config)?;
+        self.queued(move |s| {
+            let target = s.root.join("library.json");
+            match fs::symlink_metadata(&target) {
+                Ok(m) if !m.is_file() => return Err(Error::Storage),
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(Error::Storage),
+                _ => {}
+            }
+            let temp = s.root.join(format!(".library.{}.tmp", new_id()));
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temp)?;
+            let result = (|| {
+                file.write_all(&data)?;
+                file.sync_all()?;
+                s.owner()?;
+                fs::rename(&temp, target)?;
+                s.sync()
+            })();
+            let _ = fs::remove_file(temp);
+            result
+        })
+        .await
+        .map_err(|_| Error::Storage)
     }
     async fn delete(&self, id: String) -> Result<()> {
         self.queued(move |s| {

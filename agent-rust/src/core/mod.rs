@@ -1,7 +1,9 @@
 mod conversation;
 mod events;
+mod library;
 mod record;
 mod settings;
+pub use library::*;
 mod types;
 pub use conversation::*;
 use events::EventHub;
