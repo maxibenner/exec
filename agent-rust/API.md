@@ -573,3 +573,8 @@ The Rust `AgentClient` exposes typed native channel/reply/permission methods. Th
 implements the local adapter and explicit `/screenshots` session grant; see
 `docs/swift-rust-migration.md` for its permission flow and verification limits. There is no
 headless capture substitute.
+
+### Automatic session titles
+
+Library configuration includes `automaticTitles` (default `true`, including older saved configurations). At acceptance of each new user turn the manager applies this preference. The runtime runs isolated, tool-free title inference with the session model before chat inference, bounded to 15 seconds and cancellable with the operation. Failures retain the existing title without retry. Manual rename persists `manuallyNamed` and permanently suppresses automatic naming, including after restart. Naming shares operation ownership and checkpoints; it never appends to chat context. Setting changes apply to subsequent turns, not already accepted operations.
+

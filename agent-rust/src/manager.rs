@@ -477,7 +477,12 @@ impl AgentManager {
         if catalog.closed || catalog.account_busy {
             return Err(Error::Busy);
         }
-        conversation.submit_images(text, images, instructions)
+        conversation.submit_images_with_naming(
+            text,
+            images,
+            instructions,
+            !catalog.library_error && catalog.library.automatic_titles,
+        )
     }
     pub fn compact(&self, id: &str) -> Result<Submission> {
         let catalog = self.catalog.lock().unwrap();

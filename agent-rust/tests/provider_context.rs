@@ -57,6 +57,9 @@ async fn thinking_state_continues_tools_and_survives_restart_without_entering_sn
     )
     .await
     .unwrap();
+    let mut library = manager.library_configuration().unwrap();
+    library.automatic_titles = false;
+    manager.update_library(library).await.unwrap();
     let mut options = ConversationOptions::new(
         p.clone(),
         "deepseek-chat",
@@ -91,6 +94,9 @@ async fn thinking_state_continues_tools_and_survives_restart_without_entering_sn
     )
     .await
     .unwrap();
+    let mut library = manager.library_configuration().unwrap();
+    library.automatic_titles = false;
+    manager.update_library(library).await.unwrap();
     assert_eq!(
         settle(manager.submit(&c.id, "continue".into()).await.unwrap())
             .await

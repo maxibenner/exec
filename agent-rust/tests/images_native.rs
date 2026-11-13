@@ -120,6 +120,10 @@ async fn uploaded_and_generated_images_survive_restart_and_last_fork_owns_deleti
         .await
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     let c = client
         .create("test", workspace.path().to_str().unwrap())
         .await
@@ -170,6 +174,10 @@ async fn uploaded_and_generated_images_survive_restart_and_last_fork_owns_deleti
         .await
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     client.delete(&c.id).await.unwrap();
     assert!(client.read_image(&generated.id).await.is_ok());
     assert!(client.read_image(&image.id).await.is_ok());
@@ -230,6 +238,10 @@ async fn native_api_requires_host_nomination_os_permission_session_enablement_an
         .await
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     let mut denied = client.native_events(true, CancellationToken::new());
     assert!(matches!(denied.next().await.unwrap(), Err(Error::Api(403))));
     drop(denied);
@@ -331,6 +343,10 @@ async fn denial_never_consumes_generation_quota_or_creates_image_references() {
         .await
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     let c = client
         .create_with_settings(
             "test",
@@ -390,6 +406,10 @@ async fn releasing_unused_uploads_is_durable_and_preserves_other_fork_references
         .await
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     let c = client
         .create("test", workspace.path().to_str().unwrap())
         .await

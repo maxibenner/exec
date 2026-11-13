@@ -159,6 +159,9 @@ async fn manager_freezes_first_send_instructions_and_restores_without_rereading(
     )
     .await
     .unwrap();
+    let mut library = manager.library_configuration().unwrap();
+    library.automatic_titles = false;
+    manager.update_library(library).await.unwrap();
     let c = manager
         .create(ConversationOptions::new(
             provider.clone(),
@@ -189,6 +192,9 @@ async fn manager_freezes_first_send_instructions_and_restores_without_rereading(
     )
     .await
     .unwrap();
+    let mut library = manager.library_configuration().unwrap();
+    library.automatic_titles = false;
+    manager.update_library(library).await.unwrap();
     assert_eq!(
         manager
             .get(&c.id)

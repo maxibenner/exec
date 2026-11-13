@@ -2,7 +2,7 @@
 
 ## Scope and ownership
 
-The macOS app now bundles and automatically launches the existing `exec-agent` executable and connects over its private Unix-socket HTTP/NDJSON API. The initial cutover did not change Rust. The follow-up fixes one provider transport compatibility issue (valid OpenAI event streams without a Content-Type header); API contracts and backend ownership are unchanged.
+The macOS app now bundles and automatically launches the existing `exec-agent` executable and connects over its private Unix-socket HTTP/NDJSON API. The initial cutover did not change Rust. A separate feature restored backend-owned automatic titles. This follow-up fixes one provider transport compatibility issue (valid OpenAI event streams without a Content-Type header); API contracts and backend ownership are unchanged.
 
 Rust is the sole owner of:
 - Provider credentials, browser authentication/token refresh, model discovery and account observations.
@@ -86,9 +86,10 @@ The build scripts disable release debug stripping (`CARGO_PROFILE_RELEASE_STRIP=
 
 These reflect current backend contracts; they are not replacement UI designs:
 
-1. **Automatic session titles:** removed the Session Titles settings section and generation machinery, as explicitly requested. Manual rename and prompt-derived fallback titles remain.
+1. **Automatic session titles:** subsequently restored as backend-owned, isolated metadata inference, enabled by default via the library `automaticTitles` setting. Manual naming permanently prevents automatic replacement. Each accepted user turn may generate a title using the session model before chat inference, with a 15-second bound and no retry; title failures retain the existing/fallback title. Routine follow-ups are instructed to preserve the established topic. No title prompt or output enters conversation history.
 2. **Idle-only backend mutations:** `/model`, `/reasoning` and `/auto-approve` can be chosen mid-turn. The latest settings are applied once idle, before queued `/compact` or `/fork` actions. Repeated pending actions coalesce; failures never replay mutations. A live approval is not implicitly resolved by changing the desired auto-mode. Rename stays idle-only. Stop discards pending action commands; Quit also prevents queued work from starting.
 3. **Immutable workspace:** `/workspace` becomes inactive after an explicit choice or session start. A new conversation inherits the previous folder only as a suggestion and still permits one explicit choice. Its immutable Rust record is not created merely by inheriting that folder or changing model defaults. Sending, explicit selection, enabling screenshots, or saving a draft on navigation commits the workspace. Use New Conversation afterward; existing history is never rebound to another folder.
+
 4. **Text-only steering:** image submissions during a response, and input during manual compaction, retain the draft and use the existing inline error presentation. They are not silently queued as later inference.
 5. **Provider onboarding:** adding OpenAI opens browser auth directly, without an intermediate explanatory sheet. DeepSeek keeps only key entry and actions, without the auth/storage paragraph. Backend provider statuses have no personal account label, so the existing subtitle shows `Connected` instead of inventing an identity.
 6. **Image generation routing/approval:** the standalone backend composes OpenAI image generation independently of the chat provider and requires approval in manual mode. The existing approval component displays the exact backend proposal with a generic action heading where no old shell/edit heading applies. The settings footer accurately identifies the OpenAI subscription. Swift does not bypass approval or select a different image provider.

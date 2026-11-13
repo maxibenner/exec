@@ -41,6 +41,7 @@ async fn defaults_order_rename_model_and_fork_survive_restart_without_mutating_s
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
     let config = LibraryConfiguration {
+        automatic_titles: false,
         default_model: Some("first-model".into()),
         settings: SessionSettings {
             system_prompt: "default prompt".into(),

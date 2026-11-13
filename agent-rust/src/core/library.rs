@@ -29,12 +29,27 @@ impl SessionMetadata {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LibraryConfiguration {
+    #[serde(default = "enabled")]
+    pub automatic_titles: bool,
     pub default_model: Option<String>,
     pub settings: SessionSettings,
     pub order: Vec<String>,
+}
+fn enabled() -> bool {
+    true
+}
+impl Default for LibraryConfiguration {
+    fn default() -> Self {
+        Self {
+            automatic_titles: true,
+            default_model: None,
+            settings: SessionSettings::default(),
+            order: vec![],
+        }
+    }
 }
 impl LibraryConfiguration {
     pub fn validate(&self) -> Result<()> {

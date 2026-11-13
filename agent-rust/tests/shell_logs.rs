@@ -55,6 +55,10 @@ async fn full_logs_are_private_readable_and_shared_until_the_last_fork_is_delete
         .await
         .unwrap();
     let client = AgentClient::new(profile_socket(profile.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     let c = client
         .create("fake", workspace.path().to_str().unwrap())
         .await
@@ -124,6 +128,10 @@ async fn denial_creates_no_log_and_cancellation_keeps_diagnostics() {
         .await
         .unwrap();
     let client = AgentClient::new(profile_socket(profile.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     let c = client
         .create_with_settings(
             "fake",

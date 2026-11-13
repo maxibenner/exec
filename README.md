@@ -30,7 +30,8 @@ The existing native UI and virtualized transcript renderer now use the bundled R
 
 The app uses a fresh profile at `~/Library/Application Support/Exec/Agent/`. Credentials are stored in a private plaintext file. No old Swift conversations or Keychain entries are imported or removed; reconnect providers in Settings.
 
-See [the migration report](docs/swift-rust-migration.md) for the exact compatibility adjustments, unsupported flows and verification boundaries. Automatic titles are removed. Screenshots use an explicit per-conversation `/screenshots` grant; model/reasoning/auto-mode changes and compaction/fork commands can be queued mid-turn. `/workspace` permits one initial choice, including in a new conversation with an inherited folder, then becomes inactive. Account allowance refreshes when Settings opens. Compaction activity rows remain deferred.
+See [the migration report](docs/swift-rust-migration.md) for the exact compatibility adjustments, unsupported flows and verification boundaries. Automatic session titles are enabled by default in Settings and owned by the backend; manual names are never overwritten. Screenshots use an explicit per-conversation `/screenshots` grant; model/reasoning/auto-mode changes and compaction/fork commands can be queued mid-turn. `/workspace` permits one initial choice, including in a new conversation with an inherited folder, then becomes inactive. Account allowance refreshes when Settings opens. Compaction activity rows remain deferred.
+
 
 ## Keyboard controls
 

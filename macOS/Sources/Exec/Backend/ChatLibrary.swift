@@ -41,6 +41,7 @@ import Observation
     var systemPrompt = "" { didSet { guard !restoringDefaults else { return }; saveDefaults(); for item in openConversations { item.systemPrompt = systemPrompt; item.scheduleSave() } } }
     var defaultModel = "" { didSet { if defaultModel != oldValue { defaultEffort = nil }; saveDefaults() } }
     var defaultEffort: String? { didSet { saveDefaults() } }
+    var automaticTitles = true { didSet { saveDefaults() } }
     var defaultAutoApproveTools = true { didSet { saveDefaults() } }
     var searchModel = "" { didSet { guard !restoringDefaults else { return }; saveDefaults(); for item in openConversations { item.searchModel = searchModel; item.scheduleSave() } } }
     var defaultSessionModel: ChatModel? { models.first { $0.id == defaultModel } ?? models.first }
@@ -62,6 +63,7 @@ import Observation
         try await sessions.restore()
         restoringDefaults = true
         let config = sessions.configuration
+        automaticTitles = config.automaticTitles
         defaultModel = config.defaultModel ?? ""
         defaultEffort = config.settings.effort
         systemPrompt = config.settings.systemPrompt
@@ -89,7 +91,8 @@ import Observation
                 let model = defaultModel.isEmpty ? nil : defaultModel
                 let settings = AgentSettings(systemPrompt: systemPrompt, autoApprove: defaultAutoApproveTools,
                     effort: defaultEffort, searchModel: searchModel.isEmpty ? nil : searchModel)
-                do { try await sessions.update { $0.defaultModel = model; $0.settings = settings } }
+                let titles = automaticTitles
+                do { try await sessions.update { $0.defaultModel = model; $0.settings = settings; $0.automaticTitles = titles } }
                 catch { navigationError = error.localizedDescription; return }
                 if revision == defaultsRevision { return }
             }

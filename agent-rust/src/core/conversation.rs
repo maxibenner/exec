@@ -364,6 +364,15 @@ impl Conversation {
         images: Vec<ImageRef>,
         instructions: Option<String>,
     ) -> Result<Submission> {
+        self.submit_images_with_naming(text, images, instructions, false)
+    }
+    pub(crate) fn submit_images_with_naming(
+        self: &Arc<Self>,
+        text: String,
+        images: Vec<ImageRef>,
+        instructions: Option<String>,
+        automatic_titles: bool,
+    ) -> Result<Submission> {
         if images.len() > 8
             || images.iter().any(|i| i.validate().is_err())
             || images.iter().map(|i| i.byte_count).sum::<usize>() > 16 * 1024 * 1024
@@ -409,6 +418,12 @@ impl Conversation {
             config.workspace_instructions = instructions;
             config.instructions_frozen = true;
         }
+        let title_input = (automatic_titles && !s.record.metadata.manually_named).then(|| {
+            (
+                s.record.metadata.title.clone().unwrap_or_default(),
+                text.clone(),
+            )
+        });
         s.record.metadata.activity_at = SessionMetadata::activity();
         if s.record.metadata.title.is_none() && text.trim().is_empty() {
             s.record.metadata.title = Some("Image".into());
@@ -446,7 +461,7 @@ impl Conversation {
         let (settled, completion) = oneshot::channel();
         tokio::spawn(async move {
             tokio::task::yield_now().await;
-            let operation = runner.run(cancel, false).await;
+            let operation = runner.run(cancel, false, title_input).await;
             let _ = settled.send(operation);
         });
         Ok(Submission {
@@ -480,7 +495,7 @@ impl Conversation {
         let runner = self.clone();
         let (settled, completion) = oneshot::channel();
         tokio::spawn(async move {
-            let op = runner.run(cancel, true).await;
+            let op = runner.run(cancel, true, None).await;
             let _ = settled.send(op);
         });
         Ok(Submission {
@@ -685,12 +700,35 @@ impl Conversation {
         }
         Ok(())
     }
-    async fn run(&self, cancel: CancellationToken, compact_only: bool) -> Operation {
+    async fn run(
+        &self,
+        cancel: CancellationToken,
+        compact_only: bool,
+        title_input: Option<(String, String)>,
+    ) -> Operation {
         let result = AssertUnwindSafe(async {
             if compact_only {
                 self.checkpoint(None).await?;
                 self.compact_history(&cancel, false).await
             } else {
+                self.checkpoint(None).await?;
+                if let Some((title, message)) = title_input {
+                    let model = self.state().record.model.clone();
+                    if let Some(title) = super::titles::generate(
+                        self.provider.as_ref(),
+                        model,
+                        title,
+                        message,
+                        cancel.clone(),
+                    )
+                    .await
+                    {
+                        let mut state = self.state();
+                        if !state.record.metadata.manually_named && !cancel.is_cancelled() {
+                            state.record.metadata.title = Some(title);
+                        }
+                    }
+                }
                 self.steps(&cancel).await
             }
         })
