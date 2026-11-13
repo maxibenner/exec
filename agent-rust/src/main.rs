@@ -1,35 +1,15 @@
 use exec_agent::{
     Error, Result,
-    client::AgentClient,
-    core::*,
     providers::credentials::configured_deepseek_provider,
-    service::{profile_socket, start_persistent_service_with_native},
-    terminal::{Transcript, terminal_text},
+    service::{DEFAULT_ADDRESS, start_persistent_service_with_native},
 };
-use futures_util::StreamExt;
-use std::{
-    io::{IsTerminal, Write},
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
-    signal::unix::{Signal, SignalKind, signal},
-    sync::mpsc,
-};
-use tokio_util::sync::CancellationToken;
-const HELP: &str = "Exec agent CLI (local service client)\n\nUsage: exec-agent [--profile PATH] COMMAND\n  serve [--credentials PATH] [--workspace-tools] [--native-frontend-pid PID]\n                                      Run the service in the foreground\n  health                              Show service capabilities\n  models                              Discover provider models\n  metadata                            Show account/model cache freshness\n  usage openai                        Show allowance windows and reset times\n  auth-status                         Show browser connection attempt\n  auth-cancel ID                      Cancel the exact connection attempt\n  compact ID                          Compact context without replacing history\n  upload-image ID PATH                Store an image in an idle conversation\n  send-image ID ASSET_ID MESSAGE       Submit text and an owned image\n  release-image ID ASSET_ID            Release an unused uploaded image\n  image ASSET_ID PATH                 Copy an image to a new file\n  desktop ID FRONTEND_ID|off           Set explicit session desktop permission\n  providers                           Show credential configuration (never secrets)\n  balance PROVIDER                    Show provider account balances\n  search MODEL QUERY                  Search public web through the provider\n  fetch URL                           Fetch bounded public HTTPS page text\n  log ID OFFSET MAX_BYTES             Read retained shell output (at most 32768 bytes)\n  connect PROVIDER                    Open OpenAI browser sign-in, or read API key from piped stdin\n  disconnect PROVIDER                 Remove JSON-backed credentials\n  list                                List saved conversations\n  library                             Show defaults and shared ordering\n  library-set JSON                    Replace defaults and shared ordering\n  rename ID TITLE                     Rename an idle conversation\n  model ID MODEL                      Select a model for subsequent turns\n  effort ID LEVEL                     Set reasoning effort (or default)\n  search-model ID MODEL                Set search model (or default for chat model)\n  fork ID                             Copy an idle conversation\n  new MODEL [WORKSPACE] [--manual]     Create a conversation (auto approval by default)\n  show ID                             Show saved/current conversation state\n  delete ID                           Delete an idle conversation permanently\n  configure ID auto|manual PROMPT      Replace idle session policy and system prompt\n  chat ID                             Interactive chat; requires a terminal\n  send ID MESSAGE                     Submit one message and follow its operation\n  watch ID                            Observe until Ctrl-C; never approves automatically\n  steer ID OPERATION_ID MESSAGE        Add input at the next safe boundary\n  cancel ID OPERATION_ID               Cancel exactly that operation\n  approve ID OPERATION_ID APPROVAL_ID  Approve exactly that pending action\n  deny ID OPERATION_ID APPROVAL_ID     Deny exactly that pending action\n\nDefault profile: ~/.exec-agent\nOnly serve starts a service. There are no automatic request retries.\nserve reads DEEPSEEK_API_KEY and optional OPENAI_SESSION_JSON, otherwise PROFILE/credentials.json (private mode 0600).\n--credentials selects another JSON file; environment credentials take precedence.\nEnvironment/external-file changes require restart; API JSON changes take effect live. Keys are never accepted as arguments.\nIn chat, /quit or EOF detaches; Ctrl-C cancels an active turn or exits while idle.\nIn send, pending approvals must be resolved explicitly from another client.\n";
-fn main() {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("Could not start async runtime");
-    let result = runtime.block_on(main_async());
-    // Tokio's portable terminal input uses a blocking read. Detaching on Ctrl-C
-    // must not wait for another keystroke to unblock that read.
-    runtime.shutdown_background();
-    if let Err(error) = result {
-        eprintln!("{}", terminal_text(&error.to_string()));
+use std::{path::PathBuf, sync::Arc};
+use tokio::signal::unix::{SignalKind, signal};
+
+#[tokio::main]
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!("{error}");
         std::process::exit(1);
     }
 }
@@ -49,455 +29,83 @@ fn unblock_shutdown_signals() -> Result<()> {
     }
     Ok(())
 }
-fn absolute(path: impl AsRef<Path>) -> Result<PathBuf> {
-    let path = path.as_ref();
-    Ok(if path.is_absolute() {
-        path.to_owned()
-    } else {
-        std::env::current_dir()?.join(path)
-    })
-}
-fn write(text: &str) -> Result<()> {
-    let mut out = std::io::stdout().lock();
-    out.write_all(text.as_bytes())?;
-    out.flush()?;
-    Ok(())
-}
-fn print(value: impl serde::Serialize) -> Result<()> {
-    write(&format!(
-        "{}\n",
-        terminal_text(&serde_json::to_string_pretty(&value)?)
-    ))
-}
-async fn main_async() -> Result<()> {
-    let mut args: Vec<_> = std::env::args().skip(1).collect();
+
+async fn run() -> Result<()> {
+    let mut args = std::env::args().skip(1);
     let mut profile = std::env::home_dir()
         .ok_or(Error::Invalid("Home directory is unavailable."))?
         .join(".exec-agent");
-    if args.first().is_some_and(|s| s == "--profile") {
-        if args
-            .get(1)
-            .is_none_or(|s| s.is_empty() || s.starts_with("--"))
-        {
-            return Err(Error::Invalid("--profile requires a path."));
-        }
-        profile = absolute(&args[1])?;
-        args.drain(..2);
-    }
-    if args.is_empty() || matches!(args[0].as_str(), "help" | "--help") {
-        return write(HELP);
-    }
-    let command = args.remove(0);
-    if command == "serve" {
-        let mut credentials = None;
-        let mut tools = false;
-        let native = Arc::new(exec_agent::native::NativeHub::default());
-        let mut native_pid = None;
-        let mut index = 0;
-        while index < args.len() {
-            match args[index].as_str() {
-                "--workspace-tools" if !tools => tools = true,
-                "--native-frontend-pid" if native_pid.is_none() => {
-                    index += 1;
-                    let pid = args.get(index).and_then(|s| s.parse::<u32>().ok()).ok_or(
-                        Error::Invalid("Specify the trusted local Swift frontend PID."),
-                    )?;
-                    native.allow_local_frontend(pid)?;
-                    native_pid = Some(pid);
-                }
-                "--credentials" if credentials.is_none() => {
-                    index += 1;
-                    if args
-                        .get(index)
-                        .is_none_or(|s| s.is_empty() || s.starts_with("--"))
-                    {
-                        return Err(Error::Invalid("--credentials requires a path."));
-                    }
-                    credentials = Some(absolute(&args[index])?);
-                }
-                _ => return Err(Error::Invalid("Invalid serve arguments. Use --help.")),
+    let mut credentials = None;
+    let mut tools = false;
+    let mut port = None;
+    let mut profile_set = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--profile" if !profile_set => {
+                profile = PathBuf::from(
+                    args.next()
+                        .ok_or(Error::Invalid("--profile requires a path."))?,
+                );
+                profile_set = true;
             }
-            index += 1;
-        }
-        let mut interrupt = signal(SignalKind::interrupt())?;
-        let mut terminate = signal(SignalKind::terminate())?;
-        unblock_shutdown_signals()?;
-        let provider = Arc::new(configured_deepseek_provider(&profile, credentials.clone()).await?);
-        let openai = Arc::new(
-            exec_agent::providers::openai::OpenAIProvider::configured(
-                credentials.unwrap_or_else(|| profile.join("credentials.json")),
-                match std::env::var("OPENAI_SESSION_JSON") {
-                    Ok(value) => Some(value),
-                    Err(std::env::VarError::NotPresent) => None,
-                    Err(_) => return Err(Error::Invalid("Invalid OpenAI session environment.")),
-                },
-            )
-            .await?,
-        );
-        let provider = Arc::new(
-            exec_agent::providers::ProviderRegistry::new(
-                "deepseek",
-                vec![("deepseek".into(), provider), ("openai".into(), openai)],
-            )?
-            .with_cache(profile.join("metadata.json"))
-            .await?,
-        );
-        let service=start_persistent_service_with_native(&profile,provider,tools,native).await.map_err(|_|Error::Invalid("Service startup failed. Check profile permissions, socket, and store lock; stale state is never removed automatically."))?;
-        tokio::select! {_=interrupt.recv()=>{},_=terminate.recv()=>{}}
-        return service.close().await.map_err(|_| {
-            Error::Invalid("Service shutdown failed. Inspect the profile before restarting.")
-        });
-    }
-    let manual = command == "new" && args.last().is_some_and(|s| s == "--manual");
-    if manual {
-        args.pop();
-    }
-    let count = match command.as_str() {
-        "health" | "models" | "list" | "library" | "providers" | "metadata" | "auth-status" => {
-            0..=0
-        }
-        "new" => 1..=2,
-        "show" | "chat" | "watch" | "delete" | "fork" | "library-set" | "connect"
-        | "disconnect" | "balance" | "fetch" | "usage" | "auth-cancel" | "compact" => 1..=1,
-        "send" | "cancel" | "rename" | "model" | "search" | "effort" | "search-model"
-        | "upload-image" | "release-image" | "image" | "desktop" => 2..=2,
-        "approve" | "deny" | "configure" | "steer" | "log" | "send-image" => 3..=3,
-        _ => return Err(Error::Invalid("Invalid command arguments. Use --help.")),
-    };
-    if !count.contains(&args.len()) {
-        return Err(Error::Invalid("Invalid command arguments. Use --help."));
-    }
-    let client = AgentClient::new(profile_socket(&profile))?;
-    match command.as_str() {
-        "health" => return print(client.health().await?),
-        "metadata" => return print(client.metadata().await?),
-        "auth-status" => return print(client.connection_attempt().await?),
-        "auth-cancel" => {
-            client.cancel_connection(&args[0]).await?;
-            return Ok(());
-        }
-        "usage" => return print(client.account_usage(&args[0]).await?),
-        "compact" => return print(client.compact(&args[0]).await?),
-        "upload-image" => {
-            let file = tokio::fs::File::open(&args[1]).await?;
-            let mut bytes = Vec::new();
-            file.take(8 * 1024 * 1024 + 1)
-                .read_to_end(&mut bytes)
-                .await?;
-            if bytes.len() > 8 * 1024 * 1024 {
-                return Err(Error::Invalid("Image exceeds 8 MiB."));
-            }
-            let name = Path::new(&args[1])
-                .file_name()
-                .and_then(|n| n.to_str())
-                .ok_or(Error::Invalid("Invalid image filename."))?;
-            return print(client.upload_image(&args[0], name, &bytes).await?);
-        }
-        "release-image" => {
-            client.release_image(&args[0], &args[1]).await?;
-            return Ok(());
-        }
-        "image" => {
-            let data = client.read_image(&args[0]).await?;
-            let bytes = exec_agent::images::decode_base64(&data.base64)?;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&args[1])?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            return Ok(());
-        }
-        "send-image" => {
-            let data = client.read_image(&args[1]).await?;
-            return print(
-                client
-                    .submit_images(&args[0], &args[2], &[data.image])
-                    .await?,
-            );
-        }
-        "desktop" => {
-            let permission = exec_agent::native::DesktopPermission {
-                enabled: args[1] != "off",
-                frontend_id: if args[1] == "off" {
-                    None
-                } else {
-                    Some(args[1].clone())
-                },
-            };
-            return print(client.set_desktop_permission(&args[0], &permission).await?);
-        }
-        "models" => return print(client.models().await?),
-        "providers" => return print(client.connections().await?),
-        "search" => return print(client.search_web(&args[0], &args[1]).await?),
-        "balance" => return print(client.balances(&args[0]).await?),
-        "fetch" => return print(client.fetch_content(&args[0]).await?),
-        "log" => {
-            let offset = args[1]
-                .parse()
-                .map_err(|_| Error::Invalid("Invalid log offset."))?;
-            let max = args[2]
-                .parse()
-                .map_err(|_| Error::Invalid("Invalid log byte bound."))?;
-            return print(client.read_log(&args[0], offset, max).await?);
-        }
-        "disconnect" => return print(client.disconnect(&args[0]).await?),
-        "connect" => {
-            if args[0] == "openai" {
-                let challenge = client.connect_browser("openai").await?;
-                let mut browser = std::process::Command::new(if cfg!(target_os = "macos") {
-                    "open"
-                } else {
-                    "xdg-open"
-                });
-                let opened = browser
-                    .arg(&challenge.authorization_url)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .is_ok_and(|s| s.success());
-                if !opened {
-                    return Err(Error::Invalid(
-                        "Browser could not be opened. Inspect auth-status and explicitly cancel the pending attempt before trying again.",
-                    ));
-                }
-                return print(challenge.attempt);
-            }
-
-            if std::io::stdin().is_terminal() {
-                return Err(Error::Invalid(
-                    "Read the API key from private piped stdin, not terminal input or arguments.",
+            "--credentials" if credentials.is_none() => {
+                credentials = Some(PathBuf::from(
+                    args.next()
+                        .ok_or(Error::Invalid("--credentials requires a path."))?,
                 ));
             }
-            let mut key = String::new();
-            tokio::io::stdin()
-                .take(8194)
-                .read_to_string(&mut key)
-                .await?;
-            if key.len() > 8193 {
-                return Err(Error::Invalid("Credential input is too large."));
+            "--workspace-tools" if !tools => tools = true,
+            "--port" if port.is_none() => {
+                let value = args
+                    .next()
+                    .and_then(|s| s.parse::<u16>().ok())
+                    .filter(|p| *p > 0)
+                    .ok_or(Error::Invalid("--port requires a port from 1 to 65535."))?;
+                port = Some(value);
             }
-            return print(client.connect_api_key(&args[0], key.trim()).await?);
+            _ => {
+                return Err(Error::Invalid(
+                    "Invalid backend arguments. Only --profile, --credentials, --workspace-tools and --port are supported; there is no CLI client.",
+                ));
+            }
         }
-        "list" => return print(client.list().await?),
-        "library" => return print(client.library().await?),
-        "library-set" => {
-            let config: LibraryConfiguration = serde_json::from_str(&args[0])
-                .map_err(|_| Error::Invalid("Invalid library JSON."))?;
-            return print(client.update_library(config).await?);
-        }
-        "rename" => return print(client.rename(&args[0], &args[1]).await?),
-        "model" => return print(client.select_model(&args[0], &args[1]).await?),
-        "search-model" => {
-            let mut settings = client.get(&args[0]).await?.configuration.settings;
-            settings.search_model = if args[1] == "default" {
-                None
-            } else {
-                Some(args[1].clone())
-            };
-            return print(client.update_settings(&args[0], settings).await?);
-        }
-        "effort" => {
-            let mut settings = client.get(&args[0]).await?.configuration.settings;
-            settings.effort = if args[1] == "default" {
-                None
-            } else {
-                Some(args[1].clone())
-            };
-            return print(client.update_settings(&args[0], settings).await?);
-        }
-        "fork" => return print(client.fork(&args[0]).await?),
-        "new" => {
-            let workspace = absolute(args.get(1).map(String::as_str).unwrap_or("."))?;
-            let workspace = workspace.to_string_lossy();
-            let created = if manual {
-                let mut settings = client.library().await?.settings;
-                settings.auto_approve = false;
-                client
-                    .create_with_settings(&args[0], &workspace, settings)
-                    .await?
-            } else {
-                client.create(&args[0], &workspace).await?
-            };
-            return print(created);
-        }
-        "configure" => {
-            let auto_approve = match args[1].as_str() {
-                "auto" => true,
-                "manual" => false,
-                _ => return Err(Error::Invalid("Approval mode must be auto or manual.")),
-            };
-            let mut settings = client.get(&args[0]).await?.configuration.settings;
-            settings.auto_approve = auto_approve;
-            settings.system_prompt = args[2].clone();
-            return print(client.update_settings(&args[0], settings).await?);
-        }
-        "show" => return print(client.get(&args[0]).await?),
-        "delete" => {
-            client.delete(&args[0]).await?;
-            return print(serde_json::json!({"deleted":true}));
-        }
-        "steer" => return print(client.steer(&args[0], &args[1], &args[2]).await?),
-        "cancel" => return print(client.cancel(&args[0], &args[1]).await?),
-        "approve" | "deny" => {
-            return print(
-                client
-                    .approve(&args[0], &args[1], &args[2], command == "approve")
-                    .await?,
-            );
-        }
-        _ => {}
     }
-    let interactive = command == "chat";
-    if interactive && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal()) {
-        return Err(Error::Invalid(
-            "chat requires an interactive terminal. Use send/watch and explicit approve/deny commands for scripts.",
-        ));
+    if !profile.is_absolute() {
+        profile = std::env::current_dir()?.join(profile);
     }
+    let mut address: std::net::SocketAddr = DEFAULT_ADDRESS.parse().unwrap();
+    if let Some(port) = port {
+        address.set_port(port);
+    }
+    let native = Arc::new(exec_agent::native::NativeHub::default());
     let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
     unblock_shutdown_signals()?;
-    let lifetime = CancellationToken::new();
-    let (send, mut input) = mpsc::channel(32);
-    if interactive {
-        let lifetime = lifetime.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(tokio::io::stdin()).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if send.send(line).await.is_err() {
-                    return;
-                }
-            }
-            lifetime.cancel();
-        });
-    }
-    let mut transcript = Transcript::default();
-    let id = &args[0];
-    let mut session = Follow {
-        client: &client,
-        id,
-        transcript: &mut transcript,
-        interrupt: &mut interrupt,
-        input: &mut input,
-        lifetime: &lifetime,
-        interactive,
-    };
-    if command == "watch" {
-        session.follow(None, true).await?;
-        return Ok(());
-    }
-    if command == "send" {
-        // Listen for SIGINT before submission, but wait for its acknowledgement
-        // before resolving the exact operation to cancel. Never replay a lost POST.
-        let operation = client.submit(id, &args[1]).await?;
-        let result = session.follow(Some(&operation), false).await?;
-        if result.is_none_or(|o| o.state != OperationState::Completed) {
-            return Err(Error::Invalid("Operation did not complete."));
-        }
-        return Ok(());
-    }
-    session.follow(None, false).await?;
-    loop {
-        write("\nYou> ")?;
-        let line = tokio::select! {biased;_=lifetime.cancelled()=>break,_=session.interrupt.recv()=>break,line=session.input.recv()=>line};
-        let Some(line) = line else {
-            break;
-        };
-        if line.trim() == "/quit" {
-            break;
-        }
-        if line.trim().is_empty() {
-            continue;
-        }
-        let operation = client.submit(id, &line).await?;
-        session.follow(Some(&operation), false).await?;
-    }
-    Ok(())
-}
-struct Follow<'a> {
-    client: &'a AgentClient,
-    id: &'a str,
-    transcript: &'a mut Transcript,
-    interrupt: &'a mut Signal,
-    input: &'a mut mpsc::Receiver<String>,
-    lifetime: &'a CancellationToken,
-    interactive: bool,
-}
-impl Follow<'_> {
-    async fn cancel(&self) -> Result<bool> {
-        let snapshot = self.client.get(self.id).await.map_err(|_| {
-            Error::Invalid(
-                "Cancellation could not be confirmed. Inspect the conversation before continuing.",
-            )
-        })?;
-        if let Some(op) = snapshot.operation
-            && op.state.active()
-        {
-            self.client.cancel(self.id,&op.id).await.map_err(|_|Error::Invalid("Cancellation could not be confirmed. Inspect the conversation before continuing."))?;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-    async fn follow(
-        &mut self,
-        operation: Option<&str>,
-        continuous: bool,
-    ) -> Result<Option<Operation>> {
-        let cancel = self.lifetime.child_token();
-        let _guard = cancel.clone().drop_guard();
-        let mut events = self.client.events(self.id, cancel);
-        let mut prompted = std::collections::HashSet::new();
-        loop {
-            let frame = tokio::select! {biased;
-                _=self.lifetime.cancelled()=>return Ok(None),
-                _=self.interrupt.recv()=>{if continuous||!self.cancel().await?{return Ok(None);}continue;},
-                frame=events.next()=>frame,
-            };
-            let Some(frame) = frame else {
-                return Ok(None);
-            };
-            let frame = frame?;
-            write(&self.transcript.frame(&frame))?;
-            let snapshot = match frame {
-                ServiceEvent::Snapshot { snapshot }
-                | ServiceEvent::Runtime {
-                    snapshot: Some(snapshot),
-                    ..
-                } => snapshot,
-                _ => continue,
-            };
-            if operation.is_some_and(|id| snapshot.operation.as_ref().is_none_or(|op| op.id != id))
-            {
-                return Err(Error::Invalid(
-                    "Another client changed the active operation. Inspect the conversation before continuing.",
-                ));
-            }
-            if !continuous
-                && snapshot
-                    .operation
-                    .as_ref()
-                    .is_none_or(|op| !op.state.active())
-            {
-                return Ok(snapshot.operation);
-            }
-            if self.interactive
-                && let Some(approval) = snapshot.approval
-                && prompted.insert(approval.id.clone())
-            {
-                write("\nApprove this exact action? [y/N] ")?;
-                let answer = tokio::select! {biased;_=self.lifetime.cancelled()=>return Ok(None),_=self.interrupt.recv()=>{self.cancel().await?;continue;},answer=self.input.recv()=>answer};
-                if let Some(answer) = answer {
-                    self.client
-                        .approve(
-                            self.id,
-                            &approval.operation_id,
-                            &approval.id,
-                            answer.trim().eq_ignore_ascii_case("y"),
-                        )
-                        .await?;
-                }
-            }
-        }
-    }
+    let provider = Arc::new(configured_deepseek_provider(&profile, credentials.clone()).await?);
+    let openai = Arc::new(
+        exec_agent::providers::openai::OpenAIProvider::configured(
+            credentials.unwrap_or_else(|| profile.join("credentials.json")),
+            match std::env::var("OPENAI_SESSION_JSON") {
+                Ok(value) => Some(value),
+                Err(std::env::VarError::NotPresent) => None,
+                Err(_) => return Err(Error::Invalid("Invalid OpenAI session environment.")),
+            },
+        )
+        .await?,
+    );
+    let provider = Arc::new(
+        exec_agent::providers::ProviderRegistry::new(
+            "deepseek",
+            vec![("deepseek".into(), provider), ("openai".into(), openai)],
+        )?
+        .with_cache(profile.join("metadata.json"))
+        .await?,
+    );
+
+    let service = start_persistent_service_with_native(&profile, provider, tools, address, native).await
+        .map_err(|_| Error::Invalid("Backend startup failed. Check port availability, profile permissions and store ownership; no stale state was removed."))?;
+    // Readiness only: clients already know the fixed endpoint. Never discover another server.
+    println!("ready");
+    tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {} }
+    service.close().await
 }

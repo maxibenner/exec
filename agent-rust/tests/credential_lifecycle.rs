@@ -1,9 +1,9 @@
+use support::client::AgentClient;
 #[path = "support/http.rs"]
 mod http;
 mod support;
 use exec_agent::{
     Error,
-    client::AgentClient,
     core::*,
     providers::{DeepSeekProvider, credential_store::DeepSeekCredentials},
     service::*,
@@ -125,10 +125,11 @@ async fn api_credentials_change_at_runtime_without_exposing_secrets_or_network_v
         DeepSeekProvider::with_authentication(store, transport.clone(), Duration::from_secs(3))
             .unwrap(),
     );
-    let service = start_persistent_service(root.path(), provider, false)
-        .await
-        .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let service =
+        start_persistent_service(root.path(), provider, false, "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;

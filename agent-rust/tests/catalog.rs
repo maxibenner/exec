@@ -1,7 +1,7 @@
+use support::client::AgentClient;
 mod support;
 use exec_agent::{
-    Error, client::AgentClient, core::*, manager::AgentManager, service::*,
-    storage::JsonConversationStore,
+    Error, core::*, manager::AgentManager, service::*, storage::JsonConversationStore,
 };
 use serde_json::json;
 use std::{fs, sync::Arc};
@@ -36,10 +36,15 @@ async fn defaults_order_rename_model_and_fork_survive_restart_without_mutating_s
     let root = directory();
     let workspace = directory();
     let p = FakeProvider::new(vec![answer(), answer()]);
-    let service = start_persistent_service(root.path(), p.clone(), false)
-        .await
-        .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        p.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     let config = LibraryConfiguration {
         automatic_titles: false,
         default_model: Some("first-model".into()),
@@ -93,9 +98,10 @@ async fn defaults_order_rename_model_and_fork_survive_restart_without_mutating_s
     client.update_library(order.clone()).await.unwrap();
     assert_eq!(client.list().await.unwrap()[0]["id"], fork.id);
     service.close().await.unwrap();
-    let service = start_persistent_service(root.path(), p, false)
+    let service = start_persistent_service(root.path(), p, false, "127.0.0.1:0".parse().unwrap())
         .await
         .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     assert_eq!(client.library().await.unwrap(), order);
     assert_eq!(client.get(&c.id).await.unwrap(), source);
     assert_eq!(client.list().await.unwrap()[0]["id"], fork.id);

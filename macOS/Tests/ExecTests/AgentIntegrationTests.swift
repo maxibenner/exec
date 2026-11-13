@@ -143,7 +143,7 @@ actor FakeAgentTransport: AgentTransport {
         throw CheckFailure(description: "Timed out waiting for navigation")
     }
 
-    /// Real Rust subprocess and Unix HTTP framing, isolated empty credentials/profile.
+    /// Real Rust subprocess and loopback HTTP framing, isolated empty credentials/profile.
     /// Never configures a provider or sends a live model request.
     func realService() async throws {
         let executable = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/agent-rust/release/exec-agent")
@@ -155,22 +155,35 @@ actor FakeAgentTransport: AgentTransport {
         defer { try? FileManager.default.removeItem(at: root) }
         let process = Process()
         process.executableURL = executable
-        process.arguments = ["--profile", profile.path, "serve", "--workspace-tools",
-                             "--native-frontend-pid", String(ProcessInfo.processInfo.processIdentifier)]
+        process.arguments = ["--profile", profile.path, "--workspace-tools", "--port", "18765"]
         process.environment = ["PATH": "/usr/bin:/bin"]
-        process.standardOutput = FileHandle.nullDevice
+        let output = Pipe()
+        process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         try process.run()
         defer { if process.isRunning { process.terminate(); process.waitUntilExit() } }
-        let socket = profile.appendingPathComponent("service.sock").path
-        for _ in 0..<200 {
-            if FileManager.default.fileExists(atPath: socket) { break }
-            guard process.isRunning else { throw CheckFailure(description: "Isolated backend exited during startup") }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let api = AgentAPI(transport: UnixAgentTransport(socketPath: socket))
+        try await AgentService.waitUntilReady(process: process, output: output)
+        let api = AgentAPI(transport: HTTPAgentTransport(port: 18765))
         let health = try await api.get("/v1/health")
         try expect(health["version"].number == 1)
+        // A conflicting helper must fail readiness, not attach to the first backend.
+        let conflict = Process()
+        conflict.executableURL = executable
+        let conflictProfile = root.appendingPathComponent("conflict-profile")
+        conflict.arguments = ["--profile", conflictProfile.path, "--port", "18765"]
+        conflict.environment = ["PATH": "/usr/bin:/bin"]
+        let conflictOutput = Pipe()
+        conflict.standardOutput = conflictOutput
+        conflict.standardError = FileHandle.nullDevice
+        try conflict.run()
+        defer { if conflict.isRunning { conflict.terminate(); conflict.waitUntilExit() } }
+        var rejected = false
+        do { try await AgentService.waitUntilReady(process: conflict, output: conflictOutput) }
+        catch { rejected = true }
+        try expect(rejected && !conflict.isRunning && conflict.terminationStatus != 0)
+        try expect(!FileManager.default.fileExists(atPath: conflictProfile.appendingPathComponent("conversations/.lock").path))
+        let stillHealthy = try await api.get("/v1/health")
+        try expect(stillHealthy["version"].number == 1)
         let accounts = AgentAccounts(api: api)
         try await accounts.refreshConnections()
         try expect(accounts.connections.count == 2 && accounts.account == nil)
@@ -178,7 +191,7 @@ actor FakeAgentTransport: AgentTransport {
             "model": .string("deepseek/test"), "workspace": .string(workspace.path),
             "settings": .object(["autoApprove": .bool(false), "systemPrompt": .string("Test instructions")])]))
         let snapshot = try value.decoded(AgentSnapshot.self)
-        // Attestation uses the real Unix peer; OS access/capture remain isolated fakes.
+        // Native registration uses HTTP; OS access/capture remain isolated fakes.
         let desktop = AgentDesktop(api: api, preflight: { true }, requestPermission: { false }, capture: { _ in
             throw CheckFailure(description: "No screen capture expected in isolated service check")
         })
@@ -261,7 +274,6 @@ actor FakeAgentTransport: AgentTransport {
         process.terminate()
         while process.isRunning { try await Task.sleep(for: .milliseconds(10)) }
         try expect(process.terminationStatus == 0)
-        try expect(!FileManager.default.fileExists(atPath: socket))
         try expect(!FileManager.default.fileExists(atPath: profile.appendingPathComponent("conversations/.lock").path))
     }
 }

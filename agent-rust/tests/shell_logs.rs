@@ -1,5 +1,6 @@
+use support::client::AgentClient;
 mod support;
-use exec_agent::{Error, client::AgentClient, core::*, service::*};
+use exec_agent::{Error, core::*, service::*};
 use futures_util::StreamExt;
 use serde_json::json;
 use std::{fs, os::unix::fs::PermissionsExt};
@@ -51,10 +52,10 @@ async fn full_logs_are_private_readable_and_shared_until_the_last_fork_is_delete
         shell("printf BEGIN; head -c 200000 /dev/zero | tr '\\0' x; printf END"),
         answer(),
     ]);
-    let service = start_persistent_service(profile.path(), p, true)
+    let service = start_persistent_service(profile.path(), p, true, "127.0.0.1:0".parse().unwrap())
         .await
         .unwrap();
-    let client = AgentClient::new(profile_socket(profile.path())).unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;
@@ -101,9 +102,15 @@ async fn full_logs_are_private_readable_and_shared_until_the_last_fork_is_delete
     let fork = client.fork(&c.id).await.unwrap();
     assert_eq!(fork.resources, terminal.resources);
     service.close().await.unwrap();
-    let service = start_persistent_service(profile.path(), FakeProvider::new(vec![]), true)
-        .await
-        .unwrap();
+    let service = start_persistent_service(
+        profile.path(),
+        FakeProvider::new(vec![]),
+        true,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     assert_eq!(
         client.get(&fork.id).await.unwrap().resources,
         fork.resources
@@ -124,10 +131,10 @@ async fn denial_creates_no_log_and_cancellation_keeps_diagnostics() {
         answer(),
         shell("printf started; sleep 30"),
     ]);
-    let service = start_persistent_service(profile.path(), p, true)
+    let service = start_persistent_service(profile.path(), p, true, "127.0.0.1:0".parse().unwrap())
         .await
         .unwrap();
-    let client = AgentClient::new(profile_socket(profile.path())).unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;

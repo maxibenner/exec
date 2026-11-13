@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import Darwin
 
 @MainActor @Observable final class AgentService {
     static var profile: URL {
@@ -17,38 +18,27 @@ import Observation
 
     func start() async throws -> AgentAPI {
         if let api, process?.isRunning == true { return api }
-        let socket = Self.profile.appendingPathComponent("service.sock").path
-        guard socket.utf8.count <= 100 else { throw ExecError("The Exec backend profile path is too long for a local socket.") }
-        guard !FileManager.default.fileExists(atPath: socket) else {
-            throw ExecError("The Exec backend profile is already in use or was not shut down cleanly. Verify that the previous backend and its tools have stopped before recovering its socket and lock.")
-        }
         guard let executable = Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("exec-agent"),
               FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw ExecError("The bundled Exec backend is missing. Rebuild or reinstall Exec.")
         }
         let process = Process()
         process.executableURL = executable
-        process.arguments = ["--profile", Self.profile.path, "serve", "--workspace-tools",
-                             "--native-frontend-pid", String(ProcessInfo.processInfo.processIdentifier)]
+        process.arguments = ["--profile", Self.profile.path, "--workspace-tools"]
         var environment = ProcessInfo.processInfo.environment
         // GUI onboarding always controls this app's private profile, never ambient shell credentials.
         environment.removeValue(forKey: "DEEPSEEK_API_KEY")
         environment.removeValue(forKey: "OPENAI_SESSION_JSON")
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
+        let output = Pipe()
+        process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         try process.run()
         self.process = process
         do {
-            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
-            while !FileManager.default.fileExists(atPath: socket) {
-                try Task.checkCancellation()
-                guard process.isRunning else { throw ExecError("The Exec backend could not start. Its profile may be locked or unreadable; no files were removed.") }
-                guard ContinuousClock.now < deadline else { throw ExecError("The Exec backend did not become ready.") }
-                try await Task.sleep(for: .milliseconds(25))
-            }
-            let api = AgentAPI(transport: UnixAgentTransport(socketPath: socket))
+            try await Self.waitUntilReady(process: process, output: output)
+            let api = AgentAPI(transport: HTTPAgentTransport())
             let health = try await api.get("/v1/health")
             guard health["version"].number == 1, health["toolsEnabled"].bool else { throw ExecError("The bundled backend has an incompatible API or disabled workspace tools.") }
             self.api = api
@@ -57,6 +47,34 @@ import Observation
         } catch {
             await shutdown()
             throw error
+        }
+    }
+
+    /// Wait for our child's readiness, not an arbitrary server already using the port.
+    /// The marker carries no address: the endpoint is fixed and never discovered.
+    static func waitUntilReady(process: Process, output: Pipe) async throws {
+        let descriptor = output.fileHandleForReading.fileDescriptor
+        let flags = fcntl(descriptor, F_GETFL)
+        guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) >= 0 else {
+            throw ExecError("Could not read backend readiness.")
+        }
+        defer { try? output.fileHandleForReading.close() }
+        var marker = Data()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while true {
+            try Task.checkCancellation()
+            guard process.isRunning else {
+                throw ExecError("The Exec backend could not start. Port 8765 may be in use or its profile may be locked or unreadable; no files were removed.")
+            }
+            var bytes = [UInt8](repeating: 0, count: 64)
+            let count = Darwin.read(descriptor, &bytes, bytes.count)
+            if count > 0 { marker.append(contentsOf: bytes.prefix(count)) }
+            if marker == Data("ready\n".utf8) { return }
+            guard marker.count < 64, count >= 0 || errno == EAGAIN || errno == EINTR else {
+                throw ExecError("Invalid backend readiness response.")
+            }
+            guard ContinuousClock.now < deadline else { throw ExecError("The Exec backend did not become ready.") }
+            try await Task.sleep(for: .milliseconds(25))
         }
     }
 

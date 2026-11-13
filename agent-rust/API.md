@@ -1,6 +1,6 @@
-# Local service and CLI — API v1
+# Local HTTP service — API v1
 
-The HTTP API extends the TypeScript sketch with session configuration and deletion. New conversations now default to auto-approval; clients requiring individual approvals must explicitly request manual mode. The service owns the manager, provider, tools, approvals and JSON persistence; clients never run another agent loop. The Swift app is not connected yet.
+The HTTP API extends the TypeScript sketch with session configuration and deletion. New conversations now default to auto-approval; clients requiring individual approvals must explicitly request manual mode. The service owns the manager, provider, tools, approvals and JSON persistence; clients never run another agent loop. The Swift app launches the bundled backend and consumes this API.
 
 ## Standalone startup and credentials
 
@@ -8,8 +8,8 @@ From `agent-rust/`, run `cargo build --locked --release`, then:
 
 ```sh
 # Provision DEEPSEEK_API_KEY securely in the environment first, or use private JSON.
-./target/release/exec-agent serve
-./target/release/exec-agent --profile /absolute/profile serve --credentials /private/credentials.json --workspace-tools
+./target/release/exec-agent
+./target/release/exec-agent --profile /absolute/profile --credentials /private/credentials.json --workspace-tools
 ```
 
 Initial credentials are loaded at startup; API-managed JSON credentials can then change live:
@@ -19,15 +19,15 @@ Initial credentials are loaded at startup; API-managed JSON credentials can then
 
 The file can contain `{"deepseek":{"apiKey":"YOUR_DEEPSEEK_API_KEY"},"openai":{...}}`, or `{}` when disconnected. The OpenAI entry is provider-owned; see browser authentication below. Both adapters serialize document updates and preserve the other provider’s fields. An absent file also means disconnected and does not prevent history access. Provision it privately using a secure editor or secret tool; never commit a real key. The loader requires an owned regular file with no group/other permissions (`0600`), refuses final-component symlinks, bounds the shared document to 1 MiB, and never repairs insecure permissions. API writes use private same-directory staging, file sync, atomic rename and directory sync. This is plaintext storage, not encryption or Keychain. There is no `.env` parser, implicit sign-in, credential CLI argument, or automatic external-file reload.
 
-Keep profiles and credential files **outside all model workspaces**. Approved shells are not sandboxed; same-user code can still read same-user files. Client commands do not load credentials. Environment or external-file changes require restart. API JSON changes take effect without restart. Startup performs no model discovery or inference. SIGINT/SIGTERM take the cancellation/checkpoint/close path; repeated signals do not forcibly abandon tools.
+Keep profiles and credential files **outside all model workspaces**. Approved shells are not sandboxed; same-user code can still read same-user files. Environment or external-file changes require restart. API JSON changes take effect without restart. Startup performs no model discovery or inference. SIGINT/SIGTERM take the cancellation/checkpoint/close path; repeated signals do not forcibly abandon tools.
 
 ## Embedded startup
 
-`service::start_persistent_service(profile, provider, workspace_tools)` accepts an absolute profile path, `Arc<dyn ChatProvider>`, and an explicit tool opt-in. `providers::credentials::configured_deepseek_provider` provides the same JSON/environment setup; alternatively construct `DeepSeekProvider` with a host-owned async `CredentialSource`.
+`service::start_persistent_service(profile, provider, workspace_tools, address)` accepts an absolute profile path, `Arc<dyn ChatProvider>`, an explicit tool opt-in, and a loopback `SocketAddr`. `providers::credentials::configured_deepseek_provider` provides the same JSON/environment setup; alternatively construct `DeepSeekProvider` with a host-owned async `CredentialSource`.
 
 ```rust,ignore
 let service = exec_agent::service::start_persistent_service(
-    absolute_profile_path, configured_provider, false,
+    absolute_profile_path, configured_provider, false, "127.0.0.1:8765".parse()?,
 ).await?;
 // Host owns signal handling/lifetime. Wait for explicit shutdown, then:
 service.close().await?;
@@ -41,46 +41,28 @@ profile/                    owned private directory, mode 0700
   metadata.json             optional account-scoped model/usage/balance cache, mode 0600
   images/                   immutable UUID.image PNG/JPEG assets, mode 0700/0600
   shell-logs/               retained shell output, mode 0700/0600
-  service.sock              HTTP Unix socket, mode 0600
   conversations/
     .lock/                  exclusive store ownership
     <conversation-id>.json  versioned durable record, mode 0600
 ```
 
-The full socket path is at most 100 UTF-8 bytes. Existing socket endpoints and insecure/symlinked profile directories are refused, never overwritten or silently made private.
+Insecure/symlinked profile directories are refused, never silently made private.
 
-## CLI
+## Backend launcher
 
-Run `./target/release/exec-agent` (or `cargo run --`) with an optional leading `--profile PATH`:
-
-| Command | Behavior |
-|---|---|
-| `serve [--credentials PATH] [--workspace-tools]` | Foreground DeepSeek service; only this command starts a service |
-| `health` | Show service capabilities |
-| `models` | Explicit provider model discovery |
-| `providers` | Inspect configuration status, never credentials |
-| `connect PROVIDER` | Read API key from bounded private piped stdin; never arguments or echoed terminal input |
-| `disconnect PROVIDER` | Remove JSON-backed credentials; environment credentials are externally managed |
-| `list` | List conversation summaries |
-| `new MODEL [WORKSPACE] [--manual]` | Create a conversation; workspace defaults to cwd, auto mode by default |
-| `configure ID auto\|manual PROMPT` | Replace idle session policy and system prompt; use `""` for an empty prompt |
-| `show ID` | Inspect current/saved state |
-| `delete ID` | Permanently delete an idle conversation; cancel and await active work first |
-| `chat ID` | Interactive transcript and input; requires a terminal |
-| `send ID MESSAGE` | Submit once and follow that operation; nonzero exit on failure/interruption |
-| `watch ID` | Observe across turns; never auto-approves |
-| `steer ID OPERATION_ID MESSAGE` | Add input at the next safe boundary of this active operation |
-| `cancel ID OPERATION_ID` | Request cancellation of exactly that operation |
-| `approve ID OPERATION_ID APPROVAL_ID` | Approve exactly that pending action |
-| `deny ID OPERATION_ID APPROVAL_ID` | Deny exactly that pending action |
-
-`chat` prints the exact approval description/workspace and accepts only `y` to approve; other answers deny. Terminal control/OSC/bidi characters in model/tool output are escaped. Ctrl-C in chat/send cancels an active turn and waits for settlement, or exits if idle. `/quit` at chat input or EOF detaches. Ctrl-C in watch only detaches. Disconnecting never approves, cancels, or rejects work. Pending approval in `send` must be resolved explicitly from another client.
-
-No client command retries a mutation. A lost response may follow real effects: use show/watch before deciding what to do next. If another client changes the operation before send attaches, it reports the mismatch rather than following the wrong turn.
+The executable only hosts the backend; there is no CLI client, interactive terminal, or
+chat/list/watch command. Launch it with optional `--profile PATH`, `--credentials PATH`,
+`--workspace-tools` and `--port PORT`. The default profile is `~/.exec-agent`; the default
+endpoint is **`http://127.0.0.1:8765`**. An explicit port override is useful for isolated
+hosts/tests and must also be supplied to their HTTP client. The macOS app always uses 8765.
+There is no endpoint discovery, port scanning, fallback port, or automatic attachment to
+an existing backend. An occupied port fails startup. Once bound and initialized, the helper
+writes `ready\n` to stdout; this is a readiness marker, not endpoint discovery.
+SIGINT/SIGTERM cancel and await work, checkpoint, release the listener and close the store.
 
 ## HTTP API v1
 
-HTTP/1.1 over the private Unix socket, not TCP. No cookies, CORS or remote authentication. Origin/Fetch-Metadata browser requests are rejected. Same-user processes are trusted. **Never forward this socket through a public/network proxy.**
+HTTP/1.1 over loopback TCP. **No authentication. Any local process, including other local users, can read/control conversations, manage provider credentials and register a native frontend.** This intentionally replaces the old socket permissions and peer/PID checks. The service refuses non-loopback binds. No cookies or CORS; Origin/Fetch-Metadata browser requests are rejected. **Never expose or proxy this API to a network.**
 
 Bodies require `Content-Type: application/json` and reject unknown fields. Request bodies are bounded to 12 MiB (for encoded images), text to 128 Ki UTF-16 code units with an additional 128 KiB UTF-8 turn bound, model IDs to 128 code units, and workspace paths to 4,096 code units. Workspaces must be existing absolute directories and are canonicalized. Approval/cancellation IDs are UUIDs. Errors are an HTTP status plus `{"error":"safe message"}`, never raw provider exceptions. Exact diagnostic wording is not a machine-readable error code; oversized/interrupted bodies can also reset the connection.
 
@@ -167,18 +149,17 @@ Tool events are not durable acknowledgments. A result may precede its checkpoint
 Subscription and initial snapshot have no update gap. There is no replay cursor, heartbeat or automatic reconnection. Streams stay open after terminal operations to observe later turns. Slow observers are disconnected rather than blocking inference: queues are bounded to 1 MiB (one larger snapshot is permitted). Clients bound responses/frames to 32 MiB. Reconnect explicitly after interruption; never resubmit automatically.
 
 ```sh
-curl --unix-socket "$HOME/.exec-agent/service.sock" http://localhost/v1/health
-curl --no-buffer --unix-socket "$HOME/.exec-agent/service.sock" \
-  http://localhost/v1/conversations/CONVERSATION_ID/events
+curl http://127.0.0.1:8765/v1/health
+curl --no-buffer http://127.0.0.1:8765/v1/conversations/CONVERSATION_ID/events
 ```
 
 ## Shutdown and recovery
 
-`service.close().await` stops accepting connections, disconnects observers/partial requests, settles catalog mutations, cancels runs, awaits cooperative provider/tool cleanup and final checkpoints, then closes the manager/store. Noncooperative adapters can delay shutdown. Normal shutdown removes the socket and lock. Forced termination is not a clean tool shutdown.
+`service.close().await` stops accepting connections, disconnects observers/partial requests, settles catalog mutations, cancels runs, awaits cooperative provider/tool cleanup and final checkpoints, then closes the manager/store. Noncooperative adapters can delay shutdown. Normal shutdown releases the TCP listener and removes the store lock. Forced termination is not a clean tool shutdown.
 
-Crash recovery never resumes work or steals ownership. Verify the old host and its tool processes have stopped, then explicitly remove only the stale socket and `conversations/.lock` for that profile. See [README.md](README.md#persistence-and-recovery) for interrupted intent, missing results and possible side effects.
+Crash recovery never resumes work or steals ownership. Verify the old host and its tool processes have stopped, then explicitly remove only the stale `conversations/.lock` for that profile. See [README.md](README.md#persistence-and-recovery) for interrupted intent, missing results and possible side effects.
 
-Tests cover these contracts with fake providers/transports and real sockets/subprocesses. Live OpenAI/DeepSeek, interactive TTY operation, Linux deployment, browser OAuth, native OS permission behavior and Swift UI integration are not claimed verified.
+Tests cover these contracts with fake providers/transports and real loopback TCP connections/subprocesses. Live OpenAI/DeepSeek, Linux deployment, browser OAuth, native OS permission behavior and Swift UI integration are not claimed verified.
 
 ## Steering
 
@@ -214,7 +195,6 @@ creation until reload; existing conversation execution is independent. Corrupt l
 fails startup rather than silently resetting preferences. Clients retain their own selected
 session, drafts, windows and scroll state.
 
-CLI commands: `library`, `library-set JSON`, `rename ID TITLE`, `model ID MODEL`, `fork ID`.
 
 ## Credential lifecycle
 
@@ -256,14 +236,13 @@ change are rejected instead of being presented under the new account. They do no
 conversation context unless invoked as a runner tool. `toolsEnabled` in health describes
 workspace file/shell tools only; search, fetch, image generation and optional native capture are independent.
 
-CLI: `search MODEL QUERY`, `balance PROVIDER`. Live provider compatibility is unverified;
+Live provider compatibility is unverified;
 tests use synthetic credentials and fake transports, not the live service.
 
 ## Public content fetching
 
 `POST /v1/fetch` accepts `{url}` and returns `{url,contentType,text,truncated}`. The same
-operation is registered as `fetch_content` in the standalone runner and exposed as `fetch URL`
-in the CLI. No provider credentials, website credentials, cookies or ambient proxies are
+operation is registered as `fetch_content` in the standalone runner. No provider credentials, website credentials, cookies or ambient proxies are
 used. Public HTTPS port 443 only; all resolved addresses must be public, and the HTTP client
 is pinned to those addresses while retaining ordinary TLS hostname/certificate validation.
 The connected peer must match a validated address. This improves on Swift's DNS preflight,
@@ -337,8 +316,7 @@ exists or the command started: cancellation/recovery may leave only a reservatio
 `POST /v1/logs/:id` with `{offset,maxBytes}` reads up to 32,768 bytes and returns
 `{text,offset,nextOffset,totalBytes,endOfFile}`. Offsets count raw bytes; text is UTF-8-lossy
 when a boundary splits a character. EOF is a point-in-time file observation, not proof that
-an active command or output capture completed. Unreferenced IDs return 404. CLI:
-`log ID OFFSET MAX_BYTES`. Log output remains untrusted data and terminal controls are escaped.
+an active command or output capture completed. Unreferenced IDs return 404. Log output remains untrusted data.
 
 Forks retain shared references. Deleting a conversation durably removes its checkpoint,
 then removes logs only when no remaining conversation references them. Fork creation is
@@ -398,9 +376,9 @@ and keeps history readable. Attempt states are `running`, `completed`, `failed`,
 `interrupted`. Authentication continues independently of a dropped HTTP caller; an explicit
 cancel targets its exact attempt. Shutdown cancels the attempt and awaits its settlement.
 The challenge URL is returned only to the initiating trusted local client, never logged or
-included in provider status. Do not log this response. `connect openai` opens the system
-browser without printing the URL; `auth-status` and `auth-cancel ID` observe/control it.
-DeepSeek `connect` still accepts keys only through bounded piped stdin.
+included in provider status. Do not log this response. Swift opens the system browser
+without printing the URL. The auth status and cancellation HTTP endpoints observe/control it.
+DeepSeek keys are configured through the provider HTTP endpoint or private startup credentials.
 
 OpenAI authentication uses random state/nonce, S256 PKCE, an IPv4 loopback-only callback on
 port 1455 at `/auth/callback`, bounded HTTP parsing, exact Host/state validation, unique query
@@ -437,9 +415,9 @@ frame, and 4 MiB retained output/text. OpenAI chat requests are capped at 32 MiB
 `{windows:[{durationSeconds,usedPercent,resetsAt}],fetchedAt,stale}`. Reset times use Unix
 seconds; `fetchedAt` uses Unix milliseconds. Empty windows mean no valid allowance windows
 were supplied, not unlimited quota. Percentages are measured values, not forecasts.
-`usage openai` exposes this through the CLI. No per-run before/after observations are added.
+No per-run before/after observations are added.
 
-`GET /v1/metadata` / CLI `metadata` returns per-provider
+`GET /v1/metadata` returns per-provider
 `{provider,modelsFetchedAt,modelsStale,usageFetchedAt,usageStale,balanceFetchedAt,balanceStale}`.
 Nullable timestamps mean unobserved. Account observations use a 30-second cache; model
 freshness ages after five minutes and discovery remains explicitly requested. A failed
@@ -456,7 +434,7 @@ disables further cache writes until restart; it does not retry or block conversa
 
 ## Runner-owned context compaction
 
-`POST /v1/conversations/:id/compact` with `{}` returns `202 {operationID}`. CLI: `compact ID`.
+`POST /v1/conversations/:id/compact` with `{}` returns `202 {operationID}`.
 This starts an exclusive runner operation, not a manager/provider side loop. The same
 operation-targeted cancellation and terminal durability guarantees apply. Manual compaction
 rejects pending input/busy sessions and models without compaction support. Steering is for
@@ -516,30 +494,20 @@ results have `details:{type:"image",image:ImageRef,origin:"generated"|"screensho
 A managed source is read-only: copy it explicitly, never regenerate just to save it.
 OpenAI hosted search uses a separate Responses request and does not mutate chat state.
 
-CLI additions: `upload-image ID PATH`, `send-image ID ASSET_ID MESSAGE`,
-`release-image ID ASSET_ID`, `image ASSET_ID NEW_PATH`. Saving uses exclusive file creation
-and never overwrites an existing destination. Native clients use the typed `AgentClient`
-methods; image rendering, draft attachment selection and file-save presentation stay local.
+Image rendering, draft attachment selection and file-save presentation stay in Swift.
 
 ## Optional native screenshot protocol
 
 **There is no backend screen capture.** The Swift adapter owns screen/window
-capture and OS permission. Merely connecting a frontend, using auto approval, supplying a
-`local` flag, or forwarding the Unix socket never enables this capability.
-
-Trusted host composition nominates its local Swift process with
-`NativeHub::allow_local_frontend(pid)`; standalone accepts the explicit
-`serve --native-frontend-pid PID` option. Nomination records same-user process creation
-identity to reject PID reuse. Registration additionally verifies the kernel Unix peer PID,
-consumes the nomination once, and binds one live channel. No API can nominate a peer.
-After disconnect/restart the host must explicitly authorize a fresh registration; the
-Swift host integration owns that lifecycle. Unsupported peer-attestation platforms
-fail closed. This is a private same-user local trust boundary, not remote authentication.
+capture and OS permission. Registration is over the same unauthenticated HTTP API as other
+requests. There is no host nomination, process attestation, peer/PID verification or
+registration secret. Frontends report OS permission; Swift still enforces actual macOS TCC.
+A live native channel and separate explicit per-conversation enablement remain required.
 
 | Method | Path | Contract |
 |---|---|---|
 | POST | `/v1/native/events` | `{osScreenPermission:boolean}` → live NDJSON: `registered`, `request`, `cancelled`, `ping` |
-| PUT | `/v1/native/permission` | `{frontendID,granted}`; only that kernel-attested registered peer may report OS permission |
+| PUT | `/v1/native/permission` | `{frontendID,granted}`; update the registered frontend’s reported OS permission |
 | POST | `/v1/native/results` | `{request:NativeRequest,result:NativePayload}`; exact, live, single-use correlation required |
 | GET | `/v1/conversations/:id/desktop` | `{frontendID,enabled}`; initially disabled |
 | PUT | `/v1/conversations/:id/desktop` | Explicitly bind/enable one frontend or disable; independent of auto approval |
@@ -556,20 +524,19 @@ error string.
 
 Capture preparation binds the exact frontend/action without requesting OS access. The
 runner then enforces its approval policy and checkpoints intent before sending the request.
-Results must match every correlation field and the registered peer; stale, wrong-target,
+Results must match every correlation field and the live registered frontend; stale, wrong-target,
 duplicate or post-cancellation results return 409. A 60-second deadline, disabled/rebound
 session permission, revoked OS permission, disconnect or cancellation invalidates the
 request. Cancellation notifications are best-effort bounded transport messages; acceptance
 of late results never depends on notification delivery. No request is replayed or rerouted.
 The native adapter must cancel its own capture work when notified or disconnected.
 
-OS permission reports are trusted only from the host-nominated adapter; the backend cannot
+OS permission reports are unauthenticated frontend claims; the backend cannot
 verify macOS TCC on behalf of Swift and never grants it. Reporting OS permission restored
 does not re-enable session access. Native permissions/channels are transient, never restored
 or forked. General observer disconnects still only detach; disconnecting the bound native
 capability channel specifically revokes that capability and invalidates its pending calls.
-CLI `desktop ID FRONTEND_ID|off` controls session permission but does not capture screens.
-The Rust `AgentClient` exposes typed native channel/reply/permission methods. The macOS app
+The macOS app
 implements the local adapter and explicit `/screenshots` session grant; see
 `docs/swift-rust-migration.md` for its permission flow and verification limits. There is no
 headless capture substitute.

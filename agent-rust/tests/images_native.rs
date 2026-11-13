@@ -1,8 +1,7 @@
+use support::client::AgentClient;
 mod support;
 use async_trait::async_trait;
-use exec_agent::{
-    Error, Result, client::AgentClient, core::*, images::ImageStore, native::*, service::*,
-};
+use exec_agent::{Result, core::*, images::ImageStore, native::*, service::*};
 use futures_util::{
     StreamExt,
     stream::{self, BoxStream},
@@ -116,10 +115,15 @@ async fn uploaded_and_generated_images_survive_restart_and_last_fork_owns_deleti
     let root = support::directory();
     let workspace = support::directory();
     let p = Arc::new(Provider::default());
-    let service = start_persistent_service(root.path(), p.clone(), false)
-        .await
-        .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        p.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;
@@ -170,10 +174,10 @@ async fn uploaded_and_generated_images_survive_restart_and_last_fork_owns_deleti
     assert!(p.requests.lock().unwrap().last().unwrap().images.len() >= 2);
     let fork = client.fork(&c.id).await.unwrap();
     service.close().await.unwrap();
-    let service = start_persistent_service(root.path(), p, false)
+    let service = start_persistent_service(root.path(), p, false, "127.0.0.1:0".parse().unwrap())
         .await
         .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;
@@ -229,23 +233,25 @@ async fn image_store_rejects_bad_data_tampering_and_symlinks_without_overwrite()
     assert!(invalid.validate().is_err());
 }
 #[tokio::test]
-async fn native_api_requires_host_nomination_os_permission_session_enablement_and_exact_result() {
+async fn native_http_requires_os_permission_session_enablement_and_exact_result() {
     let root = support::directory();
     let workspace = support::directory();
     let p = Arc::new(Provider::default());
     let hub = Arc::new(NativeHub::default());
-    let service = start_persistent_service_with_native(root.path(), p.clone(), false, hub.clone())
-        .await
-        .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let service = start_persistent_service_with_native(
+        root.path(),
+        p.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+        hub.clone(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;
     client.update_library(library).await.unwrap();
-    let mut denied = client.native_events(true, CancellationToken::new());
-    assert!(matches!(denied.next().await.unwrap(), Err(Error::Api(403))));
-    drop(denied);
-    hub.allow_local_frontend(std::process::id()).unwrap();
     let cancel = CancellationToken::new();
     let mut native = client.native_events(true, cancel.clone());
     let frontend = match native.next().await.unwrap().unwrap() {
@@ -339,10 +345,15 @@ async fn denial_never_consumes_generation_quota_or_creates_image_references() {
     let root = support::directory();
     let workspace = support::directory();
     let p = Arc::new(Provider::default());
-    let service = start_persistent_service(root.path(), p.clone(), false)
-        .await
-        .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        p.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;
@@ -402,10 +413,10 @@ async fn releasing_unused_uploads_is_durable_and_preserves_other_fork_references
     let root = support::directory();
     let workspace = support::directory();
     let p = Arc::new(Provider::default());
-    let service = start_persistent_service(root.path(), p, false)
+    let service = start_persistent_service(root.path(), p, false, "127.0.0.1:0".parse().unwrap())
         .await
         .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;

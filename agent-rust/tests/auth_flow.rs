@@ -1,5 +1,6 @@
+use support::client::AgentClient;
 mod support;
-use exec_agent::{Error, Result, client::AgentClient, core::*, manager::AgentManager, service::*};
+use exec_agent::{Error, Result, core::*, manager::AgentManager, service::*};
 use futures_util::stream::BoxStream;
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -30,11 +31,11 @@ async fn browser_authentication_is_manager_owned_targeted_and_settles_before_shu
         manager: manager.clone(),
         provider: Arc::new(Provider),
         tools: vec![],
-        socket_path: profile_socket(root.path()),
+        address: "127.0.0.1:0".parse().unwrap(),
     })
     .await
     .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     let c = client
         .create("test", root.path().to_str().unwrap())
         .await

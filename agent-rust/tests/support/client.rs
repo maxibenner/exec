@@ -1,7 +1,7 @@
-use crate::{Error, Result, core::*};
+use exec_agent::{Error, Result, core::*};
 use futures_util::{StreamExt, stream::BoxStream};
 use serde_json::{Value, json};
-use std::{path::Path, time::Duration};
+use std::{net::SocketAddr, time::Duration};
 use tokio_util::sync::CancellationToken;
 const MAX_RESPONSE: usize = 32 * 1024 * 1024;
 const CONNECTION: &str = "Service connection failed. The request may have taken effect; inspect the conversation before continuing.";
@@ -11,18 +11,18 @@ const INTERRUPTED: &str = "Event stream interrupted. Reconnect explicitly to obt
 #[derive(Clone)]
 pub struct AgentClient {
     client: reqwest::Client,
+    address: SocketAddr,
 }
 impl AgentClient {
-    pub fn new(socket: impl AsRef<Path>) -> Result<Self> {
+    pub fn new(address: SocketAddr) -> Result<Self> {
         let client = reqwest::Client::builder()
-            .unix_socket(socket.as_ref().to_owned())
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .no_proxy()
             .pool_max_idle_per_host(0)
             .build()
             .map_err(|_| Error::Invalid(CONNECTION))?;
-        Ok(Self { client })
+        Ok(Self { client, address })
     }
     async fn open(
         &self,
@@ -35,7 +35,7 @@ impl AgentClient {
             .map_err(|_| Error::Invalid(CONNECTION))?;
         let mut request = self
             .client
-            .request(method, format!("http://localhost{route}"));
+            .request(method, format!("http://{}{route}", self.address));
         if let Some(value) = value {
             request = request.json(&value);
         }
@@ -99,7 +99,10 @@ impl AgentClient {
             .map(str::to_owned)
             .ok_or(Error::Invalid(INVALID))
     }
-    pub async fn desktop_permission(&self, id: &str) -> Result<crate::native::DesktopPermission> {
+    pub async fn desktop_permission(
+        &self,
+        id: &str,
+    ) -> Result<exec_agent::native::DesktopPermission> {
         decode(
             self.call("GET", &format!("{}/desktop", path(id)), None)
                 .await?,
@@ -108,8 +111,8 @@ impl AgentClient {
     pub async fn set_desktop_permission(
         &self,
         id: &str,
-        permission: &crate::native::DesktopPermission,
-    ) -> Result<crate::native::DesktopPermission> {
+        permission: &exec_agent::native::DesktopPermission,
+    ) -> Result<exec_agent::native::DesktopPermission> {
         decode(
             self.call(
                 "PUT",
@@ -123,7 +126,7 @@ impl AgentClient {
         &self,
         os_screen_permission: bool,
         cancel: CancellationToken,
-    ) -> BoxStream<'static, Result<crate::native::NativeEvent>> {
+    ) -> BoxStream<'static, Result<exec_agent::native::NativeEvent>> {
         self.ndjson(
             "POST",
             "/v1/native/events".into(),
@@ -143,7 +146,7 @@ impl AgentClient {
         .await?;
         Ok(())
     }
-    pub async fn native_reply(&self, reply: &crate::native::NativeReply) -> Result<()> {
+    pub async fn native_reply(&self, reply: &exec_agent::native::NativeReply) -> Result<()> {
         self.call(
             "POST",
             "/v1/native/results",
@@ -173,7 +176,7 @@ impl AgentClient {
         id: &str,
         offset: u64,
         max_bytes: usize,
-    ) -> Result<crate::shell_logs::LogChunk> {
+    ) -> Result<exec_agent::shell_logs::LogChunk> {
         if !valid_id(id) {
             return Err(Error::Invalid("Invalid log ID."));
         }
@@ -186,7 +189,10 @@ impl AgentClient {
             .await?,
         )
     }
-    pub async fn fetch_content(&self, url: &str) -> Result<crate::content_fetch::FetchedContent> {
+    pub async fn fetch_content(
+        &self,
+        url: &str,
+    ) -> Result<exec_agent::content_fetch::FetchedContent> {
         decode(
             self.call("POST", "/v1/fetch", Some(json!({"url":url})))
                 .await?,

@@ -7,7 +7,8 @@ use serde::Deserialize;
 use serde_json::json;
 use std::{
     fs,
-    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+    net::SocketAddr,
+    os::unix::fs::{DirBuilderExt, MetadataExt},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -36,14 +37,12 @@ pub async fn private_directory(path: &Path) -> Result<PathBuf> {
     .await
     .map_err(|_| Error::Internal)?
 }
-pub fn profile_socket(profile: &Path) -> PathBuf {
-    profile.join("service.sock")
-}
+pub const DEFAULT_ADDRESS: &str = "127.0.0.1:8765";
 pub struct ServiceOptions {
     pub manager: Arc<AgentManager>,
     pub provider: Arc<dyn ChatProvider>,
     pub tools: Vec<Arc<dyn Tool>>,
-    pub socket_path: PathBuf,
+    pub address: SocketAddr,
 }
 struct Host {
     options: ServiceOptions,
@@ -51,6 +50,7 @@ struct Host {
     handlers: tokio_util::task::TaskTracker,
 }
 pub struct Service {
+    pub address: SocketAddr,
     stop: CancellationToken,
     task: Option<tokio::task::JoinHandle<Result<()>>>,
 }
@@ -73,11 +73,13 @@ pub async fn start_persistent_service(
     profile: &Path,
     provider: Arc<dyn ChatProvider>,
     workspace_tools: bool,
+    address: SocketAddr,
 ) -> Result<Service> {
     start_persistent_service_with_native(
         profile,
         provider,
         workspace_tools,
+        address,
         Arc::new(crate::native::NativeHub::default()),
     )
     .await
@@ -86,6 +88,7 @@ pub async fn start_persistent_service_with_native(
     profile: &Path,
     provider: Arc<dyn ChatProvider>,
     workspace_tools: bool,
+    address: SocketAddr,
     native: Arc<crate::native::NativeHub>,
 ) -> Result<Service> {
     let profile = private_directory(profile).await?;
@@ -117,7 +120,7 @@ pub async fn start_persistent_service_with_native(
         manager: manager.clone(),
         provider,
         tools,
-        socket_path: profile_socket(&profile),
+        address,
     })
     .await
     {
@@ -129,21 +132,11 @@ pub async fn start_persistent_service_with_native(
     }
 }
 pub async fn start_service(options: ServiceOptions) -> Result<Service> {
-    use std::os::unix::ffi::OsStrExt;
-    if !options.socket_path.is_absolute() || options.socket_path.as_os_str().as_bytes().len() > 100
-    {
-        return Err(Error::Invalid(
-            "Socket path must be absolute and at most 100 bytes.",
-        ));
+    if !options.address.ip().is_loopback() {
+        return Err(Error::Invalid("The HTTP service must bind to loopback."));
     }
-    private_directory(options.socket_path.parent().ok_or(Error::Internal)?).await?;
-    // bind refuses existing endpoints; never unlink a stale socket on startup.
-    let listener = tokio::net::UnixListener::bind(&options.socket_path)?;
-    if fs::set_permissions(&options.socket_path, fs::Permissions::from_mode(0o600)).is_err() {
-        let _ = fs::remove_file(&options.socket_path);
-        return Err(Error::Internal);
-    }
-    let identity = fs::symlink_metadata(&options.socket_path)?;
+    let listener = tokio::net::TcpListener::bind(options.address).await?;
+    let address = listener.local_addr()?;
     let stop = CancellationToken::new();
     let host = Arc::new(Host {
         options,
@@ -174,25 +167,19 @@ pub async fn start_service(options: ServiceOptions) -> Result<Service> {
         host.handlers.wait().await;
         host.options.manager.cancel_and_wait().await?;
         host.options.provider.settle().await;
-        let closed = host.options.manager.close().await;
-        if fs::symlink_metadata(&host.options.socket_path)
-            .is_ok_and(|m| crate::storage::same_file(&m, &identity))
-        {
-            let _ = fs::remove_file(&host.options.socket_path);
-        }
-        closed
+        host.options.manager.close().await
     });
     Ok(Service {
+        address,
         stop,
         task: Some(task),
     })
 }
 async fn serve_connection(
     host: Arc<Host>,
-    socket: tokio::net::UnixStream,
+    socket: tokio::net::TcpStream,
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
-    let peer_pid = crate::native::peer_pid(&socket);
     let handler_host = host.clone();
     let handler = hyper::service::service_fn(move |request: Request<hyper::body::Incoming>| {
         let host = handler_host.clone();
@@ -203,9 +190,7 @@ async fn serve_connection(
             // catalog mutations finish instead of dropping a durable write.
             let _guard = cancel.clone().drop_guard();
             let response = handlers
-                .spawn(
-                    async move { dispatch(host, request.map(Body::new), cancel, peer_pid).await },
-                )
+                .spawn(async move { dispatch(host, request.map(Body::new), cancel).await })
                 .await
                 .unwrap_or_else(|_| json_response(500, json!({"error":"Service request failed."})));
             Ok::<_, std::convert::Infallible>(response)
@@ -247,9 +232,8 @@ async fn dispatch(
     host: Arc<Host>,
     request: Request<Body>,
     cancel: CancellationToken,
-    peer_pid: Option<u32>,
 ) -> Response<Body> {
-    match handle(host, request, cancel, peer_pid).await {
+    match handle(host, request, cancel).await {
         Ok(response) => response,
         Err(ApiError(status, error)) => json_response(status, json!({"error":error})),
     }
@@ -368,7 +352,6 @@ async fn handle(
     host: Arc<Host>,
     request: Request<Body>,
     request_cancel: CancellationToken,
-    peer_pid: Option<u32>,
 ) -> ApiResult<Response<Body>> {
     if request.headers().contains_key("origin") || request.headers().contains_key("sec-fetch-site")
     {
@@ -395,19 +378,7 @@ async fn handle(
         let mut connection = options
             .manager
             .native()
-            .register(
-                peer_pid.ok_or(ApiError(
-                    403,
-                    "Kernel-attested local peer identity is required.",
-                ))?,
-                input.os_screen_permission,
-            )
-            .map_err(|_| {
-                ApiError(
-                    403,
-                    "The host has not authorized this local native frontend.",
-                )
-            })?;
+            .register(input.os_screen_permission)?;
         let stop = host.stop.clone();
         let frames = async_stream::stream! {
             let line=serde_json::to_vec(&crate::native::NativeEvent::Registered{frontend_id:connection.id.clone()}).unwrap();yield Ok::<_,std::io::Error>(bytes::Bytes::from([line,b"\n".to_vec()].concat()));
@@ -430,28 +401,20 @@ async fn handle(
             granted: bool,
         }
         let input: Permission = body(request).await?;
-        options.manager.native().update_os_permission(
-            peer_pid.ok_or(ApiError(403, "Local peer identity is required."))?,
-            &input.frontend_id,
-            input.granted,
-        )?;
+        options
+            .manager
+            .native()
+            .update_os_permission(&input.frontend_id, input.granted)?;
         return Ok(json_response(200, json!({"accepted":true})));
     }
     if method == "POST" && route == "/v1/native/results" {
         let input: crate::native::NativeReply = body(request).await?;
-        options
-            .manager
-            .native()
-            .reply(
-                peer_pid.ok_or(ApiError(403, "Local peer identity is required."))?,
-                input,
+        options.manager.native().reply(input).map_err(|_| {
+            ApiError(
+                409,
+                "Native request is no longer active or does not match this request and action.",
             )
-            .map_err(|_| {
-                ApiError(
-                    409,
-                    "Native request is no longer active or does not match this peer and action.",
-                )
-            })?;
+        })?;
         return Ok(json_response(200, json!({"accepted":true})));
     }
     if method == "GET" && route == "/v1/health" {

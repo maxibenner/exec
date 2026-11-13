@@ -2,7 +2,7 @@
 
 ## Scope and ownership
 
-The macOS app now bundles and automatically launches the existing `exec-agent` executable and connects over its private Unix-socket HTTP/NDJSON API. The initial cutover did not change Rust. A separate feature restored backend-owned automatic titles. This follow-up fixes one provider transport compatibility issue (valid OpenAI event streams without a Content-Type header); API contracts and backend ownership are unchanged.
+The macOS app now bundles and automatically launches the existing `exec-agent` executable and connects over its loopback HTTP/NDJSON API at `http://127.0.0.1:8765`. The initial cutover did not change Rust. A separate feature restored backend-owned automatic titles. This follow-up fixes one provider transport compatibility issue (valid OpenAI event streams without a Content-Type header); API contracts and backend ownership are unchanged.
 
 Rust is the sole owner of:
 - Provider credentials, browser authentication/token refresh, model discovery and account observations.
@@ -42,7 +42,7 @@ The previous Swift provider implementations, OAuth/HTTP/SSE machinery, Keychain 
 | Session rename, fork, delete, order | Rust catalog APIs; detached windows keep the same frontend session object |
 | Provider add/remove | API-key entry sheet; OpenAI opens browser authentication directly, backed by Rust credential APIs |
 | Context and account usage | Context follows Rust snapshots; account allowance refreshes only when Settings opens |
-| Screenshots | Explicit `/screenshots` grant, host-attested native channel, exact correlated capture/results |
+| Screenshots | Explicit `/screenshots` grant, HTTP native channel, exact correlated capture/results |
 | Input/generated images | Rust immutable assets, loaded for the existing attachment/image views |
 | Quit | Existing confirmation copy/buttons; await Rust shutdown/reaping/checkpoint completion before replying to AppKit |
 
@@ -72,11 +72,11 @@ Rust owns the profile's `credentials.json`, `service.sock`, `conversations/`, im
 
 ### Shutdown and recovery
 
-Normal app termination sends SIGTERM to the owned service and waits for it to exit. Rust cancels work, reaps tool processes, settles writes and removes its own socket/lock. The app does not force-kill the helper, steal locks, replay pending work or resume inference on launch.
+Normal app termination sends SIGTERM to the owned service and waits for it to exit. Rust cancels work, reaps tool processes, settles writes and releases its listener and store lock. The app does not force-kill the helper, steal locks, replay pending work or resume inference on launch.
 
-A crash/forced termination can leave a backend running, or a stale socket/lock and orphaned tool processes. Startup refuses an existing socket. Follow the Rust recovery procedure in `agent-rust/API.md`: verify the old service **and its tool processes** have stopped before an operator removes stale ownership artifacts. There is no automatic recovery button that deletes them.
+A crash/forced termination can leave a backend running, or a stale store lock and orphaned tool processes. Startup fails if port 8765 is occupied; it never attaches to another server. Follow the Rust recovery procedure in `agent-rust/API.md`: verify the old service **and its tool processes** have stopped before an operator removes stale ownership artifacts. There is no automatic recovery button that deletes them.
 
-The socket path must fit Rust's 100-byte limit. An unusually long home path produces a startup error rather than silently selecting a different store.
+There is no socket path limit, endpoint discovery, authentication or port fallback. Any local process can access the API. Profile ownership/permissions and store locking are unchanged.
 
 ### Build-toolchain note
 
@@ -100,7 +100,7 @@ Search-model preferences remain within the selected chat provider, preserving th
 
 ## Native screenshots
 
-The host nominates its own process with `--native-frontend-pid`, then opens one kernel-attested live channel. Startup reports existing OS permission but never requests or grants it automatically. In the composer, `/screenshots` explicitly enables or disables screen sharing **for that conversation**. Enabling requests macOS Screen Recording permission if necessary. If macOS requires a restart after a grant, the existing inline error explains that; the app never bypasses TCC.
+The Swift frontend registers one live channel over the same unauthenticated HTTP API. There is no host nomination or peer/PID verification. Startup reports existing OS permission but never requests or grants it automatically. In the composer, `/screenshots` explicitly enables or disables screen sharing **for that conversation**. Enabling requests macOS Screen Recording permission if necessary. If macOS requires a restart after a grant, the existing inline error explains that; the app never bypasses TCC.
 
 Only an enabled session with OS permission exposes `take_screenshot` to the model. Swift uses the existing ScreenCaptureKit implementation, returns typed window lists or image bytes, and echoes every backend correlation field unchanged. Window capture requires prior enumeration through the same session/channel, enforced by Rust. Screens and titles remain untrusted evidence. In manual approval mode each capture still needs `Approve Once`; there is no local approval bypass or misleading “Always for This Session” action. Auto mode alone never grants screen access.
 
@@ -140,13 +140,13 @@ Verified:
 - Cancellation retains ownership/sleep prevention until terminal cleanup.
 - Uncertain turn/configuration requests are not automatically repeated.
 - Quit copy/buttons, repeated-Quit coalescing, Cancel behavior and waiting for backend shutdown.
-- Real Unix HTTP/chunked NDJSON, disconnected provider state, session creation/settings/rename/order/fork/delete, image upload/read/release, safe disconnected-provider turn failure, detached deletion preserving main selection/drafts, and clean service socket/lock removal.
+- Real loopback HTTP/chunked NDJSON, disconnected provider state, session creation/settings/rename/order/fork/delete, image upload/read/release, safe disconnected-provider turn failure, detached deletion preserving main selection/drafts, and clean listener/store-lock release.
 - Signed app/helper build and `codesign --verify --deep --strict` with the configured stable certificate.
 
 Still manual/unverified:
 - Live OpenAI browser authentication/rotation and reconnect UI; account removal/replacement. Other provider tools beyond the explicit live checks below, including quotas/exhaustion, remain unverified.
 - Full interactive app startup/quit, multi-window visual comparison, long live streams and all failure dialogs against real providers.
-- Interactive Screen Recording prompts/relaunch, real ScreenCaptureKit capture through the new session grant UI, and physical permission revocation. Kernel-attested channel registration, grants/revocation and fork isolation are tested against an isolated actual Rust subprocess; capture itself is faked in automated tests.
+- Interactive Screen Recording prompts/relaunch, real ScreenCaptureKit capture through the new session grant UI, and physical permission revocation. HTTP channel registration, grants/revocation and fork isolation are tested against an isolated actual Rust subprocess; capture itself is faked in automated tests.
 - Installer/notarization/update distribution and Intel/universal builds.
 
 Mocks and a disconnected real backend do not establish live provider compatibility. The retained renderer tests are meaningful regressions, not a claim that a person performed a complete pixel-by-pixel UI comparison.

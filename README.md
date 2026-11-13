@@ -26,7 +26,7 @@ cd macOS
 
 ## Backend integration
 
-The existing native UI and virtualized transcript renderer now use the bundled Rust service over a private Unix socket. Provider authentication, inference, tools, approvals, persistence and recovery belong to Rust, not a second Swift runner.
+The existing native UI and virtualized transcript renderer now use the bundled Rust service over HTTP at `http://127.0.0.1:8765`. The endpoint is fixed, with no authentication, discovery or fallback port. Any local process can access the API; it is never bound to a network interface. The backend executable no longer includes a CLI client. Provider authentication, inference, tools, approvals, persistence and recovery belong to Rust, not a second Swift runner.
 
 The app uses a fresh profile at `~/Library/Application Support/Exec/Agent/`. Credentials are stored in a private plaintext file. No old Swift conversations or Keychain entries are imported or removed; reconnect providers in Settings.
 

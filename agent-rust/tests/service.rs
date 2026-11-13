@@ -1,12 +1,6 @@
+use support::client::AgentClient;
 mod support;
-use exec_agent::{
-    Error,
-    client::AgentClient,
-    core::*,
-    manager::AgentManager,
-    service::*,
-    terminal::{Transcript, terminal_text},
-};
+use exec_agent::{Error, core::*, manager::AgentManager, service::*};
 use futures_util::{StreamExt, stream::BoxStream};
 use serde_json::{Value, json};
 use std::{
@@ -31,11 +25,11 @@ async fn setup(provider: Arc<dyn ChatProvider>, tools: Vec<Arc<dyn Tool>>) -> Fi
         manager: Arc::new(AgentManager::default()),
         provider,
         tools,
-        socket_path: profile_socket(root.path()),
+        address: "127.0.0.1:0".parse().unwrap(),
     })
     .await
     .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;
@@ -88,10 +82,15 @@ fn snapshot(frame: ServiceEvent) -> Option<ConversationSnapshot> {
 async fn api_default_auto_and_durable_settings_updates_reconcile_observers() {
     let root = directory();
     let p = FakeProvider::new(vec![answer()]);
-    let service = start_persistent_service(root.path(), p.clone(), false)
-        .await
-        .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        p.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;
@@ -138,9 +137,15 @@ async fn api_default_auto_and_durable_settings_updates_reconcile_observers() {
         );
     }
     service.close().await.unwrap();
-    let service = start_persistent_service(root.path(), p.clone(), false)
-        .await
-        .unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        p.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     assert_eq!(
         client.get(&c.id).await.unwrap().configuration.settings,
         settings
@@ -159,10 +164,15 @@ async fn api_default_auto_and_durable_settings_updates_reconcile_observers() {
 async fn api_delete_is_durable_and_does_not_repeat() {
     let root = directory();
     let provider = FakeProvider::new(vec![]);
-    let service = start_persistent_service(root.path(), provider.clone(), false)
-        .await
-        .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        provider.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;
@@ -188,9 +198,11 @@ async fn api_delete_is_durable_and_does_not_repeat() {
         Error::Api(404)
     );
     service.close().await.unwrap();
-    let service = start_persistent_service(root.path(), provider, false)
-        .await
-        .unwrap();
+    let service =
+        start_persistent_service(root.path(), provider, false, "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     assert_eq!(client.list().await.unwrap(), json!([]));
     service.close().await.unwrap();
 }
@@ -199,10 +211,15 @@ async fn api_delete_is_durable_and_does_not_repeat() {
 async fn api_create_stream_reconnect_and_durable_continuation() {
     let root = directory();
     let p = FakeProvider::new(vec![answer(), answer()]);
-    let service = start_persistent_service(root.path(), p.clone(), false)
-        .await
-        .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        p.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;
@@ -235,18 +252,17 @@ async fn api_create_stream_reconnect_and_durable_continuation() {
     let list = client.list().await.unwrap();
     assert_eq!(list[0]["id"], c.id);
     assert!(list[0].get("messages").is_none());
-    assert_eq!(
-        fs::metadata(profile_socket(root.path()))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
+    assert!(service.address.ip().is_loopback());
     service.close().await.unwrap();
-    let service = start_persistent_service(root.path(), p.clone(), false)
-        .await
-        .unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        p.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     assert_eq!(client.get(&c.id).await.unwrap(), saved);
     assert_eq!(p.count(), 1);
     client.submit(&c.id, "Continue explicitly").await.unwrap();
@@ -460,10 +476,11 @@ async fn api_approval_exact_single_use_denies() {
 async fn shutdown_persists_pending_approval_without_execution_or_restart() {
     let root = directory();
     let p=FakeProvider::new(vec![response(vec![ProviderEvent::ToolCall(ToolCall{id:"write".into(),name:"edit_file".into(),arguments:json!({"path":"must-not-exist.txt","expected_revision":"new","old_text":"","new_text":"test"}).as_object().unwrap().clone()}),ProviderEvent::Done])]);
-    let service = start_persistent_service(root.path(), p.clone(), true)
-        .await
-        .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let service =
+        start_persistent_service(root.path(), p.clone(), true, "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;
@@ -482,9 +499,11 @@ async fn shutdown_persists_pending_approval_without_execution_or_restart() {
     client.submit(&c.id, "Write").await.unwrap();
     until_api(&client, &c.id, |s| s.approval.is_some()).await;
     service.close().await.unwrap();
-    let service = start_persistent_service(root.path(), p.clone(), true)
-        .await
-        .unwrap();
+    let service =
+        start_persistent_service(root.path(), p.clone(), true, "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     let restored = client.get(&c.id).await.unwrap();
     assert_eq!(
         restored.operation.unwrap().state,
@@ -540,13 +559,9 @@ async fn http_validation_rejects_malformed_unknown_browser_origin_without_infere
             .unwrap_err(),
         Error::Api(400)
     );
-    let raw = reqwest::Client::builder()
-        .unix_socket(profile_socket(f.root.path()))
-        .no_proxy()
-        .build()
-        .unwrap();
+    let raw = reqwest::Client::builder().no_proxy().build().unwrap();
     assert_eq!(
-        raw.get("http://localhost/v1/health")
+        raw.get(format!("http://{}/v1/health", f.service.address))
             .header("Origin", "https://example.com")
             .send()
             .await
@@ -555,7 +570,7 @@ async fn http_validation_rejects_malformed_unknown_browser_origin_without_infere
         403
     );
     assert_eq!(
-        raw.post("http://localhost/v1/conversations")
+        raw.post(format!("http://{}/v1/conversations", f.service.address))
             .header("Content-Type", "application/json")
             .body("{malformed")
             .send()
@@ -565,7 +580,7 @@ async fn http_validation_rejects_malformed_unknown_browser_origin_without_infere
         400
     );
     assert_eq!(
-        raw.post("http://localhost/v1/conversations")
+        raw.post(format!("http://{}/v1/conversations", f.service.address))
             .body("{}")
             .send()
             .await
@@ -577,7 +592,7 @@ async fn http_validation_rejects_malformed_unknown_browser_origin_without_infere
     f.service.close().await.unwrap();
 }
 #[tokio::test]
-async fn socket_directory_refuses_insecure_permissions_symlinks_existing_endpoints() {
+async fn private_profile_refuses_insecure_permissions_and_http_refuses_port_conflicts() {
     let root = directory();
     let insecure = root.path().join("public");
     fs::create_dir(&insecure).unwrap();
@@ -586,21 +601,42 @@ async fn socket_directory_refuses_insecure_permissions_symlinks_existing_endpoin
     let link = root.path().join("link");
     symlink(&insecure, &link).unwrap();
     assert!(private_directory(&link).await.is_err());
-    let socket = profile_socket(root.path());
-    fs::write(&socket, "do not replace").unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let manager = Arc::new(AgentManager::default());
     assert!(
         start_service(ServiceOptions {
             manager: manager.clone(),
             provider: FakeProvider::new(vec![]),
             tools: vec![],
-            socket_path: socket.clone()
+            address: listener.local_addr().unwrap(),
         })
         .await
         .is_err()
     );
     manager.close().await.unwrap();
-    assert_eq!(fs::read_to_string(socket).unwrap(), "do not replace");
+}
+#[tokio::test]
+async fn http_refuses_network_binds_and_releases_its_port_on_shutdown() {
+    let manager = Arc::new(AgentManager::default());
+    assert!(
+        start_service(ServiceOptions {
+            manager: manager.clone(),
+            provider: FakeProvider::new(vec![]),
+            tools: vec![],
+            address: "0.0.0.0:0".parse().unwrap(),
+        })
+        .await
+        .is_err()
+    );
+    manager.close().await.unwrap();
+    let f = setup(FakeProvider::new(vec![]), vec![]).await;
+    let address = f.service.address;
+    assert!(address.ip().is_loopback());
+    assert!(address.port() > 0);
+    assert_eq!(f.client.health().await.unwrap()["version"], 1);
+    f.service.close().await.unwrap();
+    let listener = tokio::net::TcpListener::bind(address).await.unwrap();
+    assert_eq!(listener.local_addr().unwrap(), address);
 }
 struct Failing;
 #[async_trait::async_trait]
@@ -644,115 +680,6 @@ async fn discovery_and_provider_failures_do_not_leak_internal_credentials() {
     f.service.close().await.unwrap();
 }
 #[tokio::test]
-async fn terminal_renderer_reconciles_snapshot_deltas_escapes_controls() {
-    let p = FakeProvider::new(vec![response(vec![
-        ProviderEvent::Text("Hello 🌍".into()),
-        ProviderEvent::Done,
-    ])]);
-    let c = conversation(p, vec![]);
-    let (initial, mut events) = c.subscribe();
-    let mut transcript = Transcript::default();
-    let mut output = transcript.snapshot(&initial);
-    complete(c.submit("Hi".into()).unwrap()).await;
-    while let Ok(frame) = events.try_recv() {
-        output.push_str(&transcript.frame(&frame));
-    }
-    output.push_str(&transcript.snapshot(&c.snapshot()));
-    assert_eq!(output.matches("Hello 🌍").count(), 1);
-    assert_eq!(
-        terminal_text("\x1b]52;c;clipboard\x07\r\u{202e}evil"),
-        "\\u{1b}]52;c;clipboard\\u{7}\\u{d}\\u{202e}evil"
-    );
-}
-async fn cli(root: &std::path::Path, args: &[&str]) -> std::process::Output {
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_exec-agent"))
-            .arg("--profile")
-            .arg(root)
-            .args(args)
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .unwrap()
-    .unwrap()
-}
-#[tokio::test]
-async fn real_cli_creates_sends_lists_resumes_only_through_service() {
-    let f = setup(FakeProvider::new(vec![answer(), answer()]), vec![]).await;
-    let output = cli(
-        f.root.path(),
-        &["new", "fake", f.root.path().to_str().unwrap()],
-    )
-    .await;
-    assert!(output.status.success());
-    let created: ConversationSnapshot = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(created.configuration.settings.auto_approve);
-    let configured = cli(
-        f.root.path(),
-        &["configure", &created.id, "manual", "Concise answers"],
-    )
-    .await;
-    assert!(configured.status.success());
-    let configured: ConversationSnapshot = serde_json::from_slice(&configured.stdout).unwrap();
-    assert!(!configured.configuration.settings.auto_approve);
-    assert_eq!(
-        configured.configuration.settings.system_prompt,
-        "Concise answers"
-    );
-    let manual = cli(
-        f.root.path(),
-        &["new", "fake", f.root.path().to_str().unwrap(), "--manual"],
-    )
-    .await;
-    assert!(manual.status.success());
-    let manual: ConversationSnapshot = serde_json::from_slice(&manual.stdout).unwrap();
-    assert!(!manual.configuration.settings.auto_approve);
-    assert!(
-        cli(f.root.path(), &["delete", &manual.id])
-            .await
-            .status
-            .success()
-    );
-    let output = cli(f.root.path(), &["send", &created.id, "Hi"]).await;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Completed answer"));
-    assert_eq!(
-        serde_json::from_slice::<Value>(&cli(f.root.path(), &["list"]).await.stdout).unwrap()[0]["id"],
-        created.id
-    );
-    let resumed: ConversationSnapshot =
-        serde_json::from_slice(&cli(f.root.path(), &["show", &created.id]).await.stdout).unwrap();
-    assert_eq!(resumed.operation.unwrap().state, OperationState::Completed);
-    assert!(
-        cli(f.root.path(), &["send", &created.id, "Continue"])
-            .await
-            .status
-            .success()
-    );
-    assert!(
-        String::from_utf8_lossy(&cli(f.root.path(), &["chat", &created.id]).await.stderr)
-            .contains("interactive terminal")
-    );
-    assert!(
-        String::from_utf8_lossy(
-            &cli(
-                f.root.path(),
-                &["new", "fake", f.root.path().to_str().unwrap(), "unexpected"]
-            )
-            .await
-            .stderr
-        )
-        .contains("Invalid command arguments")
-    );
-    f.service.close().await.unwrap();
-}
-#[tokio::test]
 async fn service_shutdown_aborts_inference_disconnects_observers_without_retries() {
     let entered = CancellationToken::new();
     let p = FakeProvider::new(vec![waiting(entered.clone())]);
@@ -784,8 +711,8 @@ async fn service_shutdown_aborts_inference_disconnects_observers_without_retries
 #[tokio::test]
 async fn lost_mutation_responses_never_replayed_and_client_errors_hide_raw_bodies() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let root = directory();
-    let listener = tokio::net::UnixListener::bind(profile_socket(root.path())).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
     let attempts = Arc::new(AtomicUsize::new(0));
     let count = attempts.clone();
     let server = tokio::spawn(async move {
@@ -820,7 +747,7 @@ async fn lost_mutation_responses_never_replayed_and_client_errors_hide_raw_bodie
             }
         }
     });
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let client = AgentClient::new(address).unwrap();
     assert!(
         client
             .submit(&new_id(), "Once only")

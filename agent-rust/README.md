@@ -1,6 +1,6 @@
 # Exec agent — Rust
 
-Rust migration of [`../agent`](../agent), now extending API v1 with the agreed [backend parity](PARITY.md) scope implemented. The TypeScript implementation remains unchanged. This is a standalone library and executable, not a wrapper around Node or an agent framework. The Swift app is unchanged and is not connected to this service.
+Provider-neutral Rust backend bundled with the native Swift app. This is a library and backend executable, not a wrapper around Node or an agent framework. The executable only hosts the HTTP service; there is no CLI client.
 
 ## Guiding principles
 
@@ -17,14 +17,18 @@ cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --check
 
-./target/release/exec-agent --help
 # Provision DEEPSEEK_API_KEY securely in the environment, or a private credentials.json.
-./target/release/exec-agent serve
+./target/release/exec-agent
 # File/shell tools are an explicit opt-in:
-./target/release/exec-agent --profile /absolute/private/profile serve --workspace-tools
+./target/release/exec-agent --profile /absolute/private/profile --workspace-tools
 ```
 
-See [API.md](API.md) for credentials, all CLI commands, HTTP/NDJSON contracts, approvals, and recovery. Cargo.lock is committed; production requires no Node installation. Tests use fake providers/transports, synthetic credentials, temporary profiles, real local sockets, and real child processes. They never access your Keychain or call a live model.
+See [API.md](API.md) for credentials, launcher options, HTTP/NDJSON contracts, approvals, and recovery. Cargo.lock is committed; production requires no Node installation. Tests use fake providers/transports, synthetic credentials, temporary profiles, real loopback TCP connections, and real child processes. They never access your Keychain or call a live model.
+
+The default endpoint is **`http://127.0.0.1:8765`**, with no authentication, discovery or port
+fallback. `--port PORT` explicitly overrides it for standalone hosts/tests. The app always
+uses 8765. **Any local process can control the API; never expose it to a network.** An occupied
+port fails startup rather than attaching to another server.
 
 ## Modules
 
@@ -41,9 +45,8 @@ See [API.md](API.md) for credentials, all CLI commands, HTTP/NDJSON contracts, a
 | `core/images.rs`, `images.rs` | Neutral image references/reader contract and private validated immutable assets |
 | `native.rs` | Manager-owned optional local frontend capability broker; never captures screens |
 | `tools/` | Revision-checked file operations, literal search, approved bash commands and process-group cleanup |
-| `service.rs` | Private Unix-socket HTTP/NDJSON API, composition and orderly shutdown |
-| `client.rs`, `terminal.rs` | Transport-only client and escaped/reconciled terminal transcript |
-| `main.rs` | Foreground service and interactive/scriptable CLI; no second agent loop |
+| `service.rs` | Loopback HTTP/NDJSON API, composition and orderly shutdown |
+| `main.rs` | Backend-only launcher, fixed loopback port and orderly signal handling |
 
 Async work uses Tokio. Small explicit traits (`ChatProvider`, `Tool`, `PreparedTool`, `Checkpoint`, `ConversationStore`) keep providers, runtime, storage and UI/transport separate. Rust-owned data replaces defensive JavaScript cloning at interfaces. Snapshots and events are independent owned values; shared event frames are immutable.
 
@@ -105,7 +108,7 @@ Checkpoints preserve user input before inference, in-flight responses, finalized
 
 Restart marks unfinished work interrupted, clears approvals/live tool ownership, and fills missing results conservatively. Saved intent means an action **may have had effects**; later calls were not executed. Recovery itself is saved before publishing the manager. Nothing is replayed. Failed saves latch an error and block new submissions; failed deletion closes retained runner references until reload.
 
-Normal service shutdown removes its socket and lock. A crash deliberately leaves ownership recovery to the operator: verify the old service **and its tool processes** have stopped, then remove only that profile's stale `service.sock` and `conversations/.lock`. Never steal a lock based on PID or age. Orphaned staging files are ignored, not promoted. Restart does not terminate orphaned shells from an abrupt service crash.
+Normal service shutdown releases the HTTP listener and store lock. A crash deliberately leaves ownership recovery to the operator: verify the old service **and its tool processes** have stopped, then remove only that profile's stale `conversations/.lock`. Never steal a lock based on PID or age. Orphaned staging files are ignored, not promoted. Restart does not terminate orphaned shells from an abrupt service crash.
 
 ## Verification and scope
 
@@ -124,23 +127,21 @@ history. Model/account caches are account-scoped, private, and expose freshness/
 The runner owns manual/automatic OpenAI compaction without replacing visible history.
 Neutral image references and private immutable assets support uploaded input, generated
 images and optional frontend screenshots. Fork/delete/release preserve shared ownership.
-Native capture requires explicit host nomination of a local Swift process, kernel peer
-identity, a live channel, frontend-owned OS permission and separate session permission.
-There is no headless capture or remote fallback. Registration is single-use, permissions
-are transient, and cancellation/disconnect invalidates exact correlated results.
+Native capture uses the same unauthenticated HTTP API, with no host nomination or peer/PID
+checks. A live channel, frontend-owned OS permission and separate session permission are
+required. There is no headless capture or remote fallback. Permissions are transient, and
+cancellation/disconnect invalidates exact correlated results.
 
 Search, balances, current allowance/reset information, public-page fetch, images, context
-usage, compaction and native capability transport have typed API/client coverage and CLI
-controls where appropriate. The CLI does not implement native screen capture. `scraper`
+usage, compaction and native capability transport have API coverage. `scraper`
 handles bounded HTML parsing; `image` validates PNG/JPEG assets; `ring` verifies OIDC
 signatures; `base64` encodes bounded image/JWT payloads. No agent framework was introduced.
 
 Automated verification uses fake providers/transports, synthetic credentials, isolated
-stores, local sockets and subprocesses. OIDC tests generate an ephemeral RSA fixture with
+stores, loopback TCP connections and subprocesses. OIDC tests generate an ephemeral RSA fixture with
 OpenSSL (test-time prerequisite only). Live OpenAI/DeepSeek compatibility, browser sign-in,
-subscription image quota behavior, native Swift/OS permissions, interactive TTY behavior,
-Linux deployment and machine power-loss guarantees remain unverified. Mocks do not verify
-live services. No Swift files or code-signing settings were changed.
+subscription image quota behavior, native Swift/OS permissions, Linux deployment and machine power-loss guarantees remain unverified. Mocks do not verify
+live services. The Swift client consumes HTTP and is checked against an isolated backend subprocess.
 
 See [ARCHITECTURE_AUDIT.md](ARCHITECTURE_AUDIT.md) for the final guidance review and
 ownership/verification evidence.

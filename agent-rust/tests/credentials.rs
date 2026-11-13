@@ -1,11 +1,10 @@
+use support::client::AgentClient;
 #[path = "support/http.rs"]
 mod http;
 mod support;
 use exec_agent::{
-    client::AgentClient,
     core::ChatProvider,
     providers::{DeepSeekProvider, credentials::load_deepseek_api_key},
-    service::profile_socket,
 };
 use serde_json::json;
 use std::{
@@ -177,9 +176,17 @@ async fn start(
     args: &[&str],
     env_key: bool,
 ) -> (tokio::process::Child, AgentClient) {
+    let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = reservation.local_addr().unwrap();
+    drop(reservation);
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_exec-agent"));
     command
-        .args(["--profile", profile.to_str().unwrap(), "serve"])
+        .args([
+            "--profile",
+            profile.to_str().unwrap(),
+            "--port",
+            &address.port().to_string(),
+        ])
         .args(args)
         .env_clear()
         .env("HOME", profile.parent().unwrap())
@@ -190,7 +197,7 @@ async fn start(
         command.env("DEEPSEEK_API_KEY", SECRET);
     }
     let mut child = command.spawn().unwrap();
-    let client = AgentClient::new(profile_socket(profile)).unwrap();
+    let client = AgentClient::new(address).unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             assert!(
@@ -250,7 +257,6 @@ async fn standalone_serve_loads_json_env_shutdown_reopens_without_credential_exp
             .contains(SECRET)
     );
     stop(first, libc::SIGTERM).await;
-    assert!(!profile_socket(&profile).exists());
     assert!(!profile.join("conversations/.lock").exists());
     let (second, client) = start(&profile, &["--workspace-tools"], true).await;
     assert_eq!(
@@ -265,16 +271,23 @@ async fn standalone_serve_loads_json_env_shutdown_reopens_without_credential_exp
     stop(third, libc::SIGTERM).await;
 }
 #[tokio::test]
-async fn serve_fails_before_creating_profile_on_bad_arguments() {
+async fn launcher_rejects_removed_cli_commands_and_bad_arguments_before_creating_profile() {
     let root = directory();
     let profile = root.path().join("absent");
     for args in [
+        vec!["health"],
+        vec!["list"],
+        vec!["chat", "not-a-session"],
+        vec!["serve"],
+        vec!["--native-frontend-pid", "1"],
+        vec!["--port", "0"],
+        vec!["--port", "65536"],
         vec!["--credentials"],
         vec!["--api-key", SECRET],
         vec!["--workspace-tools", "--workspace-tools"],
     ] {
         let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_exec-agent"))
-            .args(["--profile", profile.to_str().unwrap(), "serve"])
+            .args(["--profile", profile.to_str().unwrap()])
             .args(args)
             .env_clear()
             .env("HOME", root.path())

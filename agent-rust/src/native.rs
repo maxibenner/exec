@@ -1,5 +1,5 @@
 //! Optional native capture broker. No capture implementation or fallback exists here.
-//! Eligibility is granted by trusted host composition, never by an HTTP client's claim.
+//! Local HTTP clients register directly; OS permission and session enablement remain explicit.
 use crate::{
     Error, Result,
     core::{ToolContext, new_id, valid_id},
@@ -71,7 +71,6 @@ pub struct DesktopPermission {
     pub enabled: bool,
 }
 struct Frontend {
-    pid: u32,
     os_permission: bool,
     requests: mpsc::Sender<NativeEvent>,
 }
@@ -81,7 +80,6 @@ struct Pending {
 }
 #[derive(Default)]
 struct State {
-    eligible: HashMap<u32, (u64, u64)>,
     windows: HashMap<(String, String), std::collections::HashSet<u32>>,
     frontends: HashMap<String, Frontend>,
     permissions: HashMap<String, String>,
@@ -134,33 +132,8 @@ impl Drop for NativeConnection {
     }
 }
 impl NativeHub {
-    /// Only trusted host startup/embedding may nominate its Swift frontend process.
-    /// Registration still requires kernel-attested peer PID and a live channel.
-    pub fn allow_local_frontend(&self, pid: u32) -> Result<()> {
-        if pid == 0 {
-            return Err(Error::Invalid("A local frontend PID is required."));
-        }
-        let identity = process_identity(pid).ok_or(Error::Invalid(
-            "The nominated local frontend process is unavailable.",
-        ))?;
-        self.state.lock().unwrap().eligible.insert(pid, identity);
-        Ok(())
-    }
-    pub(crate) fn register(
-        self: &Arc<Self>,
-        peer_pid: u32,
-        os_permission: bool,
-    ) -> Result<NativeConnection> {
+    pub(crate) fn register(self: &Arc<Self>, os_permission: bool) -> Result<NativeConnection> {
         let mut s = self.state.lock().unwrap();
-        if s.eligible
-            .remove(&peer_pid)
-            .is_none_or(|identity| Some(identity) != process_identity(peer_pid))
-        {
-            return Err(Error::Invalid(
-                "This peer was not authorized as the local Swift frontend by the host.",
-            ));
-        }
-        // Authorization is single-use: PID reuse or a reconnect cannot inherit permission.
         if s.frontends.len() >= 8 {
             return Err(Error::Busy);
         }
@@ -169,7 +142,6 @@ impl NativeHub {
         s.frontends.insert(
             id.clone(),
             Frontend {
-                pid: peer_pid,
                 os_permission,
                 requests: tx,
             },
@@ -180,18 +152,12 @@ impl NativeHub {
             hub: self.clone(),
         })
     }
-    pub(crate) fn update_os_permission(
-        &self,
-        peer_pid: u32,
-        id: &str,
-        granted: bool,
-    ) -> Result<()> {
+    pub(crate) fn update_os_permission(&self, id: &str, granted: bool) -> Result<()> {
         let mut s = self.state.lock().unwrap();
         let frontend = s
             .frontends
             .get_mut(id)
-            .filter(|f| f.pid == peer_pid)
-            .ok_or(Error::Invalid("Native frontend not found for this peer."))?;
+            .ok_or(Error::Invalid("Native frontend not found."))?;
         frontend.os_permission = granted;
         if !granted {
             s.permissions.retain(|_, frontend| frontend != id);
@@ -264,7 +230,7 @@ impl NativeHub {
         s.permissions.retain(|_, frontend| frontend != id);
         s.cancel_where(|request| request.frontend_id == id);
     }
-    pub(crate) fn reply(&self, peer_pid: u32, reply: NativeReply) -> Result<()> {
+    pub(crate) fn reply(&self, reply: NativeReply) -> Result<()> {
         let mut s = self.state.lock().unwrap();
         let pending = s.pending.get(&reply.request.id).ok_or(Error::Invalid(
             "Native request expired or was already answered.",
@@ -272,7 +238,7 @@ impl NativeHub {
         if pending.request != reply.request
             || s.frontends
                 .get(&reply.request.frontend_id)
-                .is_none_or(|f| f.pid != peer_pid || !f.os_permission)
+                .is_none_or(|f| !f.os_permission)
             || s.permissions.get(&reply.request.conversation_id) != Some(&reply.request.frontend_id)
         {
             return Err(Error::Invalid(
@@ -379,43 +345,6 @@ impl NativeHub {
         result
     }
 }
-fn process_identity(pid: u32) -> Option<(u64, u64)> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of_val(&info);
-        let result = unsafe {
-            libc::proc_pidinfo(
-                i32::try_from(pid).ok()?,
-                libc::PROC_PIDTBSDINFO,
-                0,
-                (&mut info as *mut libc::proc_bsdinfo).cast(),
-                size as i32,
-            )
-        };
-        if result as usize == size && info.pbi_uid == unsafe { libc::getuid() } {
-            Some((info.pbi_start_tvsec, info.pbi_start_tvusec))
-        } else {
-            None
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let path = format!("/proc/{pid}/stat");
-        if std::fs::metadata(&path).ok()?.uid() != unsafe { libc::getuid() } {
-            return None;
-        }
-        let text = std::fs::read_to_string(path).ok()?;
-        let rest = text.rsplit_once(')')?.1;
-        Some((rest.split_whitespace().nth(19)?.parse().ok()?, 0))
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        let _ = pid;
-        None
-    }
-}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NativeEvent {
@@ -430,41 +359,6 @@ pub enum NativeEvent {
         request: NativeRequest,
     },
     Ping,
-}
-/// The kernel, not a client-supplied field, identifies a same-host Unix peer.
-pub(crate) fn peer_pid(stream: &tokio::net::UnixStream) -> Option<u32> {
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::fd::AsRawFd;
-        let mut pid: libc::pid_t = 0;
-        let mut len = std::mem::size_of_val(&pid) as libc::socklen_t;
-        let result = unsafe {
-            libc::getsockopt(
-                stream.as_raw_fd(),
-                libc::SOL_LOCAL,
-                libc::LOCAL_PEERPID,
-                (&mut pid as *mut libc::pid_t).cast(),
-                &mut len,
-            )
-        };
-        if result == 0 && pid > 0 && len as usize == std::mem::size_of_val(&pid) {
-            return Some(pid as u32);
-        }
-        None
-    }
-    #[cfg(target_os = "linux")]
-    {
-        stream
-            .peer_cred()
-            .ok()?
-            .pid()
-            .and_then(|p| u32::try_from(p).ok())
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        let _ = stream;
-        None
-    }
 }
 #[cfg(test)]
 mod tests {
@@ -483,11 +377,10 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn only_exact_live_peer_and_request_can_answer() {
+    async fn only_exact_live_request_can_answer() {
         let hub = Arc::new(NativeHub::default());
-        assert!(hub.register(std::process::id(), true).is_err());
-        hub.allow_local_frontend(std::process::id()).unwrap();
-        let mut native = hub.register(std::process::id(), true).unwrap();
+
+        let mut native = hub.register(true).unwrap();
         let c = context();
         hub.set_permission(
             &c.conversation_id,
@@ -520,42 +413,23 @@ mod tests {
         let mut wrong = request.clone();
         wrong.operation_id = new_id();
         assert!(
-            hub.reply(
-                std::process::id(),
-                NativeReply {
-                    request: wrong,
-                    result: NativePayload::Windows { windows: vec![] }
-                }
-            )
+            hub.reply(NativeReply {
+                request: wrong,
+                result: NativePayload::Windows { windows: vec![] }
+            })
             .is_err()
         );
-        assert!(
-            hub.reply(
-                8,
-                NativeReply {
-                    request: request.clone(),
-                    result: NativePayload::Windows { windows: vec![] }
-                }
-            )
-            .is_err()
-        );
-        hub.reply(
-            std::process::id(),
-            NativeReply {
-                request: request.clone(),
-                result: NativePayload::Windows { windows: vec![] },
-            },
-        )
+        hub.reply(NativeReply {
+            request: request.clone(),
+            result: NativePayload::Windows { windows: vec![] },
+        })
         .unwrap();
         assert!(task.await.unwrap().is_ok());
         assert!(
-            hub.reply(
-                std::process::id(),
-                NativeReply {
-                    request,
-                    result: NativePayload::Failed
-                }
-            )
+            hub.reply(NativeReply {
+                request,
+                result: NativePayload::Failed
+            })
             .is_err()
         );
     }
@@ -563,8 +437,8 @@ mod tests {
     async fn cancellation_disconnect_and_permission_never_fall_back() {
         for mode in 0..3 {
             let hub = Arc::new(NativeHub::default());
-            hub.allow_local_frontend(std::process::id()).unwrap();
-            let mut native = hub.register(std::process::id(), mode != 2).unwrap();
+
+            let mut native = hub.register(mode != 2).unwrap();
             let c = context();
             let enabled = DesktopPermission {
                 frontend_id: Some(native.id.clone()),
@@ -602,13 +476,10 @@ mod tests {
             }
             assert!(task.await.unwrap().is_err());
             assert!(
-                hub.reply(
-                    std::process::id(),
-                    NativeReply {
-                        request,
-                        result: NativePayload::Failed
-                    }
-                )
+                hub.reply(NativeReply {
+                    request,
+                    result: NativePayload::Failed
+                })
                 .is_err()
             );
         }

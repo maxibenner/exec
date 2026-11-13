@@ -1,3 +1,4 @@
+use support::client::AgentClient;
 #[path = "support/http.rs"]
 mod http;
 mod support;
@@ -184,7 +185,7 @@ async fn service_requests_honor_cancellation_and_deadlines_without_retry() {
 
 #[tokio::test]
 async fn provider_service_api_round_trips_without_inference() {
-    use exec_agent::{client::AgentClient, service::*};
+    use exec_agent::service::*;
     let root = support::directory();
     let transport = Transport::new(|request| async move {
         Ok(if request.path == "user/balance" {
@@ -194,11 +195,15 @@ async fn provider_service_api_round_trips_without_inference() {
             json_response(json!({"results":[]}))
         })
     });
-    let service =
-        start_persistent_service(root.path(), Arc::new(provider(transport.clone())), false)
-            .await
-            .unwrap();
-    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        Arc::new(provider(transport.clone())),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
     assert_eq!(client.balances("deepseek").await.unwrap()[0].amount, "1.25");
     assert!(
         client

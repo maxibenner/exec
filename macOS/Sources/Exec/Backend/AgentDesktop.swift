@@ -1,7 +1,7 @@
 import AppKit
 import Observation
 
-/// Host-nominated, single-use native channel. No reconnect, capture retry, or implicit grant.
+/// Local HTTP native channel. No reconnect, capture retry, or implicit grant.
 @MainActor @Observable final class AgentDesktop {
     private let api: AgentAPI
     private let preflight: () -> Bool

@@ -8,10 +8,11 @@ protocol AgentTransport: Sendable {
     func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error>
 }
 
-struct UnixAgentTransport: AgentTransport {
-    let socketPath: String
+struct HTTPAgentTransport: AgentTransport {
+    static let defaultPort: UInt16 = 8765
+    var port: UInt16 = Self.defaultPort
     func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
-        let connection = AgentSocket(path: socketPath)
+        let connection = AgentHTTPConnection(port: port)
         return try await withTaskCancellationHandler {
             let timeout = Task {
                 try await Task.sleep(for: .seconds(120))
@@ -30,7 +31,7 @@ struct UnixAgentTransport: AgentTransport {
     }
 
     func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
-        let connection = AgentSocket(path: socketPath)
+        let connection = AgentHTTPConnection(port: port)
         let events = AgentEventReader(connection: connection, method: method, path: path, body: body)
         // Consumer-driven reads: never accumulate a queue of large full snapshots,
         // and never drop token deltas merely because several arrive in one packet.
@@ -51,14 +52,14 @@ struct UnixAgentTransport: AgentTransport {
 }
 
 private actor AgentEventReader {
-    let connection: AgentSocket
+    let connection: AgentHTTPConnection
     let method: String
     let path: String
     let body: Data?
     private var reader: HTTPBodyReader?
     private var pending = Data()
     private var closed = false
-    init(connection: AgentSocket, method: String, path: String, body: Data?) {
+    init(connection: AgentHTTPConnection, method: String, path: String, body: Data?) {
         self.connection = connection; self.method = method; self.path = path; self.body = body
     }
     func next() async throws -> Data? {
@@ -74,7 +75,7 @@ private actor AgentEventReader {
                         guard failure.count + bytes.count <= HTTPBodyReader.limit else { throw ExecError("The backend response exceeded 32 MiB.") }
                         failure.append(bytes)
                     }
-                    try UnixAgentTransport.validate(reader.status, data: failure)
+                    try HTTPAgentTransport.validate(reader.status, data: failure)
                 }
             }
             while true {
@@ -101,16 +102,16 @@ private actor AgentEventReader {
 }
 
 /// NWConnection owns descriptor lifetime and makes cancellation safe during an async read.
-private final class AgentSocket: @unchecked Sendable {
+private final class AgentHTTPConnection: @unchecked Sendable {
     let connection: NWConnection
-    init(path: String) {
-        connection = NWConnection(to: .unix(path: path), using: .tcp)
+    init(port: UInt16) {
+        connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
     }
     deinit { connection.cancel() }
     func cancel() { connection.cancel() }
     func open(_ method: String, _ path: String, body: Data?) async throws -> HTTPBodyReader {
         guard path.hasPrefix("/v1/"), !path.contains("\r"), !path.contains("\n") else { throw ExecError("Invalid backend request.") }
-        connection.start(queue: DispatchQueue(label: "Exec.agent.socket"))
+        connection.start(queue: DispatchQueue(label: "Exec.agent.http"))
         let body = body ?? Data()
         var request = Data("\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
         request.append(body)
@@ -138,7 +139,7 @@ private final class AgentSocket: @unchecked Sendable {
 
 private struct HTTPBodyReader {
     static let limit = 32 * 1024 * 1024
-    let socket: AgentSocket
+    let socket: AgentHTTPConnection
     var buffer = Data()
     var status = 0
     var chunked = false

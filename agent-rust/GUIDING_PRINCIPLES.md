@@ -169,7 +169,7 @@ Local access should be private; remote exposure requires deliberate authenticate
 
 Tools execute on the runtime host; workspace paths refer to that machine.
 
-The CLI and eventual native UI should use the same API. Platform-specific capabilities, such as macOS screenshots, should be optional host capabilities—not assumptions embedded throughout the core.
+The native UI and external HTTP consumers use the same API; there is no bundled CLI client. Platform-specific capabilities, such as macOS screenshots, should be optional host capabilities—not assumptions embedded throughout the core.
 
 ### 18. Prove behavior incrementally and report limitations honestly
 

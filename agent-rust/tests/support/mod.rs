@@ -225,3 +225,5 @@ pub fn event_kinds(receiver: &mut EventReceiver) -> Vec<EventKind> {
     }
     kinds
 }
+
+pub mod client;

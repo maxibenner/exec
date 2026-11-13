@@ -9,7 +9,7 @@
 
 ## Implementation record
 - [x] Map API contracts onto existing presentation models and identify parity constraints.
-- [x] Implement bounded Unix-socket HTTP/NDJSON transport, no mutation retries.
+- [x] Implement bounded loopback TCP HTTP/NDJSON transport, no mutation retries.
 - [x] Bundle/sign helper, automatic startup, awaited shutdown and conservative crash handling.
 - [x] Replace Swift inference/authentication/tools/persistence with backend-owned operations.
 - [x] Connect sessions, settings, accounts, images, approval, cancellation and streaming.
@@ -33,7 +33,7 @@ Final verification and unresolved decisions are recorded in `docs/swift-rust-mig
 
 ## Follow-up integration
 
-- [x] Connect the host-nominated native screenshot channel with explicit `/screenshots` session grants and native OS permission checks.
+- [x] Connect the HTTP native screenshot channel with explicit `/screenshots` session grants and native OS permission checks.
 - [x] Queue idle-only slash commands; preserve exact approvals and cancellation. Keep `/workspace` inactive after the initial choice/start, but allow one change to a newly inherited folder.
 - [x] Refresh allowance only on opening Settings; remove before/after observations from requirements.
 - [x] Open browser authentication directly and remove onboarding auth/storage descriptions.
