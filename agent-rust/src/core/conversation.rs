@@ -112,7 +112,7 @@ impl Conversation {
             record
         } else {
             ConversationRecord {
-                version: 5,
+                version: 6,
                 resources: vec![],
                 provider_state: None,
                 usage: None,
@@ -796,7 +796,8 @@ impl Conversation {
                     let action = AssertUnwindSafe(async {
                         let workspace = self.state().record.workspace.clone();
                         let model = self.state().record.model.clone();
-                        let prepared = tool.prepare(call.arguments.clone(),ToolContext{call_id:call.id.clone(),model,workspace,cancel:cancel.clone()}).await?;
+                        let search_model = self.state().record.configuration.as_ref().unwrap().settings.search_model.clone();
+                        let prepared = tool.prepare(call.arguments.clone(),ToolContext{search_model,call_id:call.id.clone(),model,workspace,cancel:cancel.clone()}).await?;
                         check_cancel(cancel)?;
                         let auto_approve = self.state().record.configuration.as_ref().unwrap().settings.auto_approve;
                         let approved = if let Some(description) = prepared.approval().filter(|_| !auto_approve) { self.ask(call,description.into(),prepared.details(),cancel).await? } else { true };

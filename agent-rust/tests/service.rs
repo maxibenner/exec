@@ -99,6 +99,7 @@ async fn api_default_auto_and_durable_settings_updates_reconcile_observers() {
         auto_approve: false,
         system_prompt: "Use concise answers".into(),
         effort: None,
+        search_model: None,
     };
     let updated = client
         .update_settings(&c.id, settings.clone())

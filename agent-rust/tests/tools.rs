@@ -26,6 +26,7 @@ async fn prepare(
         .prepare(
             args.as_object().unwrap().clone(),
             ToolContext {
+                search_model: None,
                 call_id: "test-call".into(),
                 model: "fake".into(),
                 workspace: root.to_string_lossy().into(),

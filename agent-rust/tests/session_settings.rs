@@ -172,6 +172,7 @@ async fn manager_freezes_first_send_instructions_and_restores_without_rereading(
         auto_approve: false,
         system_prompt: "Custom instructions".into(),
         effort: None,
+        search_model: None,
     };
     manager
         .update_settings(&c.id, settings.clone())
@@ -270,7 +271,7 @@ fn old_records_keep_manual_policy_and_v2_requires_configuration() {
     value["version"] = 1.into();
     let legacy: ConversationRecord = serde_json::from_value(value).unwrap();
     let recovered = legacy.recover().unwrap();
-    assert_eq!(recovered.version, 5);
+    assert_eq!(recovered.version, 6);
     let config = recovered.configuration.unwrap();
     assert!(!config.settings.auto_approve);
     assert!(config.instructions_frozen);

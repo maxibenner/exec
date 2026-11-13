@@ -45,6 +45,7 @@ async fn defaults_order_rename_model_and_fork_survive_restart_without_mutating_s
         settings: SessionSettings {
             system_prompt: "default prompt".into(),
             effort: None,
+            search_model: None,
             auto_approve: false,
         },
         order: vec![],

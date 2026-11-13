@@ -361,3 +361,16 @@ authority for execution. Typed details are presentation data: provider context s
 neutral tool text/outcomes, not frontend rendering structures. Legacy text-only executors
 remain usable; richer executors produce text and typed details in one execution, never
 repeat a tool merely to obtain presentation metadata.
+
+## Search-model selection
+
+Session/new-session-default settings accept optional `searchModel` (null follows the chat
+model). `search-model ID MODEL` or `search-model ID default` updates an idle session. The
+runner supplies this configuration to the search tool; the model cannot silently choose
+a different provider through tool arguments. The provider registry routes qualified search
+models independently of the main chat model. An explicit cross-provider choice sends public
+search queries to that selected provider, so frontends must present the selected search
+model/provider accurately. There is no implicit cross-provider fallback on failure.
+
+`configure` updates prompt/approval policy while preserving effort/search selection.
+Version-6 records persist this setting; versions 1–5 remain readable with no search override.

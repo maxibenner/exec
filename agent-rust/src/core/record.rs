@@ -49,7 +49,7 @@ impl ConversationRecord {
             return Err(Error::Invalid("Invalid provider state."));
         }
         let bad = Error::Invalid("Invalid or unsupported conversation record.");
-        if !matches!(self.version, 1..=5)
+        if !matches!(self.version, 1..=6)
             || (self.version >= 2 && self.configuration.is_none())
             || (self.version == 1 && self.configuration.is_some())
             || !valid_id(&self.id)
@@ -179,7 +179,7 @@ impl ConversationRecord {
             self.version = 2;
             self.configuration = Some(ConversationConfiguration::legacy());
         }
-        self.version = 5;
+        self.version = 6;
         if let Some(op) = &mut self.operation
             && op.state.active()
         {

@@ -245,6 +245,7 @@ pub trait ChatProvider: Send + Sync {
 }
 #[derive(Clone)]
 pub struct ToolContext {
+    pub search_model: Option<String>,
     pub call_id: String,
     pub model: String,
     pub workspace: String,

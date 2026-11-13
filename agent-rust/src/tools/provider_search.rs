@@ -51,7 +51,7 @@ impl Tool for ProviderSearch {
         search_query(&query)?;
         Ok(Box::new(PreparedSearch {
             provider: self.provider.clone(),
-            model: context.model,
+            model: context.search_model.unwrap_or(context.model),
             query,
             cancel: context.cancel,
         }))

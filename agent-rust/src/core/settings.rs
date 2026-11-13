@@ -14,6 +14,8 @@ pub struct SessionSettings {
     pub auto_approve: bool,
     #[serde(default)]
     pub effort: Option<String>,
+    #[serde(default)]
+    pub search_model: Option<String>,
 }
 impl Default for SessionSettings {
     fn default() -> Self {
@@ -21,6 +23,7 @@ impl Default for SessionSettings {
             system_prompt: String::new(),
             auto_approve: true,
             effort: None,
+            search_model: None,
         }
     }
 }
@@ -32,6 +35,13 @@ impl SessionSettings {
                 || !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
         }) {
             return Err(Error::Invalid("Invalid reasoning effort."));
+        }
+        if self
+            .search_model
+            .as_ref()
+            .is_some_and(|model| !super::valid_model_id(model))
+        {
+            return Err(Error::Invalid("Invalid search model."));
         }
         validate_instructions(&self.system_prompt)
     }
