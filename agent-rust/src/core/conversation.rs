@@ -22,6 +22,7 @@ pub struct ConversationOptions {
     pub workspace: String,
     pub tools: Vec<Arc<dyn Tool>>,
     pub max_steps: usize,
+    pub settings: SessionSettings,
     pub checkpoint: Option<Arc<dyn Checkpoint>>,
 }
 impl ConversationOptions {
@@ -36,6 +37,7 @@ impl ConversationOptions {
             workspace: workspace.into(),
             tools: vec![],
             max_steps: 32,
+            settings: SessionSettings::default(),
             checkpoint: None,
         }
     }
@@ -55,11 +57,17 @@ struct State {
     active_tool: Option<String>,
     storage_error: Option<String>,
     disposed: bool,
+    updating: bool,
 }
 impl State {
     fn snapshot(&self) -> ConversationSnapshot {
         ConversationSnapshot {
             id: self.record.id.clone(),
+            configuration: self
+                .record
+                .configuration
+                .clone()
+                .expect("validated configuration"),
             model: self.record.model.clone(),
             workspace: self.record.workspace.clone(),
             messages: self.record.messages.clone(),
@@ -99,7 +107,8 @@ impl Conversation {
             record
         } else {
             ConversationRecord {
-                version: 1,
+                version: 2,
+                configuration: Some(ConversationConfiguration::new(options.settings)),
                 id: new_id(),
                 model: options.model,
                 workspace: options.workspace,
@@ -129,6 +138,7 @@ impl Conversation {
                 active_tool: None,
                 storage_error: None,
                 disposed: false,
+                updating: false,
             }),
             provider: options.provider,
             tools,
@@ -147,15 +157,66 @@ impl Conversation {
         self.state().record.clone()
     }
     pub fn busy(&self) -> bool {
-        self.state().active.is_some()
+        let state = self.state();
+        state.active.is_some() || state.updating
     }
     pub fn dispose(&self) -> Result<()> {
         let mut s = self.state();
-        if s.active.is_some() {
-            return Err(Error::Invalid("Cannot close an active conversation."));
+        if s.active.is_some() || s.updating {
+            return Err(Error::Busy);
         }
         s.disposed = true;
         Ok(())
+    }
+    /// Durable idle-only mutation. The owned task finishes even if its caller detaches.
+    /// Publish new settings only after the save succeeds; failed acknowledgements block work.
+    pub async fn update_settings(
+        self: &Arc<Self>,
+        settings: SessionSettings,
+    ) -> Result<ConversationSnapshot> {
+        settings.validate()?;
+        let mut record = {
+            let mut s = self.state();
+            if s.disposed {
+                return Err(Error::Invalid("Conversation is closed."));
+            }
+            if s.storage_error.is_some() {
+                return Err(Error::Storage);
+            }
+            if s.active.is_some() || s.updating {
+                return Err(Error::Busy);
+            }
+            s.updating = true;
+            s.record.clone()
+        };
+        record.configuration.as_mut().unwrap().settings = settings;
+        let conversation = self.clone();
+        tokio::spawn(async move {
+            let saved = AssertUnwindSafe(async {
+                if let Some(persist) = &conversation.persist {
+                    persist.save(record.clone()).await?;
+                }
+                Ok::<_, Error>(())
+            })
+            .catch_unwind()
+            .await
+            .unwrap_or(Err(Error::Internal));
+            let mut state = conversation.state();
+            state.updating = false;
+            if saved.is_ok() {
+                state.record = record;
+            } else {
+                state.storage_error = Some(Error::Storage.to_string());
+            }
+            let snapshot = state.snapshot();
+            conversation.events.send(Arc::new(ServiceEvent::Snapshot {
+                snapshot: snapshot.clone(),
+            }));
+            saved.map_err(|_| Error::Storage)?;
+            Ok(snapshot)
+        })
+        .await
+        .map_err(|_| Error::Internal)?
     }
     /// Subscription and initial snapshot are taken under the same lock as events.
     /// Lagging observers must reconnect explicitly; they can never block execution.
@@ -214,6 +275,14 @@ impl Conversation {
         }
     }
     pub fn submit(self: &Arc<Self>, text: String) -> Result<Submission> {
+        self.submit_with_instructions(text, None)
+    }
+    /// Manager supplies a first-turn snapshot; embedded callers may supply their own.
+    pub fn submit_with_instructions(
+        self: &Arc<Self>,
+        text: String,
+        instructions: Option<String>,
+    ) -> Result<Submission> {
         let mut s = self.state();
         if s.disposed {
             return Err(Error::Invalid("Conversation is closed."));
@@ -221,11 +290,19 @@ impl Conversation {
         if s.storage_error.is_some() {
             return Err(Error::Storage);
         }
-        if s.active.is_some() {
-            return Err(Error::Invalid("Conversation is busy."));
+        if s.active.is_some() || s.updating {
+            return Err(Error::Busy);
         }
         if text.trim().is_empty() {
             return Err(Error::Invalid("Message must not be empty."));
+        }
+        if let Some(value) = &instructions {
+            validate_instructions(value)?;
+        }
+        let config = s.record.configuration.as_mut().unwrap();
+        if !config.instructions_frozen {
+            config.workspace_instructions = instructions;
+            config.instructions_frozen = true;
         }
         let operation_id = new_id();
         let cancel = CancellationToken::new();
@@ -406,6 +483,12 @@ impl Conversation {
             (
                 ProviderRequest {
                     model: s.record.model.clone(),
+                    instructions: s
+                        .record
+                        .configuration
+                        .as_ref()
+                        .unwrap()
+                        .instructions(&s.record.workspace, !self.definitions.is_empty()),
                     messages,
                     tools: self.definitions.clone(),
                     cancel: cancel.clone(),
@@ -535,7 +618,8 @@ impl Conversation {
                         let workspace = self.state().record.workspace.clone();
                         let prepared = tool.prepare(call.arguments.clone(),ToolContext{workspace,cancel:cancel.clone()}).await?;
                         check_cancel(cancel)?;
-                        let approved = if let Some(description) = prepared.approval() { self.ask(call,description.into(),cancel).await? } else { true };
+                        let auto_approve = self.state().record.configuration.as_ref().unwrap().settings.auto_approve;
+                        let approved = if let Some(description) = prepared.approval().filter(|_| !auto_approve) { self.ask(call,description.into(),cancel).await? } else { true };
                         check_cancel(cancel)?;
                         if !approved { return Ok((ToolOutcome::Denied,"User denied this action. Nothing was executed. Do not retry without a new user request.".into())); }
                         self.state().record.executing_tool_id=Some(call.id.clone());

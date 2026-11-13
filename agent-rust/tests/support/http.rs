@@ -77,6 +77,7 @@ pub fn provider(transport: Arc<dyn HttpTransport>) -> DeepSeekProvider {
 }
 pub fn request() -> ProviderRequest {
     ProviderRequest {
+        instructions: String::new(),
         model: "deepseek-flash".into(),
         messages: vec![ContextMessage::User {
             text: "Hello".into(),

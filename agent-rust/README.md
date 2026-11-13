@@ -1,6 +1,6 @@
 # Exec agent — Rust
 
-Rust migration of [`../agent`](../agent), with the same functionality and API v1. The TypeScript implementation remains unchanged. This is a standalone library and executable, not a wrapper around Node or an agent framework. The Swift app is unchanged and is not connected to this service.
+Rust migration of [`../agent`](../agent), now extending API v1 toward [backend parity](PARITY.md). The TypeScript implementation remains unchanged. This is a standalone library and executable, not a wrapper around Node or an agent framework. The Swift app is unchanged and is not connected to this service.
 
 ## Guiding principles
 
@@ -33,6 +33,7 @@ See [API.md](API.md) for credentials, all CLI commands, HTTP/NDJSON contracts, a
 | `core/types.rs` | Provider-neutral messages, tools, models, operations and events; serde wire names retain API v1 |
 | `core/conversation.rs` | Streamed conversation loop, sequential tools, exact approvals, cooperative cancellation and checkpoints |
 | `core/record.rs` | Versioned record validation, context integrity and conservative restart recovery |
+| `core/settings.rs`, `workspace_instructions.rs` | Durable execution settings and manager-owned safe instruction loading |
 | `core/events.rs` | Nonblocking, bounded observer delivery; reconnect by snapshot rather than replay |
 | `manager.rs` | Independent concurrent conversations and durable catalog ownership |
 | `storage.rs` | Single-owner JSON profiles, serialized atomic checkpoints, locking and directory sync |
@@ -54,7 +55,7 @@ async fn run(provider: Arc<dyn exec_agent::core::ChatProvider>) -> exec_agent::R
     let manager = AgentManager::default();
     let conversation = manager.create(ConversationOptions::new(provider, "model-id", "/absolute/workspace")).await?;
     let (_snapshot, mut events) = conversation.subscribe();
-    let submitted = conversation.submit("Hello".into())?;
+    let submitted = manager.submit(&conversation.id, "Hello".into()).await?;
     // Consume events concurrently if you need live updates or approvals.
     // resolve_approval(operation_id, approval_id, approved) authorizes one exact action.
     // cancel(operation_id) requests cleanup, not immediate ownership release.
@@ -65,7 +66,16 @@ async fn run(provider: Arc<dyn exec_agent::core::ChatProvider>) -> exec_agent::R
 }
 ```
 
-`submit` is synchronous in-memory acceptance, not a durable receipt. Dropping the completion receiver or an observer detaches; it does not cancel the runner. Use explicit cancellation, await settlement, then close the manager. As with any async Rust API, await catalog/store operations to completion; do not abort the enclosing task during a durable mutation. Service request handlers remain owned independently of client disconnects for this reason.
+`Conversation::submit` is synchronous in-memory acceptance, not a durable receipt.
+`AgentManager::submit` first loads root AGENTS.md for a new conversation, then delegates
+to the same runner. Embedders calling the runner directly may supply an instruction
+snapshot through `submit_with_instructions`; the runner never reads host instructions
+itself. The first accepted input freezes even an absent AGENTS.md. Both entry points
+checkpoint input and the frozen configuration before inference. Settings updates are
+idle-only, remain owned when the caller detaches, and publish only after a successful save.
+A failed settings-save acknowledgement blocks further mutations/inference until reload.
+
+Acceptance is not a durable receipt. Dropping the completion receiver or an observer detaches; it does not cancel the runner. Use explicit cancellation, await settlement, then close the manager. As with any async Rust API, await catalog/store operations to completion; do not abort the enclosing task during a durable mutation. Service request handlers remain owned independently of client disconnects for this reason.
 
 A prepared tool is consumed by execution, preventing accidental reuse. Providers and executors must honor their `CancellationToken`; the runtime does not drop an in-flight executor to simulate cleanup. A noncooperative embedded adapter can keep a conversation busy. Observer delivery never calls application code while holding runtime state. Slow observers are disconnected at the byte/event bound and must explicitly subscribe again.
 
@@ -73,7 +83,7 @@ A prepared tool is consumed by execution, preventing accidental reuse. Providers
 
 - One active operation per conversation, concurrent independent conversations, streamed text, finite step limit (32 by default), no hidden prompt queue.
 - Finalized tool calls get paired results for success, denial, failure, interruption, or non-execution. Partial/failed assistant responses stay visible but never become completed provider context. Tool calls are withheld until the entire provider response completes successfully.
-- Exact, single-use approvals; no client connected means wait. Cancellation stays possible until final checkpoint commit begins. Tool executor ownership includes cancellation cleanup, never merely saved intent.
+- New conversations default to persisted auto-approval. Manual mode uses exact, single-use approvals and waits even with no client connected. Auto mode still prepares, validates, checkpoints intent and checks cancellation before effects. Cancellation stays possible until final checkpoint commit begins; executor ownership includes cleanup.
 - No automatic inference, credential, mutation, tool, or checkpoint retries. Errors expose safe diagnostics rather than raw provider bodies or transport exceptions.
 - Concrete DeepSeek origin only, non-thinking text/function calls, explicit `thinking: {type: "disabled"}` and `reasoning_effort: "none"`. Supported finish reason **and** `[DONE]` are required; unexpected reasoning fails.
 - DeepSeek: 120-second default deadline (configurable up to 900), 16 MiB request/stream bound, 256 KiB SSE frames, 4 MiB text, 64 calls with 32 KiB argument JSON, and 128 KiB model discovery responses. Redirects, cookies, retries and ambient proxies are disabled.
@@ -85,7 +95,7 @@ File tools check path components and use no-follow file opens. As in the sketch,
 
 ## Persistence and recovery
 
-API v1 JSON names and version-1 checkpoint records are retained, including `operationID`, `callID`, `activeToolCallID`, and `executingToolID`. Native Rust APIs use snake_case. Both implementations can read completed records written by the other; never run both against one profile simultaneously.
+API v1 names such as `operationID`, `callID`, `activeToolCallID`, and `executingToolID` remain. Checkpoints now use **version 2**, requiring execution settings and frozen instruction state. Version-1 records are read conservatively with manual approval and no newly loaded AGENTS.md context; their next save writes version 2. The TypeScript sketch cannot read these new records. Never share an active profile or downgrade its writer. This is not a Swift-store migration.
 
 Profiles use a `.lock` directory, one validated `<UUID>.json` file per conversation, `0700` new directories, `0600` checkpoints, same-directory staging, file sync, atomic rename and directory sync. Corrupt/linked/unsupported/oversized records fail startup rather than being discarded. The limit is 16 MiB per record. This is local single-owner storage, not a network database or hostile-filesystem sandbox.
 
@@ -97,7 +107,7 @@ Normal service shutdown removes its socket and lock. A crash deliberately leaves
 
 ## Verification and scope
 
-The API was smoke-tested in both directions with the original TypeScript client/service, using a fake provider and isolated profiles.
+The initial API was smoke-tested with the TypeScript sketch. New settings, default-auto semantics and version-2 records are Rust extensions; cross-implementation parity is no longer claimed.
 
 Verified on macOS with Rust 1.93.1. Live DeepSeek authentication/service compatibility, interactive TTY behavior, Linux deployment, machine power-loss guarantees, remote access and Swift integration remain unverified. Automated mocks do not establish live provider compatibility.
 

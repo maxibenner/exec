@@ -8,7 +8,7 @@ These are design constraints and development guidance, not a claim that every pl
 
 [Backend parity](PARITY.md) records the approved next-stage scope and ownership boundaries.
 It supersedes the initial busy-input rejection policy with planned explicit safe-boundary
-steering, and individual-only approvals with planned persisted auto mode (default on).
+steering, and individual-only approvals with persisted auto mode (default on).
 Neither behavior may be implemented solely in a frontend. JSON/environment credentials,
 no Keychain, no Swift-store migration, and frontend-only screenshot availability are
 explicit scope decisions. The initial implementation remains unchanged until each
@@ -67,7 +67,11 @@ Approval is a runtime invariant—not merely a UI prompt.
 
 Tools first **prepare an exact action without side effects**, including its approval description. Only execution may perform the action. Approval must authorize that prepared action, not a recomputed or subsequently changed one.
 
-For file edits, revalidate the revision immediately before writing.
+For file edits, revalidate the revision immediately before writing. New sessions default
+to auto mode: the persisted backend policy authorizes prepared actions without a prompt,
+never skipping validation, intent checkpoints or cancellation. Manual mode requires a
+single-use decision. Policy changes are idle-only durable mutations. Desktop access and
+OS permission are separate capabilities, never granted by auto mode.
 
 ### 8. Target commands precisely
 

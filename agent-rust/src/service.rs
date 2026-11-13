@@ -192,7 +192,10 @@ async fn serve_connection(
 struct ApiError(u16, &'static str);
 type ApiResult<T> = std::result::Result<T, ApiError>;
 impl From<Error> for ApiError {
-    fn from(_: Error) -> Self {
+    fn from(error: Error) -> Self {
+        if error == Error::Busy {
+            return Self(409, "Conversation is busy.");
+        }
         Self(
             500,
             "Service request failed. Inspect conversation state before continuing.",
@@ -254,6 +257,8 @@ fn text(value: &str, max: usize) -> ApiResult<()> {
 struct Create {
     model: String,
     workspace: String,
+    #[serde(default)]
+    settings: SessionSettings,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -324,6 +329,10 @@ async fn handle(
         }
         if method == "POST" {
             let create: Create = body(request).await?;
+            create
+                .settings
+                .validate()
+                .map_err(|_| ApiError(400, "Invalid session settings."))?;
             text(&create.model, 128)?;
             text(&create.workspace, 4096)?;
             if !Path::new(&create.workspace).is_absolute() {
@@ -348,6 +357,7 @@ async fn handle(
                 workspace.to_string_lossy(),
             );
             config.tools = options.tools.clone();
+            config.settings = create.settings;
             return Ok(json_response(
                 201,
                 options.manager.create(config).await?.snapshot(),
@@ -362,7 +372,7 @@ async fn handle(
         || parts.len() > 2
         || parts
             .get(1)
-            .is_some_and(|s| !["events", "turns", "cancel", "approvals"].contains(s))
+            .is_some_and(|s| !["events", "turns", "cancel", "approvals", "settings"].contains(s))
     {
         return Err(ApiError(404, "Route not found."));
     }
@@ -386,6 +396,19 @@ async fn handle(
             }
             options.manager.delete(parts[0]).await?;
             Ok(json_response(200, json!({"deleted":true})))
+        }
+        ("PUT", Some("settings")) => {
+            let settings: SessionSettings = body(request).await?;
+            settings
+                .validate()
+                .map_err(|_| ApiError(400, "Invalid session settings."))?;
+            if host.stop.is_cancelled() {
+                return Err(ApiError(503, "Service is stopping."));
+            }
+            Ok(json_response(
+                200,
+                options.manager.update_settings(parts[0], settings).await?,
+            ))
         }
         ("GET", Some("events")) => {
             let (snapshot, mut receiver) = conversation.subscribe();
@@ -414,9 +437,15 @@ async fn handle(
             if host.stop.is_cancelled() {
                 return Err(ApiError(503, "Service is stopping."));
             }
-            let run = conversation
-                .submit(submit.text)
-                .map_err(|_| ApiError(409, "Conversation is busy or requires recovery."))?;
+            let run = options
+                .manager
+                .submit(parts[0], submit.text)
+                .await
+                .map_err(|error| match error {
+                    Error::Invalid(message) => ApiError(400, message),
+                    Error::Storage => ApiError(409, "Conversation requires storage recovery."),
+                    other => ApiError::from(other),
+                })?;
             Ok(json_response(202, json!({"operationID":run.operation_id})))
         }
         ("POST", Some("cancel")) => {

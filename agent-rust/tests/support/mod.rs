@@ -128,6 +128,7 @@ where
 pub fn options(provider: Arc<dyn ChatProvider>, tools: Vec<Arc<dyn Tool>>) -> ConversationOptions {
     let mut options = ConversationOptions::new(provider, "fake", "/isolated-test-workspace");
     options.tools = tools;
+    options.settings.auto_approve = false; // Approval tests explicitly opt into manual mode.
     options
 }
 pub fn conversation(

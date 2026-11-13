@@ -91,6 +91,28 @@ impl AgentManager {
             .insert(conversation.id.clone(), conversation.clone());
         Ok(conversation)
     }
+    /// Load project instructions only for the first accepted turn, then freeze them.
+    /// The runner atomically accepts input and persists the snapshot before inference.
+    pub async fn submit(&self, id: &str, text: String) -> Result<Submission> {
+        let conversation = self.get(id)?;
+        if conversation.busy() {
+            return Err(Error::Busy);
+        }
+        let snapshot = conversation.snapshot();
+        let instructions = if snapshot.configuration.instructions_frozen {
+            None
+        } else {
+            crate::workspace_instructions::load(snapshot.workspace).await?
+        };
+        conversation.submit_with_instructions(text, instructions)
+    }
+    pub async fn update_settings(
+        &self,
+        id: &str,
+        settings: SessionSettings,
+    ) -> Result<ConversationSnapshot> {
+        self.get(id)?.update_settings(settings).await
+    }
     pub fn get(&self, id: &str) -> Result<Arc<Conversation>> {
         let c = self.catalog.lock().unwrap();
         if c.closed {

@@ -81,6 +81,71 @@ fn snapshot(frame: ServiceEvent) -> Option<ConversationSnapshot> {
     }
 }
 #[tokio::test]
+async fn api_default_auto_and_durable_settings_updates_reconcile_observers() {
+    let root = directory();
+    let p = FakeProvider::new(vec![answer()]);
+    let service = start_persistent_service(root.path(), p.clone(), false)
+        .await
+        .unwrap();
+    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let c = client
+        .create("fake", root.path().to_str().unwrap())
+        .await
+        .unwrap();
+    assert!(c.configuration.settings.auto_approve);
+    let mut events = client.events(&c.id, CancellationToken::new());
+    events.next().await.unwrap().unwrap();
+    let settings = SessionSettings {
+        auto_approve: false,
+        system_prompt: "Use concise answers".into(),
+    };
+    let updated = client
+        .update_settings(&c.id, settings.clone())
+        .await
+        .unwrap();
+    let frame = tokio::time::timeout(Duration::from_secs(3), events.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot(frame).unwrap(), updated);
+    drop(events);
+    for invalid in [
+        json!({"autoApprove":true}),
+        json!({"autoApprove":true,"systemPrompt":"", "extra":true}),
+        json!({"autoApprove":false,"systemPrompt":"x".repeat(INSTRUCTION_LIMIT + 1)}),
+    ] {
+        assert_eq!(
+            client
+                .call(
+                    "PUT",
+                    &format!("/v1/conversations/{}/settings", c.id),
+                    Some(invalid)
+                )
+                .await
+                .unwrap_err(),
+            Error::Api(400)
+        );
+    }
+    service.close().await.unwrap();
+    let service = start_persistent_service(root.path(), p.clone(), false)
+        .await
+        .unwrap();
+    assert_eq!(
+        client.get(&c.id).await.unwrap().configuration.settings,
+        settings
+    );
+    client.submit(&c.id, "hello").await.unwrap();
+    terminal(&client, &c.id).await;
+    assert!(
+        p.requests.lock().unwrap()[0]
+            .instructions
+            .contains("Use concise answers")
+    );
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn api_delete_is_durable_and_does_not_repeat() {
     let root = directory();
     let provider = FakeProvider::new(vec![]);
@@ -89,7 +154,14 @@ async fn api_delete_is_durable_and_does_not_repeat() {
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
     let conversation = client
-        .create("fake", root.path().to_str().unwrap())
+        .create_with_settings(
+            "fake",
+            root.path().to_str().unwrap(),
+            SessionSettings {
+                auto_approve: false,
+                ..SessionSettings::default()
+            },
+        )
         .await
         .unwrap();
     client.delete(&conversation.id).await.unwrap();
@@ -122,7 +194,14 @@ async fn api_create_stream_reconnect_and_durable_continuation() {
         json!({"version":1,"toolsEnabled":false})
     );
     let c = client
-        .create("fake", root.path().to_str().unwrap())
+        .create_with_settings(
+            "fake",
+            root.path().to_str().unwrap(),
+            SessionSettings {
+                auto_approve: false,
+                ..SessionSettings::default()
+            },
+        )
         .await
         .unwrap();
     let op = client.submit(&c.id, "Hi").await.unwrap();
@@ -182,16 +261,37 @@ async fn same_conversation_exclusion_cross_conversation_concurrency_explicit_can
     let f = setup(p.clone(), vec![]).await;
     let a = f
         .client
-        .create("fake", f.root.path().to_str().unwrap())
+        .create_with_settings(
+            "fake",
+            f.root.path().to_str().unwrap(),
+            SessionSettings {
+                auto_approve: false,
+                ..SessionSettings::default()
+            },
+        )
         .await
         .unwrap();
     let b = f
         .client
-        .create("fake", f.root.path().to_str().unwrap())
+        .create_with_settings(
+            "fake",
+            f.root.path().to_str().unwrap(),
+            SessionSettings {
+                auto_approve: false,
+                ..SessionSettings::default()
+            },
+        )
         .await
         .unwrap();
     let op = f.client.submit(&a.id, "hold").await.unwrap();
     entered.cancelled().await;
+    assert_eq!(
+        f.client
+            .update_settings(&a.id, SessionSettings::default())
+            .await
+            .unwrap_err(),
+        Error::Api(409)
+    );
     assert_eq!(f.client.delete(&a.id).await.unwrap_err(), Error::Api(409));
     assert_eq!(
         f.client.submit(&a.id, "duplicate").await.unwrap_err(),
@@ -239,7 +339,14 @@ async fn approval_case(approved: bool) {
     .await;
     let c = f
         .client
-        .create("fake", f.root.path().to_str().unwrap())
+        .create_with_settings(
+            "fake",
+            f.root.path().to_str().unwrap(),
+            SessionSettings {
+                auto_approve: false,
+                ..SessionSettings::default()
+            },
+        )
         .await
         .unwrap();
     f.client.submit(&c.id, "Act").await.unwrap();
@@ -329,7 +436,14 @@ async fn shutdown_persists_pending_approval_without_execution_or_restart() {
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
     let c = client
-        .create("fake", root.path().to_str().unwrap())
+        .create_with_settings(
+            "fake",
+            root.path().to_str().unwrap(),
+            SessionSettings {
+                auto_approve: false,
+                ..SessionSettings::default()
+            },
+        )
         .await
         .unwrap();
     client.submit(&c.id, "Write").await.unwrap();
@@ -473,7 +587,14 @@ async fn discovery_and_provider_failures_do_not_leak_internal_credentials() {
     assert_eq!(f.client.models().await.unwrap_err(), Error::Api(500));
     let c = f
         .client
-        .create("fake", f.root.path().to_str().unwrap())
+        .create_with_settings(
+            "fake",
+            f.root.path().to_str().unwrap(),
+            SessionSettings {
+                auto_approve: false,
+                ..SessionSettings::default()
+            },
+        )
         .await
         .unwrap();
     f.client.submit(&c.id, "Fail once").await.unwrap();
@@ -534,6 +655,33 @@ async fn real_cli_creates_sends_lists_resumes_only_through_service() {
     .await;
     assert!(output.status.success());
     let created: ConversationSnapshot = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(created.configuration.settings.auto_approve);
+    let configured = cli(
+        f.root.path(),
+        &["configure", &created.id, "manual", "Concise answers"],
+    )
+    .await;
+    assert!(configured.status.success());
+    let configured: ConversationSnapshot = serde_json::from_slice(&configured.stdout).unwrap();
+    assert!(!configured.configuration.settings.auto_approve);
+    assert_eq!(
+        configured.configuration.settings.system_prompt,
+        "Concise answers"
+    );
+    let manual = cli(
+        f.root.path(),
+        &["new", "fake", f.root.path().to_str().unwrap(), "--manual"],
+    )
+    .await;
+    assert!(manual.status.success());
+    let manual: ConversationSnapshot = serde_json::from_slice(&manual.stdout).unwrap();
+    assert!(!manual.configuration.settings.auto_approve);
+    assert!(
+        cli(f.root.path(), &["delete", &manual.id])
+            .await
+            .status
+            .success()
+    );
     let output = cli(f.root.path(), &["send", &created.id, "Hi"]).await;
     assert!(
         output.status.success(),
@@ -578,7 +726,14 @@ async fn service_shutdown_aborts_inference_disconnects_observers_without_retries
     let f = setup(p.clone(), vec![]).await;
     let c = f
         .client
-        .create("fake", f.root.path().to_str().unwrap())
+        .create_with_settings(
+            "fake",
+            f.root.path().to_str().unwrap(),
+            SessionSettings {
+                auto_approve: false,
+                ..SessionSettings::default()
+            },
+        )
         .await
         .unwrap();
     f.client.submit(&c.id, "Wait").await.unwrap();
@@ -658,7 +813,14 @@ async fn attached_client_receives_live_deltas_before_terminal_completion() {
     let f = setup(p, vec![]).await;
     let c = f
         .client
-        .create("fake", f.root.path().to_str().unwrap())
+        .create_with_settings(
+            "fake",
+            f.root.path().to_str().unwrap(),
+            SessionSettings {
+                auto_approve: false,
+                ..SessionSettings::default()
+            },
+        )
         .await
         .unwrap();
     let mut events = f.client.events(&c.id, CancellationToken::new());
@@ -713,7 +875,14 @@ async fn api_tool_entry_reconnect_cancel_acceptance_and_settled_results() {
     .await;
     let c = f
         .client
-        .create("fake", f.root.path().to_str().unwrap())
+        .create_with_settings(
+            "fake",
+            f.root.path().to_str().unwrap(),
+            SessionSettings {
+                auto_approve: false,
+                ..SessionSettings::default()
+            },
+        )
         .await
         .unwrap();
     let op = f.client.submit(&c.id, "Act").await.unwrap();

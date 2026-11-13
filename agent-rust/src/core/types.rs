@@ -127,6 +127,7 @@ pub fn context(messages: &[Message]) -> Vec<ContextMessage> {
 pub struct ProviderRequest {
     pub model: String,
     pub messages: Vec<ContextMessage>,
+    pub instructions: String,
     pub tools: Vec<ToolDefinition>,
     pub cancel: CancellationToken,
 }
@@ -212,6 +213,7 @@ pub struct Approval {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSnapshot {
     pub id: String,
+    pub configuration: super::ConversationConfiguration,
     pub model: String,
     pub workspace: String,
     pub messages: Vec<Message>,

@@ -366,7 +366,7 @@ async fn shared_provider_isolates_concurrent_cancellation() {
         let dropped = observed.clone();
         async move {
             let body: serde_json::Value = serde_json::from_str(&r.body.unwrap()).unwrap();
-            Ok(if body["messages"][0]["content"] == "A" {
+            Ok(if body["messages"][1]["content"] == "A" {
                 response(
                     event(delta(json!({"content":"Partial A"}), None)),
                     4096,
@@ -475,10 +475,11 @@ async fn deepseek_shaped_responses_drive_approved_real_tools_and_durable_continu
         let requests = t.requests.lock().unwrap();
         let body: serde_json::Value =
             serde_json::from_str(requests[1].body.as_ref().unwrap()).unwrap();
-        assert_eq!(body["messages"][1]["role"], "assistant");
-        assert_eq!(body["messages"][2]["tool_call_id"], "call-1");
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][2]["role"], "assistant");
+        assert_eq!(body["messages"][3]["tool_call_id"], "call-1");
         assert!(
-            body["messages"][2]["content"]
+            body["messages"][3]["content"]
                 .as_str()
                 .unwrap()
                 .contains("Edited")
@@ -509,7 +510,7 @@ async fn deepseek_shaped_responses_drive_approved_real_tools_and_durable_continu
         .as_array()
         .unwrap()
         .len();
-    assert_eq!(count, 5);
+    assert_eq!(count, 6);
     restored.close().await.unwrap();
 }
 #[tokio::test]

@@ -84,6 +84,35 @@ impl AgentClient {
             .await?,
         )
     }
+    pub async fn create_with_settings(
+        &self,
+        model: &str,
+        workspace: &str,
+        settings: SessionSettings,
+    ) -> Result<ConversationSnapshot> {
+        decode(
+            self.call(
+                "POST",
+                "/v1/conversations",
+                Some(json!({"model":model,"workspace":workspace,"settings":settings})),
+            )
+            .await?,
+        )
+    }
+    pub async fn update_settings(
+        &self,
+        id: &str,
+        settings: SessionSettings,
+    ) -> Result<ConversationSnapshot> {
+        decode(
+            self.call(
+                "PUT",
+                &format!("{}/settings", path(id)),
+                Some(serde_json::to_value(settings)?),
+            )
+            .await?,
+        )
+    }
     pub async fn get(&self, id: &str) -> Result<ConversationSnapshot> {
         decode(self.call("GET", &path(id), None).await?)
     }

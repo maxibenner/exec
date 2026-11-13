@@ -7,6 +7,8 @@ use std::collections::{HashSet, VecDeque};
 #[serde(rename_all = "camelCase")]
 pub struct ConversationRecord {
     pub version: u32,
+    #[serde(default)]
+    pub configuration: Option<ConversationConfiguration>,
     pub id: String,
     pub model: String,
     pub workspace: String,
@@ -19,7 +21,7 @@ pub struct ConversationRecord {
 }
 // Nullable is not optional in the versioned disk schema. Missing fields indicate
 // an incomplete record and must not silently become valid recovered state.
-fn required_option<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
+pub(super) fn required_option<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<Option<T>, D::Error> {
     Option::deserialize(deserializer)
@@ -27,7 +29,9 @@ fn required_option<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
 impl ConversationRecord {
     pub fn validate(&self) -> Result<()> {
         let bad = Error::Invalid("Invalid or unsupported conversation record.");
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
+            || (self.version == 2 && self.configuration.is_none())
+            || (self.version == 1 && self.configuration.is_some())
             || !valid_id(&self.id)
             || self.model.trim().is_empty()
             || self.workspace.trim().is_empty()
@@ -35,6 +39,12 @@ impl ConversationRecord {
             || self.max_steps > 9_007_199_254_740_991
         {
             return Err(bad);
+        }
+        if let Some(configuration) = &self.configuration {
+            configuration.validate()?;
+            if !self.messages.is_empty() && !configuration.instructions_frozen {
+                return Err(bad);
+            }
         }
         if self.operation.as_ref().is_some_and(|op| !valid_id(&op.id)) {
             return Err(bad);
@@ -115,6 +125,10 @@ impl ConversationRecord {
     }
     pub fn recover(mut self) -> Result<Self> {
         self.validate()?;
+        if self.version == 1 {
+            self.version = 2;
+            self.configuration = Some(ConversationConfiguration::legacy());
+        }
         if let Some(op) = &mut self.operation
             && op.state.active()
         {

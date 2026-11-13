@@ -315,7 +315,7 @@ async fn linked_checkpoints_refused_and_invalid_save_preserves_previous_data() {
     let path = profile.join(format!("{}.json", record.id));
     let before = fs::read(&path).unwrap();
     let mut invalid = record;
-    invalid.version = 2;
+    invalid.version = 999;
     assert!(store.save(invalid).await.is_err());
     assert_eq!(fs::read(path).unwrap(), before);
     let outside = root.path().join("outside");
@@ -333,6 +333,7 @@ fn validation_rejects_orphan_duplicate_and_unpaired_terminal_results() {
         value.as_object_mut().unwrap().remove(field);
         assert!(serde_json::from_value::<ConversationRecord>(value).is_err());
     }
+    record.configuration.as_mut().unwrap().instructions_frozen = true;
     record.operation = Some(Operation {
         id: new_id(),
         state: OperationState::Running,

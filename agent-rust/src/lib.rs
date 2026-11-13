@@ -8,6 +8,7 @@ pub mod service;
 pub mod storage;
 pub mod terminal;
 pub mod tools;
+mod workspace_instructions;
 
 use std::fmt;
 pub type Result<T> = std::result::Result<T, Error>;
@@ -16,6 +17,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     Cancelled,
+    Busy,
     Storage,
     Internal,
     Invalid(&'static str),
@@ -38,6 +40,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {
             Self::Cancelled => "Operation interrupted.",
+            Self::Busy => {
+                "Conversation is busy. Wait for execution or configuration changes to settle."
+            }
             Self::Storage => {
                 "Could not save conversation. Work stopped; prior actions may have had effects. Reload the last durable checkpoint before continuing."
             }

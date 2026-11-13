@@ -235,11 +235,17 @@ pub fn request_body(request: &ProviderRequest) -> Result<String> {
             return Err(error(Failure::Request));
         }
     }
-    let messages:Vec<_>=request.messages.iter().map(|message|match message{
+    let mut messages:Vec<_>=request.messages.iter().map(|message|match message{
         ContextMessage::User{text}=>json!({"role":"user","content":text}),
         ContextMessage::Tool{call_id,text,outcome}=>json!({"role":"tool","tool_call_id":call_id,"content":if *outcome==ToolOutcome::Completed{text.clone()}else{format!("[Tool outcome: {}]\n{text}",serde_json::to_value(outcome).unwrap().as_str().unwrap())}}),
         ContextMessage::Assistant{text,calls}=>{let mut value=json!({"role":"assistant","content":text});if !calls.is_empty(){value["tool_calls"]=json!(calls.iter().map(|call|json!({"id":call.id,"type":"function","function":{"name":call.name,"arguments":serde_json::to_string(&call.arguments).unwrap()}})).collect::<Vec<_>>());}value},
     }).collect();
+    if !request.instructions.is_empty() {
+        if request.instructions.len() > 3 * 64 * 1024 || request.instructions.contains('\0') {
+            return Err(error(Failure::Request));
+        }
+        messages.insert(0, json!({"role":"system", "content":request.instructions}));
+    }
     let mut value = json!({"model":request.model,"stream":true,"thinking":{"type":"disabled"},"reasoning_effort":"none","messages":messages});
     if !request.tools.is_empty() {
         value["tools"]=json!(request.tools.iter().map(|t|json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect::<Vec<_>>());

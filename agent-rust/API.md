@@ -1,6 +1,6 @@
 # Local service and CLI — API v1
 
-The HTTP API from the TypeScript sketch is preserved. The service owns the manager, provider, tools, approvals and JSON persistence; clients never run another agent loop. The Swift app is not connected yet.
+The HTTP API extends the TypeScript sketch with session configuration and deletion. New conversations now default to auto-approval; clients requiring individual approvals must explicitly request manual mode. The service owns the manager, provider, tools, approvals and JSON persistence; clients never run another agent loop. The Swift app is not connected yet.
 
 ## Standalone startup and credentials
 
@@ -33,7 +33,7 @@ let service = exec_agent::service::start_persistent_service(
 service.close().await?;
 ```
 
-`Service::close` consumes ownership, making duplicate closes impossible in safe Rust. Dropping the handle requests shutdown, but explicit `close().await` is needed to confirm completion. Opening restores records but never resumes inference or actions. Tools apply to new and restored conversations; enabling tools does not grant approval. Existing approval grants are never restored.
+`Service::close` consumes ownership, making duplicate closes impossible in safe Rust. Dropping the handle requests shutdown, but explicit `close().await` is needed to confirm completion. Opening restores records but never resumes inference or actions. Tools apply to new and restored conversations; their execution follows the persisted session policy. New sessions default to auto mode. Manual single-action grants are never restored; restart never resumes an operation, regardless of policy.
 
 ```
 profile/                    owned private directory, mode 0700
@@ -56,7 +56,8 @@ Run `./target/release/exec-agent` (or `cargo run --`) with an optional leading `
 | `health` | Show service capabilities |
 | `models` | Explicit provider model discovery |
 | `list` | List conversation summaries |
-| `new MODEL [WORKSPACE]` | Create a conversation; workspace defaults to cwd |
+| `new MODEL [WORKSPACE] [--manual]` | Create a conversation; workspace defaults to cwd, auto mode by default |
+| `configure ID auto\|manual PROMPT` | Replace idle session policy and system prompt; use `""` for an empty prompt |
 | `show ID` | Inspect current/saved state |
 | `delete ID` | Permanently delete an idle conversation; cancel and await active work first |
 | `chat ID` | Interactive transcript and input; requires a terminal |
@@ -81,7 +82,8 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | GET | `/v1/health` | `{version:1, toolsEnabled:boolean}` |
 | GET | `/v1/models` | Neutral model array: `id`, `name`, optional `contextWindow`, `maxOutputTokens` |
 | GET | `/v1/conversations` | Summary array, omitting `messages` and `approval` |
-| POST | `/v1/conversations` | `{model,workspace}` → `201 ConversationSnapshot`, after durable creation |
+| POST | `/v1/conversations` | `{model,workspace,settings?}` → `201 ConversationSnapshot`, after durable creation |
+| PUT | `/v1/conversations/:id/settings` | `{systemPrompt,autoApprove}` → `200 ConversationSnapshot`, after durable idle-only replacement |
 | GET | `/v1/conversations/:id` | `ConversationSnapshot` |
 | DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after durable deletion; active work returns 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
@@ -91,20 +93,41 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 
 Missing conversations return 404; invalid requests 400; busy/storage-blocked submissions and stale approvals/cancellations 409. Approval decisions are single use, including races. Cancellation acceptance is not cleanup completion; the acknowledgement echoes the exact operation accepted for cancellation.
 
-A snapshot has `id`, `model`, `workspace`, `messages`, `operation`, `approval`, `activeToolCallID`, and `storageError`. Nullable fields are serialized explicitly as null. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in `src/core/types.rs`; command validation is in `src/service.rs`.
+A snapshot has `id`, `model`, `workspace`, `configuration`, `messages`, `operation`, `approval`, `activeToolCallID`, and `storageError`. Nullable fields are serialized explicitly as null. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in `src/core/types.rs`; command validation is in `src/service.rs`.
 
 **Turn acceptance is in-memory, not a durable receipt.** A 202 can precede the input checkpoint; a lost response can happen after effects. No idempotent replay mechanism is advertised. Terminal success is published only after its final checkpoint succeeds. Intermediate snapshots/events are not durability receipts.
 
+## Settings and instructions
+
+Optional creation `settings` is `{systemPrompt:string,autoApprove:boolean}`; when omitted,
+its default is `{systemPrompt:"",autoApprove:true}`. Both fields are required when supplying
+settings. Settings replacement is idle-only (409 while working/updating); no live approval
+is implicitly resolved by a configuration request. Failed writes block further work.
+
+Snapshots include `configuration: {settings, instructionsFrozen, workspaceInstructions}`.
+The nullable workspace instructions are loaded by the manager from root AGENTS.md at the
+first accepted turn, not at session creation. Missing AGENTS.md is frozen as null. Invalid,
+linked, nonregular, oversized or non-UTF-8 files reject the turn before acceptance. Each
+instruction source is limited to 64 KiB and cannot contain NUL bytes. Instructions are saved
+before inference, reused across turns/restart, and never inserted as user transcript rows.
+The system prompt can be changed while idle; the project's frozen snapshot is not reloaded.
+
+Settings mutations publish full snapshot frames after settlement, including storage-error
+snapshots on failed acknowledgements. A disconnected caller does not abort a settings write.
+The API remains local; prompts/project instructions are exposed only to trusted local
+clients and the selected provider. Auto mode does not sandbox tools or enable any future
+desktop capture capability/OS permission.
+
 ## Approval without a connected client
 
-An action remains `awaiting_approval` until an explicit matching approval/denial or cancellation. There is no automatic expiry or requirement for a client to stay connected. Reconnecting obtains the same pending approval. Service shutdown interrupts pending work; restart clears approvals and never grants or replays them.
+In manual mode, an action remains `awaiting_approval` until an explicit matching approval/denial or cancellation. There is no automatic expiry or requirement for a client to stay connected. Reconnecting obtains the same pending approval. Service shutdown interrupts pending work; restart clears approvals and never grants or replays them.
 
 ## Streaming contract
 
 `Content-Type: application/x-ndjson`. Each UTF-8 line is a JSON object, **not SSE**:
 
 1. Initial frame: `{type:"snapshot", snapshot:ConversationSnapshot}`.
-2. Later frames: `{type:"runtime", event:RuntimeEvent, snapshot?:ConversationSnapshot}`.
+2. Later frames: `{type:"runtime", event:RuntimeEvent, snapshot?:ConversationSnapshot}`. Settings settlement may also emit `{type:"snapshot", snapshot:ConversationSnapshot}` without an operation ID.
 3. Text events have `type:"text"`, `messageID`, `delta`. Append only the delta.
 4. Every non-text event carries a complete snapshot. Replace/reconcile, not append the transcript again.
 
