@@ -6,6 +6,14 @@ These principles consolidate the design of the original TypeScript system, docum
 
 These are design constraints and development guidance, not a claim that every planned capability is implemented. See [README.md](README.md) and [API.md](API.md) for current behavior, scope, and verification limits.
 
+[Backend parity](PARITY.md) records the approved next-stage scope and ownership boundaries.
+It supersedes the initial busy-input rejection policy with planned explicit safe-boundary
+steering, and individual-only approvals with planned persisted auto mode (default on).
+Neither behavior may be implemented solely in a frontend. JSON/environment credentials,
+no Keychain, no Swift-store migration, and frontend-only screenshot availability are
+explicit scope decisions. The initial implementation remains unchanged until each
+replacement is implemented and verified.
+
 ## Architecture and simplicity
 
 ### 1. Own the core agent runtime
