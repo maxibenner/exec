@@ -37,12 +37,14 @@ pub async fn private_directory(path: &Path) -> Result<PathBuf> {
     .await
     .map_err(|_| Error::Internal)?
 }
-pub const DEFAULT_ADDRESS: &str = "0.0.0.0:8765";
+pub use crate::service_auth::HttpAccess;
+pub const DEFAULT_ADDRESS: &str = "127.0.0.1:8765";
 pub struct ServiceOptions {
     pub manager: Arc<AgentManager>,
     pub provider: Arc<dyn ChatProvider>,
     pub tools: Vec<Arc<dyn Tool>>,
     pub address: SocketAddr,
+    pub access: HttpAccess,
 }
 struct Host {
     options: ServiceOptions,
@@ -74,6 +76,7 @@ pub async fn start_persistent_service(
     provider: Arc<dyn ChatProvider>,
     workspace_tools: bool,
     address: SocketAddr,
+    access: HttpAccess,
 ) -> Result<Service> {
     start_persistent_service_with_native(
         profile,
@@ -81,6 +84,7 @@ pub async fn start_persistent_service(
         workspace_tools,
         address,
         Arc::new(crate::native::NativeHub::default()),
+        access,
     )
     .await
 }
@@ -90,6 +94,7 @@ pub async fn start_persistent_service_with_native(
     workspace_tools: bool,
     address: SocketAddr,
     native: Arc<crate::native::NativeHub>,
+    access: HttpAccess,
 ) -> Result<Service> {
     let profile = private_directory(profile).await?;
     let images = crate::images::ImageStore::open(profile.join("images")).await?;
@@ -121,6 +126,7 @@ pub async fn start_persistent_service_with_native(
         provider,
         tools,
         address,
+        access,
     })
     .await
     {
@@ -132,9 +138,6 @@ pub async fn start_persistent_service_with_native(
     }
 }
 pub async fn start_service(options: ServiceOptions) -> Result<Service> {
-    if options.address.ip().to_canonical().is_loopback() {
-        return Err(Error::Invalid("Loopback-only binding is not supported."));
-    }
     let listener = tokio::net::TcpListener::bind(options.address).await?;
     let address = listener.local_addr()?;
     let stop = CancellationToken::new();
@@ -235,7 +238,20 @@ async fn dispatch(
 ) -> Response<Body> {
     match handle(host, request, cancel).await {
         Ok(response) => response,
-        Err(ApiError(status, error)) => json_response(status, json!({"error":error})),
+        Err(ApiError(status, error)) => {
+            let mut response = json_response(status, json!({"error":error}));
+            if status == 401 || status == 403 {
+                response
+                    .headers_mut()
+                    .insert("connection", "close".parse().unwrap());
+            }
+            if status == 401 {
+                response
+                    .headers_mut()
+                    .insert("www-authenticate", "Bearer".parse().unwrap());
+            }
+            response
+        }
     }
 }
 async fn body<T: serde::de::DeserializeOwned>(request: Request<Body>) -> ApiResult<T> {
@@ -357,6 +373,14 @@ async fn handle(
     {
         return Err(ApiError(403, "Browser requests are not supported."));
     }
+    let native = request.uri().path().starts_with("/v1/native/")
+        || (request.method() == "PUT"
+            && request.uri().path().starts_with("/v1/conversations/")
+            && request.uri().path().ends_with("/desktop"));
+    host.options
+        .access
+        .authorize(request.headers(), native)
+        .map_err(|(status, message)| ApiError(status, message))?;
     if host.stop.is_cancelled() {
         return Err(ApiError(503, "Service is stopping."));
     }

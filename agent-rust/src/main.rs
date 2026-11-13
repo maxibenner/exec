@@ -1,7 +1,7 @@
 use exec_agent::{
     Error, Result,
     providers::credentials::configured_deepseek_provider,
-    service::{DEFAULT_ADDRESS, start_persistent_service_with_native},
+    service::{DEFAULT_ADDRESS, HttpAccess, start_persistent_service},
 };
 use std::{path::PathBuf, sync::Arc};
 use tokio::signal::unix::{SignalKind, signal};
@@ -37,6 +37,7 @@ async fn run() -> Result<()> {
         .join(".exec-agent");
     let mut credentials = None;
     let mut tools = false;
+    let mut insecure = false;
     let mut port = None;
     let mut host = None;
     let mut profile_set = false;
@@ -56,6 +57,7 @@ async fn run() -> Result<()> {
                 ));
             }
             "--workspace-tools" if !tools => tools = true,
+            "--insecure-no-auth" if !insecure => insecure = true,
             "--host" if host.is_none() => {
                 host = Some(
                     args.next()
@@ -70,7 +72,7 @@ async fn run() -> Result<()> {
             }
             _ => {
                 return Err(Error::Invalid(
-                    "Invalid backend arguments. Only --profile, --credentials, --workspace-tools, --host and --port are supported; there is no CLI client.",
+                    "Invalid backend arguments. Only --profile, --credentials, --workspace-tools, --host, --port and --insecure-no-auth are supported; there is no CLI client.",
                 ));
             }
         }
@@ -86,9 +88,6 @@ async fn run() -> Result<()> {
             .map_err(|_| Error::Invalid("Host must be a numeric network IP address."))?;
         address.set_ip(ip);
     }
-    if address.ip().to_canonical().is_loopback() {
-        return Err(Error::Invalid("Loopback-only binding is not supported."));
-    }
     if let Some(port) = setting(port, "EXEC_AGENT_PORT")? {
         let port = port
             .parse::<u16>()
@@ -97,7 +96,27 @@ async fn run() -> Result<()> {
             .ok_or(Error::Invalid("Port must be from 1 to 65535."))?;
         address.set_port(port);
     }
-    let native = Arc::new(exec_agent::native::NativeHub::default());
+    let token = setting(None, "EXEC_AGENT_TOKEN")?;
+    let native_token = setting(None, "EXEC_AGENT_NATIVE_TOKEN")?;
+    let access = match (insecure, token.as_deref()) {
+        (false, Some(token)) => HttpAccess::bearer(token, native_token.as_deref())?,
+        (true, None) => HttpAccess::externally_secured(native_token.as_deref())?,
+        (true, Some(_)) => {
+            return Err(Error::Invalid(
+                "Do not combine EXEC_AGENT_TOKEN with --insecure-no-auth.",
+            ));
+        }
+        (false, None) => {
+            return Err(Error::Invalid(
+                "Set EXEC_AGENT_TOKEN to 32 random bytes encoded as 64 hex characters, or explicitly use --insecure-no-auth behind an enforced external access boundary.",
+            ));
+        }
+    };
+    if !address.ip().to_canonical().is_loopback() {
+        eprintln!(
+            "Network HTTP binding enabled. Require TLS termination or an encrypted tunnel and restrict direct access to this port."
+        );
+    }
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     unblock_shutdown_signals()?;
@@ -122,7 +141,7 @@ async fn run() -> Result<()> {
         .await?,
     );
 
-    let service = start_persistent_service_with_native(&profile, provider, tools, address, native).await
+    let service = start_persistent_service(&profile, provider, tools, address, access).await
         .map_err(|_| Error::Invalid("Backend startup failed. Check port availability, profile permissions and store ownership; no stale state was removed."))?;
     // Readiness only: clients already know the configured endpoint. Never discover another server.
     println!("ready");

@@ -199,7 +199,8 @@ async fn provider_service_api_round_trips_without_inference() {
         root.path(),
         Arc::new(provider(transport.clone())),
         false,
-        "0.0.0.0:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        support::http_access(),
     )
     .await
     .unwrap();

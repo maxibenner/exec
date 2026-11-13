@@ -1,5 +1,6 @@
 //! Optional native capture broker. No capture implementation or fallback exists here.
-//! Local HTTP clients register directly; OS permission and session enablement remain explicit.
+//! HTTP registration requires the independently provisioned native capability.
+//! TCP does not attest process identity. OS permission and session enablement remain explicit.
 use crate::{
     Error, Result,
     core::{ToolContext, new_id, valid_id},

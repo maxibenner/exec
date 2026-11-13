@@ -36,10 +36,15 @@ async fn defaults_order_rename_model_and_fork_survive_restart_without_mutating_s
     let root = directory();
     let workspace = directory();
     let p = FakeProvider::new(vec![answer(), answer()]);
-    let service =
-        start_persistent_service(root.path(), p.clone(), false, "0.0.0.0:0".parse().unwrap())
-            .await
-            .unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        p.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+        support::http_access(),
+    )
+    .await
+    .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     let config = LibraryConfiguration {
         automatic_titles: false,
@@ -94,9 +99,15 @@ async fn defaults_order_rename_model_and_fork_survive_restart_without_mutating_s
     client.update_library(order.clone()).await.unwrap();
     assert_eq!(client.list().await.unwrap()[0]["id"], fork.id);
     service.close().await.unwrap();
-    let service = start_persistent_service(root.path(), p, false, "0.0.0.0:0".parse().unwrap())
-        .await
-        .unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        p,
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+        support::http_access(),
+    )
+    .await
+    .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     assert_eq!(client.library().await.unwrap(), order);
     assert_eq!(client.get(&c.id).await.unwrap(), source);

@@ -227,3 +227,10 @@ pub fn event_kinds(receiver: &mut EventReceiver) -> Vec<EventKind> {
 }
 
 pub mod client;
+
+// Synthetic credentials for isolated HTTP fixtures, never user/provider credentials.
+pub const API_TOKEN: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+pub const NATIVE_TOKEN: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+pub fn http_access() -> exec_agent::service::HttpAccess {
+    exec_agent::service::HttpAccess::bearer(API_TOKEN, Some(NATIVE_TOKEN)).unwrap()
+}

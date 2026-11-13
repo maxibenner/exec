@@ -17,7 +17,8 @@ cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --check
 
-# Provision DEEPSEEK_API_KEY securely in the environment, or a private credentials.json.
+# Provision one transport credential; provider credentials remain separate.
+export EXEC_AGENT_TOKEN="$(openssl rand -hex 32)"
 ./target/release/exec-agent
 # File/shell tools are an explicit opt-in:
 ./target/release/exec-agent --profile /absolute/private/profile --workspace-tools
@@ -25,14 +26,19 @@ cargo fmt --check
 
 See [API.md](API.md) for credentials, launcher options, HTTP/NDJSON contracts, approvals, and recovery. Cargo.lock is committed; production requires no Node installation. Tests use fake providers/transports, synthetic credentials, temporary profiles, real network-bound TCP connections, and real child processes. They never access your Keychain or call a live model.
 
-The default bind is **`0.0.0.0:8765`**, with no authentication, TLS, discovery or port fallback.
-It accepts connections on all IPv4 interfaces. `--host IP` / `--port PORT` override
-`EXEC_AGENT_HOST` / `EXEC_AGENT_PORT`, then defaults. Loopback-only binds are rejected.
-The app reads the same environment variables for its bundled helper. External clients use
-`http://SERVER_IP:8765`, not the wildcard bind address. **Every reachable client can control
-the API; use only on a trusted, appropriately firewalled network.** An occupied port fails
-startup rather than attaching to another server. Firewall/routing/OS permissions can still
-prevent access; this is not an authenticated remote deployment system.
+The default bind is **`127.0.0.1:8765`**, authenticated with `EXEC_AGENT_TOKEN` on every
+request. The token is 32 random bytes encoded as 64 hex characters; clients send
+`Authorization: Bearer <token>`. `--host IP` / `--port PORT` override
+`EXEC_AGENT_HOST` / `EXEC_AGENT_PORT`. Network binding is explicit and requires TLS
+termination or encrypted tunnelling plus access restrictions. No port discovery/fallback,
+provider-token reuse, or automatic request retries are introduced.
+
+`--insecure-no-auth` is an explicit opt-out only for externally enforced access control.
+Native capture requires a separate `EXEC_AGENT_NATIVE_TOKEN`, never implicitly granted by
+ordinary API auth or auto mode. See [API.md](API.md) for provisioning, native capability
+boundaries and proxy requirements, and [the review](../docs/http-api-review.md) for Swift
+client configuration and verification. There is one API/manager/runtime, not a layered
+agent gateway. The executable does not serve HTTPS itself.
 
 ## Modules
 
@@ -116,10 +122,10 @@ Normal service shutdown releases the HTTP listener and store lock. A crash delib
 
 ## Verification and scope
 
-The agreed backend checklist in [PARITY.md](PARITY.md) is implemented. The original Swift
-app remains unchanged; its API integration and native capture adapter are a separate phase.
-Remote access, Keychain and Swift-store migration are excluded. Automatic title generation
-and per-run before/after allowance observations remain explicitly deferred.
+The native Swift app consumes this API, including explicit screenshot capabilities.
+Automatic titles are backend-owned; account allowance refreshes only when Settings opens.
+Keychain and legacy Swift-store migration remain excluded. The HTTP API supports explicitly
+secured remote access, not an untrusted multi-user hosting platform.
 
 The standalone registry composes DeepSeek and OpenAI subscription adapters with isolated
 opaque conversation contexts. DeepSeek API-key onboarding uses private JSON or environment
@@ -131,9 +137,9 @@ history. Model/account caches are account-scoped, private, and expose freshness/
 The runner owns manual/automatic OpenAI compaction without replacing visible history.
 Neutral image references and private immutable assets support uploaded input, generated
 images and optional frontend screenshots. Fork/delete/release preserve shared ownership.
-Native capture uses the same unauthenticated HTTP API, with no host nomination or peer/PID
-checks. A live channel, frontend-owned OS permission and separate session permission are
-required. There is no headless capture or remote fallback. Permissions are transient, and
+Native capture uses the same HTTP API with an independent capability credential, not peer/PID
+attestation. A live channel, frontend-owned OS permission and explicit session permission are
+required. There is no headless capture or automatic fallback to another frontend. Permissions are transient, and
 cancellation/disconnect invalidates exact correlated results.
 
 Search, balances, current allowance/reset information, public-page fetch, images, context

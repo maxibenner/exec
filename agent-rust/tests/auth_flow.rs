@@ -28,10 +28,11 @@ async fn browser_authentication_is_manager_owned_targeted_and_settles_before_shu
     let root = support::directory();
     let manager = Arc::new(AgentManager::default());
     let service = start_service(ServiceOptions {
+        access: support::http_access(),
         manager: manager.clone(),
         provider: Arc::new(Provider),
         tools: vec![],
-        address: "0.0.0.0:0".parse().unwrap(),
+        address: "127.0.0.1:0".parse().unwrap(),
     })
     .await
     .unwrap();

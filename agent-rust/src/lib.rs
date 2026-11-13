@@ -7,6 +7,7 @@ pub mod manager;
 pub mod native;
 pub mod providers;
 pub mod service;
+mod service_auth;
 pub mod shell_logs;
 pub mod storage;
 pub mod tools;

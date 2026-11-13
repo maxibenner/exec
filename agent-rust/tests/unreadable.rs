@@ -13,10 +13,15 @@ use support::*;
 async fn corrupt_record_does_not_hide_valid_history_and_requires_explicit_deletion() {
     let root = directory();
     let p = FakeProvider::new(vec![]);
-    let service =
-        start_persistent_service(root.path(), p.clone(), false, "0.0.0.0:0".parse().unwrap())
-            .await
-            .unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        p.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+        support::http_access(),
+    )
+    .await
+    .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     let valid = client
         .create("fake", root.path().to_str().unwrap())
@@ -29,9 +34,15 @@ async fn corrupt_record_does_not_hide_valid_history_and_requires_explicit_deleti
         .join("conversations")
         .join(format!("{broken_id}.json"));
     fs::write(&broken, b"corrupt transcript").unwrap();
-    let service = start_persistent_service(root.path(), p, false, "0.0.0.0:0".parse().unwrap())
-        .await
-        .unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        p,
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+        support::http_access(),
+    )
+    .await
+    .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     let list = client.list().await.unwrap();
     assert!(

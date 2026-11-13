@@ -1,4 +1,4 @@
-# Local HTTP service — API v1
+# Agent HTTP service — API v1
 
 The HTTP API extends the TypeScript sketch with session configuration and deletion. New conversations now default to auto-approval; clients requiring individual approvals must explicitly request manual mode. The service owns the manager, provider, tools, approvals and JSON persistence; clients never run another agent loop. The Swift app launches the bundled backend and consumes this API.
 
@@ -7,7 +7,9 @@ The HTTP API extends the TypeScript sketch with session configuration and deleti
 From `agent-rust/`, run `cargo build --locked --release`, then:
 
 ```sh
-# Provision DEEPSEEK_API_KEY securely in the environment first, or use private JSON.
+# Provision a transport token once (or inject it through your service manager).
+export EXEC_AGENT_TOKEN="$(openssl rand -hex 32)"
+# Separately provision provider credentials through the API or private JSON.
 ./target/release/exec-agent
 ./target/release/exec-agent --profile /absolute/profile --credentials /private/credentials.json --workspace-tools
 ```
@@ -23,11 +25,12 @@ Keep profiles and credential files **outside all model workspaces**. Approved sh
 
 ## Embedded startup
 
-`service::start_persistent_service(profile, provider, workspace_tools, address)` accepts an absolute profile path, `Arc<dyn ChatProvider>`, an explicit tool opt-in, and a non-loopback `SocketAddr`. `providers::credentials::configured_deepseek_provider` provides the same JSON/environment setup; alternatively construct `DeepSeekProvider` with a host-owned async `CredentialSource`.
+`service::start_persistent_service(profile, provider, workspace_tools, address, access)` accepts an absolute profile path, `Arc<dyn ChatProvider>`, an explicit tool opt-in, a `SocketAddr`, and an explicit `HttpAccess` policy. The execution runtime itself does not depend on HTTP authentication. `providers::credentials::configured_deepseek_provider` provides the same JSON/environment setup; alternatively construct `DeepSeekProvider` with a host-owned async `CredentialSource`.
 
 ```rust,ignore
 let service = exec_agent::service::start_persistent_service(
-    absolute_profile_path, configured_provider, false, "0.0.0.0:8765".parse()?,
+    absolute_profile_path, configured_provider, false, "127.0.0.1:8765".parse()?,
+    exec_agent::service::HttpAccess::bearer(&api_token, None)?,
 ).await?;
 // Host owns signal handling/lifetime. Wait for explicit shutdown, then:
 service.close().await?;
@@ -51,39 +54,73 @@ Insecure/symlinked profile directories are refused, never silently made private.
 ## Backend launcher
 
 The executable only hosts the backend; there is no CLI client, interactive terminal, or
-chat/list/watch command. Launch it with optional `--profile PATH`, `--credentials PATH`,
-`--workspace-tools`, `--host IP` and `--port PORT`. The default profile is `~/.exec-agent`;
-the default binding is **`0.0.0.0:8765`**, accepting connections on all IPv4 interfaces.
-`EXEC_AGENT_HOST` and `EXEC_AGENT_PORT` also configure binding; explicit flags take precedence
-over the corresponding environment variable. Invalid settings fail startup, never fall back.
-Hosts must be numeric IP addresses; loopback-only binding (including IPv4-mapped loopback)
-is rejected. A specific network-interface IP or IPv6 wildcard `::` can be selected explicitly;
-IPv6 wildcard behavior depends on the OS and is not a promise of dual-stack support.
-The macOS app reads the same environment variables and passes explicit host/port flags to
-its helper. Its local client maps wildcard binds to the matching local address; other HTTP
-clients must target the server’s actual network IP/hostname, never `0.0.0.0`.
-There is no endpoint discovery, port scanning, fallback port, or automatic attachment to
-an existing backend. An occupied port or unavailable interface fails startup. Once bound and initialized, the helper
-writes `ready\n` to stdout; this is a readiness marker, not endpoint discovery.
+chat/list/watch command. Options are `--profile PATH`, `--credentials PATH`,
+`--workspace-tools`, `--host IP`, `--port PORT`, and the deliberate `--insecure-no-auth` opt-out.
+The default profile is `~/.exec-agent`, and the default bind is **`127.0.0.1:8765`**.
+`EXEC_AGENT_HOST` and `EXEC_AGENT_PORT` also configure binding; explicit flags take precedence.
+Hosts must be numeric IP addresses. Loopback IPv4/IPv6, a specific interface, or a wildcard
+are supported. Network exposure requires an explicit bind; IPv6 wildcard behavior is OS-dependent.
+Invalid configuration fails startup, never falls back or selects another server.
+
+The bundled macOS helper uses the same host/port configuration. The app generates fresh
+API/native credentials for its child, unless an API token is explicitly supplied. A wildcard
+bind maps to loopback for this local connection; external clients use the host's actual address.
+An occupied port or unavailable interface fails startup. After binding and initialization,
+the child writes only `ready\n`; this authenticates neither a server nor a caller, and clients
+still must authenticate. There is no port scanning, endpoint discovery, or fallback server.
 SIGINT/SIGTERM cancel and await work, checkpoint, release the listener and close the store.
 
-## HTTP API v1
+## HTTP API v1: authentication and deployment
 
-HTTP/1.1 over network TCP. **No authentication or TLS. Any reachable client can read/control
-conversations, manage provider credentials and register a native frontend.** This intentionally
-replaces the old socket permissions and peer/PID checks. Default binding is all IPv4 interfaces;
-loopback-only binds are not supported. Use a trusted network and appropriate firewall rules;
-there is no built-in network access control. OS firewall, routing and local-network permissions
-can still block traffic. No cookies or CORS; Origin/Fetch-Metadata browser requests remain
-rejected. Network transport does not relocate tool execution/workspace paths: they belong to
-the backend host. OAuth callbacks and native capture still have their existing host/OS constraints.
+One HTTP/1.1 TCP server dispatches directly to the existing manager/runtime. There is no
+Unix-socket alternative, proxy API, second runner, or production CLI/SDK implementation.
+
+- **Default authentication:** set `EXEC_AGENT_TOKEN` to 32 cryptographically random bytes
+  encoded as **64 hex characters**. Standalone startup without a valid token fails closed.
+  Send `Authorization: Bearer <token>` on **every** request, including health, reads and NDJSON
+  subscriptions. Missing/wrong/ambiguous credentials return 401 with `WWW-Authenticate: Bearer`,
+  before parsing bodies or calling the manager. Authentication failures close the connection.
+- **Scope:** this is one shared **administrator** credential, not individual user accounts,
+  tenant isolation, per-client scopes or provider credentials. Every holder can read/control
+  conversations, manage provider settings and enable/use host tools. Generate once, provision
+  through a trusted channel, keep it out of URLs/source/logs, and restart the service and update
+  clients to rotate it. Restart closes old streams; work is not replayed.
+- **Encryption:** the backend serves HTTP, not TLS. For non-loopback use, protect traffic with
+  HTTPS termination or an encrypted tunnel/VPN. Restrict direct access to the backend listener;
+  a normal LAN is not automatically trusted. Provider credentials, tokens and conversation
+  data otherwise travel in plaintext. Swift supports HTTPS with normal certificate/hostname
+  verification and never falls back to HTTP.
+- **Externally enforced access:** `--insecure-no-auth` explicitly disables the API token check
+  for a protected proxy/VPN deployment. It cannot be combined with `EXEC_AGENT_TOKEN`. Bind
+  behind that boundary and firewall the direct port so callers cannot bypass it. This flag
+  never enables native screen capabilities. There is no implicit unauthenticated mode.
+- **Browser clients:** no cookies or CORS. Requests with Origin/Fetch-Metadata headers are
+  rejected even when authenticated. A browser frontend requires a separate deliberate origin
+  and credential design; never embed the administrator token in publicly served JavaScript.
+- **Proxy configuration:** preserve Authorization, avoid logging credentials/bodies, disable
+  upstream retries for commands, and disable buffering for `/events` NDJSON responses. Keep
+  observer connections open while idle. A proxy is deployment infrastructure, not a second API.
 
 ```sh
+# Authenticated local server (do not regenerate this token for each client):
+export EXEC_AGENT_TOKEN="$(openssl rand -hex 32)"
+./target/release/exec-agent --profile /absolute/private/profile --workspace-tools
+
+# Authenticate without putting the expanded token in curl's command-line arguments:
+curl --config - <<EOF
+url = "http://127.0.0.1:8765/v1/health"
+header = "Authorization: Bearer $EXEC_AGENT_TOKEN"
+EOF
+
+# Explicit network bind; supply TLS/tunnel protection and restrict access separately:
 ./target/release/exec-agent --host 0.0.0.0 --port 8765
-EXEC_AGENT_HOST=0.0.0.0 EXEC_AGENT_PORT=9876 ./target/release/exec-agent
-# From another machine, substitute the server's actual network IP:
-curl http://SERVER_IP:8765/v1/health
 ```
+
+Tools and workspace paths belong to the **backend host**, not the connecting client.
+OpenAI browser auth still uses a callback on the backend's loopback port 1455; authenticate
+on that host or explicitly tunnel that callback to the browser machine. Changing the API
+transport does not turn provider OAuth into a remote callback service. Native capture belongs
+to an explicitly authorized frontend's machine, not automatically the backend host.
 
 Bodies require `Content-Type: application/json` and reject unknown fields. Request bodies are bounded to 12 MiB (for encoded images), text to 128 Ki UTF-16 code units with an additional 128 KiB UTF-8 turn bound, model IDs to 128 code units, and workspace paths to 4,096 code units. Workspaces must be existing absolute directories and are canonicalized. Approval/cancellation IDs are UUIDs. Errors are an HTTP status plus `{"error":"safe message"}`, never raw provider exceptions. Exact diagnostic wording is not a machine-readable error code; oversized/interrupted bodies can also reset the connection.
 
@@ -520,10 +557,20 @@ Image rendering, draft attachment selection and file-save presentation stay in S
 ## Optional native screenshot protocol
 
 **There is no backend screen capture.** The Swift adapter owns screen/window
-capture and OS permission. Registration is over the same unauthenticated HTTP API as other
-requests. There is no host nomination, process attestation, peer/PID verification or
-registration secret. Frontends report OS permission; Swift still enforces actual macOS TCC.
-A live native channel and separate explicit per-conversation enablement remain required.
+capture and OS permission. Registration uses the same HTTP API but requires a **second,
+independently provisioned capability**: configure `EXEC_AGENT_NATIVE_TOKEN` on the backend
+and the trusted adapter, then send it as `X-Exec-Native-Token` in addition to normal API auth.
+It must be a distinct 64-hex secret. Without it all `/v1/native/*` operations and `PUT
+/v1/conversations/:id/desktop` return 403. Ordinary API clients never receive this secret.
+The macOS app generates a fresh native secret for its owned helper, or uses a deliberately
+provisioned one for an external backend. The native header is sent only for native operations.
+
+TCP does **not** provide process attestation or same-host guarantees. The native secret
+explicitly trusts its holders to register adapters, report OS permission, enable/disable
+sessions and return correlated captures. It is not per-frontend/multi-tenant isolation.
+The adapter enforces actual OS permission and explicit user consent; a live channel and
+separate per-conversation grant are still required. Fully trusted API administrators can
+execute host tools: these credentials are not an OS sandbox against same-user code.
 
 | Method | Path | Contract |
 |---|---|---|
@@ -552,7 +599,7 @@ request. Cancellation notifications are best-effort bounded transport messages; 
 of late results never depends on notification delivery. No request is replayed or rerouted.
 The native adapter must cancel its own capture work when notified or disconnected.
 
-OS permission reports are unauthenticated frontend claims; the backend cannot
+OS permission reports are claims from explicitly authorized adapters; the backend cannot
 verify macOS TCC on behalf of Swift and never grants it. Reporting OS permission restored
 does not re-enable session access. Native permissions/channels are transient, never restored
 or forked. General observer disconnects still only detach; disconnecting the bound native

@@ -125,10 +125,15 @@ async fn api_credentials_change_at_runtime_without_exposing_secrets_or_network_v
         DeepSeekProvider::with_authentication(store, transport.clone(), Duration::from_secs(3))
             .unwrap(),
     );
-    let service =
-        start_persistent_service(root.path(), provider, false, "0.0.0.0:0".parse().unwrap())
-            .await
-            .unwrap();
+    let service = start_persistent_service(
+        root.path(),
+        provider,
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+        support::http_access(),
+    )
+    .await
+    .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();

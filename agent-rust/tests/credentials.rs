@@ -189,6 +189,7 @@ async fn start(
         ])
         .args(args)
         .env_clear()
+        .env("EXEC_AGENT_TOKEN", support::API_TOKEN)
         .env("HOME", profile.parent().unwrap())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -282,8 +283,6 @@ async fn launcher_rejects_removed_cli_commands_and_bad_arguments_before_creating
         vec!["--native-frontend-pid", "1"],
         vec!["--host"],
         vec!["--host", "localhost"],
-        vec!["--host", "127.0.0.1"],
-        vec!["--host", "::1"],
         vec!["--port", "0"],
         vec!["--port", "65536"],
         vec!["--credentials"],
@@ -294,6 +293,7 @@ async fn launcher_rejects_removed_cli_commands_and_bad_arguments_before_creating
             .args(["--profile", profile.to_str().unwrap()])
             .args(args)
             .env_clear()
+            .env("EXEC_AGENT_TOKEN", support::API_TOKEN)
             .env("HOME", root.path())
             .output()
             .await
@@ -343,6 +343,7 @@ async fn http_environment_configures_binding_and_explicit_flags_take_precedence(
         command
             .args(["--profile", profile.to_str().unwrap()])
             .env_clear()
+            .env("EXEC_AGENT_TOKEN", support::API_TOKEN)
             .env("HOME", root.path())
             .env(
                 "EXEC_AGENT_HOST",
@@ -375,5 +376,39 @@ async fn http_environment_configures_binding_and_explicit_flags_take_precedence(
         let client = AgentClient::new(address).unwrap();
         assert_eq!(client.health().await.unwrap()["version"], 1);
         stop(child, libc::SIGTERM).await;
+    }
+}
+
+#[tokio::test]
+async fn launcher_authentication_fails_closed_before_opening_profile() {
+    let root = directory();
+    let profile = root.path().join("must-not-open");
+    for (token, insecure, native) in [
+        (None, false, None),
+        (Some("weak-secret"), false, None),
+        (Some(support::API_TOKEN), true, None),
+        (Some(support::API_TOKEN), false, Some(support::API_TOKEN)),
+    ] {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_exec-agent"));
+        command
+            .args(["--profile", profile.to_str().unwrap()])
+            .env_clear()
+            .env("HOME", root.path());
+        if let Some(token) = token {
+            command.env("EXEC_AGENT_TOKEN", token);
+        }
+        if let Some(native) = native {
+            command.env("EXEC_AGENT_NATIVE_TOKEN", native);
+        }
+        if insecure {
+            command.arg("--insecure-no-auth");
+        }
+        let output = command.output().await.unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        for secret in ["weak-secret", support::API_TOKEN] {
+            assert!(!String::from_utf8_lossy(&output.stdout).contains(secret));
+            assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+        }
+        assert!(!profile.exists());
     }
 }

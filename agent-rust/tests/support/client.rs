@@ -43,7 +43,11 @@ impl AgentClient {
             .map_err(|_| Error::Invalid(CONNECTION))?;
         let mut request = self
             .client
-            .request(method, format!("http://{}{route}", self.address));
+            .request(method, format!("http://{}{route}", self.address))
+            .bearer_auth(super::API_TOKEN);
+        if route.starts_with("/v1/native/") || route.ends_with("/desktop") {
+            request = request.header("X-Exec-Native-Token", super::NATIVE_TOKEN);
+        }
         if let Some(value) = value {
             request = request.json(&value);
         }

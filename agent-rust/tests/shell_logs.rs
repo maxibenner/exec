@@ -52,9 +52,15 @@ async fn full_logs_are_private_readable_and_shared_until_the_last_fork_is_delete
         shell("printf BEGIN; head -c 200000 /dev/zero | tr '\\0' x; printf END"),
         answer(),
     ]);
-    let service = start_persistent_service(profile.path(), p, true, "0.0.0.0:0".parse().unwrap())
-        .await
-        .unwrap();
+    let service = start_persistent_service(
+        profile.path(),
+        p,
+        true,
+        "127.0.0.1:0".parse().unwrap(),
+        support::http_access(),
+    )
+    .await
+    .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
@@ -106,7 +112,8 @@ async fn full_logs_are_private_readable_and_shared_until_the_last_fork_is_delete
         profile.path(),
         FakeProvider::new(vec![]),
         true,
-        "0.0.0.0:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+        support::http_access(),
     )
     .await
     .unwrap();
@@ -131,9 +138,15 @@ async fn denial_creates_no_log_and_cancellation_keeps_diagnostics() {
         answer(),
         shell("printf started; sleep 30"),
     ]);
-    let service = start_persistent_service(profile.path(), p, true, "0.0.0.0:0".parse().unwrap())
-        .await
-        .unwrap();
+    let service = start_persistent_service(
+        profile.path(),
+        p,
+        true,
+        "127.0.0.1:0".parse().unwrap(),
+        support::http_access(),
+    )
+    .await
+    .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
