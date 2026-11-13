@@ -413,7 +413,9 @@ impl OpenAIProvider {
             let mut body=body;let session_id=body["prompt_cache_key"].as_str().filter(|id|valid_id(id)).map(str::to_owned).unwrap_or_else(new_id);body["prompt_cache_key"]=json!(session_id);let encoded=body.to_string();if encoded.len()>32*1024*1024{Err(Error::Provider(Failure::Request))?;}
             let work=async {
                 let response=transport.send(Request{session_id:Some(session_id),endpoint:Endpoint::Responses,access:Some(session.access_token),account:Some(session.account_id),body:Some(encoded)},cancel.clone()).await?;transport::status(response.status)?;
-                if response.content_type.as_deref().is_none_or(|s| s.split(';').next() != Some("text/event-stream")){return Err(invalid());}Ok(response.body)
+                // Successful Codex streams can omit Content-Type. Missing is allowed,
+                // but bounded SSE and terminal completion still validate the response.
+                if response.content_type.as_deref().is_some_and(|s| s.split(';').next().is_none_or(|t| !t.trim().eq_ignore_ascii_case("text/event-stream"))){return Err(invalid());}Ok(response.body)
             };
             let bytes=tokio::select!{biased;_=cancel.cancelled()=>Err(Error::Cancelled),r=tokio::time::timeout(Duration::from_secs(120),work)=>r.unwrap_or(Err(Error::Provider(Failure::Timeout)))}?;
             let mut source=super::response_stream::read_sse_bounded(bytes,5*1024*1024);let mut decoder=Decoder::default();let deadline=tokio::time::sleep(Duration::from_secs(600));tokio::pin!(deadline);let mut text_bytes=0;

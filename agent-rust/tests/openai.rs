@@ -304,6 +304,62 @@ async fn responses_keep_encrypted_context_private_and_failures_never_release_cal
     );
     assert!(support::outcomes(&conversation).is_empty());
 }
+#[tokio::test]
+async fn missing_response_content_type_still_requires_a_valid_completed_stream() {
+    for (content_type, completed, expected) in [
+        (None, true, OperationState::Completed),
+        (None, false, OperationState::Failed),
+        (Some("text/html"), true, OperationState::Failed),
+        (
+            Some("Text/Event-Stream; charset=utf-8"),
+            true,
+            OperationState::Completed,
+        ),
+    ] {
+        let root = support::directory();
+        let path = root.path().join("credentials.json");
+        save(&path, &session(false));
+        let transport = Fake::new(move |request| async move {
+            if matches!(request.endpoint, Endpoint::Models) {
+                return Ok(response(
+                    json!({"models":[{"slug":"test","context_window":1000}]}),
+                ));
+            }
+            assert!(matches!(request.endpoint, Endpoint::Responses));
+            let mut events = vec![json!({"type":"response.output_text.delta","delta":"OK"})];
+            if completed {
+                events.push(json!({"type":"response.completed","response":{"status":"completed","output":[{"type":"message","status":"completed","content":[{"type":"output_text","text":"OK"}]}]}}));
+            }
+            let mut result = wire(events);
+            result.content_type = content_type.map(str::to_owned);
+            Ok(result)
+        });
+        let auth = Authentication::open(path, None, transport.clone())
+            .await
+            .unwrap();
+        let provider = Arc::new(OpenAIProvider::new(auth, transport.clone()));
+        let mut options = support::options(provider, vec![]);
+        options.model = "test".into();
+        let conversation = Conversation::new(options, None).unwrap();
+        assert_eq!(
+            support::complete(conversation.submit("hello".into()).unwrap())
+                .await
+                .state,
+            expected
+        );
+        assert_eq!(
+            transport
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r.endpoint, Endpoint::Responses))
+                .count(),
+            1
+        );
+    }
+}
+
 #[test]
 fn oidc_signature_and_claims_are_verified_with_an_isolated_generated_key() {
     // OpenSSL is a test-fixture generator only, not an application dependency.
