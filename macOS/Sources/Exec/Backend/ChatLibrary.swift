@@ -103,7 +103,14 @@ import Observation
     var sessionList: [SessionSummary] {
         var summaries = Dictionary(uniqueKeysWithValues: savedSummaries.map { ($0.id, $0) })
         for item in openConversations { if let summary = item.summary { summaries[summary.id] = summary } }
-        var result = sidebarOrder.compactMap { summaries.removeValue(forKey: $0) }
+        // A create response can arrive before its catalog order is persisted.
+        // Show those new residents at the top from their very first frame.
+        let knownIDs = Set(sidebarOrder + savedSummaries.map(\.id))
+        var result = openConversations.reversed().compactMap { item -> SessionSummary? in
+            guard let id = item.currentSessionID, !knownIDs.contains(id) else { return nil }
+            return summaries.removeValue(forKey: id)
+        }
+        result += sidebarOrder.compactMap { summaries.removeValue(forKey: $0) }
         result += savedSummaries.compactMap { summaries.removeValue(forKey: $0.id) }
         result += summaries.values.sorted { $0.id.uuidString < $1.id.uuidString }
         return result
@@ -443,8 +450,17 @@ import Observation
             index + 1 < rows.count ? rows[index + 1] : (index > 0 ? rows[index - 1] : nil)
         }
         navigate(reportingTo: wasDetached ? conversation(id) : nil) {
-            await self.conversation(id)?.waitForPendingSave()
+            let deleting = self.conversation(id)
+            await deleting?.waitForPendingSave()
             try Task.checkCancellation()
+            // The service closes a deleted session's stream before the catalog
+            // request returns. That expected closure is not a transcript failure.
+            deleting?.beginDeletion()
+            defer {
+                if let deleting, self.openConversations.contains(where: { $0 === deleting }) {
+                    deleting.resumeAfterFailedDeletion()
+                }
+            }
             var failure: Error?
             do { try await self.sessions.delete(id: id) }
             catch { failure = error }
@@ -498,6 +514,8 @@ import Observation
             if let id = conversation.currentSessionID, !self.savedSummaries.contains(where: { $0.id == id }),
                self.registeringIDs.insert(id).inserted {
                 defer { self.registeringIDs.remove(id) }
+                self.sidebarOrder.removeAll { $0 == id }
+                self.sidebarOrder.insert(id, at: 0)
                 try await self.sessions.update { config in
                     config.order.removeAll { $0 == id }
                     config.order.insert(id, at: 0)
@@ -576,7 +594,10 @@ import Observation
         let resident = Set(conversations.compactMap(\.currentSessionID))
         // New unsaved sessions retain their creation position until their
         // first checkpoint. Resident LRU ordering is unrelated to the sidebar.
-        sidebarOrder = sidebarOrder.filter { !persisted.contains($0) && resident.contains($0) } + summaries.map(\.id)
+        let pending = sidebarOrder.filter {
+            resident.contains($0) && (!persisted.contains($0) || registeringIDs.contains($0))
+        }
+        sidebarOrder = pending + summaries.map(\.id).filter { !pending.contains($0) }
         savedSummaries = summaries
     }
 

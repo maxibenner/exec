@@ -120,6 +120,7 @@ import CryptoKit
     private var observer: Task<Void, Never>?
     private var observerGeneration = UUID()
     private var observationLost = false
+    private var deletionPending = false
     private var settingsDirty = false
     private var configurationUncertain = false
     private var stopTask: Task<Void, Never>?
@@ -233,7 +234,7 @@ import CryptoKit
         observe()
     }
     func reconnectIfNeeded() {
-        guard observationLost || configurationUncertain, let id = currentSessionID, task == nil else { return }
+        guard !deletionPending, observationLost || configurationUncertain, let id = currentSessionID, task == nil else { return }
         task = Task {
             defer { task = nil }
             do { try await loadSession(id); error = snapshot?.storageError ?? snapshot?.operation?.error }
@@ -250,9 +251,17 @@ import CryptoKit
         defer { observe() }
         try apply(await api.snapshot(id))
     }
+    func beginDeletion() {
+        deletionPending = true
+        pauseObservation()
+    }
+    func resumeAfterFailedDeletion() {
+        deletionPending = false
+        observe()
+    }
     private func observe() {
         observer?.cancel()
-        guard let id = currentSessionID else { return }
+        guard !deletionPending, let id = currentSessionID else { return }
         let generation = UUID()
         observerGeneration = generation
         observationLost = false
