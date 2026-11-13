@@ -30,7 +30,7 @@ The existing native UI and virtualized transcript renderer now use the bundled R
 
 The app uses a fresh profile at `~/Library/Application Support/Exec/Agent/`. Credentials are stored in a private plaintext file. No old Swift conversations or Keychain entries are imported or removed; reconnect providers in Settings.
 
-See [the migration report](docs/swift-rust-migration.md) for the exact compatibility adjustments, unsupported flows and verification boundaries. In particular, automatic titles are removed, and the old screenshot permission flow and compaction activity rows remain deferred rather than silently replaced.
+See [the migration report](docs/swift-rust-migration.md) for the exact compatibility adjustments, unsupported flows and verification boundaries. Automatic session titles are enabled by default in Settings and owned by the backend; manual names are never overwritten. The old screenshot permission flow and compaction activity rows remain deferred rather than silently replaced.
 
 ## Keyboard controls
 

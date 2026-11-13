@@ -36,6 +36,10 @@ async fn setup(provider: Arc<dyn ChatProvider>, tools: Vec<Arc<dyn Tool>>) -> Fi
     .await
     .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     Fixture {
         root,
         service,
@@ -88,6 +92,10 @@ async fn api_default_auto_and_durable_settings_updates_reconcile_observers() {
         .await
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     let c = client
         .create("fake", root.path().to_str().unwrap())
         .await
@@ -155,6 +163,10 @@ async fn api_delete_is_durable_and_does_not_repeat() {
         .await
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     let conversation = client
         .create_with_settings(
             "fake",
@@ -191,6 +203,10 @@ async fn api_create_stream_reconnect_and_durable_continuation() {
         .await
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     assert_eq!(
         client.health().await.unwrap(),
         json!({"version":1,"toolsEnabled":false})
@@ -448,6 +464,10 @@ async fn shutdown_persists_pending_approval_without_execution_or_restart() {
         .await
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     let c = client
         .create_with_settings(
             "fake",

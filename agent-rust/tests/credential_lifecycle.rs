@@ -129,6 +129,10 @@ async fn api_credentials_change_at_runtime_without_exposing_secrets_or_network_v
         .await
         .unwrap();
     let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    // These fixtures exercise chat requests, not optional metadata inference.
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
     let c = client
         .create("deepseek-chat", workspace.path().to_str().unwrap())
         .await

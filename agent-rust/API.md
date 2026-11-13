@@ -571,3 +571,7 @@ capability channel specifically revokes that capability and invalidates its pend
 CLI `desktop ID FRONTEND_ID|off` controls session permission but does not capture screens.
 The Rust `AgentClient` exposes typed native channel/reply/permission methods for the future
 Swift bridge. No Swift adapter, live OS permission check, or headless substitute is claimed.
+
+### Automatic session titles
+
+Library configuration includes `automaticTitles` (default `true`, including older saved configurations). At acceptance of each new user turn the manager applies this preference. The runtime runs isolated, tool-free title inference with the session model before chat inference, bounded to 15 seconds and cancellable with the operation. Failures retain the existing title without retry. Manual rename persists `manuallyNamed` and permanently suppresses automatic naming, including after restart. Naming shares operation ownership and checkpoints; it never appends to chat context. Setting changes apply to subsequent turns, not already accepted operations.

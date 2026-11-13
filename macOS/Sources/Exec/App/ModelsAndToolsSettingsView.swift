@@ -18,6 +18,9 @@ struct ModelsAndToolsSettingsView: View {
     private var providerSettings: some View {
         @Bindable var settings = store
         return Group {
+            Section("Session Titles") {
+                Toggle("Automatic session titles", isOn: $settings.automaticTitles)
+            }
             if connected.isEmpty {
                 Section { Text("No providers connected").foregroundStyle(.secondary) }
             }

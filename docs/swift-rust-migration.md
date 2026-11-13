@@ -85,7 +85,7 @@ The build scripts disable release debug stripping (`CARGO_PROFILE_RELEASE_STRIP=
 
 These reflect current backend contracts; they are not replacement UI designs:
 
-1. **Automatic session titles:** removed the Session Titles settings section and generation machinery, as explicitly requested. Manual rename and prompt-derived fallback titles remain.
+1. **Automatic session titles:** subsequently restored as backend-owned, isolated metadata inference, enabled by default via the library `automaticTitles` setting. Manual naming permanently prevents automatic replacement. Each accepted user turn may generate a title using the session model before chat inference, with a 15-second bound and no retry; title failures retain the existing/fallback title. Routine follow-ups are instructed to preserve the established topic. No title prompt or output enters conversation history.
 2. **Idle-only mutations:** model/reasoning/auto-mode controls, rename and fork are unavailable while the conversation is running. The backend does not support changing live approval policy or forking a running boundary.
 3. **Immutable workspace:** once Rust has created a session, its workspace cannot be changed. The existing picker remains available before creation; use New Conversation for a different workspace afterward.
 4. **Text-only steering:** image submissions during a response, and input during manual compaction, retain the draft and use the existing inline error presentation. They are not silently queued as later inference.

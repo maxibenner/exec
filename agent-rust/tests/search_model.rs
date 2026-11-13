@@ -71,6 +71,9 @@ async fn selected_search_model_is_explicit_and_persisted_without_changing_chat_m
         )
         .await
         .unwrap();
+        let mut library = manager.library_configuration().unwrap();
+        library.automatic_titles = false;
+        manager.update_library(library).await.unwrap();
         let mut options = ConversationOptions::new(
             registry.clone(),
             "chat/main",
@@ -101,6 +104,9 @@ async fn selected_search_model_is_explicit_and_persisted_without_changing_chat_m
         )
         .await
         .unwrap();
+        let mut library = manager.library_configuration().unwrap();
+        library.automatic_titles = false;
+        manager.update_library(library).await.unwrap();
         assert_eq!(
             manager
                 .get(&c.id)

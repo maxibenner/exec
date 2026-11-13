@@ -39,12 +39,14 @@ struct AgentSettings: Codable, Sendable, Equatable {
     var searchModel: String?
 }
 struct AgentLibraryConfiguration: Codable, Sendable {
+    var automaticTitles = true
     var defaultModel: String?
     var settings = AgentSettings()
     var order: [UUID] = []
-    private enum CodingKeys: String, CodingKey { case defaultModel, settings, order }
+    private enum CodingKeys: String, CodingKey { case automaticTitles, defaultModel, settings, order }
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(automaticTitles, forKey: .automaticTitles)
         try values.encode(defaultModel, forKey: .defaultModel)
         try values.encode(settings, forKey: .settings)
         try values.encode(order.map { $0.uuidString.lowercased() }, forKey: .order)
