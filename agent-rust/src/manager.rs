@@ -15,6 +15,7 @@ struct Catalog {
     library_busy: bool,
     library_error: bool,
     account_busy: bool,
+    account_epoch: u64,
     unreadable: HashSet<String>,
 }
 pub struct AgentManager {
@@ -114,6 +115,54 @@ impl AgentManager {
             .insert(conversation.id.clone(), conversation.clone());
         Ok(conversation)
     }
+    fn provider_epoch(&self) -> Result<u64> {
+        let catalog = self.catalog.lock().unwrap();
+        if catalog.closed || catalog.account_busy {
+            return Err(Error::Busy);
+        }
+        Ok(catalog.account_epoch)
+    }
+    fn check_provider_epoch(&self, epoch: u64) -> Result<()> {
+        let catalog = self.catalog.lock().unwrap();
+        if catalog.closed || catalog.account_busy || catalog.account_epoch != epoch {
+            return Err(Error::Cancelled);
+        }
+        Ok(())
+    }
+    pub async fn discover_models(
+        &self,
+        provider: Arc<dyn ChatProvider>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<ChatModel>> {
+        let epoch = self.provider_epoch()?;
+        let result = provider.models(cancel).await?;
+        self.check_provider_epoch(epoch)?;
+        Ok(result)
+    }
+    pub async fn search_web(
+        &self,
+        provider: Arc<dyn ChatProvider>,
+        model: &str,
+        query: String,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<WebSearchResult> {
+        search_query(&query)?;
+        let epoch = self.provider_epoch()?;
+        let result = provider.search_web(model, query, cancel).await?;
+        self.check_provider_epoch(epoch)?;
+        Ok(result)
+    }
+    pub async fn account_balances(
+        &self,
+        provider: Arc<dyn ChatProvider>,
+        id: &str,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<AccountBalance>> {
+        let epoch = self.provider_epoch()?;
+        let result = provider.account_balances(id, cancel).await?;
+        self.check_provider_epoch(epoch)?;
+        Ok(result)
+    }
     pub fn connections(&self, provider: &dyn ChatProvider) -> Vec<ProviderConnection> {
         provider.connections()
     }
@@ -143,7 +192,11 @@ impl AgentManager {
                 .catch_unwind()
                 .await
                 .unwrap_or(Err(Error::Internal));
-            manager.catalog.lock().unwrap().account_busy = false;
+            {
+                let mut catalog = manager.catalog.lock().unwrap();
+                catalog.account_busy = false;
+                catalog.account_epoch = catalog.account_epoch.wrapping_add(1);
+            }
             result?;
             Ok(provider.connections())
         })

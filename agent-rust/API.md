@@ -236,3 +236,22 @@ context or overwritten. GET/turn/configuration requests for those IDs return 409
 DELETE removes the retained file durably. Valid conversations remain usable. Symlinks,
 special files, unknown JSON filenames, changing file identities or lost/foreign ownership
 remain whole-store integrity failures. Library metadata corruption also fails startup.
+
+## Provider services
+
+`POST /v1/search` accepts `{model,query}` and returns `{query,answer,sources:[{title,url}]}`.
+The standalone DeepSeek service also registers `web_search` as a runner tool, independently
+of workspace file/shell opt-in. Queries are public single-line text (DeepSeek: at most 128
+characters); results contain up to ten unique credential-free HTTPS source URLs and bounded
+excerpts. Sources and excerpts remain untrusted evidence. This is not URL fetching and
+executes no JavaScript. Search consumes provider service access and is never retried.
+
+`GET /v1/providers/deepseek/balance` returns `{amount,currency}` arrays, keeping exact decimal
+amounts as strings rather than floating point. These services use bounded JSON bodies,
+provider deadlines and explicit cancellation. Read-only results started before a credential
+change are rejected instead of being presented under the new account. They do not mutate
+conversation context unless invoked as a runner tool. `toolsEnabled` in health describes
+non-search tools; standalone search can be available while it is false.
+
+CLI: `search MODEL QUERY`, `balance PROVIDER`. Live provider compatibility is unverified;
+tests use synthetic credentials and fake transports, not the live service.

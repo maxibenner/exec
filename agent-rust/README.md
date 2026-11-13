@@ -114,3 +114,5 @@ Verified on macOS with Rust 1.93.1. Live DeepSeek authentication/service compati
 Still absent: OpenAI subscription access, full shell logs, authenticated remote serving, plugins/skills infrastructure and Swift client integration. No agent framework or speculative features were added.
 
 DeepSeek credential onboarding and disconnection now work through the private API and stdin-only CLI. Missing credentials no longer block local history. This is configuration, not live authentication verification; JSON writes do not contact the provider.
+
+DeepSeek public search (`web_search` and API) and exact-decimal balances are supported with bounded responses, deadlines, cancellation and no retries. Tests verify fake transport contracts, not live provider compatibility.

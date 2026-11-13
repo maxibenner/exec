@@ -1,10 +1,12 @@
 mod files;
+mod provider_search;
 mod shell;
 mod workspace;
 use crate::{Error, Result, core::*};
 use async_trait::async_trait;
 pub use files::create_file_tools;
 use futures_util::future::BoxFuture;
+pub use provider_search::create_provider_tools;
 pub use shell::create_shell_tool;
 use std::sync::Arc;
 pub use workspace::revision;

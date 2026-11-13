@@ -1,6 +1,8 @@
 mod conversation;
 mod events;
 mod library;
+mod provider_services;
+pub use provider_services::*;
 mod record;
 mod settings;
 pub use library::*;

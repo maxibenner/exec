@@ -65,6 +65,28 @@ impl AgentClient {
         .await
         .map_err(|_| Error::Invalid(INVALID))?
     }
+    pub async fn search_web(&self, model: &str, query: &str) -> Result<WebSearchResult> {
+        decode(
+            self.call(
+                "POST",
+                "/v1/search",
+                Some(json!({"model":model,"query":query})),
+            )
+            .await?,
+        )
+    }
+    pub async fn balances(&self, provider: &str) -> Result<Vec<AccountBalance>> {
+        if !provider
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        {
+            return Err(Error::Invalid("Invalid provider ID."));
+        }
+        decode(
+            self.call("GET", &format!("/v1/providers/{provider}/balance"), None)
+                .await?,
+        )
+    }
     pub async fn connections(&self) -> Result<Vec<ProviderConnection>> {
         decode(self.call("GET", "/v1/providers", None).await?)
     }

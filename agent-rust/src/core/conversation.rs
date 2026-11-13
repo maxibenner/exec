@@ -753,7 +753,8 @@ impl Conversation {
                     let mut started = false;
                     let action = AssertUnwindSafe(async {
                         let workspace = self.state().record.workspace.clone();
-                        let prepared = tool.prepare(call.arguments.clone(),ToolContext{workspace,cancel:cancel.clone()}).await?;
+                        let model = self.state().record.model.clone();
+                        let prepared = tool.prepare(call.arguments.clone(),ToolContext{model,workspace,cancel:cancel.clone()}).await?;
                         check_cancel(cancel)?;
                         let auto_approve = self.state().record.configuration.as_ref().unwrap().settings.auto_approve;
                         let approved = if let Some(description) = prepared.approval().filter(|_| !auto_approve) { self.ask(call,description.into(),cancel).await? } else { true };

@@ -78,11 +78,12 @@ pub async fn start_persistent_service(
     workspace_tools: bool,
 ) -> Result<Service> {
     let profile = private_directory(profile).await?;
-    let tools = if workspace_tools {
+    let mut tools = if workspace_tools {
         create_workspace_tools()
     } else {
         vec![]
     };
+    tools.extend(crate::tools::create_provider_tools(provider.clone()));
     let store = JsonConversationStore::open(profile.join("conversations")).await?;
     let manager = AgentManager::open(store, |_| (provider.clone(), tools.clone())).await?;
     match start_service(ServiceOptions {
@@ -261,6 +262,12 @@ struct Create {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct Search {
+    model: String,
+    query: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Connect {
     api_key: String,
 }
@@ -327,14 +334,47 @@ async fn handle(
     if method == "GET" && route == "/v1/health" {
         return Ok(json_response(
             200,
-            json!({"version":1,"toolsEnabled":!options.tools.is_empty()}),
+            json!({"version":1,"toolsEnabled":options.tools.iter().any(|tool| tool.definition().name != "web_search")}),
         ));
     }
     if method == "GET" && route == "/v1/models" {
         let cancel = request_cancel.child_token();
         let _guard = cancel.clone().drop_guard();
-        let models = tokio::select! {biased;_=cancel.cancelled()=>return Err(ApiError(503,"Service is stopping.")),value=tokio::time::timeout(Duration::from_secs(120),options.provider.models(cancel.clone()))=>value.map_err(|_|ApiError(500,"Model discovery failed."))??};
+        let models = tokio::select! {biased;_=cancel.cancelled()=>return Err(ApiError(503,"Service is stopping.")),value=tokio::time::timeout(Duration::from_secs(120),options.manager.discover_models(options.provider.clone(), cancel.clone()))=>value.map_err(|_|ApiError(500,"Model discovery failed."))??};
         return Ok(json_response(200, models));
+    }
+    if method == "POST" && route == "/v1/search" {
+        let search: Search = body(request).await?;
+        text(&search.model, 128)?;
+        search_query(&search.query).map_err(|_| ApiError(400, "Invalid search query."))?;
+        return Ok(json_response(
+            200,
+            options
+                .manager
+                .search_web(
+                    options.provider.clone(),
+                    &search.model,
+                    search.query,
+                    request_cancel,
+                )
+                .await?,
+        ));
+    }
+    if method == "GET"
+        && let Some(id) = route
+            .strip_prefix("/v1/providers/")
+            .and_then(|s| s.strip_suffix("/balance"))
+    {
+        if id.is_empty() || id.contains('/') {
+            return Err(ApiError(404, "Provider not found."));
+        }
+        return Ok(json_response(
+            200,
+            options
+                .manager
+                .account_balances(options.provider.clone(), id, request_cancel)
+                .await?,
+        ));
     }
     if method == "GET" && route == "/v1/providers" {
         return Ok(json_response(

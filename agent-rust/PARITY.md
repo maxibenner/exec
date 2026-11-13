@@ -77,6 +77,10 @@ The checked items below are delivered and verified; unchecked items remain outst
 - [x] Isolated unreadable-conversation summaries and explicit deletion; valid history
   stays available while unsafe store entries/ownership failures still fail closed.
 
+- [x] Provider-neutral public search and balance services, DeepSeek implementations,
+  web_search tool, API/client/CLI coverage, bounded source decoding, no retries, and
+  stale account-observation protection after credential changes. Live service unverified.
+
 ### Remaining backend work
 
 - [ ] Provider-neutral capabilities/efforts/image support and effort selection.
@@ -87,13 +91,13 @@ The checked items below are delivered and verified; unchecked items remain outst
 - [ ] Provider/account model metadata caches.
 - [ ] Manual/automatic compaction, opaque provider state and context usage.
 - [ ] Typed tool results, assets, image inputs and durable image references.
-- [ ] Web search, public HTTPS content fetching, image generation.
+- [ ] Public HTTPS content fetching and image generation; OpenAI search support.
 - [ ] Optional frontend screenshot capability protocol, session permission, exact
   request/result correlation, cancellation/disconnect handling; no headless capture.
 - [ ] Full shell logs, descriptive shell titles, typed applied-edit diffs.
 - [ ] Selected search model configuration.
 - [ ] Asset/log deletion and fork reference ownership.
-- [ ] Current account allowances/reset information, balance and freshness metadata.
+- [ ] OpenAI account allowances/reset information and account/model freshness caches.
 - [ ] Complete API/client coverage for the above, neutral diagnostics and documentation.
 
 ## Verification and delivery

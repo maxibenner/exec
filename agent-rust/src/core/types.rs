@@ -1,3 +1,4 @@
+use super::{AccountBalance, WebSearchResult};
 use crate::Result;
 use async_trait::async_trait;
 use futures_util::stream::BoxStream;
@@ -159,6 +160,24 @@ pub struct ProviderConnection {
 }
 #[async_trait]
 pub trait ChatProvider: Send + Sync {
+    fn supports_web_search(&self) -> bool {
+        false
+    }
+    async fn search_web(
+        &self,
+        _model: &str,
+        _query: String,
+        _cancel: CancellationToken,
+    ) -> Result<WebSearchResult> {
+        Err(crate::Error::Provider(crate::ProviderFailure::Unsupported))
+    }
+    async fn account_balances(
+        &self,
+        _provider: &str,
+        _cancel: CancellationToken,
+    ) -> Result<Vec<AccountBalance>> {
+        Err(crate::Error::Provider(crate::ProviderFailure::Unsupported))
+    }
     fn connections(&self) -> Vec<ProviderConnection> {
         vec![]
     }
@@ -175,6 +194,7 @@ pub trait ChatProvider: Send + Sync {
 }
 #[derive(Clone)]
 pub struct ToolContext {
+    pub model: String,
     pub workspace: String,
     pub cancel: CancellationToken,
 }

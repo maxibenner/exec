@@ -54,7 +54,14 @@ impl HttpTransport for ReqwestTransport {
         let builder = if let Some(body) = body {
             self.client
                 .post(url)
-                .header("Accept", "text/event-stream")
+                .header(
+                    "Accept",
+                    if path == "chat/completions" {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                )
                 .header("Content-Type", "application/json")
                 .body(body)
         } else {
@@ -312,6 +319,26 @@ impl DeepSeekProvider {
             authentication: None,
         })
     }
+    async fn json_service(
+        &self,
+        path: &str,
+        body: Option<String>,
+        parent: CancellationToken,
+    ) -> Result<Value> {
+        check_cancel(&parent)?;
+        let cancel = parent.child_token();
+        let _guard = cancel.clone().drop_guard();
+        let request = async {
+            let response = self.request(path, cancel, body).await?;
+            content_type(&response, "application/json")?;
+            read_json(response.body).await
+        };
+        tokio::select! { biased;
+            _ = parent.cancelled() => Err(Error::Cancelled),
+            _ = tokio::time::sleep(self.timeout) => Err(error(Failure::Timeout)),
+            result = request => result,
+        }
+    }
     async fn request(
         &self,
         path: &str,
@@ -364,6 +391,37 @@ fn content_type(response: &HttpResponse, expected: &str) -> Result<()> {
 }
 #[async_trait]
 impl ChatProvider for DeepSeekProvider {
+    fn supports_web_search(&self) -> bool {
+        true
+    }
+    async fn search_web(
+        &self,
+        _model: &str,
+        query: String,
+        cancel: CancellationToken,
+    ) -> Result<WebSearchResult> {
+        search_query(&query)?;
+        if query.chars().count() > 128 {
+            return Err(Error::Invalid(
+                "DeepSeek search queries must contain at most 128 characters.",
+            ));
+        }
+        let body = json!({"query":query,"count":10,"need_content":false}).to_string();
+        let response = self
+            .json_service("v1/tools/search", Some(body), cancel)
+            .await?;
+        super::deepseek_services::search(response, query)
+    }
+    async fn account_balances(
+        &self,
+        provider: &str,
+        cancel: CancellationToken,
+    ) -> Result<Vec<AccountBalance>> {
+        if provider != "deepseek" {
+            return Err(Error::Invalid("Unknown provider."));
+        }
+        super::deepseek_services::balances(self.json_service("user/balance", None, cancel).await?)
+    }
     fn connections(&self) -> Vec<ProviderConnection> {
         self.authentication
             .as_ref()
