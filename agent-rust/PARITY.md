@@ -92,6 +92,10 @@ The checked items below are delivered and verified; unchecked items remain outst
   discovery fallback warnings and credential-generation cache invalidation. Standalone
   currently registers DeepSeek; a second concrete provider (OpenAI) remains outstanding.
 
+- [x] Managed private shell logs, bounded API/client/CLI reads, optional descriptive
+  shell titles, execution-intent resource references and last-fork-aware deletion.
+  Cleanup retains files conservatively when unreadable sessions may reference them.
+
 ### Remaining backend work
 
 - [ ] Image-input capability integration (model metadata is available).
@@ -103,9 +107,9 @@ The checked items below are delivered and verified; unchecked items remain outst
 - [ ] Image generation and OpenAI search support.
 - [ ] Optional frontend screenshot capability protocol, session permission, exact
   request/result correlation, cancellation/disconnect handling; no headless capture.
-- [ ] Full shell logs, descriptive shell titles, typed applied-edit diffs.
+- [ ] Typed applied-edit diffs and other rich tool results.
 - [ ] Selected search model configuration.
-- [ ] Asset/log deletion and fork reference ownership.
+- [ ] Image/other asset deletion and fork reference ownership (shell logs implemented).
 - [ ] OpenAI account allowances/reset information and account/model freshness caches.
 - [ ] Complete API/client coverage for the above, neutral diagnostics and documentation.
 

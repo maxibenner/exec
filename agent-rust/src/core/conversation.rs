@@ -74,6 +74,7 @@ impl State {
             pending_input: self.record.pending_input.clone(),
             metadata: self.record.metadata.clone(),
             usage: self.record.usage.clone(),
+            resources: self.record.resources.clone(),
             operation: self.record.operation.clone(),
             approval: self.pending.as_ref().map(|p| p.approval.clone()),
             active_tool_call_id: self.active_tool.clone(),
@@ -111,7 +112,8 @@ impl Conversation {
             record
         } else {
             ConversationRecord {
-                version: 4,
+                version: 5,
+                resources: vec![],
                 provider_state: None,
                 usage: None,
                 metadata: SessionMetadata {
@@ -164,6 +166,9 @@ impl Conversation {
     }
     pub fn snapshot(&self) -> ConversationSnapshot {
         self.state().snapshot()
+    }
+    pub fn resources(&self) -> Vec<ResourceRef> {
+        self.state().record.resources.clone()
     }
     pub fn record(&self) -> ConversationRecord {
         self.state().record.clone()
@@ -788,14 +793,20 @@ impl Conversation {
                     let action = AssertUnwindSafe(async {
                         let workspace = self.state().record.workspace.clone();
                         let model = self.state().record.model.clone();
-                        let prepared = tool.prepare(call.arguments.clone(),ToolContext{model,workspace,cancel:cancel.clone()}).await?;
+                        let prepared = tool.prepare(call.arguments.clone(),ToolContext{call_id:call.id.clone(),model,workspace,cancel:cancel.clone()}).await?;
                         check_cancel(cancel)?;
                         let auto_approve = self.state().record.configuration.as_ref().unwrap().settings.auto_approve;
                         let approved = if let Some(description) = prepared.approval().filter(|_| !auto_approve) { self.ask(call,description.into(),cancel).await? } else { true };
                         check_cancel(cancel)?;
                         if self.has_pending_input() { return Ok((ToolOutcome::NotExecuted, "Not executed: new user input superseded this action. Reconsider using the new instructions.".into())); }
                         if !approved { return Ok((ToolOutcome::Denied,"User denied this action. Nothing was executed. Do not retry without a new user request.".into())); }
-                        self.state().record.executing_tool_id=Some(call.id.clone());
+                        {
+                            let resources = prepared.resources(); let mut s = self.state();
+                            let mut ids: HashSet<_> = s.record.resources.iter().map(|r|r.id.clone()).collect();
+                            if s.record.resources.len()+resources.len()>4096 || resources.iter().any(|r|!valid_id(&r.id)||r.call_id!=call.id||!ids.insert(r.id.clone())) { return Err(Error::Internal); }
+                            s.record.resources.extend(resources);
+                            s.record.executing_tool_id=Some(call.id.clone());
+                        }
                         self.checkpoint(None).await?; check_cancel(cancel)?;
                         {
                             let mut s = self.state();

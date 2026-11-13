@@ -6,6 +6,7 @@ pub mod core;
 pub mod manager;
 pub mod providers;
 pub mod service;
+pub mod shell_logs;
 pub mod storage;
 pub mod terminal;
 pub mod tools;

@@ -110,6 +110,7 @@ impl Tool for FileTool {
                 String::new()
             };
             Ok(Box::new(Action {
+                resources: vec![],
                 approval: None,
                 execute: Box::new(move || {
                     Box::pin(blocking(move || match kind {
@@ -212,6 +213,7 @@ fn prepare_edit(
         return Err(failure("Approval exceeds 64 KiB. Propose a smaller edit."));
     }
     Ok(Box::new(Action {
+        resources: vec![],
         approval: Some(approval),
         execute: Box::new(move || {
             Box::pin(blocking(move || {

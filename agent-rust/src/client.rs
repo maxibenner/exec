@@ -65,6 +65,24 @@ impl AgentClient {
         .await
         .map_err(|_| Error::Invalid(INVALID))?
     }
+    pub async fn read_log(
+        &self,
+        id: &str,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<crate::shell_logs::LogChunk> {
+        if !valid_id(id) {
+            return Err(Error::Invalid("Invalid log ID."));
+        }
+        decode(
+            self.call(
+                "POST",
+                &format!("/v1/logs/{id}"),
+                Some(json!({"offset":offset,"maxBytes":max_bytes})),
+            )
+            .await?,
+        )
+    }
     pub async fn fetch_content(&self, url: &str) -> Result<crate::content_fetch::FetchedContent> {
         decode(
             self.call("POST", "/v1/fetch", Some(json!({"url":url})))

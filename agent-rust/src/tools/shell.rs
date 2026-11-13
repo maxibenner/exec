@@ -1,32 +1,50 @@
 use super::{workspace::Workspace, *};
 use crate::check_cancel;
+use crate::shell_logs::{LOG_LIMIT, ShellLogStore};
 use serde_json::json;
-use std::{process::Stdio, sync::Mutex, time::Duration};
+use std::{process::Stdio, time::Duration};
+use tokio::sync::Mutex;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
 };
 use tokio_util::sync::CancellationToken;
-struct ShellTool;
+struct ShellTool {
+    logs: Option<Arc<ShellLogStore>>,
+}
 pub fn create_shell_tool() -> Arc<dyn Tool> {
-    Arc::new(ShellTool)
+    Arc::new(ShellTool { logs: None })
+}
+pub fn create_logged_shell_tool(logs: Arc<ShellLogStore>) -> Arc<dyn Tool> {
+    Arc::new(ShellTool { logs: Some(logs) })
 }
 #[async_trait]
 impl Tool for ShellTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition{name:"shell".into(),description:"Run an approved bash command in the workspace (not sandboxed), with bounded combined output. Default timeout 120 seconds, maximum 900. Commands are not retried; background jobs are terminated on completion.".into(),parameters:schema(json!({"command":{"type":"string","minLength":1},"timeout_seconds":{"type":"integer","minimum":1,"maximum":900}}),&["command"])}
+        ToolDefinition{name:"shell".into(),description:"Run an approved bash command in the workspace (not sandboxed), with bounded combined output. Default timeout 120 seconds, maximum 900. Managed services retain private output logs up to 64 MiB; inspect referenced logs instead of rerunning truncated commands. The optional description is display metadata only. Commands are not retried; background jobs are terminated on completion.".into(),parameters:schema(json!({"command":{"type":"string","minLength":1},"description":{"type":"string","description":"Optional short human-readable action title, display metadata only; the exact command remains authoritative."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":900}}),&["command"])}
     }
     async fn prepare(
         &self,
         args: Arguments,
         context: ToolContext,
     ) -> Result<Box<dyn PreparedTool>> {
-        fields(&args, &["command", "timeout_seconds"])?;
+        fields(&args, &["command", "timeout_seconds", "description"])?;
         let command = string(&args, "command", 32768)?;
         if command.trim().is_empty() {
             return Err(failure("Command must not be empty."));
         }
         let timeout = integer(&args, "timeout_seconds", 1, 900, Some(120))?;
+        let log = self.logs.as_ref().map(|store| (store.clone(), new_id()));
+        let resources = log
+            .as_ref()
+            .map(|(_, id)| {
+                vec![ResourceRef {
+                    id: id.clone(),
+                    call_id: context.call_id.clone(),
+                    kind: ResourceKind::ShellLog,
+                }]
+            })
+            .unwrap_or_default();
         let workspace =
             blocking(move || Workspace::new(&context.workspace, context.cancel)).await?;
         let approval = format!(
@@ -34,6 +52,7 @@ impl Tool for ShellTool {
             serde_json::to_string(&workspace.root.to_string_lossy()).unwrap()
         );
         Ok(Box::new(Action {
+            resources,
             approval: Some(approval),
             execute: Box::new(move || {
                 Box::pin(async move {
@@ -42,7 +61,7 @@ impl Tool for ShellTool {
                         Ok(workspace)
                     })
                     .await?;
-                    run(command, workspace.root, timeout, workspace.cancel).await
+                    run(command, workspace.root, timeout, workspace.cancel, log).await
                 })
             }),
         }))
@@ -53,10 +72,22 @@ struct Capture {
     first: Vec<u8>,
     last: Vec<u8>,
     size: usize,
+    log: Option<tokio::fs::File>,
+    log_path: Option<std::path::PathBuf>,
+    log_complete: bool,
+    log_bytes: usize,
 }
 impl Capture {
-    fn append(&mut self, data: &[u8]) {
-        self.size += data.len();
+    async fn append(&mut self, data: &[u8]) {
+        if let Some(file) = &mut self.log {
+            let retained = data.len().min(LOG_LIMIT.saturating_sub(self.log_bytes));
+            if file.write_all(&data[..retained]).await.is_err() || retained < data.len() {
+                self.log_complete = false;
+                self.log = None;
+            }
+            self.log_bytes += retained;
+        }
+        self.size = self.size.saturating_add(data.len());
         self.first
             .extend_from_slice(&data[..data.len().min(15000 - self.first.len())]);
         self.last.extend_from_slice(data);
@@ -72,9 +103,21 @@ impl Capture {
             String::from_utf8_lossy(&all).into_owned()
         } else {
             format!(
-                "{}\n[Output truncated: captured first/last 15,000 bytes of {} bytes. Full output was not retained.]\n{}",
+                "{}\n[Output truncated: captured first/last 15,000 bytes of {} bytes.] {}\n{}",
                 String::from_utf8_lossy(&self.first),
                 self.size,
+                match &self.log_path {
+                    Some(path) => format!(
+                        "{} captured output: {}. Inspect this log with a separate approved command; do not rerun the original command.",
+                        if self.log_complete {
+                            "Full"
+                        } else {
+                            "Partial (retention limit or write/drain failure)"
+                        },
+                        path.display()
+                    ),
+                    None => "Full output was not retained.".into(),
+                },
                 String::from_utf8_lossy(&self.last)
             )
         }
@@ -90,7 +133,7 @@ async fn drain(
         if size == 0 {
             return Ok(());
         }
-        capture.lock().unwrap().append(&data[..size]);
+        capture.lock().await.append(&data[..size]).await;
     }
 }
 fn kill_group(pid: u32, signal: i32) -> bool {
@@ -104,7 +147,17 @@ async fn run(
     cwd: std::path::PathBuf,
     timeout: u64,
     cancel: CancellationToken,
+    log: Option<(Arc<ShellLogStore>, String)>,
 ) -> Result<String> {
+    check_cancel(&cancel)?;
+    let mut capture = Capture::default();
+    if let Some((store, id)) = log {
+        capture.log_path = Some(store.path(&id)?);
+        capture.log = Some(store.writer(&id).await.map_err(|_| {
+            failure("Could not create a retained shell log. The command did not start.")
+        })?);
+        capture.log_complete = true;
+    }
     check_cancel(&cancel)?;
     let mut builder = Command::new("/bin/bash");
     builder
@@ -139,7 +192,7 @@ async fn run(
         .spawn()
         .map_err(|_| failure("Could not start the shell command.\n(no output)"))?;
     let pid = child.id().unwrap();
-    let capture = Arc::new(Mutex::new(Capture::default()));
+    let capture = Arc::new(Mutex::new(capture));
     let mut out = tokio::spawn(drain(child.stdout.take().unwrap(), capture.clone()));
     let mut err = tokio::spawn(drain(child.stderr.take().unwrap(), capture.clone()));
     let mut reason = None;
@@ -171,7 +224,7 @@ async fn run(
         tokio::join!(&mut out, &mut err)
     })
     .await;
-    if !matches!(drained, Ok((Ok(Ok(())), Ok(Ok(()))))) {
+    if !matches!(&drained, Ok((Ok(Ok(())), Ok(Ok(()))))) {
         reason = Some("Command cleanup failed; descendants may still be running.");
         out.abort();
         err.abort();
@@ -197,7 +250,18 @@ async fn run(
                 .map_or("none".into(), |s| s.to_string())
         )
     };
-    let output = capture.lock().unwrap().text();
+    let output = {
+        let mut capture = capture.lock().await;
+        if !matches!(&drained, Ok((Ok(Ok(())), Ok(Ok(()))))) {
+            capture.log_complete = false;
+        }
+        if let Some(file) = &mut capture.log
+            && file.sync_all().await.is_err()
+        {
+            capture.log_complete = false;
+        }
+        capture.text()
+    };
     let result = format!(
         "{heading}\n{}",
         if output.is_empty() {

@@ -15,6 +15,19 @@ pub fn valid_id(id: &str) -> bool {
         && uuid::Uuid::parse_str(id).is_ok()
         && [8, 13, 18, 23].iter().all(|&i| id.as_bytes()[i] == b'-')
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceKind {
+    ShellLog,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceRef {
+    pub id: String,
+    #[serde(rename = "callID")]
+    pub call_id: String,
+    pub kind: ResourceKind,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCall {
     pub id: String,
@@ -231,12 +244,16 @@ pub trait ChatProvider: Send + Sync {
 }
 #[derive(Clone)]
 pub struct ToolContext {
+    pub call_id: String,
     pub model: String,
     pub workspace: String,
     pub cancel: CancellationToken,
 }
 #[async_trait]
 pub trait PreparedTool: Send {
+    fn resources(&self) -> Vec<ResourceRef> {
+        vec![]
+    }
     fn approval(&self) -> Option<&str>;
     /// Ownership is consumed so a prepared side effect cannot accidentally run twice.
     async fn execute(self: Box<Self>) -> Result<String>;
@@ -292,6 +309,7 @@ pub struct ConversationSnapshot {
     pub pending_input: Vec<Message>,
     pub metadata: super::SessionMetadata,
     pub usage: Option<TokenUsage>,
+    pub resources: Vec<ResourceRef>,
     pub model: String,
     pub workspace: String,
     pub messages: Vec<Message>,

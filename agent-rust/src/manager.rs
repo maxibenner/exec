@@ -17,6 +17,8 @@ struct Catalog {
     account_busy: bool,
     account_epoch: u64,
     unreadable: HashSet<String>,
+    logs: Option<Arc<crate::shell_logs::ShellLogStore>>,
+    forking: usize,
 }
 pub struct AgentManager {
     catalog: Mutex<Catalog>,
@@ -319,14 +321,31 @@ impl AgentManager {
         provider: Arc<dyn ChatProvider>,
         tools: Vec<Arc<dyn Tool>>,
     ) -> Result<Arc<Conversation>> {
-        let record = self.get(id)?.fork_record()?;
+        let record = {
+            let mut catalog = self.catalog.lock().unwrap();
+            if catalog.closed || catalog.account_busy || catalog.mutating.contains(id) {
+                return Err(Error::Busy);
+            }
+            let record = catalog
+                .conversations
+                .get(id)
+                .ok_or(Error::Invalid("Conversation not found."))?
+                .fork_record()?;
+            catalog.forking += 1;
+            record
+        };
         let mut options =
             ConversationOptions::new(provider, record.model.clone(), record.workspace.clone());
         options.tools = tools;
         options.checkpoint = self.store.clone().map(|s| s as Arc<dyn Checkpoint>);
-        self.insert_conversation(Conversation::new(options, Some(record))?)
-            .await
+        let result = match Conversation::new(options, Some(record)) {
+            Ok(conversation) => self.insert_conversation(conversation).await,
+            Err(error) => Err(error),
+        };
+        self.catalog.lock().unwrap().forking -= 1;
+        result
     }
+
     /// Load project instructions only for the first accepted turn, then freeze them.
     /// The runner atomically accepts input and persists the snapshot before inference.
     pub async fn submit(&self, id: &str, text: String) -> Result<Submission> {
@@ -372,6 +391,34 @@ impl AgentManager {
             .cloned()
             .ok_or(Error::Invalid("Conversation not found."))
     }
+    pub(crate) fn attach_logs(&self, logs: Arc<crate::shell_logs::ShellLogStore>) {
+        self.catalog.lock().unwrap().logs = Some(logs);
+    }
+    pub async fn read_log(
+        &self,
+        id: &str,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<crate::shell_logs::LogChunk> {
+        let logs = {
+            let catalog = self.catalog.lock().unwrap();
+            if catalog.closed
+                || !catalog
+                    .conversations
+                    .values()
+                    .any(|c| c.resources().iter().any(|r| r.id == id))
+            {
+                return Err(Error::Invalid(
+                    "Log is not referenced by an available conversation.",
+                ));
+            }
+            catalog
+                .logs
+                .clone()
+                .ok_or(Error::Invalid("Shell log storage is unavailable."))?
+        };
+        logs.read(id, offset, max_bytes).await
+    }
     pub fn unreadable_sessions(&self) -> Vec<String> {
         let catalog = self.catalog.lock().unwrap();
         let mut ids: Vec<_> = catalog.unreadable.iter().cloned().collect();
@@ -397,29 +444,62 @@ impl AgentManager {
         Ok(result)
     }
     pub async fn delete(&self, id: &str) -> Result<()> {
-        {
-            let mut c = self.catalog.lock().unwrap();
-            if c.closed || c.mutating.contains(id) {
-                return Err(Error::Internal);
+        let resources = {
+            let mut catalog = self.catalog.lock().unwrap();
+            if catalog.closed || catalog.mutating.contains(id) || catalog.forking > 0 {
+                return Err(Error::Busy);
             }
-            if let Some(conversation) = c.conversations.get(id) {
+            let resources = if let Some(conversation) = catalog.conversations.get(id) {
                 conversation.dispose()?;
-            } else if !c.unreadable.contains(id) {
+                conversation.resources()
+            } else if catalog.unreadable.contains(id) {
+                vec![]
+            } else {
                 return Err(Error::Invalid("Conversation not found."));
-            }
-            c.mutating.insert(id.into());
-        }
+            };
+            catalog.mutating.insert(id.into());
+            resources
+        };
         let deleted = if let Some(store) = &self.store {
             store.delete(id.into()).await
         } else {
             Ok(())
         };
-        let mut c = self.catalog.lock().unwrap();
-        c.mutating.remove(id);
-        deleted?;
-        c.conversations.remove(id);
-        c.unreadable.remove(id);
-        Ok(())
+        if let Err(error) = deleted {
+            self.catalog.lock().unwrap().mutating.remove(id);
+            return Err(error);
+        }
+        let cleanup = {
+            let mut catalog = self.catalog.lock().unwrap();
+            catalog.conversations.remove(id);
+            catalog.unreadable.remove(id);
+            let referenced: HashSet<_> = catalog
+                .conversations
+                .values()
+                .flat_map(|c| c.resources().into_iter().map(|r| r.id))
+                .collect();
+            if catalog.unreadable.is_empty() {
+                catalog.logs.clone().map(|logs| {
+                    (
+                        logs,
+                        resources
+                            .into_iter()
+                            .filter(|r| !referenced.contains(&r.id))
+                            .map(|r| r.id)
+                            .collect(),
+                    )
+                })
+            } else {
+                None
+            }
+        };
+        let result = if let Some((logs, ids)) = cleanup {
+            logs.delete(ids).await
+        } else {
+            Ok(())
+        };
+        self.catalog.lock().unwrap().mutating.remove(id);
+        result
     }
     pub async fn close(&self) -> Result<()> {
         {
@@ -427,7 +507,8 @@ impl AgentManager {
             if c.closed {
                 return Err(Error::Invalid("Agent manager is closed."));
             }
-            if c.account_busy
+            if c.forking > 0
+                || c.account_busy
                 || c.library_busy
                 || !c.mutating.is_empty()
                 || c.conversations.values().any(|c| c.busy())

@@ -14,6 +14,8 @@ pub struct ConversationRecord {
     #[serde(default)]
     pub usage: Option<TokenUsage>,
     #[serde(default)]
+    pub resources: Vec<ResourceRef>,
+    #[serde(default)]
     pub configuration: Option<ConversationConfiguration>,
     pub id: String,
     pub model: String,
@@ -47,7 +49,7 @@ impl ConversationRecord {
             return Err(Error::Invalid("Invalid provider state."));
         }
         let bad = Error::Invalid("Invalid or unsupported conversation record.");
-        if !matches!(self.version, 1..=4)
+        if !matches!(self.version, 1..=5)
             || (self.version >= 2 && self.configuration.is_none())
             || (self.version == 1 && self.configuration.is_some())
             || !valid_id(&self.id)
@@ -130,6 +132,14 @@ impl ConversationRecord {
                 return Err(bad);
             }
         }
+        let mut resources = HashSet::new();
+        if self.resources.len() > 4096
+            || self.resources.iter().any(|r| {
+                !valid_id(&r.id) || !calls.contains(r.call_id.as_str()) || !resources.insert(&r.id)
+            })
+        {
+            return Err(bad);
+        }
         if !self.pending_input.is_empty() && self.operation.is_none() {
             return Err(bad);
         }
@@ -161,7 +171,7 @@ impl ConversationRecord {
             self.version = 2;
             self.configuration = Some(ConversationConfiguration::legacy());
         }
-        self.version = 4;
+        self.version = 5;
         if let Some(op) = &mut self.operation
             && op.state.active()
         {

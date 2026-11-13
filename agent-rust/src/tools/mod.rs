@@ -9,7 +9,7 @@ use async_trait::async_trait;
 pub use files::create_file_tools;
 use futures_util::future::BoxFuture;
 pub use provider_search::create_provider_tools;
-pub use shell::create_shell_tool;
+pub use shell::{create_logged_shell_tool, create_shell_tool};
 use std::sync::Arc;
 pub use workspace::revision;
 
@@ -19,11 +19,15 @@ pub fn create_workspace_tools() -> Vec<Arc<dyn Tool>> {
     tools
 }
 struct Action {
+    resources: Vec<ResourceRef>,
     approval: Option<String>,
     execute: Box<dyn FnOnce() -> BoxFuture<'static, Result<String>> + Send>,
 }
 #[async_trait]
 impl PreparedTool for Action {
+    fn resources(&self) -> Vec<ResourceRef> {
+        self.resources.clone()
+    }
     fn approval(&self) -> Option<&str> {
         self.approval.as_deref()
     }

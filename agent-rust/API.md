@@ -318,3 +318,30 @@ refresh failure, and invalidates cached data around credential changes. Read
 `GET /v1/model-warnings` after discovery to inspect safe diagnostics; no provider bodies or
 account identifiers are exposed. Disconnected providers are excluded. Durable startup
 model/account metadata caches remain outstanding. Discovery does not retry automatically.
+
+## Retained shell logs and resource references
+
+Managed workspace shells retain combined output in private `PROFILE/shell-logs/UUID.log`
+files (0600, parent 0700), up to 64 MiB per invocation. Output is still drained after the
+retention limit; truncation/write/drain failure is reported as a partial log, never a full
+one. A truncated tool result points to the retained file for a separate inspection rather
+than repeating the command. `description` is optional shell-call display metadata; it
+never changes the exact command or authorization. Embedders using `create_workspace_tools`
+without a log store keep bounded output only; standalone workspace tools use managed logs.
+
+Snapshots/checkpoints expose `resources:[{id,callID,kind:"shell_log"}]`. The runner reserves
+these references with execution intent before effects. A reference does not prove a file
+exists or the command started: cancellation/recovery may leave only a reservation.
+`POST /v1/logs/:id` with `{offset,maxBytes}` reads up to 32,768 bytes and returns
+`{text,offset,nextOffset,totalBytes,endOfFile}`. Offsets count raw bytes; text is UTF-8-lossy
+when a boundary splits a character. EOF is a point-in-time file observation, not proof that
+an active command or output capture completed. Unreferenced IDs return 404. CLI:
+`log ID OFFSET MAX_BYTES`. Log output remains untrusted data and terminal controls are escaped.
+
+Forks retain shared references. Deleting a conversation durably removes its checkpoint,
+then removes logs only when no remaining conversation references them. Fork creation is
+excluded from deletion cleanup until its record settles. Unreadable sessions cause
+conservative retention because their references cannot be proven absent. Cleanup failures
+can occur after deletion took effect; inspect state, never automatically repeat deletion.
+Abrupt crashes can leave orphan files; they are not automatically promoted or replayed.
+Version-5 records retain resource references; earlier record versions remain readable.

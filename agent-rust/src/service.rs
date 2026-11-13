@@ -1,7 +1,4 @@
-use crate::{
-    Error, Result, core::*, manager::AgentManager, storage::JsonConversationStore,
-    tools::create_workspace_tools,
-};
+use crate::{Error, Result, core::*, manager::AgentManager, storage::JsonConversationStore};
 use axum::{
     body::{Body, to_bytes},
     http::{Request, Response, StatusCode},
@@ -78,8 +75,11 @@ pub async fn start_persistent_service(
     workspace_tools: bool,
 ) -> Result<Service> {
     let profile = private_directory(profile).await?;
+    let logs = crate::shell_logs::ShellLogStore::open(profile.join("shell-logs")).await?;
     let mut tools = if workspace_tools {
-        create_workspace_tools()
+        let mut tools = crate::tools::create_file_tools();
+        tools.push(crate::tools::create_logged_shell_tool(logs.clone()));
+        tools
     } else {
         vec![]
     };
@@ -87,6 +87,7 @@ pub async fn start_persistent_service(
     tools.push(crate::tools::create_fetch_tool());
     let store = JsonConversationStore::open(profile.join("conversations")).await?;
     let manager = AgentManager::open(store, |_| (provider.clone(), tools.clone())).await?;
+    manager.attach_logs(logs);
     match start_service(ServiceOptions {
         manager: manager.clone(),
         provider,
@@ -263,6 +264,13 @@ struct Create {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ReadLog {
+    offset: u64,
+    #[serde(rename = "maxBytes")]
+    max_bytes: usize,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Fetch {
     url: String,
 }
@@ -351,6 +359,27 @@ async fn handle(
         let _guard = cancel.clone().drop_guard();
         let models = tokio::select! {biased;_=cancel.cancelled()=>return Err(ApiError(503,"Service is stopping.")),value=tokio::time::timeout(Duration::from_secs(120),options.manager.discover_models(options.provider.clone(), cancel.clone()))=>value.map_err(|_|ApiError(500,"Model discovery failed."))??};
         return Ok(json_response(200, models));
+    }
+    if method == "POST"
+        && let Some(id) = route.strip_prefix("/v1/logs/")
+    {
+        identifier(id)?;
+        let input: ReadLog = body(request).await?;
+        if input.max_bytes == 0 || input.max_bytes > 32768 {
+            return Err(ApiError(400, "Read 1–32768 log bytes."));
+        }
+        let chunk = options
+            .manager
+            .read_log(id, input.offset, input.max_bytes)
+            .await
+            .map_err(|error| match error {
+                Error::Invalid("Log is not referenced by an available conversation.") => {
+                    ApiError(404, "Log not found.")
+                }
+                Error::Invalid(message) => ApiError(400, message),
+                other => ApiError::from(other),
+            })?;
+        return Ok(json_response(200, chunk));
     }
     if method == "POST" && route == "/v1/fetch" {
         let input: Fetch = body(request).await?;
