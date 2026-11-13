@@ -113,6 +113,10 @@ async fn main_async() -> Result<()> {
         let mut terminate = signal(SignalKind::terminate())?;
         unblock_shutdown_signals()?;
         let provider = Arc::new(configured_deepseek_provider(&profile, credentials).await?);
+        let provider = Arc::new(exec_agent::providers::ProviderRegistry::new(
+            "deepseek",
+            vec![("deepseek".into(), provider)],
+        )?);
         let service=start_persistent_service(&profile,provider,tools).await.map_err(|_|Error::Invalid("Service startup failed. Check profile permissions, socket, and store lock; stale state is never removed automatically."))?;
         tokio::select! {_=interrupt.recv()=>{},_=terminate.recv()=>{}}
         return service.close().await.map_err(|_| {

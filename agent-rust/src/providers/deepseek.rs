@@ -643,6 +643,7 @@ impl ChatProvider for DeepSeekProvider {
                     context_window: limit("context_window")?,
                     max_output_tokens: limit("max_output_tokens")?,
                     efforts,
+                    provider: None,
                     default_effort,
                     accepts_images: model
                         .get("input_modalities")

@@ -343,6 +343,9 @@ async fn handle(
             json!({"version":1,"toolsEnabled":options.tools.iter().any(|tool| !["web_search", "fetch_content"].contains(&tool.definition().name.as_str()))}),
         ));
     }
+    if method == "GET" && route == "/v1/model-warnings" {
+        return Ok(json_response(200, options.provider.model_warnings()));
+    }
     if method == "GET" && route == "/v1/models" {
         let cancel = request_cancel.child_token();
         let _guard = cancel.clone().drop_guard();

@@ -298,3 +298,23 @@ provider state or measurements. Version 1–3 records remain readable; writes us
 Thinking and non-thinking responses still require supported completion and `[DONE]`; no
 inference or rotating-token retries are introduced. Mock transport tests do not verify
 live model effort availability or service compatibility.
+
+## Provider routing
+
+Standalone composition uses a provider registry. Discovered IDs are qualified (for example
+`deepseek/deepseek-chat`) and include optional `provider` metadata; clients should treat model
+IDs as opaque values. Existing unqualified DeepSeek IDs remain aliases for the configured
+default provider. Credential and balance routes continue to use provider IDs such as
+`deepseek`, not model IDs.
+
+The registry owns per-provider opaque context envelopes. Switching models/providers is
+idle-only; each provider receives only its own saved state while generic completed history
+remains conversation-owned. No mutable response context is shared across conversations.
+Embedding can register additional ChatProvider implementations; the standalone service
+currently registers only DeepSeek, not OpenAI.
+
+Discovery keeps last-successful catalogs in memory, falls back with explicit warnings on
+refresh failure, and invalidates cached data around credential changes. Read
+`GET /v1/model-warnings` after discovery to inspect safe diagnostics; no provider bodies or
+account identifiers are exposed. Disconnected providers are excluded. Durable startup
+model/account metadata caches remain outstanding. Discovery does not retry automatically.

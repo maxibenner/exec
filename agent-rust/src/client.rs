@@ -169,6 +169,9 @@ impl AgentClient {
     pub async fn health(&self) -> Result<Value> {
         self.call("GET", "/v1/health", None).await
     }
+    pub async fn model_warnings(&self) -> Result<Vec<String>> {
+        decode(self.call("GET", "/v1/model-warnings", None).await?)
+    }
     pub async fn models(&self) -> Result<Value> {
         self.call("GET", "/v1/models", None).await
     }

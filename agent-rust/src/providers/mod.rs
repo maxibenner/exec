@@ -6,3 +6,6 @@ pub mod response_stream;
 pub use deepseek::{
     CredentialSource, DeepSeekProvider, HttpResponse, HttpTransport, ReqwestTransport,
 };
+
+mod registry;
+pub use registry::ProviderRegistry;

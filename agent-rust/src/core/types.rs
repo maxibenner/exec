@@ -178,6 +178,8 @@ pub struct ChatModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepts_images: Option<bool>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -192,6 +194,9 @@ pub struct ProviderConnection {
 }
 #[async_trait]
 pub trait ChatProvider: Send + Sync {
+    fn model_warnings(&self) -> Vec<String> {
+        vec![]
+    }
     fn supports_web_search(&self) -> bool {
         false
     }

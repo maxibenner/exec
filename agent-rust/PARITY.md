@@ -88,10 +88,13 @@ The checked items below are delivered and verified; unchecked items remain outst
   DeepSeek thinking/default/off modes with opaque tool-continuation state checkpointed
   only after valid completion and restored per conversation. Opaque state is not in API snapshots.
 
+- [x] Provider registry with namespaced model routing, isolated opaque provider contexts,
+  discovery fallback warnings and credential-generation cache invalidation. Standalone
+  currently registers DeepSeek; a second concrete provider (OpenAI) remains outstanding.
+
 ### Remaining backend work
 
 - [ ] Image-input capability integration (model metadata is available).
-- [ ] Multi-provider registry and isolated conversation contexts.
 - [ ] OpenAI subscription provider, browser OAuth, safe token refresh/persistence,
   JSON credential management and runtime connect/disconnect.
 - [ ] Provider/account model metadata caches.

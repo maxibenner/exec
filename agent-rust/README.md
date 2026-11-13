@@ -118,3 +118,5 @@ DeepSeek credential onboarding and disconnection now work through the private AP
 DeepSeek public search (`web_search` and API) and exact-decimal balances are supported with bounded responses, deadlines, cancellation and no retries. Tests verify fake transport contracts, not live provider compatibility.
 
 Public-page fetch is available through the runner, API and CLI. It uses a dedicated credential-free, proxy-free HTTPS transport with DNS pinning and bounded HTML parsing. `scraper` is the focused HTML-parsing dependency; no browser or agent framework is introduced.
+
+Standalone composition now uses a provider registry with qualified model IDs and isolated per-provider opaque state. Bare DeepSeek IDs remain compatible aliases. The registry supports additional embedded providers; OpenAI is not yet implemented.
