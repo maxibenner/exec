@@ -440,7 +440,7 @@ async fn shell_timeout_terminates_invocation_retaining_diagnostics() {
 async fn shell_cancellation_cleans_process_group_including_term_resistant_child() {
     let root = directory();
     let cancel = CancellationToken::new();
-    let p=prepare(root.path(),"shell",json!({"command":"trap '' TERM; sleep 30 & child=$!; printf '%s' \"$child\" > child.pid; wait","timeout_seconds":5}),cancel.clone()).await.unwrap();
+    let p=prepare(root.path(),"shell",json!({"command":"trap '' TERM; sleep 30 & child=$!; printf '%s' \"$child\" > child.pid.tmp; mv child.pid.tmp child.pid; wait","timeout_seconds":5}),cancel.clone()).await.unwrap();
     let task = tokio::spawn(p.execute());
     let pid = wait_file(&root.path().join("child.pid")).await;
     cancel.cancel();
