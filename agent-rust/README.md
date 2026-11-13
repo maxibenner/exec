@@ -23,12 +23,16 @@ cargo fmt --check
 ./target/release/exec-agent --profile /absolute/private/profile --workspace-tools
 ```
 
-See [API.md](API.md) for credentials, launcher options, HTTP/NDJSON contracts, approvals, and recovery. Cargo.lock is committed; production requires no Node installation. Tests use fake providers/transports, synthetic credentials, temporary profiles, real loopback TCP connections, and real child processes. They never access your Keychain or call a live model.
+See [API.md](API.md) for credentials, launcher options, HTTP/NDJSON contracts, approvals, and recovery. Cargo.lock is committed; production requires no Node installation. Tests use fake providers/transports, synthetic credentials, temporary profiles, real network-bound TCP connections, and real child processes. They never access your Keychain or call a live model.
 
-The default endpoint is **`http://127.0.0.1:8765`**, with no authentication, discovery or port
-fallback. `--port PORT` explicitly overrides it for standalone hosts/tests. The app always
-uses 8765. **Any local process can control the API; never expose it to a network.** An occupied
-port fails startup rather than attaching to another server.
+The default bind is **`0.0.0.0:8765`**, with no authentication, TLS, discovery or port fallback.
+It accepts connections on all IPv4 interfaces. `--host IP` / `--port PORT` override
+`EXEC_AGENT_HOST` / `EXEC_AGENT_PORT`, then defaults. Loopback-only binds are rejected.
+The app reads the same environment variables for its bundled helper. External clients use
+`http://SERVER_IP:8765`, not the wildcard bind address. **Every reachable client can control
+the API; use only on a trusted, appropriately firewalled network.** An occupied port fails
+startup rather than attaching to another server. Firewall/routing/OS permissions can still
+prevent access; this is not an authenticated remote deployment system.
 
 ## Modules
 
@@ -45,8 +49,8 @@ port fails startup rather than attaching to another server.
 | `core/images.rs`, `images.rs` | Neutral image references/reader contract and private validated immutable assets |
 | `native.rs` | Manager-owned optional local frontend capability broker; never captures screens |
 | `tools/` | Revision-checked file operations, literal search, approved bash commands and process-group cleanup |
-| `service.rs` | Loopback HTTP/NDJSON API, composition and orderly shutdown |
-| `main.rs` | Backend-only launcher, fixed loopback port and orderly signal handling |
+| `service.rs` | Network HTTP/NDJSON API, composition and orderly shutdown |
+| `main.rs` | Backend-only launcher, configurable network binding and orderly signal handling |
 
 Async work uses Tokio. Small explicit traits (`ChatProvider`, `Tool`, `PreparedTool`, `Checkpoint`, `ConversationStore`) keep providers, runtime, storage and UI/transport separate. Rust-owned data replaces defensive JavaScript cloning at interfaces. Snapshots and events are independent owned values; shared event frames are immutable.
 
@@ -138,7 +142,7 @@ handles bounded HTML parsing; `image` validates PNG/JPEG assets; `ring` verifies
 signatures; `base64` encodes bounded image/JWT payloads. No agent framework was introduced.
 
 Automated verification uses fake providers/transports, synthetic credentials, isolated
-stores, loopback TCP connections and subprocesses. OIDC tests generate an ephemeral RSA fixture with
+stores, network-bound TCP connections and subprocesses. OIDC tests generate an ephemeral RSA fixture with
 OpenSSL (test-time prerequisite only). Live OpenAI/DeepSeek compatibility, browser sign-in,
 subscription image quota behavior, native Swift/OS permissions, Linux deployment and machine power-loss guarantees remain unverified. Mocks do not verify
 live services. The Swift client consumes HTTP and is checked against an isolated backend subprocess.

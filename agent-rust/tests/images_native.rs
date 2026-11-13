@@ -115,14 +115,10 @@ async fn uploaded_and_generated_images_survive_restart_and_last_fork_owns_deleti
     let root = support::directory();
     let workspace = support::directory();
     let p = Arc::new(Provider::default());
-    let service = start_persistent_service(
-        root.path(),
-        p.clone(),
-        false,
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let service =
+        start_persistent_service(root.path(), p.clone(), false, "0.0.0.0:0".parse().unwrap())
+            .await
+            .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
@@ -174,7 +170,7 @@ async fn uploaded_and_generated_images_survive_restart_and_last_fork_owns_deleti
     assert!(p.requests.lock().unwrap().last().unwrap().images.len() >= 2);
     let fork = client.fork(&c.id).await.unwrap();
     service.close().await.unwrap();
-    let service = start_persistent_service(root.path(), p, false, "127.0.0.1:0".parse().unwrap())
+    let service = start_persistent_service(root.path(), p, false, "0.0.0.0:0".parse().unwrap())
         .await
         .unwrap();
     let client = AgentClient::new(service.address).unwrap();
@@ -242,7 +238,7 @@ async fn native_http_requires_os_permission_session_enablement_and_exact_result(
         root.path(),
         p.clone(),
         false,
-        "127.0.0.1:0".parse().unwrap(),
+        "0.0.0.0:0".parse().unwrap(),
         hub.clone(),
     )
     .await
@@ -345,14 +341,10 @@ async fn denial_never_consumes_generation_quota_or_creates_image_references() {
     let root = support::directory();
     let workspace = support::directory();
     let p = Arc::new(Provider::default());
-    let service = start_persistent_service(
-        root.path(),
-        p.clone(),
-        false,
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let service =
+        start_persistent_service(root.path(), p.clone(), false, "0.0.0.0:0".parse().unwrap())
+            .await
+            .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
@@ -413,7 +405,7 @@ async fn releasing_unused_uploads_is_durable_and_preserves_other_fork_references
     let root = support::directory();
     let workspace = support::directory();
     let p = Arc::new(Provider::default());
-    let service = start_persistent_service(root.path(), p, false, "127.0.0.1:0".parse().unwrap())
+    let service = start_persistent_service(root.path(), p, false, "0.0.0.0:0".parse().unwrap())
         .await
         .unwrap();
     let client = AgentClient::new(service.address).unwrap();

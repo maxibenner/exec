@@ -2,7 +2,7 @@
 
 ## Scope and ownership
 
-The macOS app now bundles and automatically launches the existing `exec-agent` executable and connects over its loopback HTTP/NDJSON API at `http://127.0.0.1:8765`. The initial cutover did not change Rust. A separate feature restored backend-owned automatic titles. This follow-up fixes one provider transport compatibility issue (valid OpenAI event streams without a Content-Type header); API contracts and backend ownership are unchanged.
+The macOS app now bundles and automatically launches the existing `exec-agent` executable and connects over its network HTTP/NDJSON API bound to `0.0.0.0:8765` by default. The initial cutover did not change Rust. A separate feature restored backend-owned automatic titles. This follow-up fixes one provider transport compatibility issue (valid OpenAI event streams without a Content-Type header); API contracts and backend ownership are unchanged.
 
 Rust is the sole owner of:
 - Provider credentials, browser authentication/token refresh, model discovery and account observations.
@@ -74,9 +74,9 @@ Rust owns the profile's `credentials.json`, `service.sock`, `conversations/`, im
 
 Normal app termination sends SIGTERM to the owned service and waits for it to exit. Rust cancels work, reaps tool processes, settles writes and releases its listener and store lock. The app does not force-kill the helper, steal locks, replay pending work or resume inference on launch.
 
-A crash/forced termination can leave a backend running, or a stale store lock and orphaned tool processes. Startup fails if port 8765 is occupied; it never attaches to another server. Follow the Rust recovery procedure in `agent-rust/API.md`: verify the old service **and its tool processes** have stopped before an operator removes stale ownership artifacts. There is no automatic recovery button that deletes them.
+A crash/forced termination can leave a backend running, or a stale store lock and orphaned tool processes. Startup fails if the configured port is occupied; it never attaches to another server. Follow the Rust recovery procedure in `agent-rust/API.md`: verify the old service **and its tool processes** have stopped before an operator removes stale ownership artifacts. There is no automatic recovery button that deletes them.
 
-There is no socket path limit, endpoint discovery, authentication or port fallback. Any local process can access the API. Profile ownership/permissions and store locking are unchanged.
+There is no socket path limit, endpoint discovery, authentication or port fallback. Every reachable network client can access the API. Configure the network binding with `EXEC_AGENT_HOST` / `EXEC_AGENT_PORT`; standalone flags `--host` / `--port` take precedence. Loopback-only binds are rejected. Wildcard binds accept local connections too; Swift connects locally while external clients target the host’s network address. Firewall/routing/OS permission behavior remains deployment-specific. Profile ownership/permissions and store locking are unchanged.
 
 ### Build-toolchain note
 
@@ -140,7 +140,7 @@ Verified:
 - Cancellation retains ownership/sleep prevention until terminal cleanup.
 - Uncertain turn/configuration requests are not automatically repeated.
 - Quit copy/buttons, repeated-Quit coalescing, Cancel behavior and waiting for backend shutdown.
-- Real loopback HTTP/chunked NDJSON, disconnected provider state, session creation/settings/rename/order/fork/delete, image upload/read/release, safe disconnected-provider turn failure, detached deletion preserving main selection/drafts, and clean listener/store-lock release.
+- Real network-bound HTTP/chunked NDJSON, disconnected provider state, session creation/settings/rename/order/fork/delete, image upload/read/release, safe disconnected-provider turn failure, detached deletion preserving main selection/drafts, and clean listener/store-lock release.
 - Signed app/helper build and `codesign --verify --deep --strict` with the configured stable certificate.
 
 Still manual/unverified:

@@ -38,6 +38,23 @@ actor FakeAgentTransport: AgentTransport {
         """
         return try JSONDecoder().decode(AgentJSON.self, from: Data(json.utf8))
     }
+    func httpConfiguration() throws {
+        let defaults = try AgentHTTPConfiguration(environment: [:])
+        try expect(defaults.host == "0.0.0.0" && defaults.port == 8765 && defaults.clientHost == "127.0.0.1")
+        let explicit = try AgentHTTPConfiguration(environment: ["EXEC_AGENT_HOST": "192.0.2.20", "EXEC_AGENT_PORT": "19876"])
+        try expect(explicit.host == "192.0.2.20" && explicit.port == 19876 && explicit.clientHost == explicit.host)
+        let ipv6 = try AgentHTTPConfiguration(environment: ["EXEC_AGENT_HOST": "::"])
+        try expect(ipv6.clientHost == "::1")
+        for environment in [["EXEC_AGENT_HOST": "127.0.0.1"], ["EXEC_AGENT_HOST": "::1"],
+                            ["EXEC_AGENT_HOST": "::ffff:127.0.0.1"], ["EXEC_AGENT_HOST": "localhost"],
+                            ["EXEC_AGENT_PORT": "0"], ["EXEC_AGENT_PORT": "65536"]] {
+            var rejected = false
+            do { _ = try AgentHTTPConfiguration(environment: environment) }
+            catch { rejected = true }
+            try expect(rejected)
+        }
+    }
+
     func snapshotAndApproval() async throws {
         let transport = FakeAgentTransport()
         let provider = AgentAccounts(api: AgentAPI(transport: transport))
@@ -143,7 +160,7 @@ actor FakeAgentTransport: AgentTransport {
         throw CheckFailure(description: "Timed out waiting for navigation")
     }
 
-    /// Real Rust subprocess and loopback HTTP framing, isolated empty credentials/profile.
+    /// Real Rust subprocess and network-bound HTTP framing, isolated empty credentials/profile.
     /// Never configures a provider or sends a live model request.
     func realService() async throws {
         let executable = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/agent-rust/release/exec-agent")
@@ -163,7 +180,7 @@ actor FakeAgentTransport: AgentTransport {
         try process.run()
         defer { if process.isRunning { process.terminate(); process.waitUntilExit() } }
         try await AgentService.waitUntilReady(process: process, output: output)
-        let api = AgentAPI(transport: HTTPAgentTransport(port: 18765))
+        let api = AgentAPI(transport: HTTPAgentTransport(host: "localhost", port: 18765))
         let health = try await api.get("/v1/health")
         try expect(health["version"].number == 1)
         // A conflicting helper must fail readiness, not attach to the first backend.

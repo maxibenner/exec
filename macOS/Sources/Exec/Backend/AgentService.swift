@@ -22,9 +22,11 @@ import Darwin
               FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw ExecError("The bundled Exec backend is missing. Rebuild or reinstall Exec.")
         }
+        let configuration = try AgentHTTPConfiguration()
         let process = Process()
         process.executableURL = executable
-        process.arguments = ["--profile", Self.profile.path, "--workspace-tools"]
+        process.arguments = ["--profile", Self.profile.path, "--workspace-tools",
+                             "--host", configuration.host, "--port", String(configuration.port)]
         var environment = ProcessInfo.processInfo.environment
         // GUI onboarding always controls this app's private profile, never ambient shell credentials.
         environment.removeValue(forKey: "DEEPSEEK_API_KEY")
@@ -38,7 +40,7 @@ import Darwin
         self.process = process
         do {
             try await Self.waitUntilReady(process: process, output: output)
-            let api = AgentAPI(transport: HTTPAgentTransport())
+            let api = AgentAPI(transport: HTTPAgentTransport(host: configuration.clientHost, port: configuration.port))
             let health = try await api.get("/v1/health")
             guard health["version"].number == 1, health["toolsEnabled"].bool else { throw ExecError("The bundled backend has an incompatible API or disabled workspace tools.") }
             self.api = api
@@ -51,7 +53,7 @@ import Darwin
     }
 
     /// Wait for our child's readiness, not an arbitrary server already using the port.
-    /// The marker carries no address: the endpoint is fixed and never discovered.
+    /// The marker carries no address: the endpoint is explicitly configured and never discovered.
     static func waitUntilReady(process: Process, output: Pipe) async throws {
         let descriptor = output.fileHandleForReading.fileDescriptor
         let flags = fcntl(descriptor, F_GETFL)
@@ -64,7 +66,7 @@ import Darwin
         while true {
             try Task.checkCancellation()
             guard process.isRunning else {
-                throw ExecError("The Exec backend could not start. Port 8765 may be in use or its profile may be locked or unreadable; no files were removed.")
+                throw ExecError("The Exec backend could not start. The configured host/port may be unavailable or its profile may be locked or unreadable; no files were removed.")
             }
             var bytes = [UInt8](repeating: 0, count: 64)
             let count = Darwin.read(descriptor, &bytes, bytes.count)

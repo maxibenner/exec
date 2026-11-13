@@ -37,7 +37,7 @@ pub async fn private_directory(path: &Path) -> Result<PathBuf> {
     .await
     .map_err(|_| Error::Internal)?
 }
-pub const DEFAULT_ADDRESS: &str = "127.0.0.1:8765";
+pub const DEFAULT_ADDRESS: &str = "0.0.0.0:8765";
 pub struct ServiceOptions {
     pub manager: Arc<AgentManager>,
     pub provider: Arc<dyn ChatProvider>,
@@ -132,8 +132,8 @@ pub async fn start_persistent_service_with_native(
     }
 }
 pub async fn start_service(options: ServiceOptions) -> Result<Service> {
-    if !options.address.ip().is_loopback() {
-        return Err(Error::Invalid("The HTTP service must bind to loopback."));
+    if options.address.ip().to_canonical().is_loopback() {
+        return Err(Error::Invalid("Loopback-only binding is not supported."));
     }
     let listener = tokio::net::TcpListener::bind(options.address).await?;
     let address = listener.local_addr()?;

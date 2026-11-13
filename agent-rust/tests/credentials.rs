@@ -280,6 +280,10 @@ async fn launcher_rejects_removed_cli_commands_and_bad_arguments_before_creating
         vec!["chat", "not-a-session"],
         vec!["serve"],
         vec!["--native-frontend-pid", "1"],
+        vec!["--host"],
+        vec!["--host", "localhost"],
+        vec!["--host", "127.0.0.1"],
+        vec!["--host", "::1"],
         vec!["--port", "0"],
         vec!["--port", "65536"],
         vec!["--credentials"],
@@ -320,4 +324,56 @@ async fn standalone_without_credentials_keeps_history_accessible() {
     );
     assert_eq!(client.list().await.unwrap()[0]["id"], c.id);
     stop(second, libc::SIGTERM).await;
+}
+
+#[tokio::test]
+async fn http_environment_configures_binding_and_explicit_flags_take_precedence() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let root = directory();
+    for override_flags in [false, true] {
+        let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
+        let profile = root.path().join(if override_flags {
+            "flags"
+        } else {
+            "environment"
+        });
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_exec-agent"));
+        command
+            .args(["--profile", profile.to_str().unwrap()])
+            .env_clear()
+            .env("HOME", root.path())
+            .env(
+                "EXEC_AGENT_HOST",
+                if override_flags { "invalid" } else { "0.0.0.0" },
+            )
+            .env(
+                "EXEC_AGENT_PORT",
+                if override_flags {
+                    "invalid".into()
+                } else {
+                    address.port().to_string()
+                },
+            )
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        if override_flags {
+            command.args(["--host", "0.0.0.0", "--port", &address.port().to_string()]);
+        }
+        let mut child = command.spawn().unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .as_deref(),
+            Some("ready")
+        );
+        let client = AgentClient::new(address).unwrap();
+        assert_eq!(client.health().await.unwrap()["version"], 1);
+        stop(child, libc::SIGTERM).await;
+    }
 }

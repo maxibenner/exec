@@ -126,7 +126,7 @@ async fn api_credentials_change_at_runtime_without_exposing_secrets_or_network_v
             .unwrap(),
     );
     let service =
-        start_persistent_service(root.path(), provider, false, "127.0.0.1:0".parse().unwrap())
+        start_persistent_service(root.path(), provider, false, "0.0.0.0:0".parse().unwrap())
             .await
             .unwrap();
     let client = AgentClient::new(service.address).unwrap();

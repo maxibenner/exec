@@ -25,7 +25,7 @@ async fn setup(provider: Arc<dyn ChatProvider>, tools: Vec<Arc<dyn Tool>>) -> Fi
         manager: Arc::new(AgentManager::default()),
         provider,
         tools,
-        address: "127.0.0.1:0".parse().unwrap(),
+        address: "0.0.0.0:0".parse().unwrap(),
     })
     .await
     .unwrap();
@@ -82,14 +82,10 @@ fn snapshot(frame: ServiceEvent) -> Option<ConversationSnapshot> {
 async fn api_default_auto_and_durable_settings_updates_reconcile_observers() {
     let root = directory();
     let p = FakeProvider::new(vec![answer()]);
-    let service = start_persistent_service(
-        root.path(),
-        p.clone(),
-        false,
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let service =
+        start_persistent_service(root.path(), p.clone(), false, "0.0.0.0:0".parse().unwrap())
+            .await
+            .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
@@ -137,14 +133,10 @@ async fn api_default_auto_and_durable_settings_updates_reconcile_observers() {
         );
     }
     service.close().await.unwrap();
-    let service = start_persistent_service(
-        root.path(),
-        p.clone(),
-        false,
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let service =
+        start_persistent_service(root.path(), p.clone(), false, "0.0.0.0:0".parse().unwrap())
+            .await
+            .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     assert_eq!(
         client.get(&c.id).await.unwrap().configuration.settings,
@@ -168,7 +160,7 @@ async fn api_delete_is_durable_and_does_not_repeat() {
         root.path(),
         provider.clone(),
         false,
-        "127.0.0.1:0".parse().unwrap(),
+        "0.0.0.0:0".parse().unwrap(),
     )
     .await
     .unwrap();
@@ -199,7 +191,7 @@ async fn api_delete_is_durable_and_does_not_repeat() {
     );
     service.close().await.unwrap();
     let service =
-        start_persistent_service(root.path(), provider, false, "127.0.0.1:0".parse().unwrap())
+        start_persistent_service(root.path(), provider, false, "0.0.0.0:0".parse().unwrap())
             .await
             .unwrap();
     let client = AgentClient::new(service.address).unwrap();
@@ -211,14 +203,10 @@ async fn api_delete_is_durable_and_does_not_repeat() {
 async fn api_create_stream_reconnect_and_durable_continuation() {
     let root = directory();
     let p = FakeProvider::new(vec![answer(), answer()]);
-    let service = start_persistent_service(
-        root.path(),
-        p.clone(),
-        false,
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let service =
+        start_persistent_service(root.path(), p.clone(), false, "0.0.0.0:0".parse().unwrap())
+            .await
+            .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
@@ -252,16 +240,12 @@ async fn api_create_stream_reconnect_and_durable_continuation() {
     let list = client.list().await.unwrap();
     assert_eq!(list[0]["id"], c.id);
     assert!(list[0].get("messages").is_none());
-    assert!(service.address.ip().is_loopback());
+    assert!(service.address.ip().is_unspecified());
     service.close().await.unwrap();
-    let service = start_persistent_service(
-        root.path(),
-        p.clone(),
-        false,
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let service =
+        start_persistent_service(root.path(), p.clone(), false, "0.0.0.0:0".parse().unwrap())
+            .await
+            .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     assert_eq!(client.get(&c.id).await.unwrap(), saved);
     assert_eq!(p.count(), 1);
@@ -477,7 +461,7 @@ async fn shutdown_persists_pending_approval_without_execution_or_restart() {
     let root = directory();
     let p=FakeProvider::new(vec![response(vec![ProviderEvent::ToolCall(ToolCall{id:"write".into(),name:"edit_file".into(),arguments:json!({"path":"must-not-exist.txt","expected_revision":"new","old_text":"","new_text":"test"}).as_object().unwrap().clone()}),ProviderEvent::Done])]);
     let service =
-        start_persistent_service(root.path(), p.clone(), true, "127.0.0.1:0".parse().unwrap())
+        start_persistent_service(root.path(), p.clone(), true, "0.0.0.0:0".parse().unwrap())
             .await
             .unwrap();
     let client = AgentClient::new(service.address).unwrap();
@@ -500,7 +484,7 @@ async fn shutdown_persists_pending_approval_without_execution_or_restart() {
     until_api(&client, &c.id, |s| s.approval.is_some()).await;
     service.close().await.unwrap();
     let service =
-        start_persistent_service(root.path(), p.clone(), true, "127.0.0.1:0".parse().unwrap())
+        start_persistent_service(root.path(), p.clone(), true, "0.0.0.0:0".parse().unwrap())
             .await
             .unwrap();
     let client = AgentClient::new(service.address).unwrap();
@@ -561,31 +545,40 @@ async fn http_validation_rejects_malformed_unknown_browser_origin_without_infere
     );
     let raw = reqwest::Client::builder().no_proxy().build().unwrap();
     assert_eq!(
-        raw.get(format!("http://{}/v1/health", f.service.address))
-            .header("Origin", "https://example.com")
-            .send()
-            .await
-            .unwrap()
-            .status(),
+        raw.get(format!(
+            "http://127.0.0.1:{}/v1/health",
+            f.service.address.port()
+        ))
+        .header("Origin", "https://example.com")
+        .send()
+        .await
+        .unwrap()
+        .status(),
         403
     );
     assert_eq!(
-        raw.post(format!("http://{}/v1/conversations", f.service.address))
-            .header("Content-Type", "application/json")
-            .body("{malformed")
-            .send()
-            .await
-            .unwrap()
-            .status(),
+        raw.post(format!(
+            "http://127.0.0.1:{}/v1/conversations",
+            f.service.address.port()
+        ))
+        .header("Content-Type", "application/json")
+        .body("{malformed")
+        .send()
+        .await
+        .unwrap()
+        .status(),
         400
     );
     assert_eq!(
-        raw.post(format!("http://{}/v1/conversations", f.service.address))
-            .body("{}")
-            .send()
-            .await
-            .unwrap()
-            .status(),
+        raw.post(format!(
+            "http://127.0.0.1:{}/v1/conversations",
+            f.service.address.port()
+        ))
+        .body("{}")
+        .send()
+        .await
+        .unwrap()
+        .status(),
         415
     );
     assert_eq!(p.count(), 0);
@@ -616,23 +609,30 @@ async fn private_profile_refuses_insecure_permissions_and_http_refuses_port_conf
     manager.close().await.unwrap();
 }
 #[tokio::test]
-async fn http_refuses_network_binds_and_releases_its_port_on_shutdown() {
+async fn http_binds_all_interfaces_rejects_loopback_and_releases_its_port() {
+    assert_eq!(DEFAULT_ADDRESS, "0.0.0.0:8765");
     let manager = Arc::new(AgentManager::default());
-    assert!(
-        start_service(ServiceOptions {
-            manager: manager.clone(),
-            provider: FakeProvider::new(vec![]),
-            tools: vec![],
-            address: "0.0.0.0:0".parse().unwrap(),
-        })
-        .await
-        .is_err()
-    );
+    for address in [
+        "127.0.0.1:0",
+        "127.0.0.2:0",
+        "[::1]:0",
+        "[::ffff:127.0.0.1]:0",
+    ] {
+        assert!(
+            start_service(ServiceOptions {
+                manager: manager.clone(),
+                provider: FakeProvider::new(vec![]),
+                tools: vec![],
+                address: address.parse().unwrap(),
+            })
+            .await
+            .is_err()
+        );
+    }
     manager.close().await.unwrap();
     let f = setup(FakeProvider::new(vec![]), vec![]).await;
     let address = f.service.address;
-    assert!(address.ip().is_loopback());
-    assert!(address.port() > 0);
+    assert!(address.ip().is_unspecified());
     assert_eq!(f.client.health().await.unwrap()["version"], 1);
     f.service.close().await.unwrap();
     let listener = tokio::net::TcpListener::bind(address).await.unwrap();

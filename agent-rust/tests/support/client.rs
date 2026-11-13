@@ -14,7 +14,15 @@ pub struct AgentClient {
     address: SocketAddr,
 }
 impl AgentClient {
-    pub fn new(address: SocketAddr) -> Result<Self> {
+    pub fn new(mut address: SocketAddr) -> Result<Self> {
+        // A wildcard is a bind address, not a destination.
+        if address.ip().is_unspecified() {
+            address.set_ip(if address.is_ipv4() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            });
+        }
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())

@@ -23,11 +23,11 @@ Keep profiles and credential files **outside all model workspaces**. Approved sh
 
 ## Embedded startup
 
-`service::start_persistent_service(profile, provider, workspace_tools, address)` accepts an absolute profile path, `Arc<dyn ChatProvider>`, an explicit tool opt-in, and a loopback `SocketAddr`. `providers::credentials::configured_deepseek_provider` provides the same JSON/environment setup; alternatively construct `DeepSeekProvider` with a host-owned async `CredentialSource`.
+`service::start_persistent_service(profile, provider, workspace_tools, address)` accepts an absolute profile path, `Arc<dyn ChatProvider>`, an explicit tool opt-in, and a non-loopback `SocketAddr`. `providers::credentials::configured_deepseek_provider` provides the same JSON/environment setup; alternatively construct `DeepSeekProvider` with a host-owned async `CredentialSource`.
 
 ```rust,ignore
 let service = exec_agent::service::start_persistent_service(
-    absolute_profile_path, configured_provider, false, "127.0.0.1:8765".parse()?,
+    absolute_profile_path, configured_provider, false, "0.0.0.0:8765".parse()?,
 ).await?;
 // Host owns signal handling/lifetime. Wait for explicit shutdown, then:
 service.close().await?;
@@ -52,17 +52,38 @@ Insecure/symlinked profile directories are refused, never silently made private.
 
 The executable only hosts the backend; there is no CLI client, interactive terminal, or
 chat/list/watch command. Launch it with optional `--profile PATH`, `--credentials PATH`,
-`--workspace-tools` and `--port PORT`. The default profile is `~/.exec-agent`; the default
-endpoint is **`http://127.0.0.1:8765`**. An explicit port override is useful for isolated
-hosts/tests and must also be supplied to their HTTP client. The macOS app always uses 8765.
+`--workspace-tools`, `--host IP` and `--port PORT`. The default profile is `~/.exec-agent`;
+the default binding is **`0.0.0.0:8765`**, accepting connections on all IPv4 interfaces.
+`EXEC_AGENT_HOST` and `EXEC_AGENT_PORT` also configure binding; explicit flags take precedence
+over the corresponding environment variable. Invalid settings fail startup, never fall back.
+Hosts must be numeric IP addresses; loopback-only binding (including IPv4-mapped loopback)
+is rejected. A specific network-interface IP or IPv6 wildcard `::` can be selected explicitly;
+IPv6 wildcard behavior depends on the OS and is not a promise of dual-stack support.
+The macOS app reads the same environment variables and passes explicit host/port flags to
+its helper. Its local client maps wildcard binds to the matching local address; other HTTP
+clients must target the server’s actual network IP/hostname, never `0.0.0.0`.
 There is no endpoint discovery, port scanning, fallback port, or automatic attachment to
-an existing backend. An occupied port fails startup. Once bound and initialized, the helper
+an existing backend. An occupied port or unavailable interface fails startup. Once bound and initialized, the helper
 writes `ready\n` to stdout; this is a readiness marker, not endpoint discovery.
 SIGINT/SIGTERM cancel and await work, checkpoint, release the listener and close the store.
 
 ## HTTP API v1
 
-HTTP/1.1 over loopback TCP. **No authentication. Any local process, including other local users, can read/control conversations, manage provider credentials and register a native frontend.** This intentionally replaces the old socket permissions and peer/PID checks. The service refuses non-loopback binds. No cookies or CORS; Origin/Fetch-Metadata browser requests are rejected. **Never expose or proxy this API to a network.**
+HTTP/1.1 over network TCP. **No authentication or TLS. Any reachable client can read/control
+conversations, manage provider credentials and register a native frontend.** This intentionally
+replaces the old socket permissions and peer/PID checks. Default binding is all IPv4 interfaces;
+loopback-only binds are not supported. Use a trusted network and appropriate firewall rules;
+there is no built-in network access control. OS firewall, routing and local-network permissions
+can still block traffic. No cookies or CORS; Origin/Fetch-Metadata browser requests remain
+rejected. Network transport does not relocate tool execution/workspace paths: they belong to
+the backend host. OAuth callbacks and native capture still have their existing host/OS constraints.
+
+```sh
+./target/release/exec-agent --host 0.0.0.0 --port 8765
+EXEC_AGENT_HOST=0.0.0.0 EXEC_AGENT_PORT=9876 ./target/release/exec-agent
+# From another machine, substitute the server's actual network IP:
+curl http://SERVER_IP:8765/v1/health
+```
 
 Bodies require `Content-Type: application/json` and reject unknown fields. Request bodies are bounded to 12 MiB (for encoded images), text to 128 Ki UTF-16 code units with an additional 128 KiB UTF-8 turn bound, model IDs to 128 code units, and workspace paths to 4,096 code units. Workspaces must be existing absolute directories and are canonicalized. Approval/cancellation IDs are UUIDs. Errors are an HTTP status plus `{"error":"safe message"}`, never raw provider exceptions. Exact diagnostic wording is not a machine-readable error code; oversized/interrupted bodies can also reset the connection.
 
@@ -112,7 +133,7 @@ The system prompt can be changed while idle; the project's frozen snapshot is no
 
 Settings mutations publish full snapshot frames after settlement, including storage-error
 snapshots on failed acknowledgements. A disconnected caller does not abort a settings write.
-The API remains local; prompts/project instructions are exposed only to trusted local
+The API has no client authentication; prompts/project instructions are exposed to reachable HTTP
 clients and the selected provider. Auto mode does not sandbox tools or enable any future
 desktop capture capability/OS permission.
 
@@ -159,7 +180,7 @@ curl --no-buffer http://127.0.0.1:8765/v1/conversations/CONVERSATION_ID/events
 
 Crash recovery never resumes work or steals ownership. Verify the old host and its tool processes have stopped, then explicitly remove only the stale `conversations/.lock` for that profile. See [README.md](README.md#persistence-and-recovery) for interrupted intent, missing results and possible side effects.
 
-Tests cover these contracts with fake providers/transports and real loopback TCP connections/subprocesses. Live OpenAI/DeepSeek, Linux deployment, browser OAuth, native OS permission behavior and Swift UI integration are not claimed verified.
+Tests cover these contracts with fake providers/transports and real network-bound TCP connections/subprocesses. Live OpenAI/DeepSeek, Linux deployment, browser OAuth, native OS permission behavior and Swift UI integration are not claimed verified.
 
 ## Steering
 
@@ -375,7 +396,7 @@ The manager owns one connection attempt, excludes account changes/new turns duri
 and keeps history readable. Attempt states are `running`, `completed`, `failed`, and
 `interrupted`. Authentication continues independently of a dropped HTTP caller; an explicit
 cancel targets its exact attempt. Shutdown cancels the attempt and awaits its settlement.
-The challenge URL is returned only to the initiating trusted local client, never logged or
+The challenge URL is returned only to the initiating HTTP client, never logged or
 included in provider status. Do not log this response. Swift opens the system browser
 without printing the URL. The auth status and cancellation HTTP endpoints observe/control it.
 DeepSeek keys are configured through the provider HTTP endpoint or private startup credentials.

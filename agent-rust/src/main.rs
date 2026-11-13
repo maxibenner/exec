@@ -38,6 +38,7 @@ async fn run() -> Result<()> {
     let mut credentials = None;
     let mut tools = false;
     let mut port = None;
+    let mut host = None;
     let mut profile_set = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -55,17 +56,21 @@ async fn run() -> Result<()> {
                 ));
             }
             "--workspace-tools" if !tools => tools = true,
+            "--host" if host.is_none() => {
+                host = Some(
+                    args.next()
+                        .ok_or(Error::Invalid("--host requires an IP address."))?,
+                );
+            }
             "--port" if port.is_none() => {
-                let value = args
-                    .next()
-                    .and_then(|s| s.parse::<u16>().ok())
-                    .filter(|p| *p > 0)
-                    .ok_or(Error::Invalid("--port requires a port from 1 to 65535."))?;
-                port = Some(value);
+                port = Some(
+                    args.next()
+                        .ok_or(Error::Invalid("--port requires a port."))?,
+                );
             }
             _ => {
                 return Err(Error::Invalid(
-                    "Invalid backend arguments. Only --profile, --credentials, --workspace-tools and --port are supported; there is no CLI client.",
+                    "Invalid backend arguments. Only --profile, --credentials, --workspace-tools, --host and --port are supported; there is no CLI client.",
                 ));
             }
         }
@@ -73,8 +78,23 @@ async fn run() -> Result<()> {
     if !profile.is_absolute() {
         profile = std::env::current_dir()?.join(profile);
     }
+    // Explicit flags override environment values; no discovery or fallback binding.
     let mut address: std::net::SocketAddr = DEFAULT_ADDRESS.parse().unwrap();
-    if let Some(port) = port {
+    if let Some(host) = setting(host, "EXEC_AGENT_HOST")? {
+        let ip = host
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| Error::Invalid("Host must be a numeric network IP address."))?;
+        address.set_ip(ip);
+    }
+    if address.ip().to_canonical().is_loopback() {
+        return Err(Error::Invalid("Loopback-only binding is not supported."));
+    }
+    if let Some(port) = setting(port, "EXEC_AGENT_PORT")? {
+        let port = port
+            .parse::<u16>()
+            .ok()
+            .filter(|p| *p > 0)
+            .ok_or(Error::Invalid("Port must be from 1 to 65535."))?;
         address.set_port(port);
     }
     let native = Arc::new(exec_agent::native::NativeHub::default());
@@ -104,8 +124,19 @@ async fn run() -> Result<()> {
 
     let service = start_persistent_service_with_native(&profile, provider, tools, address, native).await
         .map_err(|_| Error::Invalid("Backend startup failed. Check port availability, profile permissions and store ownership; no stale state was removed."))?;
-    // Readiness only: clients already know the fixed endpoint. Never discover another server.
+    // Readiness only: clients already know the configured endpoint. Never discover another server.
     println!("ready");
     tokio::select! { _ = interrupt.recv() => {}, _ = terminate.recv() => {} }
     service.close().await
+}
+
+fn setting(explicit: Option<String>, name: &str) -> Result<Option<String>> {
+    if explicit.is_some() {
+        return Ok(explicit);
+    }
+    match std::env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(_) => Err(Error::Invalid("Invalid HTTP configuration environment.")),
+    }
 }

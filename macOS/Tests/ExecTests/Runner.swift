@@ -74,6 +74,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Agent snapshot reconciliation and approvals", { try await AgentIntegrationTests().snapshotAndApproval() }),
             ("Uncertain submissions never retry", { try await AgentIntegrationTests().uncertainSendIsNotRetried() }),
             ("Quit retains copy and awaits backend shutdown", { try await AgentIntegrationTests().quitWaitsForBackendAndPreservesCopy() }),
+            ("HTTP configuration requires network binding and preserves explicit endpoints", { try AgentIntegrationTests().httpConfiguration() }),
             ("Agent transport connects to isolated Rust service", { try await AgentIntegrationTests().realService() })
         ]
         for (name, check) in checks {

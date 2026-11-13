@@ -26,7 +26,9 @@ cd macOS
 
 ## Backend integration
 
-The existing native UI and virtualized transcript renderer now use the bundled Rust service over HTTP at `http://127.0.0.1:8765`. The endpoint is fixed, with no authentication, discovery or fallback port. Any local process can access the API; it is never bound to a network interface. The backend executable no longer includes a CLI client. Provider authentication, inference, tools, approvals, persistence and recovery belong to Rust, not a second Swift runner.
+The existing native UI and virtualized transcript renderer use the bundled Rust service. It listens on **`0.0.0.0:8765` by default**, accepting connections on all IPv4 interfaces. There is no authentication, discovery or fallback port; loopback-only binding is not supported. Reachable network clients can read/control conversations, execute enabled tools and manage provider settings. Use only on a trusted, appropriately firewalled network. The backend executable has no CLI client. Provider authentication, inference, tools, approvals, persistence and recovery belong to Rust, not a second Swift runner.
+
+Configure the backend with `--host IP --port PORT` or `EXEC_AGENT_HOST` / `EXEC_AGENT_PORT` (flags take precedence). Hosts must be numeric, non-loopback interface or wildcard addresses. The macOS app reads the same environment variables when launching its helper. It connects locally when the helper binds a wildcard; external clients use the machine’s actual network address, e.g. `http://SERVER_IP:8765/v1/health`. Binding does not bypass OS firewall, routing or local-network permissions.
 
 The app uses a fresh profile at `~/Library/Application Support/Exec/Agent/`. Credentials are stored in a private plaintext file. No old Swift conversations or Keychain entries are imported or removed; reconnect providers in Settings.
 

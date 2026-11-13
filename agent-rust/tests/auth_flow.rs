@@ -31,7 +31,7 @@ async fn browser_authentication_is_manager_owned_targeted_and_settles_before_shu
         manager: manager.clone(),
         provider: Arc::new(Provider),
         tools: vec![],
-        address: "127.0.0.1:0".parse().unwrap(),
+        address: "0.0.0.0:0".parse().unwrap(),
     })
     .await
     .unwrap();

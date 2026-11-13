@@ -200,14 +200,10 @@ async fn manual_compaction_api_receipt_and_opaque_checkpoint_survive_restart() {
     let root = support::directory();
     let workspace = support::directory();
     let p = Arc::new(Provider::default());
-    let service = start_persistent_service(
-        root.path(),
-        p.clone(),
-        false,
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let service =
+        start_persistent_service(root.path(), p.clone(), false, "0.0.0.0:0".parse().unwrap())
+            .await
+            .unwrap();
     let client = AgentClient::new(service.address).unwrap();
     let c = client
         .create("model", workspace.path().to_str().unwrap())
@@ -251,7 +247,7 @@ async fn manual_compaction_api_receipt_and_opaque_checkpoint_survive_restart() {
     assert_eq!(compacted.messages, history);
     assert!(compacted.context_usage.is_none());
     service.close().await.unwrap();
-    let service = start_persistent_service(root.path(), p, false, "127.0.0.1:0".parse().unwrap())
+    let service = start_persistent_service(root.path(), p, false, "0.0.0.0:0".parse().unwrap())
         .await
         .unwrap();
     let client = AgentClient::new(service.address).unwrap();

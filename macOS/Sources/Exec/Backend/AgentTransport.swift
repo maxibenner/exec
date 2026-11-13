@@ -10,9 +10,10 @@ protocol AgentTransport: Sendable {
 
 struct HTTPAgentTransport: AgentTransport {
     static let defaultPort: UInt16 = 8765
+    var host: String = "127.0.0.1"
     var port: UInt16 = Self.defaultPort
     func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
-        let connection = AgentHTTPConnection(port: port)
+        let connection = AgentHTTPConnection(host: host, port: port)
         return try await withTaskCancellationHandler {
             let timeout = Task {
                 try await Task.sleep(for: .seconds(120))
@@ -31,7 +32,7 @@ struct HTTPAgentTransport: AgentTransport {
     }
 
     func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
-        let connection = AgentHTTPConnection(port: port)
+        let connection = AgentHTTPConnection(host: host, port: port)
         let events = AgentEventReader(connection: connection, method: method, path: path, body: body)
         // Consumer-driven reads: never accumulate a queue of large full snapshots,
         // and never drop token deltas merely because several arrive in one packet.
@@ -104,16 +105,19 @@ private actor AgentEventReader {
 /// NWConnection owns descriptor lifetime and makes cancellation safe during an async read.
 private final class AgentHTTPConnection: @unchecked Sendable {
     let connection: NWConnection
-    init(port: UInt16) {
-        connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+    let authority: String
+    init(host: String, port: UInt16) {
+        authority = "\(host.contains(":") ? "[\(host)]" : host):\(port)"
+        connection = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
     }
     deinit { connection.cancel() }
     func cancel() { connection.cancel() }
     func open(_ method: String, _ path: String, body: Data?) async throws -> HTTPBodyReader {
-        guard path.hasPrefix("/v1/"), !path.contains("\r"), !path.contains("\n") else { throw ExecError("Invalid backend request.") }
+        guard path.hasPrefix("/v1/"), !path.contains("\r"), !path.contains("\n"),
+              !authority.contains("\r"), !authority.contains("\n") else { throw ExecError("Invalid backend request.") }
         connection.start(queue: DispatchQueue(label: "Exec.agent.http"))
         let body = body ?? Data()
-        var request = Data("\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
+        var request = Data("\(method) \(path) HTTP/1.1\r\nHost: \(authority)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
         request.append(body)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             connection.send(content: request, completion: .contentProcessed { error in
