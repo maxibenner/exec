@@ -261,8 +261,35 @@ pub struct DeepSeekProvider {
     credentials: CredentialSource,
     transport: Arc<dyn HttpTransport>,
     timeout: Duration,
+    authentication: Option<Arc<super::credential_store::DeepSeekCredentials>>,
 }
 impl DeepSeekProvider {
+    pub fn managed(
+        authentication: Arc<super::credential_store::DeepSeekCredentials>,
+    ) -> Result<Self> {
+        Self::with_authentication(
+            authentication,
+            Arc::new(ReqwestTransport::new()?),
+            Duration::from_secs(120),
+        )
+    }
+    pub fn with_authentication(
+        authentication: Arc<super::credential_store::DeepSeekCredentials>,
+        transport: Arc<dyn HttpTransport>,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let source = authentication.clone();
+        let mut provider = Self::with_transport(
+            Arc::new(move |cancel| {
+                let source = source.clone();
+                Box::pin(async move { source.key(&cancel) })
+            }),
+            transport,
+            timeout,
+        )?;
+        provider.authentication = Some(authentication);
+        Ok(provider)
+    }
     pub fn new(credentials: CredentialSource) -> Result<Self> {
         Self::with_transport(
             credentials,
@@ -282,6 +309,7 @@ impl DeepSeekProvider {
             credentials,
             transport,
             timeout,
+            authentication: None,
         })
     }
     async fn request(
@@ -336,6 +364,22 @@ fn content_type(response: &HttpResponse, expected: &str) -> Result<()> {
 }
 #[async_trait]
 impl ChatProvider for DeepSeekProvider {
+    fn connections(&self) -> Vec<ProviderConnection> {
+        self.authentication
+            .as_ref()
+            .map(|a| vec![a.connection()])
+            .unwrap_or_default()
+    }
+    async fn set_credential(&self, provider: &str, key: Option<String>) -> Result<()> {
+        if provider != "deepseek" {
+            return Err(Error::Invalid("Unknown provider."));
+        }
+        self.authentication
+            .as_ref()
+            .ok_or(Error::Invalid("Credentials are externally managed."))?
+            .set(key)
+            .await
+    }
     fn stream(&self, request: ProviderRequest) -> BoxStream<'static, Result<ProviderEvent>> {
         let provider = self.clone();
         Box::pin(async_stream::try_stream! {

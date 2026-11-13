@@ -1,4 +1,6 @@
 use crate::{Error, Result, core::*, storage::ConversationStore};
+use futures_util::FutureExt;
+use std::panic::AssertUnwindSafe;
 use std::{
     collections::{BTreeMap, HashSet},
     sync::{Arc, Mutex},
@@ -12,6 +14,7 @@ struct Catalog {
     library: LibraryConfiguration,
     library_busy: bool,
     library_error: bool,
+    account_busy: bool,
 }
 pub struct AgentManager {
     catalog: Mutex<Catalog>,
@@ -73,6 +76,9 @@ impl AgentManager {
         if let Some(store) = &self.store {
             options.checkpoint = Some(store.clone());
         }
+        if self.catalog.lock().unwrap().account_busy {
+            return Err(Error::Busy);
+        }
         let conversation = Conversation::new(options, None)?;
         self.insert_conversation(conversation).await
     }
@@ -84,6 +90,9 @@ impl AgentManager {
             let mut c = self.catalog.lock().unwrap();
             if c.closed {
                 return Err(Error::Invalid("Agent manager is closed."));
+            }
+            if c.account_busy {
+                return Err(Error::Busy);
             }
             c.mutating.insert(conversation.id.clone());
         }
@@ -101,6 +110,42 @@ impl AgentManager {
         c.conversations
             .insert(conversation.id.clone(), conversation.clone());
         Ok(conversation)
+    }
+    pub fn connections(&self, provider: &dyn ChatProvider) -> Vec<ProviderConnection> {
+        provider.connections()
+    }
+    pub async fn set_credential(
+        self: &Arc<Self>,
+        provider: Arc<dyn ChatProvider>,
+        id: &str,
+        credential: Option<String>,
+    ) -> Result<Vec<ProviderConnection>> {
+        {
+            let mut catalog = self.catalog.lock().unwrap();
+            if catalog.closed {
+                return Err(Error::Invalid("Agent manager is closed."));
+            }
+            if catalog.account_busy
+                || !catalog.mutating.is_empty()
+                || catalog.conversations.values().any(|c| c.busy())
+            {
+                return Err(Error::Busy);
+            }
+            catalog.account_busy = true;
+        }
+        let manager = self.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            let result = AssertUnwindSafe(provider.set_credential(&id, credential))
+                .catch_unwind()
+                .await
+                .unwrap_or(Err(Error::Internal));
+            manager.catalog.lock().unwrap().account_busy = false;
+            result?;
+            Ok(provider.connections())
+        })
+        .await
+        .map_err(|_| Error::Internal)?
     }
     pub fn library_configuration(&self) -> Result<LibraryConfiguration> {
         let c = self.catalog.lock().unwrap();
@@ -216,6 +261,9 @@ impl AgentManager {
     /// Load project instructions only for the first accepted turn, then freeze them.
     /// The runner atomically accepts input and persists the snapshot before inference.
     pub async fn submit(&self, id: &str, text: String) -> Result<Submission> {
+        if self.catalog.lock().unwrap().account_busy {
+            return Err(Error::Busy);
+        }
         let conversation = self.get(id)?;
         if conversation.busy() {
             return Err(Error::Busy);
@@ -226,6 +274,10 @@ impl AgentManager {
         } else {
             crate::workspace_instructions::load(snapshot.workspace).await?
         };
+        let catalog = self.catalog.lock().unwrap();
+        if catalog.closed || catalog.account_busy {
+            return Err(Error::Busy);
+        }
         conversation.submit_with_instructions(text, instructions)
     }
     pub fn steer(&self, id: &str, operation_id: &str, text: String) -> Result<String> {
@@ -299,7 +351,8 @@ impl AgentManager {
             if c.closed {
                 return Err(Error::Invalid("Agent manager is closed."));
             }
-            if c.library_busy
+            if c.account_busy
+                || c.library_busy
                 || !c.mutating.is_empty()
                 || c.conversations.values().any(|c| c.busy())
             {

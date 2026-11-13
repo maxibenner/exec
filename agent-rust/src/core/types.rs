@@ -147,8 +147,26 @@ pub struct ChatModel {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConnection {
+    pub id: String,
+    pub name: String,
+    pub connected: bool,
+    pub source: String,
+    pub manageable: bool,
+    pub blocked: bool,
+}
 #[async_trait]
 pub trait ChatProvider: Send + Sync {
+    fn connections(&self) -> Vec<ProviderConnection> {
+        vec![]
+    }
+    async fn set_credential(&self, _provider: &str, _credential: Option<String>) -> Result<()> {
+        Err(crate::Error::Invalid(
+            "This provider's credentials are externally managed.",
+        ))
+    }
     /// Implementations must cooperate with cancellation and never retry inference.
     fn stream(&self, request: ProviderRequest) -> BoxStream<'static, Result<ProviderEvent>>;
     async fn models(&self, _cancel: CancellationToken) -> Result<Vec<ChatModel>> {

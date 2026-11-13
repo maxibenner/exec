@@ -286,6 +286,10 @@ async fn same_conversation_exclusion_cross_conversation_concurrency_explicit_can
     let op = f.client.submit(&a.id, "hold").await.unwrap();
     entered.cancelled().await;
     assert_eq!(
+        f.client.disconnect("deepseek").await.unwrap_err(),
+        Error::Api(409)
+    );
+    assert_eq!(
         f.client
             .update_settings(&a.id, SessionSettings::default())
             .await

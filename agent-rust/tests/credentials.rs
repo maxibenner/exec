@@ -265,11 +265,10 @@ async fn standalone_serve_loads_json_env_shutdown_reopens_without_credential_exp
     stop(third, libc::SIGTERM).await;
 }
 #[tokio::test]
-async fn serve_fails_before_creating_profile_on_missing_credentials_or_bad_arguments() {
+async fn serve_fails_before_creating_profile_on_bad_arguments() {
     let root = directory();
     let profile = root.path().join("absent");
     for args in [
-        vec![],
         vec!["--credentials"],
         vec!["--api-key", SECRET],
         vec!["--workspace-tools", "--workspace-tools"],
@@ -287,4 +286,25 @@ async fn serve_fails_before_creating_profile_on_missing_credentials_or_bad_argum
         assert!(!String::from_utf8_lossy(&output.stdout).contains(SECRET));
     }
     assert!(!profile.exists());
+}
+
+#[tokio::test]
+async fn standalone_without_credentials_keeps_history_accessible() {
+    let root = directory();
+    let profile = root.path().join("offline");
+    let (first, client) = start(&profile, &[], false).await;
+    assert!(!client.connections().await.unwrap()[0].connected);
+    let c = client
+        .create("deepseek-chat", root.path().to_str().unwrap())
+        .await
+        .unwrap();
+    client.rename(&c.id, "Offline history").await.unwrap();
+    stop(first, libc::SIGTERM).await;
+    let (second, client) = start(&profile, &[], false).await;
+    assert_eq!(
+        client.get(&c.id).await.unwrap().metadata.title.as_deref(),
+        Some("Offline history")
+    );
+    assert_eq!(client.list().await.unwrap()[0]["id"], c.id);
+    stop(second, libc::SIGTERM).await;
 }

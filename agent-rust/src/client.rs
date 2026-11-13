@@ -65,6 +65,41 @@ impl AgentClient {
         .await
         .map_err(|_| Error::Invalid(INVALID))?
     }
+    pub async fn connections(&self) -> Result<Vec<ProviderConnection>> {
+        decode(self.call("GET", "/v1/providers", None).await?)
+    }
+    pub async fn connect_api_key(
+        &self,
+        provider: &str,
+        key: &str,
+    ) -> Result<Vec<ProviderConnection>> {
+        if !provider
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        {
+            return Err(Error::Invalid("Invalid provider ID."));
+        }
+        decode(
+            self.call(
+                "PUT",
+                &format!("/v1/providers/{provider}"),
+                Some(json!({"apiKey":key})),
+            )
+            .await?,
+        )
+    }
+    pub async fn disconnect(&self, provider: &str) -> Result<Vec<ProviderConnection>> {
+        if !provider
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        {
+            return Err(Error::Invalid("Invalid provider ID."));
+        }
+        decode(
+            self.call("DELETE", &format!("/v1/providers/{provider}"), None)
+                .await?,
+        )
+    }
     pub async fn library(&self) -> Result<LibraryConfiguration> {
         decode(self.call("GET", "/v1/library", None).await?)
     }

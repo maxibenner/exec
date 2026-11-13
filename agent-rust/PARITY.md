@@ -70,6 +70,10 @@ The checked items below are delivered and verified; unchecked items remain outst
 - [x] Session titles/manual naming, activity timestamps, idle model changes, forks,
   shared ordering and configurable new-session defaults through manager/API/client/CLI.
 
+- [x] Credential-independent startup/history access and runtime DeepSeek API-key
+  connect/disconnect via private JSON, provider-neutral status/API/client and stdin-only CLI.
+  Environment values remain externally managed; no live validation is claimed.
+
 ### Remaining backend work
 
 - [ ] Provider-neutral capabilities/efforts/image support and effort selection.
@@ -77,7 +81,7 @@ The checked items below are delivered and verified; unchecked items remain outst
 - [ ] OpenAI subscription provider, browser OAuth, safe token refresh/persistence,
   JSON credential management and runtime connect/disconnect.
 - [ ] DeepSeek thinking/effort, reasoning context and token measurements.
-- [ ] Credential-independent access to saved conversations and metadata caches.
+- [ ] Provider/account model metadata caches.
 - [ ] Manual/automatic compaction, opaque provider state and context usage.
 - [ ] Typed tool results, assets, image inputs and durable image references.
 - [ ] Web search, public HTTPS content fetching, image generation.

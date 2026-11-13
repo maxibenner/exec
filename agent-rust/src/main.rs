@@ -13,12 +13,12 @@ use std::{
     sync::Arc,
 };
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     signal::unix::{Signal, SignalKind, signal},
     sync::mpsc,
 };
 use tokio_util::sync::CancellationToken;
-const HELP: &str = "Exec agent CLI (local service client)\n\nUsage: exec-agent [--profile PATH] COMMAND\n  serve [--credentials PATH] [--workspace-tools]\n                                      Run the service in the foreground (DeepSeek)\n  health                              Show service capabilities\n  models                              Discover provider models\n  list                                List saved conversations\n  library                             Show defaults and shared ordering\n  library-set JSON                    Replace defaults and shared ordering\n  rename ID TITLE                     Rename an idle conversation\n  model ID MODEL                      Select a model for subsequent turns\n  fork ID                             Copy an idle conversation\n  new MODEL [WORKSPACE] [--manual]     Create a conversation (auto approval by default)\n  show ID                             Show saved/current conversation state\n  delete ID                           Delete an idle conversation permanently\n  configure ID auto|manual PROMPT      Replace idle session policy and system prompt\n  chat ID                             Interactive chat; requires a terminal\n  send ID MESSAGE                     Submit one message and follow its operation\n  watch ID                            Observe until Ctrl-C; never approves automatically\n  steer ID OPERATION_ID MESSAGE        Add input at the next safe boundary\n  cancel ID OPERATION_ID               Cancel exactly that operation\n  approve ID OPERATION_ID APPROVAL_ID  Approve exactly that pending action\n  deny ID OPERATION_ID APPROVAL_ID     Deny exactly that pending action\n\nDefault profile: ~/.exec-agent\nOnly serve starts a service. There are no automatic request retries.\nserve reads DEEPSEEK_API_KEY, otherwise PROFILE/credentials.json (private mode 0600).\n--credentials selects another JSON file; environment credentials take precedence.\nRestart serve after changing credentials. Keys are never accepted as arguments.\nIn chat, /quit or EOF detaches; Ctrl-C cancels an active turn or exits while idle.\nIn send, pending approvals must be resolved explicitly from another client.\n";
+const HELP: &str = "Exec agent CLI (local service client)\n\nUsage: exec-agent [--profile PATH] COMMAND\n  serve [--credentials PATH] [--workspace-tools]\n                                      Run the service in the foreground (DeepSeek)\n  health                              Show service capabilities\n  models                              Discover provider models\n  providers                           Show credential configuration (never secrets)\n  connect PROVIDER                    Read API key from private piped stdin\n  disconnect PROVIDER                 Remove JSON-backed credentials\n  list                                List saved conversations\n  library                             Show defaults and shared ordering\n  library-set JSON                    Replace defaults and shared ordering\n  rename ID TITLE                     Rename an idle conversation\n  model ID MODEL                      Select a model for subsequent turns\n  fork ID                             Copy an idle conversation\n  new MODEL [WORKSPACE] [--manual]     Create a conversation (auto approval by default)\n  show ID                             Show saved/current conversation state\n  delete ID                           Delete an idle conversation permanently\n  configure ID auto|manual PROMPT      Replace idle session policy and system prompt\n  chat ID                             Interactive chat; requires a terminal\n  send ID MESSAGE                     Submit one message and follow its operation\n  watch ID                            Observe until Ctrl-C; never approves automatically\n  steer ID OPERATION_ID MESSAGE        Add input at the next safe boundary\n  cancel ID OPERATION_ID               Cancel exactly that operation\n  approve ID OPERATION_ID APPROVAL_ID  Approve exactly that pending action\n  deny ID OPERATION_ID APPROVAL_ID     Deny exactly that pending action\n\nDefault profile: ~/.exec-agent\nOnly serve starts a service. There are no automatic request retries.\nserve reads DEEPSEEK_API_KEY, otherwise PROFILE/credentials.json (private mode 0600).\n--credentials selects another JSON file; environment credentials take precedence.\nEnvironment/external-file changes require restart; API JSON changes take effect live. Keys are never accepted as arguments.\nIn chat, /quit or EOF detaches; Ctrl-C cancels an active turn or exits while idle.\nIn send, pending approvals must be resolved explicitly from another client.\n";
 fn main() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -124,9 +124,10 @@ async fn main_async() -> Result<()> {
         args.pop();
     }
     let count = match command.as_str() {
-        "health" | "models" | "list" | "library" => 0..=0,
+        "health" | "models" | "list" | "library" | "providers" => 0..=0,
         "new" => 1..=2,
-        "show" | "chat" | "watch" | "delete" | "fork" | "library-set" => 1..=1,
+        "show" | "chat" | "watch" | "delete" | "fork" | "library-set" | "connect"
+        | "disconnect" => 1..=1,
         "send" | "cancel" | "rename" | "model" => 2..=2,
         "approve" | "deny" | "configure" | "steer" => 3..=3,
         _ => return Err(Error::Invalid("Invalid command arguments. Use --help.")),
@@ -138,6 +139,24 @@ async fn main_async() -> Result<()> {
     match command.as_str() {
         "health" => return print(client.health().await?),
         "models" => return print(client.models().await?),
+        "providers" => return print(client.connections().await?),
+        "disconnect" => return print(client.disconnect(&args[0]).await?),
+        "connect" => {
+            if std::io::stdin().is_terminal() {
+                return Err(Error::Invalid(
+                    "Read the API key from private piped stdin, not terminal input or arguments.",
+                ));
+            }
+            let mut key = String::new();
+            tokio::io::stdin()
+                .take(8194)
+                .read_to_string(&mut key)
+                .await?;
+            if key.len() > 8193 {
+                return Err(Error::Invalid("Credential input is too large."));
+            }
+            return print(client.connect_api_key(&args[0], key.trim()).await?);
+        }
         "list" => return print(client.list().await?),
         "library" => return print(client.library().await?),
         "library-set" => {

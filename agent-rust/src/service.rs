@@ -260,6 +260,11 @@ struct Create {
     settings: Option<SessionSettings>,
 }
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct Connect {
+    api_key: String,
+}
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
 #[derive(Deserialize)]
@@ -330,6 +335,31 @@ async fn handle(
         let _guard = cancel.clone().drop_guard();
         let models = tokio::select! {biased;_=cancel.cancelled()=>return Err(ApiError(503,"Service is stopping.")),value=tokio::time::timeout(Duration::from_secs(120),options.provider.models(cancel.clone()))=>value.map_err(|_|ApiError(500,"Model discovery failed."))??};
         return Ok(json_response(200, models));
+    }
+    if method == "GET" && route == "/v1/providers" {
+        return Ok(json_response(
+            200,
+            options.manager.connections(options.provider.as_ref()),
+        ));
+    }
+    if let Some(id) = route.strip_prefix("/v1/providers/") {
+        if id.is_empty() || id.contains('/') {
+            return Err(ApiError(404, "Provider not found."));
+        }
+        let credential = match method.as_str() {
+            "PUT" => Some(body::<Connect>(request).await?.api_key),
+            "DELETE" => None,
+            _ => return Err(ApiError(404, "Route not found.")),
+        };
+        let connections = options
+            .manager
+            .set_credential(options.provider.clone(), id, credential)
+            .await
+            .map_err(|error| match error {
+                Error::Invalid(message) => ApiError(400, message),
+                other => ApiError::from(other),
+            })?;
+        return Ok(json_response(200, connections));
     }
     if route == "/v1/library" {
         return match method.as_str() {

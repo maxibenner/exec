@@ -12,14 +12,14 @@ From `agent-rust/`, run `cargo build --locked --release`, then:
 ./target/release/exec-agent --profile /absolute/profile serve --credentials /private/credentials.json --workspace-tools
 ```
 
-Credentials are loaded once at startup:
+Initial credentials are loaded at startup; API-managed JSON credentials can then change live:
 
 1. `DEEPSEEK_API_KEY`, if present, overrides JSON entirely. Empty/invalid values fail closed.
 2. `--credentials PATH`, otherwise `PROFILE/credentials.json` (default `~/.exec-agent/credentials.json`).
 
-The file must contain exactly `{"deepseek":{"apiKey":"YOUR_DEEPSEEK_API_KEY"}}`. Provision it privately using a secure editor or secret tool; never commit a real key. The loader requires an owned regular file with no group/other permissions (`0600`), refuses final-component symlinks, bounds reads to 16 KiB, and never writes credentials or changes their permissions. This is plaintext storage, not encryption or Keychain. There is no `.env` parser, implicit sign-in, credential CLI argument, or hot reload.
+The file contains `{"deepseek":{"apiKey":"YOUR_DEEPSEEK_API_KEY"}}`, or `{}` when disconnected. An absent file also means disconnected and does not prevent history access. Provision it privately using a secure editor or secret tool; never commit a real key. The loader requires an owned regular file with no group/other permissions (`0600`), refuses final-component symlinks, bounds reads to 16 KiB, and never repairs insecure permissions. API writes use private same-directory staging, file sync, atomic rename and directory sync. This is plaintext storage, not encryption or Keychain. There is no `.env` parser, implicit sign-in, credential CLI argument, or automatic external-file reload.
 
-Keep profiles and credential files **outside all model workspaces**. Approved shells are not sandboxed; same-user code can still read same-user files. Client commands do not load credentials. Restart after changing the key. Startup performs no model discovery or inference. SIGINT/SIGTERM take the cancellation/checkpoint/close path; repeated signals do not forcibly abandon tools.
+Keep profiles and credential files **outside all model workspaces**. Approved shells are not sandboxed; same-user code can still read same-user files. Client commands do not load credentials. Environment or external-file changes require restart. API JSON changes take effect without restart. Startup performs no model discovery or inference. SIGINT/SIGTERM take the cancellation/checkpoint/close path; repeated signals do not forcibly abandon tools.
 
 ## Embedded startup
 
@@ -37,7 +37,7 @@ service.close().await?;
 
 ```
 profile/                    owned private directory, mode 0700
-  credentials.json          optional manually managed plaintext credentials, mode 0600
+  credentials.json          optional private JSON-backed plaintext credentials, mode 0600
   service.sock              HTTP Unix socket, mode 0600
   conversations/
     .lock/                  exclusive store ownership
@@ -55,6 +55,9 @@ Run `./target/release/exec-agent` (or `cargo run --`) with an optional leading `
 | `serve [--credentials PATH] [--workspace-tools]` | Foreground DeepSeek service; only this command starts a service |
 | `health` | Show service capabilities |
 | `models` | Explicit provider model discovery |
+| `providers` | Inspect configuration status, never credentials |
+| `connect PROVIDER` | Read API key from bounded private piped stdin; never arguments or echoed terminal input |
+| `disconnect PROVIDER` | Remove JSON-backed credentials; environment credentials are externally managed |
 | `list` | List conversation summaries |
 | `new MODEL [WORKSPACE] [--manual]` | Create a conversation; workspace defaults to cwd, auto mode by default |
 | `configure ID auto\|manual PROMPT` | Replace idle session policy and system prompt; use `""` for an empty prompt |
@@ -81,6 +84,9 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | Method | Path | Body / response |
 |---|---|---|
 | GET | `/v1/health` | `{version:1, toolsEnabled:boolean}` |
+| GET | `/v1/providers` | Provider status array; no secrets or account identifiers |
+| PUT | `/v1/providers/:id` | `{apiKey}` → provider statuses after private JSON save |
+| DELETE | `/v1/providers/:id` | Disconnect JSON-backed provider → statuses |
 | GET | `/v1/library` | Shared defaults and ordering |
 | PUT | `/v1/library` | `{defaultModel,settings,order}` → saved configuration |
 | GET | `/v1/models` | Neutral model array: `id`, `name`, optional `contextWindow`, `maxOutputTokens` |
@@ -206,3 +212,18 @@ fails startup rather than silently resetting preferences. Clients retain their o
 session, drafts, windows and scroll state.
 
 CLI commands: `library`, `library-set JSON`, `rename ID TITLE`, `model ID MODEL`, `fork ID`.
+
+## Credential lifecycle
+
+Missing credentials do not prevent startup, browsing, renaming, forking or deleting saved
+conversations. Inference/discovery fail safely before transport without a configured key.
+DeepSeek API-key onboarding is an explicit local credential write, not a live validation
+request. `connected` means a credential is configured, not that the service verified it.
+Statuses contain `id`, `name`, `connected`, `source` (`json` or `environment`), `manageable`
+and `blocked`. Environment credentials override JSON and cannot be changed through the API.
+
+The manager rejects account mutations while any conversation/catalog mutation is active
+(409), and excludes new manager submissions/creation during a credential mutation. Writes
+remain owned after client disconnect. Failed write acknowledgements block that credential
+source until reload; no retry or permission repair is performed. Requests containing keys
+must never be logged. Keys never appear in snapshots, events, provider statuses or errors.

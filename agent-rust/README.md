@@ -37,7 +37,7 @@ See [API.md](API.md) for credentials, all CLI commands, HTTP/NDJSON contracts, a
 | `core/events.rs` | Nonblocking, bounded observer delivery; reconnect by snapshot rather than replay |
 | `manager.rs` | Independent concurrent conversations and durable catalog ownership |
 | `storage.rs` | Single-owner JSON profiles, serialized atomic checkpoints, locking and directory sync |
-| `providers/` | DeepSeek HTTP/SSE, request validation, model discovery and startup-only credentials |
+| `providers/` | DeepSeek HTTP/SSE, request validation, model discovery and private JSON/environment credential lifecycle |
 | `tools/` | Revision-checked file operations, literal search, approved bash commands and process-group cleanup |
 | `service.rs` | Private Unix-socket HTTP/NDJSON API, composition and orderly shutdown |
 | `client.rs`, `terminal.rs` | Transport-only client and escaped/reconciled terminal transcript |
@@ -111,4 +111,6 @@ The initial API was smoke-tested with the TypeScript sketch. New settings, defau
 
 Verified on macOS with Rust 1.93.1. Live DeepSeek authentication/service compatibility, interactive TTY behavior, Linux deployment, machine power-loss guarantees, remote access and Swift integration remain unverified. Automated mocks do not establish live provider compatibility.
 
-The sketch's intentionally absent features remain absent: credential onboarding, OpenAI subscription access, full shell logs, authenticated remote serving, plugins/skills infrastructure and Swift client integration. No agent framework or speculative features were added.
+Still absent: OpenAI subscription access, full shell logs, authenticated remote serving, plugins/skills infrastructure and Swift client integration. No agent framework or speculative features were added.
+
+DeepSeek credential onboarding and disconnection now work through the private API and stdin-only CLI. Missing credentials no longer block local history. This is configuration, not live authentication verification; JSON writes do not contact the provider.

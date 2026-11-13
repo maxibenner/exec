@@ -1,14 +1,13 @@
 use super::DeepSeekProvider;
-use crate::{Error, Result, check_cancel};
+use crate::{Error, Result};
 use std::{
     fs::OpenOptions,
     io::Read,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
-    sync::Arc,
 };
 const FILE_ERROR: &str = "Cannot load DeepSeek credentials. Set DEEPSEEK_API_KEY or supply an owned, private (0600) credentials JSON file with {\"deepseek\":{\"apiKey\":\"…\"}}.";
-fn api_key(value: &str) -> Result<String> {
+pub(super) fn api_key(value: &str) -> Result<String> {
     let key = value.trim();
     if key.is_empty() || key.len() > 8192 || !key.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
         return Err(Error::Invalid(
@@ -69,12 +68,10 @@ pub async fn configured_deepseek_provider(
         Err(std::env::VarError::NotPresent) => None,
         Err(_) => return Err(Error::Invalid("Invalid DeepSeek API key.")),
     };
-    let key = load_deepseek_api_key(profile, path, environment).await?;
-    DeepSeekProvider::new(Arc::new(move |cancel| {
-        let key = key.clone();
-        Box::pin(async move {
-            check_cancel(&cancel)?;
-            Ok(key)
-        })
-    }))
+    let credentials = super::credential_store::DeepSeekCredentials::open(
+        path.unwrap_or_else(|| profile.join("credentials.json")),
+        environment,
+    )
+    .await?;
+    DeepSeekProvider::managed(credentials)
 }

@@ -1,3 +1,4 @@
+pub mod credential_store;
 pub mod credentials;
 pub mod deepseek;
 pub mod response_stream;
