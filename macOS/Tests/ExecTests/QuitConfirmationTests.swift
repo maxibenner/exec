@@ -42,13 +42,11 @@ import AppKit
         delegate.store = library
         var prompts = 0
         var replies: [Bool] = []
-        var stops = 0
         delegate.confirmQuit = { _, _ in prompts += 1; return .alertSecondButtonReturn }
         delegate.replyToTermination = { _, reply in replies.append(reply) }
-        delegate.stopRemoteAccess = { stops += 1 }
         try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateNow)
         await Task.yield()
-        try expect(prompts == 0 && replies.isEmpty && stops == 0)
+        try expect(prompts == 0 && replies.isEmpty)
         try expect(first.draft == "Unsent in the background" && library.current.draft == "Unsent in the active composer")
     }
 
@@ -77,14 +75,12 @@ import AppKit
         var replies: [Bool] = []
         var replyReentry: NSApplication.TerminateReply?
         var stillRunningAtQuit = true
-        var stops = 0
         var alertText = ""
         delegate.confirmQuit = { alert, _ in
             prompts += 1
             alertText = alert.informativeText
             return await withCheckedContinuation { decision = $0 }
         }
-        delegate.stopRemoteAccess = { stops += 1 }
         delegate.replyToTermination = { [weak delegate] application, reply in
             replies.append(reply)
             if reply { stillRunningAtQuit = library.hasRunningOperations }
@@ -100,7 +96,7 @@ import AppKit
         decision?.resume(returning: .alertSecondButtonReturn); decision = nil
         try await wait { replies == [false] }
         try await Task.sleep(for: .milliseconds(30))
-        try expect(replyReentry == .terminateLater && prompts == 1 && stops == 0)
+        try expect(replyReentry == .terminateLater && prompts == 1)
         try expect(first.busy && second.busy)
 
         // A genuinely new user request may show one new confirmation after Cancel.
@@ -110,7 +106,7 @@ import AppKit
         decision?.resume(returning: .alertFirstButtonReturn); decision = nil
         try expect(delegate.applicationShouldTerminate(app) == .terminateLater)
         try await wait { replies == [false, true] }
-        try expect(stops == 1 && prompts == 2 && !stillRunningAtQuit)
+        try expect(prompts == 2 && !stillRunningAtQuit)
         try expect(first.messages.last?.status == .interrupted && second.messages.last?.status == .interrupted)
         for conversation in [first, second] {
             let saved = try await fixture.sessions.load(id: conversation.currentSessionID!)

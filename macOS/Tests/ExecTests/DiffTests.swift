@@ -12,11 +12,6 @@ struct DiffTests {
         let restored = try JSONDecoder().decode(ToolResult.self, from: JSONEncoder().encode(
             ToolResult(call: ToolCall(id: "edit", name: "edit_file", arguments: "{}"), text: "Edited file",
                        edit: .init(path: "file", diff: source))))
-        let remote = RemoteTranscript.Row(Message(role: .tool, text: "", toolResult: restored), pendingIDs: [])
-        try expect(remote.tool?.isDiff == true && remote.tool?.output == source)
-        let failure = ToolResult(call: restored.call, text: "- Edit failed")
-        let remoteFailure = RemoteTranscript.Row(Message(role: .tool, text: "", toolResult: failure), pendingIDs: [])
-        try expect(remoteFailure.tool?.isDiff == false && remoteFailure.tool?.output == failure.text)
         // A restored diff must have content on its very first layout, without an
         // onChange callback on an empty Group being required to populate it.
         let view = NSHostingView(rootView: DiffView(source: restored.edit!.diff).frame(width: 800))
