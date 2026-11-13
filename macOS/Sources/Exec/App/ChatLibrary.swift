@@ -10,7 +10,7 @@ import Observation
         _ = authenticating
         return isPresentingStartup ? discoveredModels : discoveredModels.filter { provider.isModelAvailable($0.id) }
     }
-    enum SettingsTab { case modelsAndTools, systemPrompt, accounts, usage, updates, remoteAccess }
+    enum SettingsTab { case modelsAndTools, systemPrompt, accounts, usage, updates }
     var settingsTab = SettingsTab.modelsAndTools
     var connectionError: String?
     private var rememberedModels: [String: String]
@@ -622,46 +622,6 @@ import Observation
         }
     }
 
-    /// Resolve existing conversations without changing desktop/window selection.
-    /// Cold loads share the navigation lock, preventing a second runner or deletion
-    /// while restoration is suspended. The operation executes before eviction.
-    func withRemoteConversation<T>(_ id: UUID, _ operation: (ChatStore) throws -> T) async throws -> T {
-        guard canModify, !isPresentingStartup else { throw ExecError("Exec is restoring or changing conversations. Try again shortly.") }
-        guard sessionList.contains(where: { $0.id == id && !$0.unreadable }) else {
-            throw ExecError("Conversation is unavailable.")
-        }
-        if let resident = conversation(id) { return try operation(resident) }
-        let generation = metadataGeneration
-        navigating = true
-        defer { loading = nil; navigating = false; trimConversations() }
-        let next = try makeConversation()
-        loading = next
-        try await next.loadSession(id)
-        try Task.checkCancellation()
-        guard generation == metadataGeneration else { throw CancellationError() }
-        remember(next)
-        return try operation(next)
-    }
-
-    /// Save a remotely created workspace without changing desktop selection or drafts.
-    /// The command ID is also the conversation ID, so an interrupted request can be
-    /// found in the catalog and can never overwrite or duplicate an existing session.
-    func createRemoteConversation(id: UUID, workspace: Workspace) async throws {
-        guard canModify, !isPresentingStartup, !sessionList.contains(where: { $0.id == id }) else {
-            throw ExecError("Cannot create this conversation right now.")
-        }
-        navigating = true
-        defer { loading = nil; navigating = false; trimConversations() }
-        // Check disk as well as the current account's catalog. A partial earlier
-        // save or a session belonging to another account must never be replaced.
-        guard try await sessions.load(id: id) == nil else { throw ExecError("Conversation already exists.") }
-        let next = try makeConversation(workspace: workspace, id: id)
-        loading = next
-        try Task.checkCancellation()
-        try await next.saveIfIdle(force: true)
-        remember(next)
-    }
-
     func canForkConversation(_ source: ChatStore) -> Bool {
         canModify && source.canFork && hasConversation(source) && openConversations.contains { $0 === source }
     }
@@ -838,10 +798,10 @@ import Observation
         }
     }
 
-    private func makeConversation(workspace: Workspace? = nil, id: UUID = UUID()) throws -> ChatStore {
+    private func makeConversation(workspace: Workspace? = nil) throws -> ChatStore {
         let conversation = ChatStore(provider: try provider.makeConversationProvider(), sessions: sessions,
                                      selectOnCheckpoint: false, newConversation: true, workspace: workspace,
-                                     newConversationID: id, defaultAutoApproveTools: defaultAutoApproveTools)
+                                     defaultAutoApproveTools: defaultAutoApproveTools)
         conversation.installModels(models, cached: modelsAreCached)
         conversation.selectedModel = defaultSessionModel?.id ?? ""
         conversation.selectedEffort = effectiveDefaultEffort

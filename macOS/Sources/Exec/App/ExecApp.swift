@@ -4,7 +4,6 @@ import SwiftUI
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     private let initiallyHasSavedSessions = SessionStore.applicationHasSavedSessions()
     @State private var startup = ChatStartup()
-    @State private var remoteAccess = RemoteAccess()
     @StateObject private var updater = SparkleUpdater()
     @State private var windowGeometry = MainWindowGeometry()
     @State private var hasPresentedMainWindow = false
@@ -18,7 +17,7 @@ import SwiftUI
         Settings {
             if let store = startup.store {
                 SettingsView(store: store, canCheckForUpdates: updater.canCheckForUpdates,
-                             checkForUpdates: updater.checkForUpdates, remoteAccess: remoteAccess)
+                             checkForUpdates: updater.checkForUpdates)
             }
         }
         .defaultSize(width: 500, height: 560)
@@ -112,8 +111,6 @@ import SwiftUI
             }
             .onChange(of: startup.store.map(ObjectIdentifier.init), initial: true) { _, _ in
                 delegate.store = startup.store
-                remoteAccess.attach(startup.store)
-                delegate.stopRemoteAccess = { remoteAccess.suspend() }
             }
         }
         .defaultSize(width: 980, height: 700)

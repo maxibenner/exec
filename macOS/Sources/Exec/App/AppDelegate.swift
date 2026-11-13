@@ -2,7 +2,6 @@ import AppKit
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var store: ChatLibrary?
-    var stopRemoteAccess: (() -> Void)?
     private var waitingToQuit = false
 
     // Keep presentation and the final AppKit reply injectable so tests never quit
@@ -17,11 +16,6 @@ import AppKit
     }
     var replyToTermination: (NSApplication, Bool) -> Void = { application, shouldQuit in
         application.reply(toApplicationShouldTerminate: shouldQuit)
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        // Also covers idle quits, which do not take the cancellation path below.
-        stopRemoteAccess?()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -52,7 +46,6 @@ import AppKit
                 waitingToQuit = false
                 return
             }
-            stopRemoteAccess?() // No new commands while cancellation checkpoints finish.
             if store.hasRunningOperations { store.stopAll() }
             // Let cancellation reap shell children and checkpoint outcomes before exiting.
             while store.hasRunningOperations { try? await Task.sleep(for: .milliseconds(50)) }
