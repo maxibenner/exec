@@ -106,6 +106,9 @@ impl AgentManager {
         };
         conversation.submit_with_instructions(text, instructions)
     }
+    pub fn steer(&self, id: &str, operation_id: &str, text: String) -> Result<String> {
+        self.get(id)?.steer(operation_id, text)
+    }
     pub async fn update_settings(
         &self,
         id: &str,

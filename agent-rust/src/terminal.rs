@@ -23,7 +23,7 @@ pub struct Transcript {
 impl Transcript {
     pub fn snapshot(&mut self, snapshot: &ConversationSnapshot) -> String {
         let mut output = String::new();
-        for message in &snapshot.messages {
+        for message in snapshot.messages.iter().chain(&snapshot.pending_input) {
             let previous = self.lengths.entry(message.id().into()).or_insert_with(|| {
                 let role = match message {
                     Message::User { .. } => "user".into(),

@@ -313,6 +313,13 @@ async fn same_conversation_exclusion_cross_conversation_concurrency_explicit_can
         f.client.get(&a.id).await.unwrap().operation.unwrap().state,
         OperationState::Running
     );
+    assert_eq!(
+        f.client.steer(&a.id, &new_id(), "stale").await.unwrap_err(),
+        Error::Api(409)
+    );
+    let steered = f.client.steer(&a.id, &op, "new direction").await.unwrap();
+    assert_eq!(steered["operationID"], op);
+    assert_eq!(f.client.get(&a.id).await.unwrap().pending_input.len(), 1);
     f.client.cancel(&a.id, &op).await.unwrap();
     let interrupted = terminal(&f.client, &a.id).await;
     assert_eq!(

@@ -137,6 +137,14 @@ impl AgentClient {
             .map(str::to_owned)
             .ok_or(Error::Invalid(INVALID))
     }
+    pub async fn steer(&self, id: &str, operation_id: &str, text: &str) -> Result<Value> {
+        self.call(
+            "POST",
+            &format!("{}/steer", path(id)),
+            Some(json!({"operationID":operation_id,"text":text})),
+        )
+        .await
+    }
     pub async fn cancel(&self, id: &str, operation_id: &str) -> Result<Value> {
         self.call(
             "POST",

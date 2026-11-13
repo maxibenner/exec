@@ -214,6 +214,7 @@ pub struct Approval {
 pub struct ConversationSnapshot {
     pub id: String,
     pub configuration: super::ConversationConfiguration,
+    pub pending_input: Vec<Message>,
     pub model: String,
     pub workspace: String,
     pub messages: Vec<Message>,
@@ -235,6 +236,10 @@ pub struct RuntimeEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventKind {
+    Input {
+        #[serde(rename = "messageID")]
+        message_id: String,
+    },
     Operation {
         state: OperationState,
     },

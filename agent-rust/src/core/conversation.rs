@@ -9,7 +9,7 @@ use std::{
     task::Poll,
     time::{Duration, Instant},
 };
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 
 #[async_trait]
@@ -71,6 +71,7 @@ impl State {
             model: self.record.model.clone(),
             workspace: self.record.workspace.clone(),
             messages: self.record.messages.clone(),
+            pending_input: self.record.pending_input.clone(),
             operation: self.record.operation.clone(),
             approval: self.pending.as_ref().map(|p| p.approval.clone()),
             active_tool_call_id: self.active_tool.clone(),
@@ -86,6 +87,7 @@ pub struct Conversation {
     definitions: Vec<ToolDefinition>,
     persist: Option<Arc<dyn Checkpoint>>,
     events: EventHub,
+    input_arrived: Notify,
 }
 pub struct Submission {
     pub operation_id: String,
@@ -107,13 +109,14 @@ impl Conversation {
             record
         } else {
             ConversationRecord {
-                version: 2,
+                version: 3,
                 configuration: Some(ConversationConfiguration::new(options.settings)),
                 id: new_id(),
                 model: options.model,
                 workspace: options.workspace,
                 max_steps: options.max_steps,
                 messages: vec![],
+                pending_input: vec![],
                 operation: None,
                 executing_tool_id: None,
             }
@@ -145,6 +148,7 @@ impl Conversation {
             definitions,
             persist: options.checkpoint,
             events,
+            input_arrived: Notify::new(),
         }))
     }
     fn state(&self) -> MutexGuard<'_, State> {
@@ -293,7 +297,7 @@ impl Conversation {
         if s.active.is_some() || s.updating {
             return Err(Error::Busy);
         }
-        if text.trim().is_empty() {
+        if !valid_input(&text) {
             return Err(Error::Invalid("Message must not be empty."));
         }
         if let Some(value) = &instructions {
@@ -315,6 +319,8 @@ impl Conversation {
             state: OperationState::Running,
             error: None,
         });
+        let pending = std::mem::take(&mut s.record.pending_input);
+        s.record.messages.extend(pending);
         s.record.messages.push(Message::User { id: new_id(), text });
         let runner = self.clone();
         let (settled, completion) = oneshot::channel();
@@ -327,6 +333,61 @@ impl Conversation {
             operation_id,
             completion,
         })
+    }
+    /// In-memory acceptance, like submit. The runner checkpoints pending input;
+    /// no client-side queue or competing execution loop is involved.
+    pub fn steer(&self, operation_id: &str, text: String) -> Result<String> {
+        if !valid_input(&text) {
+            return Err(Error::Invalid("Invalid steering input."));
+        }
+        let mut s = self.state();
+        if s.storage_error.is_some() {
+            return Err(Error::Storage);
+        }
+        if s.disposed
+            || s.record
+                .operation
+                .as_ref()
+                .is_none_or(|op| op.id != operation_id)
+            || s.active
+                .as_ref()
+                .is_none_or(|a| a.finishing || a.cancel.is_cancelled())
+        {
+            return Err(Error::Busy);
+        }
+        if s.record.pending_input.len() >= 32 {
+            return Err(Error::Busy);
+        }
+        let id = new_id();
+        s.record.pending_input.push(Message::User {
+            id: id.clone(),
+            text,
+        });
+        if s.pending.take().is_some() {
+            // Dropping the one-shot withdraws the exact old approval, never grants it.
+            self.emit(&s, EventKind::Approval { approval_id: None });
+        }
+        self.emit(
+            &s,
+            EventKind::Input {
+                message_id: id.clone(),
+            },
+        );
+        self.input_arrived.notify_one();
+        Ok(id)
+    }
+    fn has_pending_input(&self) -> bool {
+        !self.state().record.pending_input.is_empty()
+    }
+    fn inject_pending_input(&self) -> bool {
+        let mut s = self.state();
+        let pending = std::mem::take(&mut s.record.pending_input);
+        let changed = !pending.is_empty();
+        for message in pending {
+            s.record.messages.push(message);
+            self.changed(&s, s.record.messages.len() - 1);
+        }
+        changed
     }
     pub fn cancel(&self, operation_id: &str) -> bool {
         let mut s = self.state();
@@ -445,12 +506,18 @@ impl Conversation {
         let max_steps = self.state().record.max_steps;
         for _ in 0..max_steps {
             check_cancel(cancel)?;
+            self.inject_pending_input();
             let calls = self.respond(cancel).await?;
             self.checkpoint(None).await?;
             self.execute_calls(&calls, cancel).await?;
             check_cancel(cancel)?;
             if calls.is_empty() {
-                return Ok(());
+                let mut s = self.state();
+                if s.record.pending_input.is_empty() {
+                    // Linearize settlement against steering under the same lock.
+                    s.active.as_mut().unwrap().finishing = true;
+                    return Ok(());
+                }
             }
         }
         Err(Error::Invalid(
@@ -503,7 +570,15 @@ impl Conversation {
             let mut stream = self.provider.stream(request);
             let mut calls = vec![];
             let mut last_save: Option<Instant> = None;
-            while let Some(event) = stream.next().await {
+            loop {
+                let event = tokio::select! {
+                    biased;
+                    _ = self.input_arrived.notified() => { self.checkpoint(None).await?; continue; }
+                    event = stream.next() => event,
+                };
+                let Some(event) = event else {
+                    break;
+                };
                 check_cancel(cancel)?;
                 match event? {
                     ProviderEvent::Text(delta) => {
@@ -580,6 +655,10 @@ impl Conversation {
         {
             let mut s = self.state();
             check_cancel(cancel)?;
+            if !s.record.pending_input.is_empty() {
+                self.set_state(&mut s, OperationState::Running);
+                return Ok(false);
+            }
             let approval = Approval {
                 id: new_id(),
                 operation_id: s.record.operation.as_ref().unwrap().id.clone(),
@@ -611,7 +690,9 @@ impl Conversation {
             let mut text =
                 "Not executed: operation interrupted. Do not retry without a new user request."
                     .to_string();
-            if !cancel.is_cancelled() {
+            if self.has_pending_input() {
+                text = "Not executed: new user input superseded this action. Reconsider using the new instructions.".into();
+            } else if !cancel.is_cancelled() {
                 if let Some(tool) = self.tools.get(&call.name) {
                     let mut started = false;
                     let action = AssertUnwindSafe(async {
@@ -621,15 +702,34 @@ impl Conversation {
                         let auto_approve = self.state().record.configuration.as_ref().unwrap().settings.auto_approve;
                         let approved = if let Some(description) = prepared.approval().filter(|_| !auto_approve) { self.ask(call,description.into(),cancel).await? } else { true };
                         check_cancel(cancel)?;
+                        if self.has_pending_input() { return Ok((ToolOutcome::NotExecuted, "Not executed: new user input superseded this action. Reconsider using the new instructions.".into())); }
                         if !approved { return Ok((ToolOutcome::Denied,"User denied this action. Nothing was executed. Do not retry without a new user request.".into())); }
                         self.state().record.executing_tool_id=Some(call.id.clone());
                         self.checkpoint(None).await?; check_cancel(cancel)?;
-                        started=true; self.state().active_tool=Some(call.id.clone());
+                        {
+                            let mut s = self.state();
+                            if !s.record.pending_input.is_empty() {
+                                return Ok((ToolOutcome::NotExecuted, "Not executed: new user input superseded this action. Reconsider using the new instructions.".into()));
+                            }
+                            // Executor ownership is the safe-boundary linearization point.
+                            started=true; s.active_tool=Some(call.id.clone());
+                        }
                         // Poll once before announcing entry: Rust async functions are lazy.
                         let mut execution = AssertUnwindSafe(prepared.execute()).catch_unwind();
                         let first = futures_util::poll!(&mut execution);
                         { let s=self.state(); self.emit(&s,EventKind::ToolStarted{call_id:call.id.clone()}); }
-                        let result = match first { Poll::Ready(result) => result, Poll::Pending => execution.await };
+                        let result = match first {
+                            Poll::Ready(result) => result,
+                            Poll::Pending => loop {
+                                tokio::select! { biased;
+                                    _ = self.input_arrived.notified() => {
+                                        if self.checkpoint(None).await.is_err() { cancel.cancel(); }
+                                        // Never drop an executor to simulate cancellation: keep owning cleanup.
+                                    }
+                                    result = &mut execution => break result,
+                                }
+                            }
+                        };
                         let result = result.unwrap_or(Err(Error::Internal))?; check_cancel(cancel)?;
                         Ok((ToolOutcome::Completed,result))
                     }).catch_unwind().await.unwrap_or(Err(Error::Internal));

@@ -267,6 +267,13 @@ struct Submit {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Steer {
+    #[serde(rename = "operationID")]
+    operation_id: String,
+    text: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Cancel {
     #[serde(rename = "operationID")]
     operation_id: String,
@@ -370,9 +377,17 @@ async fn handle(
     let parts: Vec<_> = tail.split('/').collect();
     if parts.is_empty()
         || parts.len() > 2
-        || parts
-            .get(1)
-            .is_some_and(|s| !["events", "turns", "cancel", "approvals", "settings"].contains(s))
+        || parts.get(1).is_some_and(|s| {
+            ![
+                "events",
+                "turns",
+                "cancel",
+                "approvals",
+                "settings",
+                "steer",
+            ]
+            .contains(s)
+        })
     {
         return Err(ApiError(404, "Route not found."));
     }
@@ -447,6 +462,18 @@ async fn handle(
                     other => ApiError::from(other),
                 })?;
             Ok(json_response(202, json!({"operationID":run.operation_id})))
+        }
+        ("POST", Some("steer")) => {
+            let input: Steer = body(request).await?;
+            identifier(&input.operation_id)?;
+            text(&input.text, 128 * 1024)?;
+            let id = options
+                .manager
+                .steer(parts[0], &input.operation_id, input.text)?;
+            Ok(json_response(
+                202,
+                json!({"operationID":input.operation_id,"messageID":id}),
+            ))
         }
         ("POST", Some("cancel")) => {
             let cancel: Cancel = body(request).await?;

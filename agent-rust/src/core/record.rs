@@ -14,6 +14,8 @@ pub struct ConversationRecord {
     pub workspace: String,
     pub max_steps: usize,
     pub messages: Vec<Message>,
+    #[serde(default)]
+    pub pending_input: Vec<Message>,
     #[serde(deserialize_with = "required_option")]
     pub operation: Option<Operation>,
     #[serde(rename = "executingToolID", deserialize_with = "required_option")]
@@ -29,8 +31,8 @@ pub(super) fn required_option<'de, T: Deserialize<'de>, D: serde::Deserializer<'
 impl ConversationRecord {
     pub fn validate(&self) -> Result<()> {
         let bad = Error::Invalid("Invalid or unsupported conversation record.");
-        if !matches!(self.version, 1 | 2)
-            || (self.version == 2 && self.configuration.is_none())
+        if !matches!(self.version, 1..=3)
+            || (self.version >= 2 && self.configuration.is_none())
             || (self.version == 1 && self.configuration.is_some())
             || !valid_id(&self.id)
             || self.model.trim().is_empty()
@@ -101,6 +103,20 @@ impl ConversationRecord {
                 }
             }
         }
+        if (self.version < 3 && !self.pending_input.is_empty()) || self.pending_input.len() > 32 {
+            return Err(bad);
+        }
+        for message in &self.pending_input {
+            if !matches!(message, Message::User { text, .. } if valid_input(text))
+                || !valid_id(message.id())
+                || !ids.insert(message.id())
+            {
+                return Err(bad);
+            }
+        }
+        if !self.pending_input.is_empty() && self.operation.is_none() {
+            return Err(bad);
+        }
         if !self.messages.is_empty()
             && (self.operation.is_none()
                 || !matches!(self.messages.first(), Some(Message::User { .. })))
@@ -129,6 +145,7 @@ impl ConversationRecord {
             self.version = 2;
             self.configuration = Some(ConversationConfiguration::legacy());
         }
+        self.version = 3;
         if let Some(op) = &mut self.operation
             && op.state.active()
         {

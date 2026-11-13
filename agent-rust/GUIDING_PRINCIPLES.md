@@ -7,7 +7,7 @@ These principles consolidate the design of the original TypeScript system, docum
 These are design constraints and development guidance, not a claim that every planned capability is implemented. See [README.md](README.md) and [API.md](API.md) for current behavior, scope, and verification limits.
 
 [Backend parity](PARITY.md) records the approved next-stage scope and ownership boundaries.
-It supersedes the initial busy-input rejection policy with planned explicit safe-boundary
+It supersedes the initial busy-input rejection policy with explicit safe-boundary
 steering, and individual-only approvals with persisted auto mode (default on).
 Neither behavior may be implemented solely in a frontend. JSON/environment credentials,
 no Keychain, no Swift-store migration, and frontend-only screenshot availability are
@@ -59,7 +59,7 @@ Provider-specific authentication, request encoding, streaming decoding, capabili
 
 Allow independent conversations to run concurrently, but initially permit only one active operation per conversation.
 
-Each conversation owns its context, approval state, cancellation, and execution lifecycle. Reject input while busy rather than silently queueing it or inventing steering behavior.
+Each conversation owns its context, approval state, cancellation, and execution lifecycle. Ordinary turn submission rejects busy work. Explicit operation-targeted steering accepts bounded pending input and injects it only after finalized tool calls have outcomes; it never starts a second runner.
 
 ### 7. Enforce approvals at the execution boundary
 

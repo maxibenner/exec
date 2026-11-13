@@ -81,7 +81,7 @@ A prepared tool is consumed by execution, preventing accidental reuse. Providers
 
 ## Preserved behavior and limits
 
-- One active operation per conversation, concurrent independent conversations, streamed text, finite step limit (32 by default), no hidden prompt queue.
+- One active operation per conversation, concurrent independent conversations, streamed text, finite step limit (32 by default), explicit operation-targeted steering (no hidden prompt queue).
 - Finalized tool calls get paired results for success, denial, failure, interruption, or non-execution. Partial/failed assistant responses stay visible but never become completed provider context. Tool calls are withheld until the entire provider response completes successfully.
 - New conversations default to persisted auto-approval. Manual mode uses exact, single-use approvals and waits even with no client connected. Auto mode still prepares, validates, checkpoints intent and checks cancellation before effects. Cancellation stays possible until final checkpoint commit begins; executor ownership includes cleanup.
 - No automatic inference, credential, mutation, tool, or checkpoint retries. Errors expose safe diagnostics rather than raw provider bodies or transport exceptions.
@@ -95,7 +95,7 @@ File tools check path components and use no-follow file opens. As in the sketch,
 
 ## Persistence and recovery
 
-API v1 names such as `operationID`, `callID`, `activeToolCallID`, and `executingToolID` remain. Checkpoints now use **version 2**, requiring execution settings and frozen instruction state. Version-1 records are read conservatively with manual approval and no newly loaded AGENTS.md context; their next save writes version 2. The TypeScript sketch cannot read these new records. Never share an active profile or downgrade its writer. This is not a Swift-store migration.
+API v1 names such as `operationID`, `callID`, `activeToolCallID`, and `executingToolID` remain. Checkpoints now use **version 3** (adding pending steering input), requiring execution settings and frozen instruction state. Version-2 records remain readable. Version-1 records are read conservatively with manual approval and no newly loaded AGENTS.md context; their next save writes version 3. The TypeScript sketch cannot read these new records. Never share an active profile or downgrade its writer. This is not a Swift-store migration.
 
 Profiles use a `.lock` directory, one validated `<UUID>.json` file per conversation, `0700` new directories, `0600` checkpoints, same-directory staging, file sync, atomic rename and directory sync. Corrupt/linked/unsupported/oversized records fail startup rather than being discarded. The limit is 16 MiB per record. This is local single-owner storage, not a network database or hostile-filesystem sandbox.
 

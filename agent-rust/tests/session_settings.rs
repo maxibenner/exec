@@ -269,7 +269,7 @@ fn old_records_keep_manual_policy_and_v2_requires_configuration() {
     value["version"] = 1.into();
     let legacy: ConversationRecord = serde_json::from_value(value).unwrap();
     let recovered = legacy.recover().unwrap();
-    assert_eq!(recovered.version, 2);
+    assert_eq!(recovered.version, 3);
     let config = recovered.configuration.unwrap();
     assert!(!config.settings.auto_approve);
     assert!(config.instructions_frozen);

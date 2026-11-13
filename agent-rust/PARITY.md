@@ -24,7 +24,7 @@ fail closed for uncertain store ownership/integrity. Tool bounds need not match 
 exact byte counts, but truncation and full-log access must remain truthful.
 
 This file describes the target and remaining work, not implemented capabilities.
-README.md and API.md describe current behavior. Steering remains unimplemented.
+README.md and API.md describe current behavior.
 The checked items below are delivered and verified; unchecked items remain outstanding.
 
 ## Ownership
@@ -64,6 +64,9 @@ The checked items below are delivered and verified; unchecked items remain outst
 - [x] Version-2 checkpoint configuration with conservative version-1 read support. No
   Swift-store import or claim of backwards writes to the TypeScript sketch.
 
+- [x] Operation-targeted steering, checkpointed pending input, safe-boundary injection,
+  approval withdrawal and explicit superseded results; restart never resumes input.
+
 ### Remaining backend work
 
 - [ ] Remaining session configuration/metadata: titles/manual-title flag, activity,
@@ -74,8 +77,6 @@ The checked items below are delivered and verified; unchecked items remain outst
   JSON credential management and runtime connect/disconnect.
 - [ ] DeepSeek thinking/effort, reasoning context and token measurements.
 - [ ] Credential-independent access to saved conversations and metadata caches.
-- [ ] Steering with durable pending input, safe-boundary injection, pending-approval
-  withdrawal, explicit outcomes for superseded calls, conservative recovery.
 - [ ] Manual/automatic compaction, opaque provider state and context usage.
 - [ ] Typed tool results, assets, image inputs and durable image references.
 - [ ] Web search, public HTTPS content fetching, image generation.

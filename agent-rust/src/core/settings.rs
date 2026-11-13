@@ -2,6 +2,9 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 pub const INSTRUCTION_LIMIT: usize = 64 * 1024;
+pub fn valid_input(text: &str) -> bool {
+    !text.trim().is_empty() && !text.contains('\0') && text.encode_utf16().count() <= 128 * 1024
+}
 
 /// Durable execution preferences, not frontend presentation state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

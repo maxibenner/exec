@@ -63,6 +63,7 @@ Run `./target/release/exec-agent` (or `cargo run --`) with an optional leading `
 | `chat ID` | Interactive transcript and input; requires a terminal |
 | `send ID MESSAGE` | Submit once and follow that operation; nonzero exit on failure/interruption |
 | `watch ID` | Observe across turns; never auto-approves |
+| `steer ID OPERATION_ID MESSAGE` | Add input at the next safe boundary of this active operation |
 | `cancel ID OPERATION_ID` | Request cancellation of exactly that operation |
 | `approve ID OPERATION_ID APPROVAL_ID` | Approve exactly that pending action |
 | `deny ID OPERATION_ID APPROVAL_ID` | Deny exactly that pending action |
@@ -88,12 +89,13 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after durable deletion; active work returns 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
 | POST | `/v1/conversations/:id/turns` | `{text}` → `202 {operationID}` |
+| POST | `/v1/conversations/:id/steer` | `{operationID,text}` → `202 {operationID,messageID}` |
 | POST | `/v1/conversations/:id/cancel` | `{operationID}` → `202 {accepted:true,operationID}` |
 | POST | `/v1/conversations/:id/approvals` | `{operationID,approvalID,approved:boolean}` → `{resolved:true}` |
 
 Missing conversations return 404; invalid requests 400; busy/storage-blocked submissions and stale approvals/cancellations 409. Approval decisions are single use, including races. Cancellation acceptance is not cleanup completion; the acknowledgement echoes the exact operation accepted for cancellation.
 
-A snapshot has `id`, `model`, `workspace`, `configuration`, `messages`, `operation`, `approval`, `activeToolCallID`, and `storageError`. Nullable fields are serialized explicitly as null. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in `src/core/types.rs`; command validation is in `src/service.rs`.
+A snapshot has `id`, `model`, `workspace`, `configuration`, `messages`, `pendingInput`, `operation`, `approval`, `activeToolCallID`, and `storageError`. Nullable fields are serialized explicitly as null. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in `src/core/types.rs`; command validation is in `src/service.rs`.
 
 **Turn acceptance is in-memory, not a durable receipt.** A 202 can precede the input checkpoint; a lost response can happen after effects. No idempotent replay mechanism is advertised. Terminal success is published only after its final checkpoint succeeds. Intermediate snapshots/events are not durability receipts.
 
@@ -163,3 +165,20 @@ curl --no-buffer --unix-socket "$HOME/.exec-agent/service.sock" \
 Crash recovery never resumes work or steals ownership. Verify the old host and its tool processes have stopped, then explicitly remove only the stale socket and `conversations/.lock` for that profile. See [README.md](README.md#persistence-and-recovery) for interrupted intent, missing results and possible side effects.
 
 Tests cover these contracts with fake providers and real sockets/subprocesses. Live DeepSeek, interactive TTY operation, Linux deployment and Swift UI integration are not claimed verified.
+
+## Steering
+
+Steering targets an exact active operation; stale, cancelling or settling operations
+return 409. Ordinary turn submission still rejects a busy conversation. Accepted steering
+input is observable in `pendingInput` (up to 32 messages), checkpointed by the runner while
+streaming or executing, and incorporated only after all finalized calls have outcomes.
+The `input` event contains `messageID`; later message events reconcile the same ID when
+incorporated. A pending approval is withdrawn; old unstarted calls receive `not_executed`.
+A live executor keeps ownership through completion/cleanup and is not cancelled merely
+because new input arrived. No later old action starts after the safe boundary.
+
+Like turn submission, 202 is in-memory acceptance, not a durable receipt. A crash before
+its checkpoint can lose newly accepted input. Checkpointed pending input survives restart
+but never starts inference itself; the next explicit turn incorporates it before new input.
+Cancellation or step-limit failure can retain pending input for that next explicit turn.
+Version-3 checkpoints retain pending input; older versions are read conservatively.
