@@ -81,6 +81,35 @@ fn snapshot(frame: ServiceEvent) -> Option<ConversationSnapshot> {
     }
 }
 #[tokio::test]
+async fn api_delete_is_durable_and_does_not_repeat() {
+    let root = directory();
+    let provider = FakeProvider::new(vec![]);
+    let service = start_persistent_service(root.path(), provider.clone(), false)
+        .await
+        .unwrap();
+    let client = AgentClient::new(profile_socket(root.path())).unwrap();
+    let conversation = client
+        .create("fake", root.path().to_str().unwrap())
+        .await
+        .unwrap();
+    client.delete(&conversation.id).await.unwrap();
+    assert_eq!(
+        client.get(&conversation.id).await.unwrap_err(),
+        Error::Api(404)
+    );
+    assert_eq!(
+        client.delete(&conversation.id).await.unwrap_err(),
+        Error::Api(404)
+    );
+    service.close().await.unwrap();
+    let service = start_persistent_service(root.path(), provider, false)
+        .await
+        .unwrap();
+    assert_eq!(client.list().await.unwrap(), json!([]));
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn api_create_stream_reconnect_and_durable_continuation() {
     let root = directory();
     let p = FakeProvider::new(vec![answer(), answer()]);
@@ -163,6 +192,7 @@ async fn same_conversation_exclusion_cross_conversation_concurrency_explicit_can
         .unwrap();
     let op = f.client.submit(&a.id, "hold").await.unwrap();
     entered.cancelled().await;
+    assert_eq!(f.client.delete(&a.id).await.unwrap_err(), Error::Api(409));
     assert_eq!(
         f.client.submit(&a.id, "duplicate").await.unwrap_err(),
         Error::Api(409)

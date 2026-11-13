@@ -87,6 +87,13 @@ impl AgentClient {
     pub async fn get(&self, id: &str) -> Result<ConversationSnapshot> {
         decode(self.call("GET", &path(id), None).await?)
     }
+    pub async fn delete(&self, id: &str) -> Result<()> {
+        let response = self.call("DELETE", &path(id), None).await?;
+        if response != json!({"deleted":true}) {
+            return Err(Error::Invalid(INVALID));
+        }
+        Ok(())
+    }
     pub async fn submit(&self, id: &str, text: &str) -> Result<String> {
         let value = self
             .call(

@@ -18,7 +18,7 @@ use tokio::{
     sync::mpsc,
 };
 use tokio_util::sync::CancellationToken;
-const HELP: &str = "Exec agent CLI (local service client)\n\nUsage: exec-agent [--profile PATH] COMMAND\n  serve [--credentials PATH] [--workspace-tools]\n                                      Run the service in the foreground (DeepSeek)\n  health                              Show service capabilities\n  models                              Discover provider models\n  list                                List saved conversations\n  new MODEL [WORKSPACE]                Create a conversation (workspace defaults to cwd)\n  show ID                             Show saved/current conversation state\n  chat ID                             Interactive chat; requires a terminal\n  send ID MESSAGE                     Submit one message and follow its operation\n  watch ID                            Observe until Ctrl-C; never approves automatically\n  cancel ID OPERATION_ID               Cancel exactly that operation\n  approve ID OPERATION_ID APPROVAL_ID  Approve exactly that pending action\n  deny ID OPERATION_ID APPROVAL_ID     Deny exactly that pending action\n\nDefault profile: ~/.exec-agent\nOnly serve starts a service. There are no automatic request retries.\nserve reads DEEPSEEK_API_KEY, otherwise PROFILE/credentials.json (private mode 0600).\n--credentials selects another JSON file; environment credentials take precedence.\nRestart serve after changing credentials. Keys are never accepted as arguments.\nIn chat, /quit or EOF detaches; Ctrl-C cancels an active turn or exits while idle.\nIn send, pending approvals must be resolved explicitly from another client.\n";
+const HELP: &str = "Exec agent CLI (local service client)\n\nUsage: exec-agent [--profile PATH] COMMAND\n  serve [--credentials PATH] [--workspace-tools]\n                                      Run the service in the foreground (DeepSeek)\n  health                              Show service capabilities\n  models                              Discover provider models\n  list                                List saved conversations\n  new MODEL [WORKSPACE]                Create a conversation (workspace defaults to cwd)\n  show ID                             Show saved/current conversation state\n  delete ID                           Delete an idle conversation permanently\n  chat ID                             Interactive chat; requires a terminal\n  send ID MESSAGE                     Submit one message and follow its operation\n  watch ID                            Observe until Ctrl-C; never approves automatically\n  cancel ID OPERATION_ID               Cancel exactly that operation\n  approve ID OPERATION_ID APPROVAL_ID  Approve exactly that pending action\n  deny ID OPERATION_ID APPROVAL_ID     Deny exactly that pending action\n\nDefault profile: ~/.exec-agent\nOnly serve starts a service. There are no automatic request retries.\nserve reads DEEPSEEK_API_KEY, otherwise PROFILE/credentials.json (private mode 0600).\n--credentials selects another JSON file; environment credentials take precedence.\nRestart serve after changing credentials. Keys are never accepted as arguments.\nIn chat, /quit or EOF detaches; Ctrl-C cancels an active turn or exits while idle.\nIn send, pending approvals must be resolved explicitly from another client.\n";
 fn main() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -122,7 +122,7 @@ async fn main_async() -> Result<()> {
     let count = match command.as_str() {
         "health" | "models" | "list" => 0..=0,
         "new" => 1..=2,
-        "show" | "chat" | "watch" => 1..=1,
+        "show" | "chat" | "watch" | "delete" => 1..=1,
         "send" | "cancel" => 2..=2,
         "approve" | "deny" => 3..=3,
         _ => return Err(Error::Invalid("Invalid command arguments. Use --help.")),
@@ -147,6 +147,10 @@ async fn main_async() -> Result<()> {
             );
         }
         "show" => return print(client.get(&args[0]).await?),
+        "delete" => {
+            client.delete(&args[0]).await?;
+            return print(serde_json::json!({"deleted":true}));
+        }
         "cancel" => return print(client.cancel(&args[0], &args[1]).await?),
         "approve" | "deny" => {
             return print(

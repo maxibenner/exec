@@ -58,6 +58,7 @@ Run `./target/release/exec-agent` (or `cargo run --`) with an optional leading `
 | `list` | List conversation summaries |
 | `new MODEL [WORKSPACE]` | Create a conversation; workspace defaults to cwd |
 | `show ID` | Inspect current/saved state |
+| `delete ID` | Permanently delete an idle conversation; cancel and await active work first |
 | `chat ID` | Interactive transcript and input; requires a terminal |
 | `send ID MESSAGE` | Submit once and follow that operation; nonzero exit on failure/interruption |
 | `watch ID` | Observe across turns; never auto-approves |
@@ -82,6 +83,7 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | GET | `/v1/conversations` | Summary array, omitting `messages` and `approval` |
 | POST | `/v1/conversations` | `{model,workspace}` → `201 ConversationSnapshot`, after durable creation |
 | GET | `/v1/conversations/:id` | `ConversationSnapshot` |
+| DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after durable deletion; active work returns 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
 | POST | `/v1/conversations/:id/turns` | `{text}` → `202 {operationID}` |
 | POST | `/v1/conversations/:id/cancel` | `{operationID}` → `202 {accepted:true,operationID}` |

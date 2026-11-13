@@ -374,6 +374,19 @@ async fn handle(
     let action = parts.get(1).copied();
     match (method.as_str(), action) {
         ("GET", None) => Ok(json_response(200, conversation.snapshot())),
+        ("DELETE", None) => {
+            if host.stop.is_cancelled() {
+                return Err(ApiError(503, "Service is stopping."));
+            }
+            if conversation.busy() {
+                return Err(ApiError(
+                    409,
+                    "Cancel and await the active operation before deleting.",
+                ));
+            }
+            options.manager.delete(parts[0]).await?;
+            Ok(json_response(200, json!({"deleted":true})))
+        }
         ("GET", Some("events")) => {
             let (snapshot, mut receiver) = conversation.subscribe();
             let stop = host.stop.clone();
