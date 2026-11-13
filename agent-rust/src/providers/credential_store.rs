@@ -62,6 +62,7 @@ impl DeepSeekCredentials {
             id: "deepseek".into(),
             name: "DeepSeek".into(),
             connected: state.key.is_some() && !state.blocked,
+            email: None,
             source: if state.environment {
                 "environment"
             } else {

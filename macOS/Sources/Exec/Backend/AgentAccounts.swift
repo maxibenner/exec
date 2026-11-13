@@ -18,7 +18,7 @@ import Observation
         usableProviders = Set(statuses.filter { $0["connected"].bool && !$0["blocked"].bool }.compactMap { $0["id"].string })
         connections = statuses.compactMap { value in
             guard let id = value["id"].string, let name = value["name"].string else { return nil }
-            return ProviderConnection(id: id, name: name, account: value["connected"].bool ? "Connected" : nil,
+            return ProviderConnection(id: id, name: name, account: value["connected"].bool ? (value["email"].string ?? "") : nil,
                 authentication: id == "deepseek" ? .apiKey : .browser,
                 webSearch: id == "deepseek" ? .service("DeepSeek") : .model,
                 supportsImageGeneration: id == "openai", balanceIdentity: id == "deepseek" && value["connected"].bool ? id : nil)

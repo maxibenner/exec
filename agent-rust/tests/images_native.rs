@@ -42,6 +42,7 @@ impl ChatProvider for Provider {
             id: "openai".into(),
             name: "Test".into(),
             connected: true,
+            email: None,
             source: "fake".into(),
             manageable: false,
             blocked: false,

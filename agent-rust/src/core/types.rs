@@ -209,6 +209,8 @@ pub struct ProviderConnection {
     pub id: String,
     pub name: String,
     pub connected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     pub source: String,
     pub manageable: bool,
     pub blocked: bool,

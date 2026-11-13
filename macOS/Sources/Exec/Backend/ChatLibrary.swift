@@ -336,7 +336,7 @@ import Observation
             let next = try makeConversation(workspace: current.workspace)
             next.requestInitialWorkspaceSelection()
             activate(next)
-            next.scheduleSave()
+            next.scheduleSave(force: next.workspace != nil)
         } catch { navigationError = error.localizedDescription }
     }
 

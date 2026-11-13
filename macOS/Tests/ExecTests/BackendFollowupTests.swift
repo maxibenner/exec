@@ -70,13 +70,14 @@ import Foundation
         await inherited.waitForPendingSave()
         try expect(inherited !== previous && inherited.workspace?.root == previous.workspace?.root)
         inherited.selectedModel = "openai/test"
+        try await transport.reply("/v1/conversations", snapshotJSON("completed"))
+        let config = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(AgentLibraryConfiguration()))
+        try await transport.reply("/v1/library", config)
         inherited.scheduleSave()
         await inherited.waitForPendingSave()
-        try expect(inherited.canSelectWorkspace && inherited.currentSessionID == nil)
-        let before = await transport.requests
-        try expect(!before.contains { $0.method == "POST" && $0.path == "/v1/conversations" })
-        try inherited.setInitialWorkspace(Workspace(root: URL(fileURLWithPath: "/tmp/chosen")))
-        try expect(!inherited.canSelectWorkspace && inherited.workspace?.root.path == "/tmp/chosen")
+        try expect(!inherited.canSelectWorkspace && inherited.currentSessionID != nil)
+        try expect(library.sidebarSessions.contains { $0.id == inherited.currentSessionID })
+        try expect(inherited.draft.isEmpty)
         try expectFailure { try inherited.setInitialWorkspace(Workspace(root: URL(fileURLWithPath: "/tmp/another"))) }
         try expect(previous.workspace?.root.path == "/tmp")
 
@@ -96,7 +97,7 @@ import Foundation
         await store.waitUntilIdle()
         try expect(store.currentSessionID != nil && !store.canSelectWorkspace)
         let creates = await transport.requests.filter { $0.method == "POST" && $0.path == "/v1/conversations" }
-        try expect(creates.count == 1)
+        try expect(creates.count == 2)
     }
 
     func usageRefreshesOnlyOnSettingsRequest() async throws {

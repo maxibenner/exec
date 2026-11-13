@@ -61,7 +61,7 @@ struct ProviderSettingsView: View {
                             .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(connection.name)
-                            if let account = connection.account {
+                            if connection.authentication == .browser, let account = connection.account, !account.isEmpty {
                                 Text(verbatim: account).font(.caption).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }

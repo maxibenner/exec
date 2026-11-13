@@ -88,6 +88,16 @@ fn random() -> Result<String> {
         .map_err(|_| failure())?;
     Ok(B64.encode(bytes))
 }
+/// Presentation metadata only; never used to authorize or identify a session.
+fn display_email(access: &str) -> Option<String> {
+    let payload = access.split('.').nth(1)?;
+    let claims: Value = serde_json::from_slice(&B64.decode(payload).ok()?).ok()?;
+    claims["https://api.openai.com/profile"]["email"]
+        .as_str()
+        .filter(|email| !email.is_empty() && email.len() <= 320 && !email.chars().any(char::is_control))
+        .map(str::to_owned)
+}
+
 pub fn account(access: &str) -> Result<String> {
     let parts: Vec<_> = access.split('.').collect();
     if parts.len() != 3 {
@@ -238,6 +248,9 @@ impl Authentication {
                 "json"
             }
             .into(),
+            email: state.session.as_ref()
+                .filter(|s| !state.blocked && !s.requires_reconnect)
+                .and_then(|s| display_email(&s.access_token)),
             manageable: !self.environment && !state.blocked,
             blocked: state.blocked || state.session.as_ref().is_some_and(|s| s.requires_reconnect),
         }
