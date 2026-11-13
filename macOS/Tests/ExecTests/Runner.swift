@@ -74,10 +74,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Agent snapshot reconciliation and approvals", { try await AgentIntegrationTests().snapshotAndApproval() }),
             ("Uncertain submissions never retry", { try await AgentIntegrationTests().uncertainSendIsNotRetried() }),
             ("Quit retains copy and awaits backend shutdown", { try await AgentIntegrationTests().quitWaitsForBackendAndPreservesCopy() }),
-            ("External quit detaches without cancelling backend work", { try await HTTPConsumerTests().externalQuitDetachesWithoutCancelling() }),
             ("HTTP redirects and interrupted mutations never replay", { try await HTTPConsumerTests().redirectsAndInterruptedMutationsAreNotReplayed() }),
             ("HTTPS rejects an untrusted certificate without fallback", { try await HTTPConsumerTests().tlsRejectsUntrustedCertificate() }),
-            ("HTTP configuration defaults to authenticated loopback and validates external endpoints", { try AgentIntegrationTests().httpConfiguration() }),
+            ("Bundled backend ignores external settings and provisions private credentials", { try AgentIntegrationTests().httpConfiguration() }),
             ("Agent transport connects to isolated Rust service", { try await AgentIntegrationTests().realService() })
         ]
         for (name, check) in checks {

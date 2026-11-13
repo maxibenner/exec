@@ -41,31 +41,23 @@ actor FakeAgentTransport: AgentTransport {
     static let apiToken = String(repeating: "1", count: 64)
     static let nativeToken = String(repeating: "2", count: 64)
     func httpConfiguration() throws {
-        let defaults = try AgentHTTPConfiguration(environment: [:])
-        try expect(defaults.host == "127.0.0.1" && defaults.port == 8765 && defaults.launchesBackend)
-        try expect(defaults.token?.count == 64 && defaults.nativeToken?.count == 64 && defaults.token != defaults.nativeToken)
-        let explicit = try AgentHTTPConfiguration(environment: ["EXEC_AGENT_HOST": "0.0.0.0", "EXEC_AGENT_PORT": "19876"])
-        try expect(explicit.port == 19876 && explicit.clientHost == "127.0.0.1")
-        let ipv6 = try AgentHTTPConfiguration(environment: ["EXEC_AGENT_HOST": "::1"])
-        try expect(ipv6.clientHost == "::1")
-        let remote = try AgentHTTPConfiguration(environment: ["EXEC_AGENT_URL": "https://example.com:443", "EXEC_AGENT_TOKEN": Self.apiToken])
-        try expect(!remote.launchesBackend && remote.usesTLS && remote.clientHost == "example.com" && remote.nativeToken == nil)
-        let external = try AgentHTTPConfiguration(environment: ["EXEC_AGENT_URL": "http://127.0.0.1:8765", "EXEC_AGENT_INSECURE_NO_AUTH": "1"])
-        try expect(!external.launchesBackend && external.token == nil && external.nativeToken == nil)
-        for environment in [["EXEC_AGENT_NATIVE_TOKEN": "unexpected"], ["EXEC_AGENT_HOST": "localhost"], ["EXEC_AGENT_PORT": "0"], ["EXEC_AGENT_PORT": "65536"],
-                            ["EXEC_AGENT_URL": "http://192.0.2.1", "EXEC_AGENT_TOKEN": Self.apiToken],
-                            ["EXEC_AGENT_URL": "https://example.com"],
-                            ["EXEC_AGENT_URL": "https://user:secret@example.com", "EXEC_AGENT_TOKEN": Self.apiToken],
-                            ["EXEC_AGENT_URL": "https://example.com/v1", "EXEC_AGENT_TOKEN": Self.apiToken],
-                            ["EXEC_AGENT_TOKEN": "bad\r\nheader"], ["EXEC_AGENT_INSECURE_NO_AUTH": "1"],
-                            ["EXEC_AGENT_URL": "http://0.0.0.0", "EXEC_AGENT_TOKEN": Self.apiToken]] {
-            var rejected = false
-            do { _ = try AgentHTTPConfiguration(environment: environment) }
-            catch { rejected = true }
-            try expect(rejected)
-        }
-        let tunnel = try AgentHTTPConfiguration(environment: ["EXEC_AGENT_URL": "http://192.0.2.1:8765", "EXEC_AGENT_TOKEN": Self.apiToken, "EXEC_AGENT_ALLOW_INSECURE_HTTP": "1"])
-        try expect(!tunnel.usesTLS && !tunnel.launchesBackend)
+        let configuration = try AgentHTTPConfiguration()
+        let another = try AgentHTTPConfiguration()
+        try expect(configuration.host == "127.0.0.1" && configuration.port == 8765)
+        try expect(configuration.token.count == 64 && configuration.nativeToken.count == 64)
+        try expect(configuration.token != configuration.nativeToken && configuration.token != another.token)
+        let environment = configuration.childEnvironment(inherited: [
+            "PATH": "/usr/bin:/bin", "HOME": "/isolated-home",
+            "EXEC_AGENT_URL": "https://other-backend.example", "EXEC_AGENT_HOST": "0.0.0.0",
+            "EXEC_AGENT_PORT": "19876", "EXEC_AGENT_INSECURE_NO_AUTH": "1",
+            "EXEC_AGENT_ALLOW_INSECURE_HTTP": "1", "EXEC_AGENT_TOKEN": Self.apiToken,
+            "EXEC_AGENT_NATIVE_TOKEN": Self.nativeToken,
+            "DEEPSEEK_API_KEY": "test-only", "OPENAI_SESSION_JSON": "test-only"])
+        try expect(environment == ["PATH": "/usr/bin:/bin", "HOME": "/isolated-home",
+                                   "EXEC_AGENT_TOKEN": configuration.token,
+                                   "EXEC_AGENT_NATIVE_TOKEN": configuration.nativeToken])
+        try expect(configuration.transport.host == "127.0.0.1" && configuration.transport.port == 8765)
+        try expect(configuration.transport.token == configuration.token && !configuration.transport.usesTLS)
     }
 
     func snapshotAndApproval() async throws {
@@ -207,15 +199,6 @@ actor FakeAgentTransport: AgentTransport {
         do { _ = try await ordinary.request("POST", "/v1/native/events", .object(["osScreenPermission": .bool(true)])) }
         catch { nativeRejected = true }
         try expect(nativeRejected)
-        // An external client attaches without launching a child, and shutdown never kills this service.
-        let external = AgentService()
-        let remoteAPI = try await external.start(configuration: AgentHTTPConfiguration(environment: [
-            "EXEC_AGENT_URL": "http://127.0.0.1:18765", "EXEC_AGENT_TOKEN": Self.apiToken]))
-        try expect(!remoteAPI.ownsBackend && remoteAPI.desktop.frontendID == nil)
-        await external.shutdown()
-        try expect(process.isRunning && external.api == nil)
-        let afterDetach = try await api.get("/v1/health")
-        try expect(afterDetach["version"].number == 1)
         // A conflicting helper must fail readiness, not attach to the first backend.
         let conflict = Process()
         conflict.executableURL = executable

@@ -88,8 +88,8 @@ Unix-socket alternative, proxy API, second runner, or production CLI/SDK impleme
 - **Encryption:** the backend serves HTTP, not TLS. For non-loopback use, protect traffic with
   HTTPS termination or an encrypted tunnel/VPN. Restrict direct access to the backend listener;
   a normal LAN is not automatically trusted. Provider credentials, tokens and conversation
-  data otherwise travel in plaintext. Swift supports HTTPS with normal certificate/hostname
-  verification and never falls back to HTTP.
+  data otherwise travel in plaintext. The current Swift app connects only to its bundled
+  loopback helper; other frontends must provide their own protected remote transport.
 - **Externally enforced access:** `--insecure-no-auth` explicitly disables the API token check
   for a protected proxy/VPN deployment. It cannot be combined with `EXEC_AGENT_TOKEN`. Bind
   behind that boundary and firewall the direct port so callers cannot bypass it. This flag
@@ -562,8 +562,9 @@ independently provisioned capability**: configure `EXEC_AGENT_NATIVE_TOKEN` on t
 and the trusted adapter, then send it as `X-Exec-Native-Token` in addition to normal API auth.
 It must be a distinct 64-hex secret. Without it all `/v1/native/*` operations and `PUT
 /v1/conversations/:id/desktop` return 403. Ordinary API clients never receive this secret.
-The macOS app generates a fresh native secret for its owned helper, or uses a deliberately
-provisioned one for an external backend. The native header is sent only for native operations.
+The macOS app generates a fresh native secret for its own bundled helper and never attaches
+to an external backend. Other trusted adapters can be provisioned independently for standalone
+hosting. The native header is sent only for native operations.
 
 TCP does **not** provide process attestation or same-host guarantees. The native secret
 explicitly trusts its holders to register adapters, report OS permission, enable/disable

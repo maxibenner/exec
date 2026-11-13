@@ -11,7 +11,7 @@ Corrections:
 - Validate a single administrator bearer token before any HTTP body/route effects. Reads, health and event streams are protected too. Duplicate authorization headers fail closed.
 - Permit unauthenticated operation only with the explicit `--insecure-no-auth` flag behind externally enforced access control. Missing credentials never silently choose this mode.
 - Independently authorize native registration, OS-permission reports, results and desktop grants. A general API token is not a screenshot grant.
-- Align Swift with authenticated owned/external endpoints, normal TLS trust, host-based workspace paths and external-service ownership.
+- Keep Swift tied to its authenticated bundled helper; leave standalone backend hosting and other frontends independent.
 
 Authentication is a small HTTP-boundary check (`service_auth.rs`), not middleware that owns another runtime or provider state. It uses the existing `ring` dependency for constant-time HMAC verification; no new dependencies or account framework were added. Provider authentication is unchanged and remains in providers.
 
@@ -36,39 +36,30 @@ This is a shared administrator credential, not per-client identities/scopes. Eve
 
 Native apps, command-line HTTP consumers and server-side applications can connect directly. Browser Origin/Fetch-Metadata requests remain rejected; browser support requires a deliberate separate origin and credential design. This is not a multi-tenant service or an OS sandbox against same-user code.
 
-## Swift configuration
+## Swift bundled backend
 
-### Owned helper (default)
+The current macOS app **always launches its bundled `exec-agent` helper** and connects to
+`127.0.0.1:8765`. It has no external-backend selection mode, endpoint discovery or fallback.
+`EXEC_AGENT_URL`, `EXEC_AGENT_HOST`, `EXEC_AGENT_PORT`, API/native token overrides and insecure
+transport flags cannot redirect or reconfigure the app's connection. Standalone `EXEC_AGENT_*`
+settings are removed from the child environment before provisioning fresh private API/native
+credentials. A port conflict fails startup instead of attaching to another server.
 
-Without `EXEC_AGENT_URL`, Swift launches its bundled helper:
+Swift generates separate ephemeral API and native credentials per helper launch and passes
+them through the child environment, not argv/readiness output. Provider credential overrides
+are removed so onboarding manages the app's own profile. The app waits for its own child's
+readiness, authenticates health, starts the native channel and owns orderly helper shutdown.
+Quit cancels and awaits work rather than detaching from a remotely managed service.
 
-| Variable | Behavior |
-|---|---|
-| `EXEC_AGENT_HOST` | Numeric bind IP, default `127.0.0.1`; `0.0.0.0`/`::` explicitly expose network interfaces |
-| `EXEC_AGENT_PORT` | 1–65535, default `8765`; no discovery or fallback |
-| `EXEC_AGENT_TOKEN` | Optional pre-provisioned API token; otherwise a fresh random token is generated per launch |
+Workspaces use the local Mac folder picker and Finder/Terminal actions. Screenshot capture
+stays in Swift on that Mac, with OS permission, explicit per-conversation enablement and
+exact request/result correlation. The Rust backend never implements headless capture.
 
-To connect other trusted frontends to the app-owned helper, set `EXEC_AGENT_TOKEN` in **the app's launch environment** and give that same value to those clients. Finder/LaunchServices do not necessarily inherit your terminal environment; launch the app executable from the configured environment or configure its launcher. The default ephemeral value is intentionally not printed or served by the API.
-
-Swift always generates a separate, ephemeral native credential for its own adapter and passes both credentials through the child environment, not argv/readiness output. `EXEC_AGENT_NATIVE_TOKEN` is rejected in managed mode; use standalone hosting for separately provisioned adapters. Provider credential overrides are removed from the helper environment. The app still waits for its own child's readiness and authenticates health, never attaching silently to an unrelated process on an occupied port. Quit waits for that helper's cancellation/cleanup.
-
-### External service
-
-Configure the client before launching it:
-
-```sh
-export EXEC_AGENT_URL="https://agent.example.com"
-# Inject the existing server's EXEC_AGENT_TOKEN securely; do not generate another value here.
-macOS/dist/Exec.app/Contents/MacOS/Exec
-```
-
-- `EXEC_AGENT_URL` must be a concrete HTTP(S) origin, without credentials, path, query or fragment. Do not combine it with `EXEC_AGENT_HOST`/`EXEC_AGENT_PORT`.
-- `EXEC_AGENT_TOKEN` is required. For an externally authenticated proxy/VPN deployment only, `EXEC_AGENT_INSECURE_NO_AUTH=1` explicitly omits the API header instead; it cannot be combined with a token. No proxy login UI or custom authentication scheme is implemented in Swift.
-- HTTPS is required for non-loopback endpoints unless `EXEC_AGENT_ALLOW_INSECURE_HTTP=1` explicitly acknowledges protection by a tunnel/VPN or equivalent boundary. That flag does not itself encrypt anything. HTTPS uses normal system certificate/hostname verification, with no trust bypass or plaintext fallback.
-- Swift does not launch or terminate the external service. Quit detaches and cancels local pending UI actions, not backend operations; explicit Stop remains an operation-targeted API action. Disconnecting a native channel still revokes its transient capture capability.
-- New workspaces use an explicit absolute **backend-host path**, not the local file picker. Finder/Terminal actions are unavailable for external paths. Image attachment selection/upload remains client-local, as intended.
-- Native capture is absent unless a separate `EXEC_AGENT_NATIVE_TOKEN` is explicitly provisioned to this frontend. Screenshots capture **this frontend's Mac**, not automatically the backend machine. OS permission and `/screenshots` session consent remain required.
-- OpenAI browser authentication still uses `localhost:1455` on the backend host. Authenticate on that host or explicitly forward that callback port; the HTTP migration does not make it a remote OAuth redirect service.
+Standalone Rust hosting retains its configurable binding and authentication for other
+trusted frontends and future server deployments. Those capabilities do **not** make the
+current Swift app an arbitrary server client. A future native adapter would independently
+need its own capture implementation, OS permissions and separately provisioned native
+credential; an ordinary API token alone cannot enable capture.
 
 ## Network deployment
 
@@ -85,7 +76,7 @@ This follows the separation of HTTPS, endpoint access control, and credential pr
 ## Verification
 
 - Full isolated Rust suite: authentication rejection before effects, duplicate/wrong credentials, separate native capability, explicit external-auth mode, safe binding, lifecycle/recovery, approvals, cancellation and existing provider fixtures.
-- 62 macOS checks: authenticated actual Rust subprocess, NDJSON/native grants, external attach/detach without server termination, correct quit semantics, no redirect or interrupted-mutation replay, and rejection of an untrusted TLS certificate. Existing native transcript/selection/layout checks remain intact.
+- 61 macOS checks: authenticated actual Rust subprocess, NDJSON/native grants, bundled-only configuration and inherited-setting isolation, owned-helper quit semantics, no redirect or interrupted-mutation replay, and transport rejection of an untrusted TLS certificate. The external attach/detach mode and its obsolete checks have been removed. Existing native transcript/selection/layout checks remain intact.
 - Stable signed build, with the same bundled helper and no signing-identity changes.
 - One-off authorized live HTTP smoke checks: OpenAI and DeepSeek Unicode streaming completed; OpenAI synthetic image input succeeded; protected image bytes/hash matched. Anonymous API access returned 401, and an ordinary API token could not register a native adapter (403). Temporary conversations/assets were removed and the helper exited cleanly. No live credentials or inference were added to automated tests.
 

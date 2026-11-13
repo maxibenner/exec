@@ -76,7 +76,7 @@ Normal app termination sends SIGTERM to the owned service and waits for it to ex
 
 A crash/forced termination can leave a backend running, or a stale store lock and orphaned tool processes. Startup fails if the configured port is occupied; it never attaches to another server. Follow the Rust recovery procedure in `agent-rust/API.md`: verify the old service **and its tool processes** have stopped before an operator removes stale ownership artifacts. There is no automatic recovery button that deletes them.
 
-There is no socket path limit, endpoint discovery or port fallback. The bundled helper uses ephemeral API/native credentials and defaults to loopback. Explicit network binding requires protected transport and access control. An external endpoint can be configured without starting a helper; external quit detaches rather than cancelling backend work. See [the HTTP review and configuration guide](http-api-review.md) for the exact environment variables, shared administrator-token model and TLS/proxy requirements.
+There is no socket path limit, endpoint discovery or port fallback. The bundled helper uses ephemeral API/native credentials and defaults to loopback. Explicit network binding requires protected transport and access control. The current Swift app always starts and owns its bundled helper; it cannot select an external endpoint and ignores standalone deployment environment settings. Quit cancels and awaits its helper’s work. See [the HTTP review and configuration guide](http-api-review.md) for the exact environment variables, shared administrator-token model and TLS/proxy requirements.
 
 ### Build-toolchain note
 

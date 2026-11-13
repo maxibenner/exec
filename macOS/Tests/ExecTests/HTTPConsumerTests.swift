@@ -2,30 +2,6 @@ import AppKit
 import Network
 
 @MainActor struct HTTPConsumerTests {
-    func externalQuitDetachesWithoutCancelling() async throws {
-        let transport = FakeAgentTransport()
-        let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport, ownsBackend: false)))
-        try library.current.apply(AgentIntegrationTests.fixture(state: "running").decoded(AgentSnapshot.self))
-        defer { library.closePresentations() }
-        let delegate = AppDelegate()
-        delegate.store = library
-        var text = ""
-        var shutdown = false
-        var reply = false
-        delegate.confirmQuit = { alert, _ in text = alert.informativeText; return .alertFirstButtonReturn }
-        delegate.shutdownBackend = { library.closePresentations(); shutdown = true }
-        delegate.replyToTermination = { _, result in reply = result }
-        try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateLater)
-        for _ in 0..<100 {
-            if reply { break }
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        try expect(shutdown && reply && text.contains("external backend will continue"))
-        let requests = await transport.requests
-        try expect(!requests.contains { $0.path.hasSuffix("/cancel") })
-        try expect(!library.localWorkspaceAccess)
-    }
-
     func redirectsAndInterruptedMutationsAreNotReplayed() async throws {
         for redirect in [false, true] {
             let peer = try HTTPTestPeer(redirect: redirect)
