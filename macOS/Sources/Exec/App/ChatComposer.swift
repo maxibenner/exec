@@ -33,31 +33,32 @@ struct ChatComposer: View {
         return model?.efforts.first { $0.id == (store.selectedEffort ?? model?.defaultEffort) }?.name ?? "Default"
     }
     private var canApprove: Bool {
-        store.canNavigate && store.workspace != nil && store.account != nil && !store.current.busy
+        store.canNavigate && store.workspace != nil && store.account != nil && store.current.canRequestCommands
     }
     private var choices: [Choice] {
         let items: [Choice]
         switch page {
         case nil:
-            items = [Choice(id: "model", title: "model", detail: modelName, enabled: !store.current.busy && !store.models.isEmpty),
-                     Choice(id: "effort", title: "reasoning", detail: effortName, enabled: !store.current.busy && store.current.model?.efforts.isEmpty == false),
+            items = [Choice(id: "model", title: "model", detail: modelName, enabled: store.current.canRequestCommands && !store.models.isEmpty),
+                     Choice(id: "effort", title: "reasoning", detail: effortName, enabled: store.current.canRequestCommands && store.current.model?.efforts.isEmpty == false),
                      Choice(id: "approve", title: "auto-approve", detail: store.autoApproveTools ? "On" : "Off", enabled: canApprove),
                      Choice(id: "compact", title: "compact", enabled: store.canCompact),
-                     Choice(id: "fork", title: "fork", enabled: store.library.canForkConversation(store.current)),
+                     Choice(id: "fork", title: "fork", enabled: store.library.canRequestFork(store.current)),
                      Choice(id: "workspace", title: "workspace", detail: "Change workspace…", enabled: store.canChooseWorkspace),
                      Choice(id: "finder", title: "finder", detail: "Open workspace in Finder", enabled: store.workspace != nil),
-                     Choice(id: "terminal", title: "terminal", detail: "Open workspace in Terminal", enabled: store.workspace != nil)]
+                     Choice(id: "terminal", title: "terminal", detail: "Open workspace in Terminal", enabled: store.workspace != nil),
+                     Choice(id: "screenshots", title: "screenshots", detail: store.current.screenshotsEnabled ? "Disable screen access" : "Allow screen sharing for this conversation…", enabled: store.workspace != nil && !store.current.changingScreenshots)]
         case .model:
             items = store.models.map {
                 Choice(id: $0.id, title: $0.name, detail: store.library.modelGroups.count > 1 ? store.library.providerName(for: $0.id) : "",
-                       selected: $0.id == store.selectedModel, enabled: store.canNavigate && !store.current.busy)
+                       selected: $0.id == store.selectedModel, enabled: store.canNavigate && store.current.canRequestCommands)
             }
         case .effort:
-            let available = store.canNavigate && !store.current.busy && store.current.model?.efforts.isEmpty == false
+            let available = store.canNavigate && store.current.canRequestCommands && store.current.model?.efforts.isEmpty == false
             items = [Choice(id: "", title: "Default", selected: store.current.selectedEffort == nil, enabled: available)] + (store.current.model?.efforts ?? []).map {
                 Choice(id: $0.id, title: $0.name, selected: store.current.selectedEffort == $0.id, enabled: available)
             }
-        case .approve, .compact, .fork, .workspace, .finder, .terminal:
+        case .approve, .compact, .fork, .workspace, .finder, .terminal, .screenshots:
             items = [] // Actions stay in the root command list.
 
         }
@@ -279,9 +280,14 @@ struct ChatComposer: View {
                 close()
                 store.compact()
             case .fork:
-                guard store.library.canForkConversation(store.current) else { return }
-                if let windows { windows.forkConversation(store.current) }
-                else { store.library.forkConversation(store.current) }
+                guard store.library.canRequestFork(store.current) else { return }
+                store.draft = ""
+                store.current.whenIdle("fork") {
+                    guard store.library.canForkConversation(store.current) else { throw ExecError("Cannot fork this conversation right now.") }
+                    if let windows { windows.forkConversation(store.current) }
+                    else { store.library.forkConversation(store.current) }
+                    await store.library.waitForNavigation()
+                }
                 close()
             case .workspace:
                 guard store.canChooseWorkspace else { return }
@@ -298,6 +304,10 @@ struct ChatComposer: View {
                 store.draft = ""
                 close()
                 store.openWorkspaceInTerminal()
+            case .screenshots:
+                store.draft = ""
+                close()
+                store.current.toggleScreenshots()
             case .model, .effort:
                 store.draft = "/\(destination.commandName) "
                 highlighted = 0
@@ -308,7 +318,7 @@ struct ChatComposer: View {
         switch page {
         case .model: store.selectedModel = choice.id
         case .effort: store.selectedEffort = choice.id.isEmpty ? nil : choice.id
-        case .approve, .compact, .fork, .workspace, .finder, .terminal: return
+        case .approve, .compact, .fork, .workspace, .finder, .terminal, .screenshots: return
         }
         store.draft = ""
         close(); focused = true

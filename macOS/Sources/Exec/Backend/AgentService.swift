@@ -28,7 +28,8 @@ import Observation
         }
         let process = Process()
         process.executableURL = executable
-        process.arguments = ["--profile", Self.profile.path, "serve", "--workspace-tools"]
+        process.arguments = ["--profile", Self.profile.path, "serve", "--workspace-tools",
+                             "--native-frontend-pid", String(ProcessInfo.processInfo.processIdentifier)]
         var environment = ProcessInfo.processInfo.environment
         // GUI onboarding always controls this app's private profile, never ambient shell credentials.
         environment.removeValue(forKey: "DEEPSEEK_API_KEY")
@@ -51,6 +52,7 @@ import Observation
             let health = try await api.get("/v1/health")
             guard health["version"].number == 1, health["toolsEnabled"].bool else { throw ExecError("The bundled backend has an incompatible API or disabled workspace tools.") }
             self.api = api
+            try await api.desktop.start()
             return api
         } catch {
             await shutdown()
@@ -60,6 +62,7 @@ import Observation
 
     /// SIGTERM asks Rust to cancel, reap tools and checkpoint. Never force kill or steal locks.
     func shutdown() async {
+        api?.desktop.stop()
         guard let process else { return }
         if process.isRunning { process.terminate() }
         while process.isRunning { try? await Task.sleep(for: .milliseconds(25)) }
@@ -70,6 +73,7 @@ import Observation
 
 @MainActor final class AgentAPI {
     let transport: any AgentTransport
+    lazy var desktop = AgentDesktop(api: self)
     init(transport: any AgentTransport) { self.transport = transport }
     func get(_ path: String) async throws -> AgentJSON { try await request("GET", path) }
     func request(_ method: String, _ path: String, _ body: AgentJSON? = nil) async throws -> AgentJSON {

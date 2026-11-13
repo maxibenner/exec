@@ -523,7 +523,7 @@ methods; image rendering, draft attachment selection and file-save presentation 
 
 ## Optional native screenshot protocol
 
-**There is no backend screen capture.** The later Swift adapter must own screen/window
+**There is no backend screen capture.** The Swift adapter owns screen/window
 capture and OS permission. Merely connecting a frontend, using auto approval, supplying a
 `local` flag, or forwarding the Unix socket never enables this capability.
 
@@ -533,7 +533,7 @@ Trusted host composition nominates its local Swift process with
 identity to reject PID reuse. Registration additionally verifies the kernel Unix peer PID,
 consumes the nomination once, and binds one live channel. No API can nominate a peer.
 After disconnect/restart the host must explicitly authorize a fresh registration; the
-future Swift host integration owns that lifecycle. Unsupported peer-attestation platforms
+Swift host integration owns that lifecycle. Unsupported peer-attestation platforms
 fail closed. This is a private same-user local trust boundary, not remote authentication.
 
 | Method | Path | Contract |
@@ -569,5 +569,7 @@ does not re-enable session access. Native permissions/channels are transient, ne
 or forked. General observer disconnects still only detach; disconnecting the bound native
 capability channel specifically revokes that capability and invalidates its pending calls.
 CLI `desktop ID FRONTEND_ID|off` controls session permission but does not capture screens.
-The Rust `AgentClient` exposes typed native channel/reply/permission methods for the future
-Swift bridge. No Swift adapter, live OS permission check, or headless substitute is claimed.
+The Rust `AgentClient` exposes typed native channel/reply/permission methods. The macOS app
+implements the local adapter and explicit `/screenshots` session grant; see
+`docs/swift-rust-migration.md` for its permission flow and verification limits. There is no
+headless capture substitute.

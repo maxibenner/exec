@@ -2,7 +2,7 @@
 
 ## Scope and ownership
 
-The macOS app now bundles and automatically launches the existing `exec-agent` executable and connects over its private Unix-socket HTTP/NDJSON API. **No Rust sources or API contracts were changed.**
+The macOS app now bundles and automatically launches the existing `exec-agent` executable and connects over its private Unix-socket HTTP/NDJSON API. The initial cutover did not change Rust. The follow-up fixes one provider transport compatibility issue (valid OpenAI event streams without a Content-Type header); API contracts and backend ownership are unchanged.
 
 Rust is the sole owner of:
 - Provider credentials, browser authentication/token refresh, model discovery and account observations.
@@ -33,15 +33,16 @@ The previous Swift provider implementations, OAuth/HTTP/SSE machinery, Keychain 
 | Existing flow | Backend mapping |
 |---|---|
 | Open/reopen conversation | Snapshot + live events; reopening explicitly reconnects a lost observer |
-| New conversation/workspace | Durable creation when workspace/model are known; Rust supplies identity/canonical path |
+| New conversation/workspace | Inherited workspace stays selectable once until explicit choice or session start; Rust supplies durable identity/canonical path |
 | Send | Upload selected images, submit one turn, reconcile acceptance; no inference retries |
 | Send while responding | Exact-operation text steering |
 | Stop / Escape | Exact-operation cancellation; retain ownership until cleanup/terminal state |
 | Approve Once / Deny | Exact conversation + operation + approval IDs, one request per decision |
 | Auto mode / reasoning / model / prompt | Rust settings/model API, only when permitted by the service |
 | Session rename, fork, delete, order | Rust catalog APIs; detached windows keep the same frontend session object |
-| Provider add/remove | Existing account sheet and browser flow, backed by Rust credential APIs |
-| Context and account usage | Rust measurements, with the existing display components |
+| Provider add/remove | API-key entry sheet; OpenAI opens browser authentication directly, backed by Rust credential APIs |
+| Context and account usage | Context follows Rust snapshots; account allowance refreshes only when Settings opens |
+| Screenshots | Explicit `/screenshots` grant, host-attested native channel, exact correlated capture/results |
 | Input/generated images | Rust immutable assets, loaded for the existing attachment/image views |
 | Quit | Existing confirmation copy/buttons; await Rust shutdown/reaping/checkpoint completion before replying to AppKit |
 
@@ -65,7 +66,7 @@ The new private profile is:
 ~/Library/Application Support/Exec/Agent/
 ```
 
-Rust owns the profile's `credentials.json`, `service.sock`, `conversations/`, images, logs and caches. Credentials are private **plaintext**, not Keychain-encrypted. The existing account sheet now states this accurately. GUI startup removes ambient `DEEPSEEK_API_KEY`/`OPENAI_SESSION_JSON` overrides from the child environment so onboarding manages this profile, not an inherited shell credential.
+Rust owns the profile's `credentials.json`, `service.sock`, `conversations/`, images, logs and caches. Credentials are private **plaintext**, not Keychain-encrypted. The onboarding sheet has no explanatory auth/storage paragraph; this storage contract is documented here. GUI startup removes ambient `DEEPSEEK_API_KEY`/`OPENAI_SESSION_JSON` overrides from the child environment so onboarding manages this profile, not an inherited shell credential.
 
 **No legacy Swift data, credentials, sessions, images or defaults are migrated or deleted.** Existing users reconnect providers in the same account UI. The new selected-session preference has a distinct key.
 
@@ -86,25 +87,25 @@ The build scripts disable release debug stripping (`CARGO_PROFILE_RELEASE_STRIP=
 These reflect current backend contracts; they are not replacement UI designs:
 
 1. **Automatic session titles:** removed the Session Titles settings section and generation machinery, as explicitly requested. Manual rename and prompt-derived fallback titles remain.
-2. **Idle-only mutations:** model/reasoning/auto-mode controls, rename and fork are unavailable while the conversation is running. The backend does not support changing live approval policy or forking a running boundary.
-3. **Immutable workspace:** once Rust has created a session, its workspace cannot be changed. The existing picker remains available before creation; use New Conversation for a different workspace afterward.
+2. **Idle-only backend mutations:** `/model`, `/reasoning` and `/auto-approve` can be chosen mid-turn. The latest settings are applied once idle, before queued `/compact` or `/fork` actions. Repeated pending actions coalesce; failures never replay mutations. A live approval is not implicitly resolved by changing the desired auto-mode. Rename stays idle-only. Stop discards pending action commands; Quit also prevents queued work from starting.
+3. **Immutable workspace:** `/workspace` becomes inactive after an explicit choice or session start. A new conversation inherits the previous folder only as a suggestion and still permits one explicit choice. Its immutable Rust record is not created merely by inheriting that folder or changing model defaults. Sending, explicit selection, enabling screenshots, or saving a draft on navigation commits the workspace. Use New Conversation afterward; existing history is never rebound to another folder.
 4. **Text-only steering:** image submissions during a response, and input during manual compaction, retain the draft and use the existing inline error presentation. They are not silently queued as later inference.
-5. **Credential disclosure:** the existing account sheet's Keychain paragraph now describes private plaintext storage. Backend provider statuses have no personal account label, so the existing subtitle shows `Connected` instead of inventing an identity.
+5. **Provider onboarding:** adding OpenAI opens browser auth directly, without an intermediate explanatory sheet. DeepSeek keeps only key entry and actions, without the auth/storage paragraph. Backend provider statuses have no personal account label, so the existing subtitle shows `Connected` instead of inventing an identity.
 6. **Image generation routing/approval:** the standalone backend composes OpenAI image generation independently of the chat provider and requires approval in manual mode. The existing approval component displays the exact backend proposal with a generic action heading where no old shell/edit heading applies. The settings footer accurately identifies the OpenAI subscription. Swift does not bypass approval or select a different image provider.
 7. **Input acceptance:** a submitted draft clears on backend acknowledgement, not before a local Swift checkpoint. An uncertain acknowledgement retains the draft and reconciles the snapshot without resubmitting. Inspect the transcript before explicitly resending it.
 8. **Errors:** errors still use the existing inline error surface/account alert. Backend-safe diagnostic text is preserved; old provider-specific wording is not reconstructed from string matching.
 
 Search-model preferences remain within the selected chat provider, preserving the existing disclosure/routing behavior rather than silently introducing cross-provider search.
 
-## Unsupported or incomplete parity: decisions required, not implemented
+## Native screenshots
 
-### Native screenshots — permission-flow integration is deferred
+The host nominates its own process with `--native-frontend-pid`, then opens one kernel-attested live channel. Startup reports existing OS permission but never requests or grants it automatically. In the composer, `/screenshots` explicitly enables or disables screen sharing **for that conversation**. Enabling requests macOS Screen Recording permission if necessary. If macOS requires a restart after a grant, the existing inline error explains that; the app never bypasses TCC.
 
-Rust supports a native capture *protocol*, but it requires a host-nominated process, live registered channel, prior reported OS permission and an explicitly enabled per-session desktop capability **before the tool is exposed**. The old Swift flow requested OS/tool permission only when the model called the tool, with `Approve Once` / `Always for This Session` and auto-mode handling.
+Only an enabled session with OS permission exposes `take_screenshot` to the model. Swift uses the existing ScreenCaptureKit implementation, returns typed window lists or image bytes, and echoes every backend correlation field unchanged. Window capture requires prior enumeration through the same session/channel, enforced by Rust. Screens and titles remain untrusted evidence. In manual approval mode each capture still needs `Approve Once`; there is no local approval bypass or misleading “Always for This Session” action. Auto mode alone never grants screen access.
 
-Those are not interchangeable permission models. This migration does **not** nominate/register a native capture channel, silently turn on desktop access, request Screen Recording permission on every launch, or run a Swift screenshot tool outside Rust. Consequently, `take_screenshot` is not available from this app yet. The existing native capture helper and existing screenshot presentation are retained as frontend code, but are not invoked by a hidden fallback.
+Stop/cancellation, disable, OS revocation or channel disconnect prevents late capture results from being shared. No capture/result is retried. OS permission restoration does not re-enable sessions. Grants are transient, not restored on restart or inherited by forks. A disconnected channel requires a new app/backend launch and explicit session enablement, not an automatic registration retry.
 
-**Decision needed:** approve a minimal explicit capability-enablement flow using the current UI, or revise the Rust preparation/permission contract in a separate task. Until then, no claims of screenshot feature parity or verified TCC behavior are made.
+## Remaining compatibility limits
 
 ### Compaction activity rows
 
@@ -112,9 +113,9 @@ Manual compaction is connected and cancellable; automatic compaction remains Rus
 
 **Decision needed:** a future backend event/transcript contract if the old activity-row behavior must be restored exactly.
 
-### Before/after allowance observations
+### Account allowance policy
 
-Current allowance/reset information is connected. Rust explicitly defers per-run before/after allowance observations, so Swift does not retain the old side-channel requests/storage or manufacture quota attribution. A backend observation contract is required before restoring that behavior.
+Before/after turn allowance observations are intentionally removed from the product requirements. Current allowance/reset information refreshes only when the user opens Settings, not on launch, account changes, or turn completion. The last fetched observation retains its timestamp; no per-turn quota attribution is invented.
 
 ### Offline model catalog startup
 
@@ -126,11 +127,13 @@ Rust requires a model to create a durable session. A workspace/draft can remain 
 
 ## Verification
 
-`./scripts/test.sh` passed **51 checks**. `./scripts/build-app.sh` succeeded with the configured stable signing certificate, including verification of the bundled helper and app.
+`./scripts/test.sh` passed **58 checks**. `./scripts/build-app.sh` succeeded with the configured stable signing certificate, including verification of the bundled helper and app.
 
 Automated checks use isolated stores, synthetic transport fixtures and an actual local Rust subprocess with an empty credential environment. They never read the user's Keychain, configure a live provider, call a live model, open browser sign-in or capture the screen.
 
 Verified:
+- Deferred commands, coalescing, uncertain-settings failure gating, inherited workspace one-choice behavior and Settings-only usage refresh.
+- Native capture correlation, cancellation discarding late results, no result retries, OS revocation and no implicit regrant.
 - Existing native transcript/layout/selection/Markdown/tool-rendering checks.
 - Snapshot/Unicode delta reconciliation without duplicate rows, exact approval correlation and single decision submission.
 - Cancellation retains ownership/sleep prevention until terminal cleanup.
@@ -140,9 +143,17 @@ Verified:
 - Signed app/helper build and `codesign --verify --deep --strict` with the configured stable certificate.
 
 Still manual/unverified:
-- Live OpenAI browser authentication/rotation, DeepSeek credentials, live model/tool/service behavior and subscription image quota.
+- Live OpenAI browser authentication/rotation and reconnect UI; account removal/replacement. Other provider tools beyond the explicit live checks below, including quotas/exhaustion, remain unverified.
 - Full interactive app startup/quit, multi-window visual comparison, long live streams and all failure dialogs against real providers.
-- Native capture registration/TCC/session-permission UX (deferred above).
+- Interactive Screen Recording prompts/relaunch, real ScreenCaptureKit capture through the new session grant UI, and physical permission revocation. Kernel-attested channel registration, grants/revocation and fork isolation are tested against an isolated actual Rust subprocess; capture itself is faked in automated tests.
 - Installer/notarization/update distribution and Intel/universal builds.
 
 Mocks and a disconnected real backend do not establish live provider compatibility. The retained renderer tests are meaningful regressions, not a claim that a person performed a complete pixel-by-pixel UI comparison.
+
+### One-off authorized live checks (not automated tests)
+
+Used the existing configured accounts only for this debugging session, with temporary conversations and synthetic inputs, no user project contents and no credential copies/logging. The original OpenAI error was reproduced as a successful SSE response lacking Content-Type; the Rust adapter now tolerates a missing header while rejecting explicitly incompatible types and requiring a valid completed stream. One end-to-end Rust plain-text turn completed after the fix.
+
+Additional manual API checks all completed: OpenAI Unicode/multiline fenced text, follow-up context recall, text plus a synthetic red image (color recognized), image-only input, exact-operation text steering, and one explicitly approved image generation. The generated 1536×1024 image asset was retrieved and its byte count validated. DeepSeek Unicode text also completed. No inference or generation was retried. Temporary conversations and image references were deleted afterward and the service exited cleanly. These verify live backend behavior, not a full interactive Swift UI/TCC walkthrough.
+
+The full isolated Rust test suite passed, including missing-header success, truncated stream failure and incompatible Content-Type rejection. Live credentials are never part of the long-term test suite.

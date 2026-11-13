@@ -38,12 +38,8 @@ import Observation
         pendingApproval = Approval(id: approval.id, kind: kind, content: content,
                                    directory: URL(fileURLWithPath: approval.workspace), timeoutSeconds: timeout)
     }
-    func resolveApproval(id: UUID, approved: Bool, allowScreenshotsForSession: Bool = false) {
+    func resolveApproval(id: UUID, approved: Bool) {
         guard !resolving, pendingApproval?.id == id, let operationID, let resolve else { return }
-        guard !allowScreenshotsForSession else {
-            reportError?("Session screenshot permission is not available in the current backend integration.")
-            return
-        }
         resolving = true
         Task {
             defer { resolving = false }

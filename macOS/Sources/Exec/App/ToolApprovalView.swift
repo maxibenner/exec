@@ -33,13 +33,6 @@ struct ToolApprovalView: View {
                 Button("Deny") {
                     if canResolve() { executor.resolveApproval(id: approval.id, approved: false) }
                 }
-                if approval.kind == .screenshot {
-                    Button("Always for This Session") {
-                        if canResolve() {
-                            executor.resolveApproval(id: approval.id, approved: true, allowScreenshotsForSession: true)
-                        }
-                    }
-                }
                 Button("Approve Once") {
                     if canResolve() { executor.resolveApproval(id: approval.id, approved: true) }
                 }

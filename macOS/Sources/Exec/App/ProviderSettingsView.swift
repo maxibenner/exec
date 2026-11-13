@@ -98,7 +98,10 @@ struct ProviderSettingsView: View {
                     } else {
                         Menu {
                             ForEach(available) { connection in
-                                Button(connection.name) { adding = connection }
+                                Button(connection.name) {
+                                    if connection.authentication == .apiKey { adding = connection }
+                                    else { store.connect(providerID: connection.id) }
+                                }
                             }
                         } label: { addProviderLabel }
                         .menuIndicator(.hidden)
@@ -146,13 +149,7 @@ struct ProviderConnectionSheet: View {
                     .focused($focused)
                     .autocorrectionDisabled()
                     .accessibilityLabel("API key")
-            } else {
-                Text("Continue in your browser to sign in to \(providerName).")
             }
-            Text("Exec stores your provider sign-ins and API keys in a private plaintext file in its backend profile so you can stay connected. These credentials are not stored in macOS Keychain.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { key = ""; dismiss() }

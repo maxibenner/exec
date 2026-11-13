@@ -76,7 +76,6 @@ import Observation
             try await current.loadSession(id)
         }
         refreshModels()
-        refreshAccountUsage()
     }
     private func saveDefaults() {
         guard !restoringDefaults else { return }
@@ -156,7 +155,7 @@ import Observation
         navigationTask?.cancel()
         Task { await provider.cancelConnection() }
         modelTask?.cancel()
-        for item in conversations where item.busy { item.stop() }
+        for item in conversations { item.cancelPendingCommands(); if item.busy { item.stop() } }
     }
     func closePresentations() { for item in conversations { item.closePresentation() } }
     func connect(providerID: String, credential: String? = nil) {
@@ -172,7 +171,7 @@ import Observation
         modelTask?.cancel()
         connectionError = nil
         accountTask = Task {
-            defer { authenticating = false; accountTask = nil; refreshModels(); refreshAccountUsage() }
+            defer { authenticating = false; accountTask = nil; refreshModels() }
             do { try await operation() }
             catch { connectionError = error.localizedDescription }
             try? await provider.refreshConnections()
@@ -219,7 +218,7 @@ import Observation
             }
         } catch { /* Keep the last report; account observations must not fail a chat. */ }
     }
-    private func refreshAccountUsage() {
+    func refreshAccountUsage() {
         guard !authenticating, usageConnection != nil else { return }
         let generation = accountGeneration
         Task {
@@ -298,6 +297,10 @@ import Observation
         }
     }
 
+    func waitForNavigation() async { await navigationTask?.value }
+    func canRequestFork(_ source: ChatStore) -> Bool {
+        canModify && source.canRequestFork && hasConversation(source) && openConversations.contains { $0 === source }
+    }
     func canForkConversation(_ source: ChatStore) -> Bool {
         canModify && source.canFork && hasConversation(source) && openConversations.contains { $0 === source }
     }
@@ -306,6 +309,8 @@ import Observation
         guard canForkConversation(source) else { return }
         let commandDraft = source.draft
         navigate(reportingTo: source) {
+            await source.waitForPendingSave()
+            try Task.checkCancellation()
             let next = try self.makeConversation()
             self.loading = next
             try await next.copyConversation(from: source)
@@ -502,7 +507,6 @@ import Observation
             guard let self, let conversation else { return }
             self.applyModels(to: conversation)
             self.trimConversations()
-            self.refreshAccountUsage()
         }
     }
     private func remember(_ conversation: ChatStore) {
@@ -514,6 +518,22 @@ import Observation
     }
 
     private func activate(_ conversation: ChatStore) {
+        let previous = current
+        if previous !== conversation, previous.currentSessionID == nil, previous.hasUnsentDraft {
+            previous.scheduleSave(force: true)
+            Task {
+                await previous.waitUntilIdle()
+                await previous.waitForPendingSave()
+                do {
+                    guard previous.currentSessionID != nil else { throw ExecError(previous.error ?? "Choose a workspace and model before leaving this draft.") }
+                } catch {
+                    previous.error = error.localizedDescription
+                    // A failed/uncertain create is not retried or allowed to hide the draft.
+                    if self.current === conversation { self.current = previous; self.persistSelection() }
+                    self.navigationError = error.localizedDescription
+                }
+            }
+        }
         applyModels(to: conversation)
         remember(conversation)
         current = conversation
@@ -522,7 +542,7 @@ import Observation
         // An untouched blank isn't an open document.
         openConversations.removeAll { conversation in
             conversation !== current && conversation.summary == nil && !conversation.busy && !conversation.isSaving &&
-            !conversation.hasUnsavedChanges && conversation.error == nil &&
+            !conversation.hasUnsentDraft && !conversation.hasUnsavedChanges && conversation.error == nil &&
             !savedSummaries.contains(where: { $0.id == conversation.currentSessionID })
         }
         trimConversations()

@@ -155,7 +155,8 @@ actor FakeAgentTransport: AgentTransport {
         defer { try? FileManager.default.removeItem(at: root) }
         let process = Process()
         process.executableURL = executable
-        process.arguments = ["--profile", profile.path, "serve", "--workspace-tools"]
+        process.arguments = ["--profile", profile.path, "serve", "--workspace-tools",
+                             "--native-frontend-pid", String(ProcessInfo.processInfo.processIdentifier)]
         process.environment = ["PATH": "/usr/bin:/bin"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -177,6 +178,17 @@ actor FakeAgentTransport: AgentTransport {
             "model": .string("deepseek/test"), "workspace": .string(workspace.path),
             "settings": .object(["autoApprove": .bool(false), "systemPrompt": .string("Test instructions")])]))
         let snapshot = try value.decoded(AgentSnapshot.self)
+        // Attestation uses the real Unix peer; OS access/capture remain isolated fakes.
+        let desktop = AgentDesktop(api: api, preflight: { true }, requestPermission: { false }, capture: { _ in
+            throw CheckFailure(description: "No screen capture expected in isolated service check")
+        })
+        try await desktop.start()
+        defer { desktop.stop() }
+        try expect(desktop.frontendID != nil && desktop.enabled.isEmpty)
+        try await desktop.setEnabled(true, for: snapshot.id)
+        let permission = try await api.get(AgentAPI.path(snapshot.id, "/desktop"))
+        try expect(permission["enabled"].bool)
+        try expect(permission["frontendID"].string == desktop.frontendID)
         try expect(snapshot.configuration.settings.autoApprove == false)
         try expect(snapshot.configuration.settings.systemPrompt == "Test instructions")
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2,
@@ -204,6 +216,11 @@ actor FakeAgentTransport: AgentTransport {
         _ = try await api.send("PUT", AgentAPI.path(snapshot.id, "/settings"), body: AgentSettings(systemPrompt: "Updated", autoApprove: true))
         let fork = try await api.request("POST", AgentAPI.path(snapshot.id, "/fork"), .object([:])).decoded(AgentSnapshot.self)
         try expect(fork.id != snapshot.id && fork.configuration.settings.systemPrompt == "Updated")
+        let forkPermission = try await api.get(AgentAPI.path(fork.id, "/desktop"))
+        try expect(!forkPermission["enabled"].bool)
+        try await desktop.setEnabled(false, for: snapshot.id)
+        let revoked = try await api.get(AgentAPI.path(snapshot.id, "/desktop"))
+        try expect(!revoked["enabled"].bool)
         let config = AgentLibraryConfiguration(defaultModel: "deepseek/test", settings: .init(), order: [fork.id, snapshot.id])
         _ = try await api.send("PUT", "/v1/library", body: config)
         let restored = try await api.get("/v1/library").decoded(AgentLibraryConfiguration.self)

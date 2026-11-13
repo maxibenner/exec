@@ -26,6 +26,8 @@ import CryptoKit
     var error: String?
     private(set) var currentSessionID: UUID?
     private(set) var workspace: Workspace?
+    private var workspaceChosen = false
+    private var commitInheritedWorkspace = false
     private(set) var isRestoringSession = false
     private(set) var isSending = false
     private(set) var isCompacting = false
@@ -36,10 +38,76 @@ import CryptoKit
     private var acceptedOperationID: UUID?
     private var snapshot: AgentSnapshot?
     private var operationActive: Bool { snapshot?.operation?.active == true }
-    var busy: Bool { isRestoringSession || submitting || operationActive || isStopping }
+    private var backendBusy: Bool { isRestoringSession || submitting || operationActive || isStopping }
+    var busy: Bool { backendBusy || commandTask != nil }
+    private var commandTask: Task<Void, Never>?
+    private var pendingCommands: [(key: String, action: @MainActor () async throws -> Void)] = []
+    private var commandsClosed = false
+    var canRequestCommands: Bool { !commandsClosed && !isRestoringSession && !configurationUncertain }
+    var desktop: AgentDesktop { api.desktop }
+    var screenshotsEnabled: Bool { currentSessionID.map { desktop.enabled.contains($0) } ?? false }
+    private var desktopTask: Task<Void, Never>?
+    var changingScreenshots: Bool { desktopTask != nil || (currentSessionID.map { desktop.changing.contains($0) } ?? false) }
+
+    /// Coalesce repeat actions, bind them to this conversation, and never send an idle-only
+    /// mutation against a running backend operation. Settings use their latest chosen value.
+    func whenIdle(_ key: String, action: @escaping @MainActor () async throws -> Void) {
+        guard canRequestCommands else { return }
+        if let index = pendingCommands.firstIndex(where: { $0.key == key }) { pendingCommands[index].action = action }
+        else { pendingCommands.append((key, action)) }
+        drainCommands()
+    }
+    private func drainCommands() {
+        guard !commandsClosed, !configurationUncertain, !backendBusy, !isSaving, commandTask == nil,
+              currentSessionID != nil || workspaceChosen || !pendingCommands.isEmpty,
+              settingsDirty || !pendingCommands.isEmpty else { return }
+        commandTask = Task {
+            defer { commandTask = nil; updateSleepActivity() }
+            await saveTask?.value
+            do {
+                while !backendBusy && !commandsClosed {
+                    try Task.checkCancellation()
+                    if settingsDirty {
+                        isSaving = true
+                        do { try await persistConfiguration() }
+                        catch { isSaving = false; throw error }
+                        isSaving = false
+                    }
+                    guard !pendingCommands.isEmpty else { break }
+                    let command = pendingCommands.removeFirst()
+                    try await command.action()
+                }
+            } catch {
+                pendingCommands.removeAll()
+                self.error = error.localizedDescription
+            }
+        }
+    }
+    func cancelPendingCommands() {
+        commandsClosed = true
+        pendingCommands.removeAll()
+        commandTask?.cancel()
+    }
+    func toggleScreenshots() {
+        guard !changingScreenshots else { return }
+        let enable = !screenshotsEnabled
+        desktopTask = Task {
+            defer { desktopTask = nil }
+            do {
+                if currentSessionID == nil {
+                    scheduleSave(force: true)
+                    await waitUntilIdle()
+                    await waitForPendingSave()
+                }
+                try Task.checkCancellation()
+                guard let id = currentSessionID else { throw ExecError("Choose a workspace and model before enabling screenshots.") }
+                try await desktop.setEnabled(enable, for: id)
+            } catch { self.error = error.localizedDescription }
+        }
+    }
     var isWorking: Bool { busy }
     var canEditDraft: Bool { !isRestoringSession && !isStopping }
-    var canSelectWorkspace: Bool { !busy && currentSessionID == nil && messages.isEmpty }
+    var canSelectWorkspace: Bool { !busy && !isSaving && !workspaceChosen && currentSessionID == nil && messages.isEmpty }
     private(set) var autoApproveTools: Bool
     private(set) var contextUsage: ContextUsage?
     private(set) var needsInitialWorkspaceSelection = false
@@ -86,6 +154,7 @@ import CryptoKit
     func setInitialWorkspace(_ workspace: Workspace) throws {
         guard canSelectWorkspace else { throw ExecError("Choose a workspace in a new conversation.") }
         self.workspace = workspace
+        workspaceChosen = true
         needsInitialWorkspaceSelection = false
     }
     func waitUntilIdle() async { await task?.value }
@@ -96,28 +165,32 @@ import CryptoKit
                       effort: selectedEffort, searchModel: !searchModel.isEmpty && provider.providerID(for: searchModel) == provider.providerID(for: selectedModel) ? searchModel : nil)
     }
     func setAutoApproveTools(_ enabled: Bool) {
-        guard !busy else { return } // Rust settings changes are idle-only; never resolve a live approval implicitly.
+        guard canRequestCommands else { return }
         autoApproveTools = enabled
         scheduleSave()
     }
-    func scheduleSave() {
+    func scheduleSave(force: Bool = false) {
         settingsDirty = true
-        guard !busy, saveTask == nil else { return }
+        commitInheritedWorkspace = commitInheritedWorkspace || force
+        guard !busy, !isSaving, saveTask == nil, !commandsClosed else { return }
         saveTask = Task {
-            defer { saveTask = nil }
+            defer { saveTask = nil; drainCommands() }
             do { try await saveIfIdle() }
             catch { self.error = error.localizedDescription }
         }
     }
     func saveIfIdle(force: Bool = false) async throws {
-        guard !busy else { return }
+        guard !busy, !isSaving else { return }
         isSaving = true
-        defer { isSaving = false }
-        try await persistConfiguration()
+        defer { isSaving = false; drainCommands() }
+        try await persistConfiguration(allowInheritedWorkspace: force)
     }
-    private func persistConfiguration() async throws {
+    private func persistConfiguration(allowInheritedWorkspace: Bool = false) async throws {
         guard !configurationUncertain else { throw ExecError("The previous configuration request could not be confirmed. Reopen the conversation before making further changes.") }
         guard let workspace, !selectedModel.isEmpty else { return }
+        // A newly inherited workspace is a suggestion, not an explicit choice. Do not
+        // create an immutable Rust session until selection, sending, or leaving a draft.
+        guard currentSessionID != nil || workspaceChosen || commitInheritedWorkspace || allowInheritedWorkspace else { return }
         let desiredSettings = settings
         let desiredModel = selectedModel
         do {
@@ -142,6 +215,7 @@ import CryptoKit
         } catch {
             // Configuration/create may have committed. Do not retry an uncertain write.
             configurationUncertain = true
+            pendingCommands.removeAll()
             hasUnsavedChanges = true
             throw error
         }
@@ -227,6 +301,7 @@ import CryptoKit
         try tools.apply(value.approval)
         updateSleepActivity()
         loadImages()
+        if !operationActive { drainCommands() }
         if wasActive && !operationActive {
             didFinish?()
             Task { [weak self] in
@@ -273,7 +348,7 @@ import CryptoKit
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !draftImages.isEmpty, canEditDraft, !isImportingImages, !submitting, hasUsableModel else { return }
+        guard !text.isEmpty || !draftImages.isEmpty, canEditDraft, !isImportingImages, !submitting, !isSaving, commandTask == nil, hasUsableModel else { return }
         if operationActive && (!draftImages.isEmpty || isCompacting) {
             error = isCompacting ? "Wait for compaction to finish before sending a message." : "Images cannot be sent while a response is running. Stop or wait for the response to finish."
             return
@@ -284,10 +359,10 @@ import CryptoKit
         acceptedOperationID = nil
         error = nil
         task = Task {
-            defer { submitting = false; task = nil; updateSleepActivity() }
+            defer { submitting = false; task = nil; updateSleepActivity(); drainCommands() }
             do {
                 await waitForPendingSave()
-                if !operationActive { try await persistConfiguration() }
+                if !operationActive { try await persistConfiguration(allowInheritedWorkspace: true) }
                 guard let id = currentSessionID else { throw ExecError("Choose a workspace and model before sending a message.") }
                 if operationActive, let operation = snapshot?.operation {
                     _ = try await api.request("POST", AgentAPI.path(id, "/steer"), .object([
@@ -317,14 +392,25 @@ import CryptoKit
             }
         }
     }
-    var canCompact: Bool { !busy && !isSaving && snapshot?.pendingInput.isEmpty != false && !messages.isEmpty && provider.providerID(for: selectedModel) == "openai" }
+    var canCompact: Bool { canRequestCommands && !messages.isEmpty && provider.providerID(for: selectedModel) == "openai" }
     func compact() {
-        guard canCompact, let id = currentSessionID else { return }
+        guard canCompact else { return }
+        whenIdle("compact") { [weak self] in
+            guard let self else { return }
+            guard self.canCompact, self.snapshot?.pendingInput.isEmpty != false else {
+                throw ExecError("Compaction is unavailable for the selected model or pending input.")
+            }
+            self.compactNow()
+            await self.task?.value
+        }
+    }
+    private func compactNow() {
+        guard !backendBusy, !isSaving, let id = currentSessionID else { return }
         submitting = true
         acceptedOperationID = nil
         isCompacting = true
         task = Task {
-            defer { submitting = false; task = nil }
+            defer { submitting = false; task = nil; drainCommands() }
             do {
                 let receipt = try await api.request("POST", AgentAPI.path(id, "/compact"), .object([:]))
                 acceptedOperationID = receipt["operationID"].string.flatMap(UUID.init(uuidString:))
@@ -334,6 +420,8 @@ import CryptoKit
     }
     func stop() {
         guard stopTask == nil else { return }
+        pendingCommands.removeAll()
+        commandTask?.cancel()
         // A submit may still be awaiting its receipt. Wait for its single request,
         // then target the operation actually accepted; never cancel by session alone.
         let pending = task
@@ -341,7 +429,7 @@ import CryptoKit
         isStopping = true
         stopTask = Task {
             await pending?.value
-            defer { stopTask = nil; isStopping = operationActive && snapshot?.operation?.state == "cancelling"; updateSleepActivity() }
+            defer { stopTask = nil; isStopping = operationActive && snapshot?.operation?.state == "cancelling"; updateSleepActivity(); drainCommands() }
             guard let id = currentSessionID else { return }
             do {
                 pauseObservation()
@@ -363,7 +451,8 @@ import CryptoKit
             } catch { self.error = error.localizedDescription; isStopping = false }
         }
     }
-    var canFork: Bool { !busy && !isSaving && !hasUnsavedChanges && snapshot?.pendingInput.isEmpty != false && currentSessionID != nil }
+    var canRequestFork: Bool { canRequestCommands && !hasUnsavedChanges && currentSessionID != nil }
+    var canFork: Bool { !backendBusy && !isSaving && !hasUnsavedChanges && snapshot?.pendingInput.isEmpty != false && currentSessionID != nil }
     func copyConversation(from source: ChatStore) async throws {
         guard source.canFork, let id = source.currentSessionID else { throw ExecError("Wait for the conversation to finish before forking it.") }
         let value = try await api.request("POST", AgentAPI.path(id, "/fork"), .object([:]))
@@ -375,6 +464,8 @@ import CryptoKit
         if !busy, let activity = sleepActivity { sleepPrevention.end(activity); sleepActivity = nil }
     }
     func closePresentation() {
+        desktopTask?.cancel()
+        cancelPendingCommands()
         pauseObservation()
         imageTask?.cancel(); imageTask = nil
         if let activity = sleepActivity { sleepPrevention.end(activity); sleepActivity = nil }

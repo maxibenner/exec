@@ -19,6 +19,12 @@ enum ScreenshotTool {
     struct Output: Sendable {
         let text: String
         var image: ImageAttachment?
+        var windows: [Window]?
+    }
+
+    struct Window: Sendable {
+        let id: UInt32
+        let title: String
     }
 
     static func request(_ call: ToolCall) throws -> Request {

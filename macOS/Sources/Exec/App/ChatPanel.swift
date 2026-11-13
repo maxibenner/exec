@@ -53,15 +53,16 @@ import Observation
     var selectedModel: String {
         get { models.contains(where: { $0.id == current.selectedModel }) ? current.selectedModel : "" }
         set {
-            guard canNavigate, !current.busy, models.contains(where: { $0.id == newValue }), newValue != current.selectedModel else { return }
+            guard canNavigate, current.canRequestCommands, models.contains(where: { $0.id == newValue }), newValue != current.selectedModel else { return }
             current.selectedModel = newValue
+            current.selectedEffort = nil
             current.scheduleSave()
         }
     }
     var selectedEffort: String? {
         get { current.effectiveEffort }
         set {
-            guard canNavigate, !current.busy, newValue == nil || current.model?.efforts.contains(where: { $0.id == newValue }) == true else { return }
+            guard canNavigate, current.canRequestCommands, newValue == nil || current.model?.efforts.contains(where: { $0.id == newValue }) == true else { return }
             current.selectedEffort = newValue
             current.scheduleSave()
         }

@@ -30,3 +30,14 @@ Repository finalization (focused Conventional Commit, merge to `main`, worktree/
 - Compaction API exposes operation state, not the old transcript activity rows.
 
 Final verification and unresolved decisions are recorded in `docs/swift-rust-migration.md`.
+
+## Follow-up integration
+
+- [x] Connect the host-nominated native screenshot channel with explicit `/screenshots` session grants and native OS permission checks.
+- [x] Queue idle-only slash commands; preserve exact approvals and cancellation. Keep `/workspace` inactive after the initial choice/start, but allow one change to a newly inherited folder.
+- [x] Refresh allowance only on opening Settings; remove before/after observations from requirements.
+- [x] Open browser authentication directly and remove onboarding auth/storage descriptions.
+- [x] Diagnose/fix OpenAI streams with missing Content-Type and verify synthetic/live behavior.
+- [x] Run authorized one-off live text, Unicode, context, steering, vision and image-generation checks, then clean up temporary conversations. No live fixtures were added to tests.
+
+See the updated migration report for the verification boundaries and remaining manual TCC/UI checks.
