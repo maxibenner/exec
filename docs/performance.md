@@ -75,3 +75,20 @@ this is not an isolated test. Do not launch a second instance against the same s
 Turning probes on requires a new process; merely rebuilding does not affect a running app.
 Stack samples can include local paths, process metadata, and symbols. Review them before
 sharing. No report is uploaded automatically.
+
+## Transcript container benchmark
+
+```sh
+./scripts/benchmark-transcript.sh
+BENCH_COUNTS="100 400" ./scripts/benchmark-transcript.sh
+```
+
+Compiles the production message renderer with a test-only lazy-container alternative.
+Each mode/trial runs in a fresh process. Measures nearby scrolling, history jumps,
+resizing and bottom/offscreen streaming with synthetic messages. It does not read
+profiles or call providers. Raw measurements are printed, not committed.
+
+The lazy alternative is an experiment, not a production renderer. Results do not
+establish real gesture smoothness, GPU/energy use, selection correctness, or behavior
+with large tool cards/images. Compare repeated trials on the same machine and build;
+do not treat historical measurements as current performance guarantees.

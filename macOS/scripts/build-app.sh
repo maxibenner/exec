@@ -13,7 +13,7 @@ if [[ -z "$identity" || "$identity" == "-" ]]; then
     fi
     identity="-"
     printf 'WARNING: Ad-hoc development signing; rebuilds may trigger Keychain prompts.\n' >&2
-    printf 'See README.md for configuring a stable signing certificate.\n' >&2
+    printf 'See ../docs/development.md for configuring a stable signing certificate.\n' >&2
 else
     options+=(--options runtime --timestamp)
     printf 'Signing with configured identity: %s\n' "$identity"
@@ -26,11 +26,11 @@ minimum_macos="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' Reso
 cargo="${CARGO:-$(command -v cargo || true)}"
 if [[ -z "$cargo" && -x "$HOME/.cargo/bin/cargo" ]]; then cargo="$HOME/.cargo/bin/cargo"; fi
 if [[ -z "$cargo" ]]; then printf 'Rust/Cargo is required to bundle the Exec backend.\n' >&2; exit 1; fi
-agent_target="$PWD/.build/agent-rust"
+agent_target="$PWD/.build/backend"
 # Rust 1.93's Mach-O debug stripping can produce unloadable proc-macro dylibs on
 # newer macOS. Keep symbols rather than modifying/re-signing compiler artifacts.
 MACOSX_DEPLOYMENT_TARGET="$minimum_macos" CARGO_TARGET_DIR="$agent_target" CARGO_PROFILE_RELEASE_STRIP=none \
-    "$cargo" build --manifest-path ../agent-rust/Cargo.toml --locked --release --bin exec-agent
+    "$cargo" build --manifest-path ../backend/Cargo.toml --locked --release --bin exec-agent
 # Keep the build SDK distinct from the deployment target. Some Swift toolchains
 # otherwise stamp the minimum OS as the SDK, opting into legacy system styling.
 build_options=(-c release --sdk "$sdk_path"
@@ -51,7 +51,7 @@ codesign "${options[@]}" --sign "$identity" --identifier app.exec.agent "$built/
 cp Resources/Info.plist "$built/Contents/Info.plist"
 # Compile the layered glass icon and the compatibility ICNS for older macOS.
 # Use an absolute input path: the asset compiler service can outlive a worktree.
-xcrun actool "$PWD/Design/Icons/Glass_Icon.icon" \
+xcrun actool "$PWD/Resources/Glass_Icon.icon" \
     --compile "$built/Contents/Resources" \
     --output-partial-info-plist "$staging/IconInfo.plist" \
     --app-icon Glass_Icon --platform macosx \

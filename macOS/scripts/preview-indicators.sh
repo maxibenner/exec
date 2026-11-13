@@ -6,7 +6,7 @@ mkdir -p "$app/Contents/MacOS"
 # Never overwrite the executable inode of an already-running preview.
 staging="$(mktemp -d "$PWD/.build/.indicator-preview.XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
-swiftc -O -swift-version 6 -parse-as-library scripts/IndicatorPreview.swift -o "$staging/IndicatorPreview"
+swiftc -O -swift-version 6 -parse-as-library Tools/Benchmarks/IndicatorPreview.swift -o "$staging/IndicatorPreview"
 mv "$staging/IndicatorPreview" "$app/Contents/MacOS/IndicatorPreview"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

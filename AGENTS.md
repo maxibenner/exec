@@ -2,9 +2,11 @@
 
 ## Layout
 
-- `macOS/` contains the current macOS application.
-- `Relay/` and `iOS/` are reserved for separate applications and are currently empty.
-- Run macOS build and test commands from `macOS/`.
+- `backend/` contains the provider-neutral Rust runtime, HTTP service, providers, tools and tests.
+- `macOS/` contains the native Swift application; UI is grouped under `Application/`, `Features/`, `UI/` and `Platform/`, with shared contracts in `Core/` and helper integration in `Backend/`.
+- `docs/` contains current guides and published update metadata. Preserve published feed/release-note URLs.
+- Run macOS build and test commands from `macOS/`; run Cargo commands from `backend/`.
+- See `docs/development.md` for build artifacts, signing and repository hygiene.
 
 ## Git
 
@@ -25,7 +27,7 @@
 - Keep clear module boundaries across core logic, providers, UI components, and any future plugins or skills so additions can be made without rewriting unrelated code.
 - Design for straightforward extension through small, explicit interfaces and composition. Introduce plugin/skill infrastructure only when a concrete feature needs it—not speculative scaffolding.
 - UI and orchestration depend on `ChatProvider`, not OpenAI wire formats.
-- Provider-specific authentication, model discovery and opaque response context stay in `Providers/`.
+- Provider-specific authentication, model discovery and opaque response context stay in `backend/src/providers/`.
 - Never log tokens, authorization URLs, raw token responses or personal account identifiers.
 - No automatic retries of inference or rotating-token exchanges; failures can occur after the server performed the operation.
 - Preserve explicit cancellation and distinguish interrupted/failed turns from completed context.

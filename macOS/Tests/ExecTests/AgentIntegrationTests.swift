@@ -168,7 +168,7 @@ actor FakeAgentTransport: AgentTransport {
     /// Real Rust subprocess and network-bound HTTP framing, isolated empty credentials/profile.
     /// Never configures a provider or sends a live model request.
     func realService() async throws {
-        let executable = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/agent-rust/release/exec-agent")
+        let executable = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/backend/release/exec-agent")
         guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw CheckFailure(description: "Build the Rust helper before running integration checks.") }
         let root = URL(fileURLWithPath: "/tmp/exec-agent-test-\(UUID().uuidString.prefix(8))")
         let profile = root.appendingPathComponent("profile")

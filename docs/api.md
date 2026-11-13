@@ -1,10 +1,10 @@
 # Agent HTTP service — API v1
 
-The HTTP API extends the TypeScript sketch with session configuration and deletion. New conversations now default to auto-approval; clients requiring individual approvals must explicitly request manual mode. The service owns the manager, provider, tools, approvals and JSON persistence; clients never run another agent loop. The Swift app launches the bundled backend and consumes this API.
+The HTTP API owns session configuration and deletion. New conversations default to auto-approval; clients requiring individual approvals must explicitly request manual mode. The service owns the manager, provider, tools, approvals and JSON persistence; clients never run another agent loop. The Swift app launches the bundled backend and consumes this API.
 
 ## Standalone startup and credentials
 
-From `agent-rust/`, run `cargo build --locked --release`, then:
+From `backend/`, run `cargo build --locked --release`, then:
 
 ```sh
 # Provision a transport token once (or inject it through your service manager).
@@ -62,13 +62,16 @@ Hosts must be numeric IP addresses. Loopback IPv4/IPv6, a specific interface, or
 are supported. Network exposure requires an explicit bind; IPv6 wildcard behavior is OS-dependent.
 Invalid configuration fails startup, never falls back or selects another server.
 
-The bundled macOS helper uses the same host/port configuration. The app generates fresh
-API/native credentials for its child, unless an API token is explicitly supplied. A wildcard
-bind maps to loopback for this local connection; external clients use the host's actual address.
-An occupied port or unavailable interface fails startup. After binding and initialization,
-the child writes only `ready\n`; this authenticates neither a server nor a caller, and clients
-still must authenticate. There is no port scanning, endpoint discovery, or fallback server.
-SIGINT/SIGTERM cancel and await work, checkpoint, release the listener and close the store.
+The bundled macOS app always launches its helper at `127.0.0.1:8765` with fresh,
+separate API/native credentials. It ignores standalone endpoint and token overrides,
+strips inherited provider credential overrides, and cannot attach to an external service.
+An occupied port fails startup rather than selecting another listener. See
+[architecture.md](architecture.md) for frontend ownership and capability boundaries.
+
+After binding and initialization, the standalone child writes only `ready\n`; this
+authenticates neither a server nor a caller, and clients still must authenticate.
+There is no port scanning, endpoint discovery, or fallback server. SIGINT/SIGTERM
+cancel and await work, checkpoint, release the listener and close the store.
 
 ## HTTP API v1: authentication and deployment
 
@@ -149,7 +152,7 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 
 Missing conversations return 404; invalid requests 400; busy/storage-blocked submissions and stale approvals/cancellations 409. Approval decisions are single use, including races. Cancellation acceptance is not cleanup completion; the acknowledgement echoes the exact operation accepted for cancellation.
 
-A snapshot has `id`, `model`, `workspace`, `configuration`, `messages`, `pendingInput`, `metadata`, `usage`, `contextUsage`, `resources`, `operation`, `approval`, `activeToolCallID`, and `storageError`. Nullable fields are serialized explicitly as null. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in `src/core/types.rs`; command validation is in `src/service.rs`.
+A snapshot has `id`, `model`, `workspace`, `configuration`, `messages`, `pendingInput`, `metadata`, `usage`, `contextUsage`, `resources`, `operation`, `approval`, `activeToolCallID`, and `storageError`. Nullable fields are serialized explicitly as null. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in [`backend/src/core/types.rs`](../backend/src/core/types.rs); command validation is in [`backend/src/service.rs`](../backend/src/service.rs).
 
 **Turn acceptance is in-memory, not a durable receipt.** A 202 can precede the input checkpoint; a lost response can happen after effects. No idempotent replay mechanism is advertised. Terminal success is published only after its final checkpoint succeeds. Intermediate snapshots/events are not durability receipts.
 
@@ -215,7 +218,7 @@ curl --no-buffer http://127.0.0.1:8765/v1/conversations/CONVERSATION_ID/events
 
 `service.close().await` stops accepting connections, disconnects observers/partial requests, settles catalog mutations, cancels runs, awaits cooperative provider/tool cleanup and final checkpoints, then closes the manager/store. Noncooperative adapters can delay shutdown. Normal shutdown releases the TCP listener and removes the store lock. Forced termination is not a clean tool shutdown.
 
-Crash recovery never resumes work or steals ownership. Verify the old host and its tool processes have stopped, then explicitly remove only the stale `conversations/.lock` for that profile. See [README.md](README.md#persistence-and-recovery) for interrupted intent, missing results and possible side effects.
+Crash recovery never resumes work or steals ownership. Verify the old host and its tool processes have stopped, then explicitly remove only the stale `conversations/.lock` for that profile. See [architecture.md](architecture.md#storage-and-recovery) for interrupted intent, missing results and possible side effects.
 
 Tests cover these contracts with fake providers/transports and real network-bound TCP connections/subprocesses. Live OpenAI/DeepSeek, Linux deployment, browser OAuth, native OS permission behavior and Swift UI integration are not claimed verified.
 
@@ -607,7 +610,7 @@ or forked. General observer disconnects still only detach; disconnecting the bou
 capability channel specifically revokes that capability and invalidates its pending calls.
 The macOS app
 implements the local adapter and explicit `/screenshots` session grant; see
-`docs/swift-rust-migration.md` for its permission flow and verification limits. There is no
+[architecture.md](architecture.md) for its permission flow and verification limits. There is no
 headless capture substitute.
 
 ### Automatic session titles
