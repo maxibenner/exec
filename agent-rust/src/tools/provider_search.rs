@@ -22,15 +22,19 @@ impl PreparedTool for PreparedSearch {
         None
     }
     async fn execute(self: Box<Self>) -> Result<String> {
-        check_search(
-            self.provider
-                .search_web(&self.model, self.query, self.cancel)
-                .await?,
-        )
+        Ok(self.execute_output().await?.text)
     }
-}
-fn check_search(result: WebSearchResult) -> Result<String> {
-    serde_json::to_string(&result).map_err(|_| Error::Internal)
+    async fn execute_output(self: Box<Self>) -> Result<ToolOutput> {
+        let result = self
+            .provider
+            .search_web(&self.model, self.query, self.cancel)
+            .await?;
+        let text = serde_json::to_string(&result).map_err(|_| Error::Internal)?;
+        Ok(ToolOutput {
+            text,
+            details: Some(ToolDetails::Search { result }),
+        })
+    }
 }
 #[async_trait]
 impl Tool for ProviderSearch {

@@ -37,8 +37,15 @@ impl PreparedTool for PreparedFetch {
         None
     }
     async fn execute(self: Box<Self>) -> Result<String> {
+        Ok(self.execute_output().await?.text)
+    }
+    async fn execute_output(self: Box<Self>) -> Result<ToolOutput> {
         let content = self.fetcher.fetch(&self.url, self.cancel).await?;
-        serde_json::to_string(&content).map_err(|_| Error::Internal)
+        let text = serde_json::to_string(&content).map_err(|_| Error::Internal)?;
+        Ok(ToolOutput {
+            text,
+            details: Some(ToolDetails::Page { content }),
+        })
     }
 }
 

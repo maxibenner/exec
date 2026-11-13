@@ -345,3 +345,19 @@ conservative retention because their references cannot be proven absent. Cleanup
 can occur after deletion took effect; inspect state, never automatically repeat deletion.
 Abrupt crashes can leave orphan files; they are not automatically promoted or replayed.
 Version-5 records retain resource references; earlier record versions remain readable.
+
+## Typed tool details
+
+Tool transcript messages may include `details` on completed outcomes only:
+- `{type:"edit",path,diff,truncated}`: applied edit and a bounded contextual unified diff.
+- `{type:"search",result:{query,answer,sources}}`: source-bearing search evidence.
+- `{type:"page",content:{url,contentType,text,truncated}}`: directly fetched page text.
+
+Pending edit approvals expose the same edit preview in `approval.details`; this is a
+proposal, not evidence of execution. Denied, failed, interrupted and not-executed results
+have no applied details. Diff previews over 64 KiB are explicitly truncated and must not
+be treated as complete patches. The exact prepared replacement/revision remains the
+authority for execution. Typed details are presentation data: provider context still sees
+neutral tool text/outcomes, not frontend rendering structures. Legacy text-only executors
+remain usable; richer executors produce text and typed details in one execution, never
+repeat a tool merely to obtain presentation metadata.

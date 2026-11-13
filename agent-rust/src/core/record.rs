@@ -114,7 +114,15 @@ impl ConversationRecord {
                         pending.push_back(call.id.as_str());
                     }
                 }
-                Message::Tool { call_id, .. } => {
+                Message::Tool {
+                    call_id,
+                    outcome,
+                    details,
+                    ..
+                } => {
+                    if details.is_some() && *outcome != ToolOutcome::Completed {
+                        return Err(bad);
+                    }
                     if pending.pop_front() != Some(call_id.as_str()) {
                         return Err(bad);
                     }
@@ -226,7 +234,7 @@ pub fn finish_missing_results(messages: &mut Vec<Message>, intent: Option<&str>)
         .collect();
     for call_id in missing {
         let uncertain = intent == Some(call_id.as_str());
-        messages.push(Message::Tool{id:new_id(),call_id,text: if uncertain {
+        messages.push(Message::Tool{id:new_id(),call_id,details:None,text: if uncertain {
             "Execution was interrupted before a durable result was recorded; it may have had effects. Do not retry without a new user request."
         } else { "Not executed: operation interrupted before this action started. Do not retry without a new user request." }.into(),
             outcome:if uncertain {ToolOutcome::Interrupted} else {ToolOutcome::NotExecuted}});

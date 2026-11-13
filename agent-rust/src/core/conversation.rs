@@ -737,6 +737,7 @@ impl Conversation {
         &self,
         call: &ToolCall,
         description: String,
+        details: Option<ToolDetails>,
         cancel: &CancellationToken,
     ) -> Result<bool> {
         check_cancel(cancel)?;
@@ -759,6 +760,7 @@ impl Conversation {
                 operation_id: s.record.operation.as_ref().unwrap().id.clone(),
                 call: call.clone(),
                 description,
+                details,
                 workspace: s.record.workspace.clone(),
             };
             let approval_id = Some(approval.id.clone());
@@ -782,6 +784,7 @@ impl Conversation {
     async fn execute_calls(&self, calls: &[ToolCall], cancel: &CancellationToken) -> Result<()> {
         for call in calls {
             let mut outcome = ToolOutcome::NotExecuted;
+            let mut details = None;
             let mut text =
                 "Not executed: operation interrupted. Do not retry without a new user request."
                     .to_string();
@@ -796,7 +799,7 @@ impl Conversation {
                         let prepared = tool.prepare(call.arguments.clone(),ToolContext{call_id:call.id.clone(),model,workspace,cancel:cancel.clone()}).await?;
                         check_cancel(cancel)?;
                         let auto_approve = self.state().record.configuration.as_ref().unwrap().settings.auto_approve;
-                        let approved = if let Some(description) = prepared.approval().filter(|_| !auto_approve) { self.ask(call,description.into(),cancel).await? } else { true };
+                        let approved = if let Some(description) = prepared.approval().filter(|_| !auto_approve) { self.ask(call,description.into(),prepared.details(),cancel).await? } else { true };
                         check_cancel(cancel)?;
                         if self.has_pending_input() { return Ok((ToolOutcome::NotExecuted, "Not executed: new user input superseded this action. Reconsider using the new instructions.".into())); }
                         if !approved { return Ok((ToolOutcome::Denied,"User denied this action. Nothing was executed. Do not retry without a new user request.".into())); }
@@ -817,7 +820,7 @@ impl Conversation {
                             started=true; s.active_tool=Some(call.id.clone());
                         }
                         // Poll once before announcing entry: Rust async functions are lazy.
-                        let mut execution = AssertUnwindSafe(prepared.execute()).catch_unwind();
+                        let mut execution = AssertUnwindSafe(prepared.execute_output()).catch_unwind();
                         let first = futures_util::poll!(&mut execution);
                         { let s=self.state(); self.emit(&s,EventKind::ToolStarted{call_id:call.id.clone()}); }
                         let result = match first {
@@ -833,7 +836,8 @@ impl Conversation {
                             }
                         };
                         let result = result.unwrap_or(Err(Error::Internal))?; check_cancel(cancel)?;
-                        Ok((ToolOutcome::Completed,result))
+                        details = result.details;
+                        Ok((ToolOutcome::Completed,result.text))
                     }).catch_unwind().await.unwrap_or(Err(Error::Internal));
                     self.state().active_tool = None;
                     match action {
@@ -876,6 +880,7 @@ impl Conversation {
                     call_id: call.id.clone(),
                     text,
                     outcome,
+                    details,
                 });
                 s.record.executing_tool_id = None;
                 self.changed(&s, s.record.messages.len() - 1);

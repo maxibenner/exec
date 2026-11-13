@@ -76,6 +76,7 @@ pub enum Message {
         call_id: String,
         text: String,
         outcome: ToolOutcome,
+        details: Option<ToolDetails>,
     },
 }
 impl Message {
@@ -249,8 +250,39 @@ pub struct ToolContext {
     pub workspace: String,
     pub cancel: CancellationToken,
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ToolDetails {
+    Edit {
+        path: String,
+        diff: String,
+        truncated: bool,
+    },
+    Search {
+        result: super::WebSearchResult,
+    },
+    Page {
+        content: super::FetchedContent,
+    },
+}
+pub struct ToolOutput {
+    pub text: String,
+    pub details: Option<ToolDetails>,
+}
 #[async_trait]
 pub trait PreparedTool: Send {
+    fn details(&self) -> Option<ToolDetails> {
+        None
+    }
+    async fn execute_output(self: Box<Self>) -> Result<ToolOutput> {
+        let details = self.details();
+        let text = self.execute().await?;
+        Ok(ToolOutput { text, details })
+    }
     fn resources(&self) -> Vec<ResourceRef> {
         vec![]
     }
@@ -299,6 +331,7 @@ pub struct Approval {
     pub operation_id: String,
     pub call: ToolCall,
     pub description: String,
+    pub details: Option<ToolDetails>,
     pub workspace: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

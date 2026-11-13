@@ -224,4 +224,5 @@ async fn cancellation_and_runner_fetch_use_fake_transport_only() {
             .iter()
             .any(|m| m.text().contains("Evidence"))
     );
+    assert!(c.snapshot().messages.iter().any(|m|matches!(m,Message::Tool{details:Some(ToolDetails::Page{content}),..} if content.text=="Evidence")));
 }

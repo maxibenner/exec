@@ -96,6 +96,9 @@ The checked items below are delivered and verified; unchecked items remain outst
   shell titles, execution-intent resource references and last-fork-aware deletion.
   Cleanup retains files conservatively when unreadable sessions may reference them.
 
+- [x] Typed edit/search/page result details and prepared edit approval previews.
+  Applied details appear only on successful execution; provider context remains neutral.
+
 ### Remaining backend work
 
 - [ ] Image-input capability integration (model metadata is available).
@@ -103,11 +106,10 @@ The checked items below are delivered and verified; unchecked items remain outst
   JSON credential management and runtime connect/disconnect.
 - [ ] Provider/account model metadata caches.
 - [ ] Manual/automatic compaction and context-window usage presentation metadata.
-- [ ] Typed tool results, assets, image inputs and durable image references.
+- [ ] Image assets, image inputs and durable image references.
 - [ ] Image generation and OpenAI search support.
 - [ ] Optional frontend screenshot capability protocol, session permission, exact
   request/result correlation, cancellation/disconnect handling; no headless capture.
-- [ ] Typed applied-edit diffs and other rich tool results.
 - [ ] Selected search model configuration.
 - [ ] Image/other asset deletion and fork reference ownership (shell logs implemented).
 - [ ] OpenAI account allowances/reset information and account/model freshness caches.

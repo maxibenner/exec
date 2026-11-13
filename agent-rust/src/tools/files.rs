@@ -1,3 +1,4 @@
+use super::edit_diff::edit_diff;
 use super::{workspace::*, *};
 use crate::{
     check_cancel,
@@ -111,6 +112,7 @@ impl Tool for FileTool {
             };
             Ok(Box::new(Action {
                 resources: vec![],
+                details: None,
                 approval: None,
                 execute: Box::new(move || {
                     Box::pin(blocking(move || match kind {
@@ -193,6 +195,12 @@ fn prepare_edit(
             &original[index + old.len()..]
         )
     };
+    let (diff, truncated) = edit_diff(&path, original, &after);
+    let details = Some(ToolDetails::Edit {
+        path: path.clone(),
+        diff,
+        truncated,
+    });
     let data = after.into_bytes();
     if data.len() > FILE_LIMIT || before.as_ref().is_some_and(|b| b.data == data) {
         return Err(failure("Edit is unchanged or exceeds 1 MiB."));
@@ -214,6 +222,7 @@ fn prepare_edit(
     }
     Ok(Box::new(Action {
         resources: vec![],
+        details,
         approval: Some(approval),
         execute: Box::new(move || {
             Box::pin(blocking(move || {

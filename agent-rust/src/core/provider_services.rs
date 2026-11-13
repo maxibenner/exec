@@ -27,3 +27,12 @@ pub fn search_query(query: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchedContent {
+    pub url: String,
+    pub content_type: String,
+    pub text: String,
+    pub truncated: bool,
+}

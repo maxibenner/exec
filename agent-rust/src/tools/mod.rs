@@ -1,3 +1,4 @@
+mod edit_diff;
 mod fetch;
 mod files;
 pub use fetch::{create_fetch_tool, create_fetch_tool_with};
@@ -20,11 +21,15 @@ pub fn create_workspace_tools() -> Vec<Arc<dyn Tool>> {
 }
 struct Action {
     resources: Vec<ResourceRef>,
+    details: Option<ToolDetails>,
     approval: Option<String>,
     execute: Box<dyn FnOnce() -> BoxFuture<'static, Result<String>> + Send>,
 }
 #[async_trait]
 impl PreparedTool for Action {
+    fn details(&self) -> Option<ToolDetails> {
+        self.details.clone()
+    }
     fn resources(&self) -> Vec<ResourceRef> {
         self.resources.clone()
     }

@@ -105,6 +105,7 @@ async fn model_search_tool_uses_same_runner_loop_and_persists_sources_as_evidenc
     );
     assert_eq!(transport.count(), 3);
     assert_eq!(support::outcomes(&c), [ToolOutcome::Completed]);
+    assert!(c.snapshot().messages.iter().any(|m|matches!(m,Message::Tool{details:Some(ToolDetails::Search{result}),..} if result.sources.len()==1)));
     assert!(
         c.snapshot()
             .messages

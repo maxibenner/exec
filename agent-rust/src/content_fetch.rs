@@ -3,7 +3,6 @@ use crate::{Error, Result, check_cancel, providers::response_stream::ByteStream}
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::Url;
-use serde::{Deserialize, Serialize};
 use std::{
     net::{IpAddr, SocketAddr},
     sync::Arc,
@@ -96,14 +95,7 @@ pub fn public_url(text: &str) -> Result<Url> {
     url.set_fragment(None);
     Ok(url)
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct FetchedContent {
-    pub url: String,
-    pub content_type: String,
-    pub text: String,
-    pub truncated: bool,
-}
+pub use crate::core::FetchedContent;
 #[async_trait]
 pub trait Resolver: Send + Sync {
     async fn resolve(&self, host: &str) -> Result<Vec<SocketAddr>>;

@@ -366,6 +366,7 @@ fn validation_rejects_orphan_duplicate_and_unpaired_terminal_results() {
     record.messages.push(Message::Tool {
         id: new_id(),
         call_id: "wrong".into(),
+        details: None,
         text: "done".into(),
         outcome: ToolOutcome::Completed,
     });

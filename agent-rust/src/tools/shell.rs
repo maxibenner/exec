@@ -53,6 +53,7 @@ impl Tool for ShellTool {
         );
         Ok(Box::new(Action {
             resources,
+            details: None,
             approval: Some(approval),
             execute: Box::new(move || {
                 Box::pin(async move {
