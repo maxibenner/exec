@@ -492,10 +492,10 @@ import CryptoKit
             } catch { self.error = error.localizedDescription; isStopping = false }
         }
     }
-    var canRequestFork: Bool { canRequestCommands && !hasUnsavedChanges && currentSessionID != nil }
-    var canFork: Bool { !deletedRemotely && !backendBusy && !isSaving && !hasUnsavedChanges && snapshot?.pendingInput.isEmpty != false && currentSessionID != nil }
+    var canRequestFork: Bool { canFork }
+    var canFork: Bool { canRequestCommands && !deletedRemotely && !isSaving && !hasUnsavedChanges && currentSessionID != nil }
     func copyConversation(from source: ChatStore) async throws {
-        guard source.canFork, let id = source.currentSessionID else { throw ExecError("Wait for the conversation to finish before forking it.") }
+        guard source.canFork, let id = source.currentSessionID else { throw ExecError("Cannot fork this conversation right now.") }
         let value = try await api.request("POST", AgentAPI.path(id, "/fork"), .object([:]))
         try apply(value.decoded(AgentSnapshot.self))
         observe()

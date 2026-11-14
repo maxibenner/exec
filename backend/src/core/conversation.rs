@@ -324,7 +324,7 @@ impl Conversation {
     }
     pub(crate) fn fork_record(&self) -> Result<ConversationRecord> {
         let state = self.state();
-        if state.active.is_some() || state.updating || !state.record.pending_input.is_empty() {
+        if state.updating {
             return Err(Error::Busy);
         }
         if state.storage_error.is_some() {
@@ -334,6 +334,48 @@ impl Conversation {
             return Err(Error::Invalid("Conversation is closed."));
         }
         let mut record = state.record.clone();
+        record.pending_input.clear();
+        if state.active.is_some() {
+            // Snapshot only completed transcript pieces, never live work.
+            record.messages.retain(|message| {
+                !matches!(
+                    message,
+                    Message::Assistant {
+                        status: MessageStatus::Streaming,
+                        ..
+                    }
+                )
+            });
+            let resolved: HashSet<_> = record
+                .messages
+                .iter()
+                .filter_map(|message| {
+                    if let Message::Tool { call_id, .. } = message {
+                        Some(call_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for message in &mut record.messages {
+                if let Message::Assistant { calls, .. } = message {
+                    calls.retain(|call| resolved.contains(&call.id));
+                }
+            }
+            record.resources.retain(|resource| {
+                resource.call_id.is_empty() || resolved.contains(&resource.call_id)
+            });
+            record.executing_tool_id = None;
+            if let Some(operation) = &mut record.operation
+                && operation.state.active()
+            {
+                operation.state = OperationState::Interrupted;
+                operation.error = None;
+            }
+            // Opaque provider context may include calls omitted from this snapshot.
+            record.provider_state = None;
+            record.usage = None;
+        }
         record.id = new_id();
         record.metadata.activity_at = SessionMetadata::activity();
         record.metadata.title = Some(format!(

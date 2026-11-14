@@ -142,7 +142,7 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | GET | `/v1/conversations/:id` | `ConversationSnapshot` |
 | PUT | `/v1/conversations/:id/title` | `{title}` → saved idle snapshot |
 | PUT | `/v1/conversations/:id/model` | `{model}` → saved idle snapshot |
-| POST | `/v1/conversations/:id/fork` | `{}` → `201` independent saved copy; source must be idle without pending input |
+| POST | `/v1/conversations/:id/fork` | `{}` → `201` independent saved snapshot of the transcript, including during an active turn |
 | DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after durable deletion; active work returns 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
 | POST | `/v1/conversations/:id/turns` | `{text,images?}` → `202 {operationID}` |
@@ -247,7 +247,14 @@ Version-3 checkpoints retain pending input; older versions are read conservative
 (Unix milliseconds). The first prompt supplies a fallback title; manual names are retained.
 Rename/model changes are idle-only and checkpointed before publication. Forks preserve
 transcript IDs and frozen instructions in an independent conversation; they never resume
-work or mutate the source. Shell/image resource references are shared until the last referencing fork is deleted; transient native permissions are never forked.
+work or mutate the source. Forking does not wait for an active turn: the backend snapshots
+under the conversation lock, omits streaming assistant output and queued input, and keeps
+completed tool results with their matching calls. Calls without results are omitted rather
+than resumed or replayed. The fork has no live operation or approval; an active source
+operation is marked interrupted in the copy. Opaque provider context and usage are cleared
+for active forks so continuation is rebuilt from the retained transcript. Existing failed
+or interrupted transcript entries remain unchanged. Shell/image resource references are
+shared until the last referencing fork is deleted; transient native permissions are never forked.
 
 `GET/PUT /v1/library` owns shared `defaultModel` (nullable), new-session `settings`, and
 `order` (up to 10,000 unique conversation UUIDs). Omitted creation model/settings use these
