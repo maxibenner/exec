@@ -13,7 +13,7 @@ MACOSX_DEPLOYMENT_TARGET="$minimum_macos" CARGO_TARGET_DIR="$PWD/.build/backend"
 sources=()
 while IFS= read -r file; do sources+=("$file"); done < <(
     # Settings tests inject update actions; never start the live updater in tests.
-    find Sources/Exec Tests/ExecTests ../shared/ExecRemote/Sources/ExecRemote -name '*.swift' ! -name ExecApp.swift ! -name ChatView.swift ! -name SparkleUpdater.swift | sort
+    find Sources/Exec Tests/ExecTests ../shared/ExecRemote/Sources/ExecRemote ../shared/ExecTranscript/Sources/ExecTranscript -name '*.swift' ! -name ExecApp.swift ! -name ChatView.swift ! -name SparkleUpdater.swift | sort
 )
 swiftc -swift-version 6 -parse-as-library "${sources[@]}" -o .build/exec-checks
 .build/exec-checks

@@ -1,4 +1,9 @@
 import SwiftUI
+#if canImport(ExecTranscript)
+import ExecTranscript
+typealias ToolCard<Content: View> = ExecTranscript.ToolCard<Content>
+typealias ToolCallHeader = ExecTranscript.ToolCallHeader
+#endif
 
 // Disclosure state belongs to the conversation, not to a recycled row host.
 struct ToolMessageView: View {
@@ -22,11 +27,11 @@ struct ToolMessageView: View {
 
     var body: some View {
         let presentation = ToolPresentation(call: call, result: result, descriptiveShellTitles: descriptiveShellTitles)
-        DisclosureGroup(isExpanded: Binding(get: { expanded ?? (result?.edit != nil || result?.generatedImage != nil) }, set: { value in
+        ToolCard(presentation: presentation, isExpanded: Binding(get: { expanded ?? (result?.edit != nil || result?.generatedImage != nil) }, set: { value in
             state.followsLatest = false
             state.expanded[messageID] = value
             expanded = value
-        })) {
+        }), awaitingApproval: result == nil && isAwaitingApproval) {
             VStack(alignment: .leading, spacing: 12) {
                 if let generated = result?.generatedImage {
                     GeneratedImageView(attachment: generated)
@@ -52,49 +57,7 @@ struct ToolMessageView: View {
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 12)
-        } label: {
-            HStack(spacing: 8) {
-                ToolCallHeader(presentation: presentation)
-                Color.clear
-                    .frame(width: 16, height: 16)
-                    .overlay {
-                        if result == nil && isAwaitingApproval {
-                            Image(systemName: "hand.raised")
-                                .foregroundStyle(.secondary)
-                                .accessibilityLabel("Awaiting approval")
-                        }
-                    }
-            }
         }
-        .disclosureGroupStyle(InstantToolDisclosureStyle())
-        .transaction { transaction in
-            transaction.animation = nil
-            transaction.disablesAnimations = true
-        }
-        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-struct ToolCallHeader: View {
-    let presentation: ToolPresentation
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: presentation.icon).frame(width: 16)
-            Text(verbatim: presentation.title).fontWeight(.medium).fixedSize()
-            if let summary = presentation.singleLineSummary {
-                Text(verbatim: summary)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
-                    .help(presentation.summary ?? summary)
-            }
-            if let detail = presentation.detail {
-                Text(verbatim: detail).font(.caption).foregroundStyle(.secondary).fixedSize()
-            }
-            Spacer(minLength: 0)
-        }
-        .font(.callout)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -127,39 +90,6 @@ struct ToolTextSection: View {
                     .foregroundColor: NSColor.labelColor
                 ]
             ))
-        }
-    }
-}
-
-/// Preserve the header's appearance while pressed without changing button behavior.
-private struct ToolHeaderButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-    }
-}
-
-/// Keep the full header clickable, with no implicit disclosure animation.
-private struct InstantToolDisclosureStyle: DisclosureGroupStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                var transaction = Transaction(animation: nil)
-                transaction.disablesAnimations = true
-                withTransaction(transaction) { configuration.isExpanded.toggle() }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .frame(width: 12)
-                    configuration.label
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(ToolHeaderButtonStyle())
-            .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
-            if configuration.isExpanded { configuration.content }
         }
     }
 }

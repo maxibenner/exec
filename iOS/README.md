@@ -2,7 +2,7 @@
 
 A thin SwiftUI client. It contains no agent runtime, shell tools, provider credentials, or local conversation database. The transcript uses a native **UITableView**, diffable updates, reusable self-sizing cells, and selectable UITextView text—not a SwiftUI scroll/lazy stack. Navigation, forms, pickers, sheets, and camera scanning use system components.
 
-Requires iOS 17+ and Xcode with an iOS SDK. Open `ExecRemote.xcodeproj`; its only package dependency is the local `../shared/ExecRemote` package (Foundation + CryptoKit).
+Requires iOS 17+ and Xcode with an iOS SDK. Open `ExecRemote.xcodeproj`; its package dependencies are local: `../shared/ExecRemote` (API/transport) and `../shared/ExecTranscript` (native transcript presentation).
 
 ## Simulator
 
@@ -39,7 +39,8 @@ The app icon is an opaque 1024px derivative of the existing Exec artwork. Device
 - Native multiline composer with system Liquid Glass on iOS 26+, and system material on older supported iOS versions.
 - Foreground snapshot polling every 1.5 seconds; reconnect fetches authoritative state. Sends/approvals/settings changes are never automatically retried. Following an uncertain send, inspect the refreshed conversation before manually sending again.
 - Shared settings are agent-owned; selected conversation, scroll position and drafts are local. Drafts are currently in memory, not durable across process termination.
-- A native, selectable **plain-text** transcript; rich desktop Markdown/diff rendering, image viewing/upload, steering UI, push notifications, and background execution are not included.
+- Native selectable Markdown (headings, emphasis, lists, quotes, fenced code, safe links and text tables), using the same bounded parser as macOS. Tool cards, headers and input/result summaries are shared with the Mac; expansion state survives cell reuse and pending-to-completed tool updates.
+- iOS uses UIKit TextKit rather than AppKit text tables. Tool edit diffs are selectable monospace text; desktop diff decorations, image viewing/upload, steering UI, push notifications and background execution are not included.
 - Quit/sleep/offline Mac means the hosted agent is unavailable. The Mac app still owns its bundled helper's lifecycle. Standalone installation is not part of this feature.
 
 Revoke on the Mac to remove authorization. **Forget Host** only removes the phone's local credential.

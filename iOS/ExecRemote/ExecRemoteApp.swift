@@ -36,10 +36,15 @@ struct RootView: View {
                             }
                         }.disabled(conversation["unreadable"].bool)
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button("Delete", systemImage: "trash", role: .destructive) { Task { await store.deleteConversation(conversation.id) } }
+                            Button(role: .destructive) { Task { await store.deleteConversation(conversation.id) } } label: {
+                                Image(systemName: "trash")
+                            }
+                                .labelStyle(.iconOnly)
+                                .accessibilityLabel("Delete")
                                 .disabled(store.busy || !store.connected || ["running", "awaiting_approval", "cancelling"].contains(conversation["operation"]["state"].string ?? ""))
                         }
                     }
+                    .listStyle(.plain)
                     .refreshable { do { try await store.refresh() } catch { store.error = error.localizedDescription } }
                     .overlay { if store.conversations.isEmpty { ContentUnavailableView("No Conversations", systemImage: "bubble.left.and.bubble.right") } }
                 }
@@ -107,7 +112,7 @@ struct RootView: View {
 struct ConversationScreen: View {
     @Bindable var store: RemoteStore
     var body: some View {
-        NativeTranscript(conversationID: store.selected, messages: store.snapshot["messages"].array)
+        NativeTranscript(conversationID: store.selected, snapshot: store.snapshot)
         .navigationTitle(store.snapshot["metadata"]["title"].string ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: store.selected) { if let id = store.selected { await store.open(id) } }

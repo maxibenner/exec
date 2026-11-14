@@ -7,11 +7,13 @@ let package = Package(
     products: [.executable(name: "Exec", targets: ["Exec"])],
     dependencies: [
         .package(path: "../shared/ExecRemote"),
+        .package(path: "../shared/ExecTranscript"),
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1")
     ],
     targets: [
         .executableTarget(name: "Exec", dependencies: [
             .product(name: "ExecRemote", package: "ExecRemote"),
+            .product(name: "ExecTranscript", package: "ExecTranscript"),
             .product(name: "Sparkle", package: "Sparkle")
         ])
     ]

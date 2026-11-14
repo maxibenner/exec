@@ -2,7 +2,7 @@
 
 ## Ownership
 
-`backend/` remains the single headless agent/API. The bundled Mac app launches it and gracefully closes it on quit. Remote access is entirely backend-owned: a future standalone process can use the same pairing endpoints and relay connector without any SwiftUI process. `relay/` is an opaque WebSocket switch. `shared/ExecRemote/` contains provider-neutral JSON, invitation validation, and the encrypted Swift client; `iOS/` contains only presentation and device credential storage.
+`backend/` remains the single headless agent/API. The bundled Mac app launches it and gracefully closes it on quit. Remote access is entirely backend-owned: a future standalone process can use the same pairing endpoints and relay connector without any SwiftUI process. `relay/` is an opaque WebSocket switch. `shared/ExecRemote/` contains provider-neutral JSON, invitation validation, and the encrypted Swift client; `iOS/` contains only presentation and device credential storage. `shared/ExecTranscript/` supplies the Markdown parser, tool presentation, and SwiftUI tool cards used by both apps; iOS keeps UIKit list virtualization and selectable native TextKit rendering.
 
 The local HTTP listener and its ephemeral administrator/native credentials are unchanged. The relay adapter calls the existing handler with a distinct, fixed remote authorization policy; it never fabricates or exports an administrator credential. Accepted mutations are tracked by the existing service task tracker and settle despite observer loss. Shutdown stops the connector and awaits those handlers before closing the manager.
 

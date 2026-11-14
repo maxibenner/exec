@@ -2,25 +2,22 @@ import Foundation
 
 /// Display-only interpretation of tool inputs and results. Stored tool data and
 /// model context remain untouched.
-struct ToolPresentation {
-    struct Field: Equatable {
-        let title: String
-        let text: String
+public struct ToolPresentation: Sendable {
+    public struct Field: Equatable, Sendable {
+        public let title: String
+        public let text: String
+        public init(title: String, text: String) { self.title = title; self.text = text }
     }
 
-    let title: String
-    let icon: String
-    var summary: String?
-    var detail: String?
-    var inputs: [Field] = []
-    var outputTitle: String? = "Result"
-    var output: String
+    public let title: String
+    public let icon: String
+    public var summary: String?
+    public var detail: String?
+    public var inputs: [Field] = []
+    public var outputTitle: String? = "Result"
+    public var output: String
 
-    init(_ result: ToolResult) {
-        self.init(call: result.call, result: result)
-    }
-
-    init(call: ToolCall, result: ToolResult? = nil, descriptiveShellTitles: Bool = false) {
+    public init(name: String, arguments rawArguments: String, result: ToolDisplayResult? = nil, descriptiveShellTitles: Bool = false) {
         struct Arguments: Decodable {
             var path: String?
             var query: String?
@@ -28,13 +25,13 @@ struct ToolPresentation {
             var url: String?
             var prompt: String?
         }
-        let arguments = try? CodingTools.decode(Arguments.self, call)
+        let arguments = rawArguments.utf8.count <= 32_768 ? try? JSONDecoder().decode(Arguments.self, from: Data(rawArguments.utf8)) : nil
         output = result?.text ?? ""
-        switch call.name {
+        switch name {
         case "shell":
             title = "Shell"; icon = "terminal"
             if let command = arguments?.command {
-                summary = descriptiveShellTitles ? (CodingTools.shellDescription(call) ?? command) : command
+                summary = descriptiveShellTitles ? (Self.shellDescription(rawArguments) ?? command) : command
                 inputs = [Field(title: "Command", text: command)]
             }
             outputTitle = "Output"
@@ -45,7 +42,7 @@ struct ToolPresentation {
         case "read_file":
             title = "Read"; icon = "doc.text"
             summary = arguments?.path
-            detail = result.flatMap { ReadFileSummary($0)?.lineLabel }
+            detail = result.flatMap { ReadFileSummary(name: name, arguments: rawArguments, output: $0.text)?.lineLabel }
             outputTitle = nil
         case "search_text":
             title = "Search"; icon = "magnifyingglass"
@@ -56,7 +53,7 @@ struct ToolPresentation {
             outputTitle = "Matches"
         case "edit_file":
             title = "Edit"; icon = "pencil"
-            summary = result?.edit?.path ?? arguments?.path
+            summary = result?.editPath ?? arguments?.path
             outputTitle = nil
         case "fetch_content":
             title = "Fetch page"; icon = "doc.text"
@@ -74,29 +71,29 @@ struct ToolPresentation {
             outputTitle = nil
         case "take_screenshot":
             title = "Screenshot"; icon = "camera"
-            summary = (try? ScreenshotTool.request(call))?.summary
+            summary = Self.screenshotSummary(rawArguments)
             outputTitle = nil
 
         case "web_search":
             title = "Web search"; icon = "globe"
-            summary = result?.webSearch?.query ?? arguments?.query
+            summary = result?.searchQuery ?? arguments?.query
             outputTitle = nil
         default:
-            title = call.name; icon = "wrench"
+            title = name; icon = "wrench"
         }
         if inputs.isEmpty, outputTitle != nil || result == nil {
             // Pending cards expose the complete request, even for tools whose
             // finished presentation normally shows only an image, diff or page.
-            inputs = [Field(title: "Arguments", text: call.arguments)]
+            inputs = [Field(title: "Arguments", text: rawArguments)]
         }
         guard let result else { return }
         // Preserve terminal failures, including edits that have no saved diff.
-        if result.edit == nil, result.webSearch == nil, detail == nil {
+        if result.editPath == nil, result.searchQuery == nil, detail == nil {
             if result.text.hasPrefix("Tool error: ") || result.text.hasPrefix("Error: ") { detail = "Error" }
             else if result.text.hasPrefix("User denied this ") { detail = "Denied" }
-            else if result.text.hasPrefix("Interrupted.") || result.text == WebSearchTool.interrupted || result.text == FetchContentTool.interrupted || result.text == ScreenshotTool.interrupted || result.text == ImageGenerationTool.interrupted { detail = "Interrupted" }
+            else if result.text.hasPrefix("Interrupted.") || result.legacyInterrupted { detail = "Interrupted" }
             else if result.text.hasPrefix("Not executed:") || result.text == "Duplicate tool call ID; not executed." { detail = "Not run" }
-            else if result.call.name == "shell", result.text.hasPrefix("Command timed out;") { detail = "Timed out" }
+            else if name == "shell", result.text.hasPrefix("Command timed out;") { detail = "Timed out" }
             if detail != nil, outputTitle != nil { outputTitle = "Result" }
         }
         if let outcome = result.outcome {
@@ -109,13 +106,32 @@ struct ToolPresentation {
             }
         }
         // Shell and screenshot outcomes stay in the expanded output, not the header.
-        if result.call.name == "shell" || result.call.name == "take_screenshot" { detail = nil }
+        if name == "shell" || name == "take_screenshot" { detail = nil }
     }
 
-    var singleLineSummary: String? {
+    public var singleLineSummary: String? {
         summary?.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\n", with: " ↵ ")
             .replacingOccurrences(of: "\r", with: " ↵ ")
             .replacingOccurrences(of: "\t", with: " ⇥ ")
     }
+    private static func shellDescription(_ arguments: String) -> String? {
+        struct Description: Decodable { let description: String? }
+        guard arguments.utf8.count <= 32_768,
+              let value = try? JSONDecoder().decode(Description.self, from: Data(arguments.utf8)),
+              let text = value.description?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
+    }
+    private static func screenshotSummary(_ arguments: String) -> String? {
+        struct Capture: Decodable { let target: String; let window_id: UInt32 }
+        guard arguments.utf8.count <= 32_768,
+              let value = try? JSONDecoder().decode(Capture.self, from: Data(arguments.utf8)) else { return nil }
+        switch (value.target, value.window_id) {
+        case ("desktop", 0): return "Main display"
+        case ("list_windows", 0): return "Visible windows"
+        case ("window", let id) where id > 0: return "Window \(id)"
+        default: return nil
+        }
+    }
+
 }

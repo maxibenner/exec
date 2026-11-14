@@ -1,18 +1,18 @@
 import Foundation
 
-struct ReadFileSummary {
-    let path: String
-    let lines: ClosedRange<Int>?
+public struct ReadFileSummary {
+    public let path: String
+    public let lines: ClosedRange<Int>?
 
-    init?(_ result: ToolResult) {
+    public init?(name: String, arguments: String, output: String) {
         struct Arguments: Decodable { let path: String }
-        guard result.call.name == "read_file",
-              let arguments = try? JSONDecoder().decode(Arguments.self, from: Data(result.call.arguments.utf8)),
+        guard name == "read_file",
+              let arguments = try? JSONDecoder().decode(Arguments.self, from: Data(arguments.utf8)),
               !arguments.path.isEmpty else { return nil }
         path = arguments.path
         var first: Int?
         var last: Int?
-        let output = result.text.split(separator: "\n", omittingEmptySubsequences: false)
+        let output = output.split(separator: "\n", omittingEmptySubsequences: false)
         if output.first?.hasPrefix("Revision: ") == true {
             for line in output.dropFirst() {
                 guard let colon = line.firstIndex(of: ":"),
@@ -26,7 +26,7 @@ struct ReadFileSummary {
         else { lines = nil }
     }
 
-    var lineLabel: String? {
+    public var lineLabel: String? {
         guard let lines else { return nil }
         return lines.lowerBound == lines.upperBound
             ? "Line \(lines.lowerBound)"

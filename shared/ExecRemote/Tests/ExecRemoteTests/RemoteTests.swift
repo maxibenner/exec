@@ -16,6 +16,20 @@ final class RemoteTests: XCTestCase, @unchecked Sendable {
         XCTAssertNoThrow(try PairingInvitation.parse(invitation("ws://127.0.0.1:8787", local:true)))
     }
 
+    func testToolRowsKeepIdentityAndDoNotDuplicateSpeculativeCalls() throws {
+        let assistant = try JSONDecoder().decode(RemoteJSON.self, from: Data(#"{"id":"assistant","role":"assistant","text":"Checking","calls":[{"id":"entered","name":"shell","arguments":{"command":"true"}},{"id":"future","name":"read_file","arguments":{"path":"file"}}]}"#.utf8))
+        let pending = RemoteTranscriptRow.project(.object(["messages":.array([assistant]), "activeToolCallID":.string("entered")]))
+        XCTAssertEqual(pending.count, 2)
+        XCTAssertEqual(pending.last?.call?["id"].string, "entered")
+        let result: RemoteJSON = .object(["id":.string("result"), "role":.string("tool"), "callID":.string("entered"), "text":.string("Exit code: 0"), "outcome":.string("completed")])
+        let finished = RemoteTranscriptRow.project(.object(["messages":.array([assistant, result])]))
+        XCTAssertEqual(finished.count, 2)
+        XCTAssertEqual(finished.last?.id, pending.last?.id)
+        XCTAssertEqual(finished.last?.message["text"].string, "Exit code: 0")
+        let idle = RemoteTranscriptRow.project(.object(["messages":.array([assistant])]))
+        XCTAssertEqual(idle.count, 1)
+    }
+
     #if os(macOS)
     func testRealRelayAndRustPairingSettingsAndRevocation() async throws {
         guard let backend = ProcessInfo.processInfo.environment["EXEC_TEST_BACKEND"],

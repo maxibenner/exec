@@ -71,6 +71,7 @@ Tests use isolated profiles, fake transports and a local Rust subprocess, not yo
 - `iOS/` — minimal native remote client and Xcode project.
 - `relay/` — self-hosted WebSocket relay and Dockerfile.
 - `shared/ExecRemote/` — shared Swift JSON, pairing and encrypted client package.
+- `shared/ExecTranscript/` — shared Markdown parsing and native tool-call components.
 - `docs/` — current guides, README images and published update metadata.
 
 Guides: [Development and signing](docs/development.md) · [Architecture](docs/architecture.md) · [HTTP API](docs/api.md) · [Performance tools](docs/performance.md) · [Releasing](docs/releasing.md).
