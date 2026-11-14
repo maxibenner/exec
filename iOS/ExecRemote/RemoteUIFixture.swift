@@ -24,6 +24,8 @@ import ExecRemote
     static var conversations: [RemoteJSON] {
         (1...6).map { index in
             .object(["id": .string("fixture-\(index)"), "workspace": .string("/Fixture/Workspace"),
+                     "operation": .object(["state": .string(ProcessInfo.processInfo.arguments.contains("--activity-fixture")
+                        ? ["running", "awaiting_approval", "cancelling", "completed", "failed", "completed"][index - 1] : "completed")]),
                      "metadata": .object(["title": .string("Session \(index)"),
                                           "activityAt": .number(Date().timeIntervalSince1970 * 1000 - Double(index) * 1000)])])
         }
@@ -61,10 +63,10 @@ import ExecRemote
     static func snapshot(_ id: String) -> RemoteJSON {
         let messages: [RemoteJSON] = (1...40).map { index in
             .object(["id": .string("message-\(index)"), "role": .string(index.isMultiple(of: 2) ? "user" : "assistant"),
-                     "text": .string("Message \(index)\nThis is an isolated transcript for checking native navigation underlap, scrolling, and composer spacing."),
+                     "text": .string("\(id) message \(index)\nThis is an isolated transcript for checking native navigation underlap, scrolling, and composer spacing."),
                      "status": .string("completed")])
         }
-        return .object(["id": .string(id), "metadata": .object(["title": .string("Session 1")]),
+        return .object(["id": .string(id), "metadata": .object(["title": .string("Session \(id.split(separator: "-").last ?? "")")]),
                         "messages": .array(messages),
                         "operation": .object(["id": .string("fixture-operation"), "state": .string("running")])])
     }

@@ -166,6 +166,13 @@ extension RelayClient: RemoteTransport {}
         guard recentConversations.contains(id) else { return }
         syncStates[id] = state
         recentConversations.update(state.snapshot)
+        // Transcript polling is more frequent than list polling during a turn.
+        // Keep the row authoritative when returning to the session list.
+        if let index = conversations.firstIndex(where: { $0.id == id }),
+           case .object(var summary) = conversations[index] {
+            summary["operation"] = state.snapshot["operation"]
+            conversations[index] = .object(summary)
+        }
         if selected == id { snapshot = state.snapshot }
     }
     func loadEarlier() async {

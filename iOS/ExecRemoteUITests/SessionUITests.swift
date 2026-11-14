@@ -45,6 +45,29 @@ import XCTest
         XCTAssertLessThan(composer.frame.maxY, app.keyboards.firstMatch.frame.minY)
     }
 
+    func testSwitchingSessionsKeepsTheirIdentity() {
+        let app = launch()
+        for index in [1, 2, 1, 3, 2] {
+            let row = app.buttons["session-fixture-\(index)"]
+            XCTAssertTrue(row.waitForExistence(timeout: 5))
+            row.tap()
+            XCTAssertTrue(app.navigationBars["Session \(index)"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "fixture-\(index) message 40")).firstMatch.waitForExistence(timeout: 5))
+            app.navigationBars.buttons.firstMatch.tap()
+            XCTAssertTrue(app.navigationBars["All Sessions"].waitForExistence(timeout: 5))
+        }
+    }
+
+    func testActiveSessionIndicatorsIncludeApprovalAndCancellation() {
+        let app = launch(["--activity-fixture"])
+        for index in 1...3 {
+            XCTAssertTrue(app.activityIndicators["session-active-fixture-\(index)"].waitForExistence(timeout: 5))
+        }
+        for index in 4...6 {
+            XCTAssertFalse(app.activityIndicators["session-active-fixture-\(index)"].exists)
+        }
+    }
+
     private func deleteMiddleSession(_ app: XCUIApplication) {
         let row = app.buttons["session-fixture-3"]
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))

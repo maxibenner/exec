@@ -122,8 +122,9 @@ struct RootView: View {
                             .lineLimit(1).truncationMode(.middle)
                     }
                     Spacer(minLength: 4)
-                    if ["running", "cancelling"].contains(conversation["operation"]["state"].string ?? "") {
-                        ProgressView().controlSize(.mini).accessibilityLabel("Running")
+                    if RemoteMessageSubmission.isActive(conversation) {
+                        ProgressView().controlSize(.mini).accessibilityLabel("Active")
+                            .accessibilityIdentifier("session-active-\(conversation.id)")
                             .frame(width: 16, height: 20)
                     }
                 }
