@@ -30,6 +30,7 @@ import Observation
     private let provider: any ChatProvider
     private let sessions: SessionCatalog
     private let preferences: UserDefaults
+    private static let modelCacheKey = "chat.modelCatalog"
     private let residentLimit: Int
     private var restoringDefaults = false
     private var synchronization: Task<Void, Never>?
@@ -58,6 +59,11 @@ import Observation
         self.residentLimit = max(1, residentLimit)
         sessions = SessionCatalog(api: provider.api, preferences: preferences)
         current = ChatStore(provider: provider)
+        if let data = preferences.data(forKey: Self.modelCacheKey),
+           let cached = try? JSONDecoder().decode([ChatModel].self, from: data) {
+            models = cached
+            current.installModels(cached)
+        }
         observe(current)
         openConversations = [current]
     }
@@ -75,6 +81,9 @@ import Observation
         current = try makeConversation()
         openConversations = [current]
         try await provider.refreshConnections()
+        models = models.filter { provider.isModelAvailable($0.id) }
+        cacheModels()
+        for item in conversations { applyModels(to: item) }
         try await refreshCatalog()
         if let id = sessions.selected, savedSummaries.contains(where: { $0.id == id && !$0.unreadable }) {
             try await current.loadSession(id)
@@ -231,6 +240,7 @@ import Observation
             catch { connectionError = error.localizedDescription }
             try? await provider.refreshConnections()
             models = models.filter { provider.isModelAvailable($0.id) }
+            cacheModels()
             balances = [:]; cachedUsage = nil
             for item in conversations { applyModels(to: item) }
         }
@@ -243,11 +253,20 @@ import Observation
                 let available = try await provider.models()
                 guard !Task.isCancelled else { return }
                 models = available.filter { provider.isModelAvailable($0.id) }
+                cacheModels()
+                modelRefreshError = nil
                 for item in conversations { applyModels(to: item) }
                 if models.isEmpty { modelRefreshError = "Could not load models. Remove and add the provider in Settings → Providers to try again." }
             } catch {
                 if !Task.isCancelled { modelRefreshError = "Could not load models. Remove and add the provider in Settings → Providers to try again." }
             }
+        }
+    }
+    // Catalog metadata only: never persist account identities or credentials.
+    // Failed refreshes leave the last successful catalog intact.
+    private func cacheModels() {
+        if let data = try? JSONEncoder().encode(models) {
+            preferences.set(data, forKey: Self.modelCacheKey)
         }
     }
     private func applyModels(to conversation: ChatStore) {

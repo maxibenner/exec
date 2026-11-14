@@ -66,6 +66,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Unsubmitted drafts survive navigation and uncertain creation", { try await BackendFollowupTests().localDraftSurvivesNavigationAndUncertainCreate() }),
             ("Remote deletion reconciles without losing local drafts", { try await BackendFollowupTests().remoteDeletionReconcilesAndPreservesLocalDraft() }),
             ("Inherited workspaces permit one explicit choice before starting", { try await BackendFollowupTests().inheritedWorkspaceCanBeChosenExactlyOnce() }),
+            ("Model catalogs survive launch and reconcile successful refreshes", { try await BackendFollowupTests().modelCatalogSurvivesLaunchAndRefreshes() }),
             ("Account usage refreshes only on opening settings", { try await BackendFollowupTests().usageRefreshesOnlyOnSettingsRequest() }),
             ("Mid-turn commands apply once after idle", { try await BackendFollowupTests().commandsWaitForIdleAndPreserveApprovals() }),
             ("Compaction queues and uncertain settings stop queued effects", { try await BackendFollowupTests().compactQueuesOnceAndConfigurationFailureStopsActions() }),
