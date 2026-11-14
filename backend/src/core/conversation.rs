@@ -37,7 +37,7 @@ impl ConversationOptions {
             model: model.into(),
             workspace: workspace.into(),
             tools: vec![],
-            max_steps: 32,
+            max_steps: 64,
             settings: SessionSettings::default(),
             checkpoint: None,
             images: None,
