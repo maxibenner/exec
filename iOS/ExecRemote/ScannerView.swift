@@ -12,11 +12,13 @@ struct ScannerView: View {
             Group {
                 if authorized && DataScannerViewController.isSupported && DataScannerViewController.isAvailable && failure == nil {
                     CameraScanner(scanned: scanned, failed: { failure = $0 })
+                        .ignoresSafeArea()
                 } else {
-                    ContentUnavailableView("Camera Unavailable", systemImage: "qrcode", description: Text(failure ?? "Paste the pairing invitation from the Mac instead, or enable camera access in Settings."))
+                    ContentUnavailableView("Camera Unavailable", systemImage: "qrcode", description: Text(failure ?? "Enable camera access in Settings and use a device that supports camera scanning."))
                 }
             }
-            .navigationTitle("Scan Pairing Code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
             .task {
                 if DataScannerViewController.isSupported && AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
@@ -35,7 +37,7 @@ private struct CameraScanner: UIViewControllerRepresentable {
         scanner.delegate = context.coordinator
         let coordinator = context.coordinator
         Task { @MainActor in
-            do { try scanner.startScanning() } catch { coordinator.failed("Could not start the camera. Paste a pairing invitation instead.") }
+            do { try scanner.startScanning() } catch { coordinator.failed("Could not start the camera. Close the scanner and check camera access in Settings.") }
         }
         return scanner
     }
@@ -47,7 +49,7 @@ private struct CameraScanner: UIViewControllerRepresentable {
         var finished = false
         init(scanned: @escaping (String) -> Void, failed: @escaping (String) -> Void) { self.scanned = scanned; self.failed = failed }
         func dataScanner(_ dataScanner: DataScannerViewController, becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable) {
-            failed("Camera scanning became unavailable. Paste a pairing invitation instead.")
+            failed("Camera scanning became unavailable. Close the scanner and check camera access in Settings.")
         }
         func dataScanner(_ dataScanner: DataScannerViewController, didAdd addedItems: [RecognizedItem], allItems: [RecognizedItem]) {
             guard !finished else { return }
