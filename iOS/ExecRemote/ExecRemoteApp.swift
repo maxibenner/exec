@@ -34,24 +34,20 @@ struct RootView: View {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
                         List {
                             ForEach(RemoteSessionDay.group(store.conversations)) { day in
-                                ForEach(day.conversations, id: \.id) { conversation in
-                                    // Single-row sections give every swipe its own rounded boundary.
-                                    Section {
+                                Section {
+                                    ForEach(day.conversations, id: \.id) { conversation in
                                         sessionRow(conversation)
-                                    } header: {
-                                        if conversation.id == day.conversations.first?.id {
-                                            Text(day.title(now: context.date))
-                                                .font(.title3.bold())
-                                                .foregroundStyle(Color(uiColor: .label))
-                                                .textCase(nil)
-                                                .padding(.vertical, 8)
-                                        }
                                     }
+                                } header: {
+                                    Text(day.title(now: context.date))
+                                        .font(.title3.bold())
+                                        .foregroundStyle(Color(uiColor: .label))
+                                        .textCase(nil)
+                                        .padding(.vertical, 8)
                                 }
                             }
                         }
                         .listStyle(.insetGrouped)
-                        .listSectionSpacing(0)
                         .scrollContentBackground(.hidden)
                         .background(Color(uiColor: .systemGroupedBackground))
                         .refreshable { do { try await store.refresh() } catch { store.error = error.localizedDescription } }
@@ -138,7 +134,9 @@ struct RootView: View {
         }
         .accessibilityIdentifier("session-\(conversation.id)")
         .disabled(conversation["unreadable"].bool)
-        .listRowBackground(Color.clear)
+        // The native background supplies grouped outer corners at rest and
+        // gray highlighting with animated trailing corners when any row is swiped.
+        // A custom row background or clip would replace that per-row animation.
         .listRowSeparator(.hidden)
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button("Delete", systemImage: "trash", role: .destructive) {
