@@ -128,6 +128,71 @@ import Foundation
         try expect(creates.count == 2)
     }
 
+    func modelCatalogSurvivesLaunchAndRefreshes() async throws {
+        let transport = FakeAgentTransport()
+        let provider = AgentAccounts(api: AgentAPI(transport: transport))
+        let suite = "exec-model-cache-\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        try await transport.reply("/v1/providers", .array([.object([
+            "id": .string("openai"), "name": .string("OpenAI"), "connected": .bool(true)
+        ])]))
+        try await provider.refreshConnections()
+        let model = ChatModel(id: "openai/test", name: "Previous model", contextWindow: 100000,
+                              efforts: [ChatEffort(id: "high", name: "High")], defaultEffort: "high", acceptsImages: true)
+        try await transport.reply("/v1/models", .array([try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(model))]))
+        let first = ChatLibrary(provider: provider, preferences: preferences)
+        defer { first.closePresentations() }
+        first.refreshModels()
+        try await wait { first.models == [model] }
+
+        let relaunched = ChatLibrary(provider: provider, preferences: preferences)
+        defer { relaunched.closePresentations() }
+        try relaunched.current.apply(snapshot("completed"))
+        let panel = ChatPanel(library: relaunched, conversation: relaunched.current)
+        try expect(panel.selectedModel == model.id && panel.models == [model])
+        try expect(panel.modelUnavailableReason == nil && relaunched.current.model == model)
+
+        // A failed discovery is not evidence that the selected model disappeared.
+        await transport.fail("/v1/models")
+        relaunched.refreshModels()
+        try await wait { relaunched.error != nil }
+        try expect(panel.selectedModel == model.id && panel.modelUnavailableReason == nil)
+
+        // A successful empty catalog, unlike a failed request, is authoritative.
+        let refreshedTransport = FakeAgentTransport()
+        let refreshedProvider = AgentAccounts(api: AgentAPI(transport: refreshedTransport))
+        try await refreshedTransport.reply("/v1/providers", .array([.object([
+            "id": .string("openai"), "name": .string("OpenAI"), "connected": .bool(true)
+        ])]))
+        try await refreshedProvider.refreshConnections()
+        try await refreshedTransport.reply("/v1/models", .array([]))
+        let refreshed = ChatLibrary(provider: refreshedProvider, preferences: preferences)
+        defer { refreshed.closePresentations() }
+        try refreshed.current.apply(snapshot("completed"))
+        let refreshedPanel = ChatPanel(library: refreshed, conversation: refreshed.current)
+        refreshed.refreshModels()
+        try await wait { refreshed.models.isEmpty }
+        try expect(refreshed.current.selectedModel == model.id)
+        try expect(refreshedPanel.selectedModel.isEmpty && refreshedPanel.modelUnavailableReason == "Model unavailable")
+        let nextLaunch = ChatLibrary(provider: refreshedProvider, preferences: preferences)
+        defer { nextLaunch.closePresentations() }
+        try expect(nextLaunch.models.isEmpty)
+
+        // Account restoration invalidates cached models from disconnected providers.
+        // Use a fresh cache from the first successful fetch, without account data.
+        preferences.set(try JSONEncoder().encode([model]), forKey: "chat.modelCatalog")
+        let signedOutTransport = FakeAgentTransport()
+        try await signedOutTransport.reply("/v1/providers", .array([]))
+        try await signedOutTransport.reply("/v1/library", try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(AgentLibraryConfiguration())))
+        try await signedOutTransport.reply("/v1/conversations", .array([]))
+        let signedOut = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: signedOutTransport)), preferences: preferences)
+        defer { signedOut.closePresentations() }
+        try expect(signedOut.models == [model])
+        try await signedOut.restore()
+        try expect(signedOut.models.isEmpty && signedOut.current.models.isEmpty)
+    }
+
     func usageRefreshesOnlyOnSettingsRequest() async throws {
         let transport = FakeAgentTransport()
         let config = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(AgentLibraryConfiguration()))

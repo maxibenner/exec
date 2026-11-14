@@ -34,15 +34,23 @@ struct Invitation {
     secret: String,
     expires: u64,
 }
+#[derive(Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum ConnectionStatus {
+    Disconnected,
+    Connecting,
+    Connected,
+    RelayNotFound,
+}
 struct State {
     config: Configuration,
     invitation: Option<Invitation>,
+    connection: ConnectionStatus,
 }
 pub(crate) struct RemoteAccess {
     path: PathBuf,
     state: Mutex<State>,
     revision: watch::Sender<u64>,
-    connected: std::sync::atomic::AtomicBool,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -133,9 +141,9 @@ impl RemoteAccess {
             state: Mutex::new(State {
                 config,
                 invitation: None,
+                connection: ConnectionStatus::Disconnected,
             }),
             revision,
-            connected: false.into(),
         }))
     }
     async fn persist(&self, config: &Configuration) -> Result<()> {
@@ -167,7 +175,9 @@ impl RemoteAccess {
     pub(crate) async fn status(&self) -> Value {
         let state = self.state.lock().await;
         json!({"enabled":state.config.enabled,"relay":state.config.relay,"localDevelopment":state.config.local_development,
-            "connected":self.connected.load(std::sync::atomic::Ordering::Relaxed),
+            "connected":state.config.enabled && state.connection == ConnectionStatus::Connected,
+            "connectionStatus":if state.config.enabled { state.connection } else { ConnectionStatus::Disconnected },
+            "invitationActive":state.config.enabled && state.invitation.as_ref().is_some_and(|invitation| invitation.expires > now()),
             "devices":state.config.devices.iter().map(|d| json!({"id":d.id,"name":d.name})).collect::<Vec<_>>()})
     }
     pub(crate) async fn configure(&self, input: Configure) -> Result<()> {
@@ -180,6 +190,11 @@ impl RemoteAccess {
         config.enabled = input.enabled;
         config.local_development = input.local_development;
         self.persist(&config).await?;
+        state.connection = if config.enabled {
+            ConnectionStatus::Connecting
+        } else {
+            ConnectionStatus::Disconnected
+        };
         state.config = config;
         state.invitation = None;
         self.revision.send_modify(|r| *r += 1);
@@ -324,6 +339,64 @@ pub(crate) fn permits(method: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn wait_status(remote: &RemoteAccess, expected: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if remote.status().await["connectionStatus"] == expected {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn relay_status_tracks_handshake_failure_and_disable() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = RemoteAccess::load(dir.path()).await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay = format!("ws://{}", listener.local_addr().unwrap());
+        remote
+            .configure(Configure {
+                relay: relay.clone(),
+                enabled: true,
+                local_development: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(remote.status().await["connectionStatus"], "connecting");
+        let stop = tokio_util::sync::CancellationToken::new();
+        let runner = tokio::spawn(remote.clone().run(std::sync::Weak::new(), stop.clone()));
+        let (socket, _) = listener.accept().await.unwrap();
+        let _socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+        wait_status(&remote, "connected").await;
+        remote
+            .configure(Configure {
+                relay: relay.clone(),
+                enabled: false,
+                local_development: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(remote.status().await["connectionStatus"], "disconnected");
+        assert_eq!(remote.status().await["connected"], false);
+        drop(listener);
+        remote
+            .configure(Configure {
+                relay,
+                enabled: true,
+                local_development: true,
+            })
+            .await
+            .unwrap();
+        wait_status(&remote, "relayNotFound").await;
+        stop.cancel();
+        runner.await.unwrap();
+        assert_eq!(remote.status().await["connectionStatus"], "disconnected");
+    }
     #[tokio::test]
     async fn pairing_is_single_use_persistent_and_revocable() {
         let dir = tempfile::tempdir().unwrap();
@@ -337,6 +410,7 @@ mod tests {
             .await
             .unwrap();
         let invitation = remote.invite().await.unwrap();
+        assert_eq!(remote.status().await["invitationActive"], true);
         let (_, public) = crypto::keypair();
         let (_, other) = crypto::keypair();
         assert!(
@@ -345,10 +419,12 @@ mod tests {
                 .await
                 .is_err()
         );
+        assert_eq!(remote.status().await["invitationActive"], true);
         let id = remote
             .authorize_device(&public, invitation["secret"].as_str(), "Phone")
             .await
             .unwrap();
+        assert_eq!(remote.status().await["invitationActive"], false);
         assert!(
             remote
                 .authorize_device(&other, invitation["secret"].as_str(), "Other")

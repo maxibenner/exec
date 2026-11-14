@@ -6,11 +6,7 @@ use axum::{
     http::Request,
 };
 use futures_util::{SinkExt, StreamExt};
-use std::{
-    collections::HashMap,
-    sync::{Weak, atomic::Ordering},
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Weak, time::Duration};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{
     connect_async_with_config,
@@ -40,13 +36,35 @@ struct Command {
     body: Option<Value>,
 }
 impl RemoteAccess {
+    async fn set_connection(&self, revision: u64, connection: ConnectionStatus) {
+        let mut state = self.state.lock().await;
+        if *self.revision.borrow() == revision && state.config.enabled {
+            state.connection = connection;
+        }
+    }
     pub(crate) async fn run(self: Arc<Self>, host: Weak<Host>, stop: CancellationToken) {
         let mut changed = self.revision.subscribe();
         loop {
-            let config = self.state.lock().await.config.clone();
+            let (config, revision) = {
+                let mut state = self.state.lock().await;
+                state.connection = if state.config.enabled {
+                    ConnectionStatus::Connecting
+                } else {
+                    ConnectionStatus::Disconnected
+                };
+                (state.config.clone(), *changed.borrow_and_update())
+            };
             let attempt = async {
                 if config.enabled {
-                    let _ = self.connection(host.clone(), config).await;
+                    let _ = self.connection(host.clone(), config, revision).await;
+                    let mut state = self.state.lock().await;
+                    if *self.revision.borrow() == revision && state.config.enabled {
+                        state.connection = if state.connection == ConnectionStatus::Connecting {
+                            ConnectionStatus::RelayNotFound
+                        } else {
+                            ConnectionStatus::Disconnected
+                        };
+                    }
                 } else {
                     std::future::pending::<()>().await;
                 }
@@ -55,16 +73,19 @@ impl RemoteAccess {
                 _ = stop.cancelled() => break,
                 _ = changed.changed() => {},
                 _ = attempt => {
-                    self.connected.store(false, Ordering::Relaxed);
                     // Reconnect only the transport. Never replay an API request.
                     tokio::select! { _ = stop.cancelled() => break, _ = changed.changed() => {}, _ = tokio::time::sleep(Duration::from_secs(3)) => {} }
                 }
             }
-            self.connected.store(false, Ordering::Relaxed);
         }
-        self.connected.store(false, Ordering::Relaxed);
+        self.state.lock().await.connection = ConnectionStatus::Disconnected;
     }
-    async fn connection(self: &Arc<Self>, host: Weak<Host>, config: Configuration) -> Result<()> {
+    async fn connection(
+        self: &Arc<Self>,
+        host: Weak<Host>,
+        config: Configuration,
+        revision: u64,
+    ) -> Result<()> {
         let mut request = format!("{}/v1/host", config.relay)
             .into_client_request()
             .map_err(|_| Error::Internal)?;
@@ -84,7 +105,8 @@ impl RemoteAccess {
         .await
         .map_err(|_| Error::Internal)?
         .map_err(|_| Error::Internal)?;
-        self.connected.store(true, Ordering::Relaxed);
+        self.set_connection(revision, ConnectionStatus::Connected)
+            .await;
         let (mut sink, mut source) = socket.split();
         let (out, mut outgoing) = mpsc::channel::<Envelope>(16);
         let mut clients = HashMap::<String, mpsc::Sender<String>>::new();

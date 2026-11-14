@@ -3,15 +3,17 @@ import CoreImage.CIFilterBuiltins
 
 struct RemoteAccessSettingsView: View {
     let api: AgentAPI
-    private static let defaultRelay = "wss://relay.numbersoffice.com"
-    @State private var relay = Self.defaultRelay
-    @State private var enabled = false
-    @State private var localDevelopment = false
-    @State private var status: AgentJSON = .null
+    @State private var settings: RemoteAccessSettings
+    @FocusState private var relayFocused: Bool
     @State private var invitation: AgentJSON?
     @State private var error: String?
     @State private var busy = false
     @State private var revoking: String?
+    private var status: AgentJSON { settings.status }
+    init(api: AgentAPI) {
+        self.api = api
+        _settings = State(initialValue: RemoteAccessSettings(api: api))
+    }
     private var invitationText: String? {
         guard let invitation, let data = try? JSONEncoder().encode(invitation) else { return nil }
         return String(decoding: data, as: UTF8.self)
@@ -19,26 +21,23 @@ struct RemoteAccessSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Remote access", isOn: $enabled)
-                LabeledContent("Status", value: status["connected"].bool ? "Connected" : "Disconnected")
-            } footer: {
-                Text("Exec must remain open and the Mac awake.")
-            }
-            Section {
-                TextField("Relay", text: $relay)
-            } footer: {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("You can host your own relay as a docker container. Find the code on [Github](https://github.com/maxibenner/exec/tree/main/relay).")
-                        .font(.caption).tint(.blue)
-                    Button("Save") { perform {
-                        status = try await api.request("PUT", "/v1/remote", .object([
-                            "relay":.string(relay), "enabled":.bool(enabled), "localDevelopment":.bool(localDevelopment)
-                        ]))
-                        invitation = nil
-                    } }
-                    .buttonStyle(.bordered)
-                    .foregroundStyle(.primary)
+                Toggle("Remote access", isOn: Binding(get: { settings.enabled }, set: { value in
+                    relayFocused = false
+                    Task { await settings.save(enabled: value); invitation = nil }
+                }))
+                TextField("Relay address", text: $settings.relay, prompt: Text(RemoteAccessSettings.defaultRelay))
+                    .focused($relayFocused)
+                    .background(RelayFocusDismissal(isFocused: relayFocused) { relayFocused = false })
+                    .onSubmit { relayFocused = false }
+                    .onChange(of: relayFocused) { _, focused in
+                        if !focused { Task { await settings.save(); invitation = nil } }
+                    }
+                LabeledContent("Status") {
+                    Text(settings.connection).foregroundStyle(settings.connectionColor)
                 }
+            } footer: {
+                Text("Exec must remain open and the Mac awake. You can host your own relay as a docker container; find the code on [Github](https://github.com/maxibenner/exec/tree/main/relay).")
+                    .tint(.blue)
             }
             if status["enabled"].bool || !status["devices"].array.isEmpty {
                 Section {
@@ -70,40 +69,37 @@ struct RemoteAccessSettingsView: View {
                                         .padding(12).background(.white).accessibilityLabel("Pairing QR code")
                                     Spacer()
                                 }
-                                Button("Copy Pairing Invitation") {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(text, forType: .string)
-                                }
-                                .buttonStyle(.bordered)
-                                .foregroundStyle(.primary)
-                                Text("Single use. Expires after five minutes. Only share with a device you trust.")
-                                    .font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     }
                 }
             }
-            if let error { Section { Text(error).foregroundStyle(.red).textSelection(.enabled) } }
+            if let error = error ?? settings.error { Section { Text(error).foregroundStyle(.red).textSelection(.enabled) } }
         }
         .formStyle(.grouped)
-        .disabled(busy)
+        .disabled(busy || settings.saving || !settings.loaded)
         .confirmationDialog("Revoke this device?", isPresented: Binding(get: { revoking != nil }, set: { if !$0 { revoking = nil } })) {
             Button("Revoke", role: .destructive) {
                 guard let id = revoking else { return }; revoking = nil
-                perform { status = try await api.request("DELETE", "/v1/remote/devices/\(id)") }
+                perform {
+                    _ = try await api.request("DELETE", "/v1/remote/devices/\(id)")
+                    try await settings.refresh()
+                }
             }
         }
         .task {
             do {
-                status = try await api.get("/v1/remote")
-                let savedRelay = status["relay"].string ?? ""
-                relay = savedRelay.isEmpty ? Self.defaultRelay : savedRelay
-                enabled = status["enabled"].bool
-                // Preserve existing local configurations without offering plaintext opt-in in the UI.
-                localDevelopment = status["localDevelopment"].bool
+                try await settings.refresh()
                 while !Task.isCancelled {
                     try await Task.sleep(for: .seconds(2))
-                    if !busy { status = try await api.get("/v1/remote") }
+                    if !busy && !settings.saving {
+                        let observedInvitation = invitationText
+                        try await settings.refresh()
+                        // An older poll must not dismiss a newly created invitation.
+                        if !busy, observedInvitation == invitationText, !status["invitationActive"].bool {
+                            invitation = nil
+                        }
+                    }
                     if let expiry = invitation?["expires"].number, expiry <= Date().timeIntervalSince1970 { invitation = nil }
                 }
             } catch is CancellationError {} catch { if !Task.isCancelled { self.error = error.localizedDescription } }
