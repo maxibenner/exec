@@ -76,6 +76,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Cancellation keeps ownership through cleanup", { try await AgentEventTests().cancellationOwnsCleanupAndUsesExactID() }),
             ("Uncertain configuration never retries", { try await AgentEventTests().configurationFailureDoesNotRetry() }),
             ("Agent snapshot reconciliation and approvals", { try await AgentIntegrationTests().snapshotAndApproval() }),
+            ("Queued images retain their operation and never replay", { try await ImageQueueTests().queuesImagesWithoutReplayingOrChangingOperation() }),
             ("Uncertain submissions never retry", { try await AgentIntegrationTests().uncertainSendIsNotRetried() }),
             ("Quit retains copy and awaits backend shutdown", { try await AgentIntegrationTests().quitWaitsForBackendAndPreservesCopy() }),
             ("HTTP redirects and interrupted mutations never replay", { try await HTTPConsumerTests().redirectsAndInterruptedMutationsAreNotReplayed() }),

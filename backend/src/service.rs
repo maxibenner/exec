@@ -366,6 +366,8 @@ struct Steer {
     #[serde(rename = "operationID")]
     operation_id: String,
     text: String,
+    #[serde(default)]
+    images: Vec<ImageRef>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -993,10 +995,12 @@ async fn handle(
         ("POST", Some("steer")) => {
             let input: Steer = body(request).await?;
             identifier(&input.operation_id)?;
-            text(&input.text, 128 * 1024)?;
-            let id = options
-                .manager
-                .steer(parts[0], &input.operation_id, input.text)?;
+            let id = options.manager.steer_images(
+                parts[0],
+                &input.operation_id,
+                input.text,
+                input.images,
+            )?;
             Ok(json_response(
                 202,
                 json!({"operationID":input.operation_id,"messageID":id}),

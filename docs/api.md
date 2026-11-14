@@ -146,9 +146,11 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after durable deletion; active work returns 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
 | POST | `/v1/conversations/:id/turns` | `{text,images?}` → `202 {operationID}` |
-| POST | `/v1/conversations/:id/steer` | `{operationID,text}` → `202 {operationID,messageID}` |
+| POST | `/v1/conversations/:id/steer` | `{operationID,text,images?}` → `202 {operationID,messageID}` |
 | POST | `/v1/conversations/:id/cancel` | `{operationID}` → `202 {accepted:true,operationID}` |
 | POST | `/v1/conversations/:id/approvals` | `{operationID,approvalID,approved:boolean}` → `{resolved:true}` |
+
+Images may be uploaded while a turn is active, then queued through `/steer` as conversation-owned image references. Steering accepts text, images, or both, with the same eight-image/16 MiB limits as a new turn. Input is incorporated at the next safe runner boundary, not retroactively added to an in-flight provider request. The operation ID remains fixed across uploads: if that operation finishes or is cancelled, a rejected steering request must not be retried as a new turn. Accepted pending images survive cancellation/restart without automatically resuming inference.
 
 Missing conversations return 404; invalid requests 400; busy/storage-blocked submissions and stale approvals/cancellations 409. Approval decisions are single use, including races. Cancellation acceptance is not cleanup completion; the acknowledgement echoes the exact operation accepted for cancellation.
 
