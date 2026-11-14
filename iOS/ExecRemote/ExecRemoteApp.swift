@@ -50,7 +50,22 @@ struct RootView: View {
                         .scrollContentBackground(.hidden)
                         .background(Color(uiColor: .systemGroupedBackground))
                         .refreshable { do { try await store.refresh() } catch { store.error = error.localizedDescription } }
-                        .overlay { if store.conversations.isEmpty { ContentUnavailableView("No Sessions", systemImage: "bubble.left.and.bubble.right") } }
+                        .overlay {
+                            if store.conversations.isEmpty {
+                                if store.isLoadingConversations {
+                                    ProgressView()
+                                } else if store.hasLoadedConversations {
+                                    VStack(spacing: 12) {
+                                        Image(systemName: "bubble.left.and.bubble.right")
+                                            .font(.system(size: 32))
+                                            .accessibilityHidden(true)
+                                        Text("No Sessions")
+                                            .font(.subheadline)
+                                    }
+                                    .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                     }
                 }
             }

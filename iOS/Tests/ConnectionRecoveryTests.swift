@@ -14,6 +14,8 @@ private actor FakeTransport: RemoteTransport {
     private var connectionWaiter: CheckedContinuation<Void, Never>?
     private var heldRequest: String?
     private var requestWaiter: CheckedContinuation<Void, Never>?
+    var sessions: [RemoteJSON] = [.object(["id": .string("session")])]
+    func setSessions(_ value: [RemoteJSON]) { sessions = value }
     var resetNextSync = false
     var waitingForConnection: Bool { connectionWaiter != nil }
     var waitingForRequest: Bool { requestWaiter != nil }
@@ -73,7 +75,7 @@ private actor FakeTransport: RemoteTransport {
         }
         switch path {
         case "/v1/models": return .array([])
-        case "/v1/conversations": return .array([.object(["id": .string("session")])])
+        case "/v1/conversations": return .array(sessions)
         case let path where path.hasPrefix("/v1/conversations/session/sync"): return sync(path)
         default: return .object([:])
         }
@@ -90,6 +92,38 @@ private actor FakeTransport: RemoteTransport {
         ])))
         let host = PairedHost(invitation: invitation, deviceName: "Test fixture")
         return RemoteStore(client: transport, loadHost: { host }, saveHost: { _ in }, forgetHost: {})
+    }
+
+    func testEmptyListIsConfirmedOnlyAfterSuccessfulLoad() async throws {
+        let transport = FakeTransport(), store = try makeStore(transport)
+        await transport.setSessions([])
+        XCTAssertTrue(store.isLoadingConversations)
+        XCTAssertFalse(store.hasLoadedConversations)
+        await transport.holdNextRequest("GET", "/v1/conversations")
+        let loading = Task { await store.poll() }
+        while !(await transport.waitingForRequest) { await Task.yield() }
+        XCTAssertTrue(store.isLoadingConversations)
+        XCTAssertFalse(store.hasLoadedConversations)
+        await transport.releaseRequest()
+        await loading.value
+        XCTAssertTrue(store.hasLoadedConversations)
+        XCTAssertFalse(store.isLoadingConversations)
+        XCTAssertTrue(store.conversations.isEmpty)
+        await store.forget()
+        XCTAssertFalse(store.hasLoadedConversations)
+    }
+
+    func testFailedInitialListDoesNotConfirmEmptyState() async throws {
+        let transport = FakeTransport(), store = try makeStore(transport)
+        await transport.failNext("GET", "/v1/conversations")
+        await store.poll()
+        XCTAssertFalse(store.hasLoadedConversations)
+        XCTAssertFalse(store.isLoadingConversations)
+        XCTAssertNotNil(store.error)
+        await store.poll()
+        XCTAssertTrue(store.hasLoadedConversations)
+        XCTAssertFalse(store.isLoadingConversations)
+        XCTAssertEqual(store.conversations.count, 1)
     }
 
     func testInterruptedPollingReconnectsAndRefreshesWithoutLosingDraft() async throws {

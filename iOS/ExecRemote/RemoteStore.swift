@@ -20,6 +20,8 @@ extension RelayClient: RemoteTransport {}
     var busy = false
     var error: String?
     var conversations: [RemoteJSON] = []
+    private(set) var hasLoadedConversations = false
+    var isLoadingConversations: Bool { !hasLoadedConversations && (busy || error == nil) }
     var models: [RemoteJSON] = []
     var library: RemoteJSON = .null
     var selected: String? {
@@ -128,6 +130,7 @@ extension RelayClient: RemoteTransport {}
         deletions = RemoteSessionDeletions()
         snapshotGeneration += 1
         selected = nil; snapshot = .null; conversations = []; drafts = [:]
+        hasLoadedConversations = false
     }
     func refresh() async throws {
         let generation = hostGeneration, readGeneration = snapshotGeneration
@@ -143,6 +146,7 @@ extension RelayClient: RemoteTransport {}
         let settings = try await client.request("GET", "/v1/library")
         guard generation == hostGeneration, readGeneration == snapshotGeneration else { return }
         conversations = deletions.reconcile(list); library = settings
+        hasLoadedConversations = true
         let ids = Set(conversations.compactMap { $0["id"].string }).union(deletions.pendingIDs)
         recentConversations.retain(ids)
         syncStates = syncStates.filter { recentConversations.contains($0.key) }
