@@ -9,7 +9,7 @@ Requires iOS 17+ and Xcode with an iOS SDK. Open `ExecRemote.xcodeproj`; its pac
 1. Start the relay as described in [`relay/README.md`](../relay/README.md).
 2. Build/open the current Mac app; configure **Settings → Remote Access** with `ws://127.0.0.1:8787` and **Local development relay** enabled.
 3. Run the `ExecRemote` scheme on an iPhone simulator.
-4. On Mac, create a pairing QR code and choose **Copy Pairing Invitation**. Paste into the iOS pairing field and tap **Pair**. The Simulator has no camera.
+4. Pairing requires scanning a Mac pairing QR code on a physical device. The Simulator has no camera; use the isolated UI fixtures below for simulator checks.
 5. Open an existing conversation, or create one and tap **Choose Folder** to browse directories **on the agent host**. The current path appears above the folder list; **back up** navigates to its parent. New Chat groups Model and its supported Reasoning options together; selecting reasoning overrides only that new session's effort.
 
 CLI simulator build:
@@ -51,7 +51,7 @@ The app icon is an opaque 1024px derivative of the existing Exec artwork. Device
 
 ## First-version scope
 
-- QR/pasted invitation pairing, one saved host, per-device identity stored in Keychain (`WhenUnlockedThisDeviceOnly`, not synced).
+- QR-code pairing, one saved host, per-device identity stored in Keychain (`WhenUnlockedThisDeviceOnly`, not synced).
 - Native inset-grouped session list on the system grouped background, sorted by last activity with primary-label daily sections (Today, Yesterday, then dates). Neutral rows show a title above a single time/workspace row, without folder icons. The centered All Sessions navigation header and bottom toolbar use system styling; options are bottom-left and new chat bottom-right. Native destructive swipe actions support full-swipe deletion. Rows retain the system background and animated trailing-corner mask instead of overriding it with a flat custom background. Deletions hide the row immediately and suppress stale refreshes; a failed deletion restores it, but a failed refresh after host acceptance does not. Active conversations must be stopped before deletion.
 - Native multiline composer with system Liquid Glass on iOS 26+, and system material on older supported iOS versions. The transcript extends underneath the top navigation bar, retaining UIKit's automatic safe-area content inset. Its native table controller registers the scroll view with the SwiftUI navigation owner (not just the embedded child) for system translucency and scroll-edge styling. The transcript scrolls beneath the floating composer with measured bottom padding, following content-height and inset changes while at the bottom without interrupting reading above. Sending keeps keyboard focus; the transcript supports interactive swipe-down keyboard dismissal.
 - During an active turn, an empty composer shows Stop; entering text switches to Send and submits to the host's operation-bound steering queue. Sent/queued text and the active indicator appear immediately through a display-only overlay, with stable row identity after reconciliation. Drafts clear immediately and are restored on send failure without discarding newer typing; failures never trigger automatic resubmission. An accepted send whose refresh fails retains its local row, not a restored draft. Execution/cancellation always use authoritative state, never the visual overlay.

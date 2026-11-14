@@ -22,11 +22,9 @@ import ExecRemote
 
 struct RootView: View {
     @Bindable var store: RemoteStore
-    @State private var invitation = ""
     @State private var scanning = false
     @State private var settings = false
     @State private var creating = false
-    @State private var forgetting = false
     var body: some View {
         NavigationStack {
             Group {
@@ -52,19 +50,35 @@ struct RootView: View {
                         .scrollContentBackground(.hidden)
                         .background(Color(uiColor: .systemGroupedBackground))
                         .refreshable { do { try await store.refresh() } catch { store.error = error.localizedDescription } }
-                        .overlay { if store.conversations.isEmpty { ContentUnavailableView("No Sessions", systemImage: "bubble.left.and.bubble.right") } }
+                        .overlay {
+                            if store.conversations.isEmpty {
+                                if store.isLoadingConversations {
+                                    ProgressView()
+                                } else if store.hasLoadedConversations {
+                                    VStack(spacing: 12) {
+                                        Image(systemName: "bubble.left.and.bubble.right")
+                                            .font(.system(size: 32))
+                                            .accessibilityHidden(true)
+                                        Text("No Sessions")
+                                            .font(.subheadline)
+                                    }
+                                    .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                     }
                 }
             }
-            .navigationTitle(store.host == nil ? "Exec" : "All Sessions")
-            .navigationBarTitleDisplayMode(store.host == nil ? .large : .inline)
+            .navigationTitle(store.host == nil ? "" : "All Sessions")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(store.host == nil ? .hidden : .visible, for: .navigationBar)
             .toolbar {
                 if store.host != nil {
                     ToolbarItem(placement: .bottomBar) {
                         Menu {
                             Button("Settings", systemImage: "gearshape") { settings = true }
                             Button("Reconnect", systemImage: "arrow.clockwise") { Task { await store.connect() } }
-                            Button("Forget Host", systemImage: "trash", role: .destructive) { forgetting = true }
+                            Button("Forget Host", systemImage: "trash", role: .destructive) { Task { await store.forget() } }
                         } label: { Label("Session Options", systemImage: "ellipsis") }.disabled(store.busy)
                     }
                     ToolbarItem(placement: .bottomBar) { Spacer() }
@@ -93,9 +107,6 @@ struct RootView: View {
             }
             .sheet(isPresented: $settings) { SharedSettingsScreen(store: store) }
             .sheet(isPresented: $creating) { NewChatScreen(store: store) }
-            .confirmationDialog("Forget this host? Revoke this device on the Mac to remove its authorization.", isPresented: $forgetting) {
-                Button("Forget Host", role: .destructive) { Task { await store.forget() } }
-            }
         }
     }
     private func sessionRow(_ conversation: RemoteJSON) -> some View {
@@ -111,8 +122,9 @@ struct RootView: View {
                             .lineLimit(1).truncationMode(.middle)
                     }
                     Spacer(minLength: 4)
-                    if ["running", "cancelling"].contains(conversation["operation"]["state"].string ?? "") {
-                        ProgressView().controlSize(.mini).accessibilityLabel("Running")
+                    if RemoteMessageSubmission.isActive(conversation) {
+                        ProgressView().controlSize(.mini).accessibilityLabel("Active")
+                            .accessibilityIdentifier("session-active-\(conversation.id)")
                             .frame(width: 16, height: 20)
                     }
                 }
@@ -135,20 +147,29 @@ struct RootView: View {
     }
 
     private var pairing: some View {
-        Form {
-            Section {
-                Button("Scan Pairing QR Code", systemImage: "qrcode.viewfinder") { scanning = true }
+        VStack(spacing: 16) {
+            Image(systemName: "qrcode.viewfinder")
+                .font(.system(size: 48, weight: .light))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text("Pair Device")
+                .font(.headline)
+            Text("On your Mac, open Exec → Settings → Remote Access.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaInset(edge: .bottom) {
+            Button { scanning = true } label: {
+                Text("Scan Pairing QR Code")
+                    .frame(maxWidth: .infinity)
             }
-            Section {
-                TextEditor(text: $invitation).frame(minHeight: 120).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .accessibilityLabel("Pairing invitation")
-                Button("Pair") {
-                    let text = invitation; invitation = ""
-                    Task { await store.pair(text) }
-                }.disabled(invitation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy)
-            } header: { Text("Pairing Invitation") } footer: {
-                Text("On your Mac, open Exec → Settings → Remote Access. You can paste an invitation when a camera is unavailable.")
-            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(store.busy)
+            .padding()
         }
     }
 }

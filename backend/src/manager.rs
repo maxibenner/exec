@@ -537,7 +537,16 @@ impl AgentManager {
             .compact()
     }
     pub fn steer(&self, id: &str, operation_id: &str, text: String) -> Result<String> {
-        self.get(id)?.steer(operation_id, text)
+        self.steer_images(id, operation_id, text, vec![])
+    }
+    pub fn steer_images(
+        &self,
+        id: &str,
+        operation_id: &str,
+        text: String,
+        images: Vec<ImageRef>,
+    ) -> Result<String> {
+        self.get(id)?.steer_images(operation_id, text, images)
     }
     pub async fn update_settings(
         &self,
@@ -594,41 +603,28 @@ impl AgentManager {
     ) -> Result<ImageRef> {
         let conversation = self.get(id)?;
         let images = {
-            let mut c = self.catalog.lock().unwrap();
-            if c.closed || c.account_busy || c.mutating.contains(id) || conversation.busy() {
+            let c = self.catalog.lock().unwrap();
+            if c.closed || c.account_busy || c.mutating.contains(id) {
                 return Err(Error::Busy);
             }
-            let images = c
-                .images
+            c.images
                 .clone()
-                .ok_or(Error::Invalid("Image storage is unavailable."))?;
-            c.mutating.insert(id.into());
-            images
+                .ok_or(Error::Invalid("Image storage is unavailable."))?
         };
-        let manager = self.clone();
-        let id = id.to_owned();
-        tokio::spawn(async move {
-            let asset_id = new_id();
-            let resource = ResourceRef {
-                id: asset_id.clone(),
-                call_id: String::new(),
-                kind: ResourceKind::Image,
-            };
-            let result = async {
-                conversation
-                    .mutate_record(move |record| {
-                        record.resources.push(resource);
-                        Ok(())
-                    })
-                    .await?;
-                images.put(asset_id, name, bytes).await
-            }
-            .await;
-            manager.catalog.lock().unwrap().mutating.remove(&id);
-            result
-        })
-        .await
-        .map_err(|_| Error::Internal)?
+        let asset_id = new_id();
+        let resource = ResourceRef {
+            id: asset_id.clone(),
+            call_id: String::new(),
+            kind: ResourceKind::Image,
+        };
+        // Conversation ownership blocks deletion until storage settles, but leaves
+        // reads and explicit cancellation available during an active upload.
+        conversation
+            .store_image(
+                resource,
+                async move { images.put(asset_id, name, bytes).await },
+            )
+            .await
     }
     pub async fn release_image(self: &Arc<Self>, id: &str, asset: &str) -> Result<()> {
         if !valid_id(asset) {

@@ -171,7 +171,9 @@ impl ConversationRecord {
             return Err(bad);
         }
         for message in &self.pending_input {
-            if !matches!(message, Message::User { text, .. } if valid_input(text))
+            if !matches!(message, Message::User { text, images, .. }
+                if super::images::validate_message_images(text, images).is_ok()
+                    && images.iter().all(|image| self.resources.iter().any(|r| r.id == image.id && r.kind == ResourceKind::Image)))
                 || !valid_id(message.id())
                 || !ids.insert(message.id())
             {

@@ -35,6 +35,27 @@ impl ImageRef {
         Ok(())
     }
 }
+/// Shared bounds for normal turns and operation-bound queued input.
+pub(crate) fn validate_message_images(text: &str, images: &[ImageRef]) -> Result<()> {
+    if images.len() > 8
+        || images.iter().any(|image| image.validate().is_err())
+        || images.iter().map(|image| image.byte_count).sum::<usize>() > 16 * 1024 * 1024
+    {
+        return Err(Error::Invalid(
+            "At most eight images and 16 MiB per message are allowed.",
+        ));
+    }
+    if (text.trim().is_empty() && images.is_empty())
+        || text.len() > 128 * 1024
+        || text.contains('\0')
+    {
+        return Err(Error::Invalid(
+            "Message must contain text or images within the input bounds.",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct ImageInput {
     pub media_type: String,

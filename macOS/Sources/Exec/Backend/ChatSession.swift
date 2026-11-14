@@ -386,10 +386,11 @@ import CryptoKit
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !draftImages.isEmpty, canEditDraft, !isImportingImages, !submitting, !isSaving, commandTask == nil, hasUsableModel else { return }
-        if operationActive && (!draftImages.isEmpty || isCompacting) {
-            error = isCompacting ? "Wait for compaction to finish before sending a message." : "Images cannot be sent while a response is running. Stop or wait for the response to finish."
+        if operationActive && isCompacting {
+            error = "Wait for compaction to finish before sending a message."
             return
         }
+        let steeringOperationID = operationActive ? snapshot?.operation?.id : nil
         let inputImages = draftImages
         let originalDraft = draft
         submitting = true
@@ -399,20 +400,23 @@ import CryptoKit
             defer { submitting = false; task = nil; updateSleepActivity(); drainCommands() }
             do {
                 await waitForPendingSave()
-                if !operationActive { try await persistConfiguration(allowInheritedWorkspace: true) }
+                if steeringOperationID == nil { try await persistConfiguration(allowInheritedWorkspace: true) }
                 guard let id = currentSessionID else { throw ExecError("Choose a workspace and model before sending a message.") }
-                if operationActive, let operation = snapshot?.operation {
-                    _ = try await api.request("POST", AgentAPI.path(id, "/steer"), .object([
-                        "operationID": .string(operation.id.uuidString.lowercased()), "text": .string(text)]))
+                var images: [AgentImage] = []
+                for image in inputImages {
+                    let value = try await api.request("POST", AgentAPI.path(id, "/images"), .object([
+                        "name": .string(image.name), "base64": .string(image.data.base64EncodedString())]))
+                    let ref = try value.decoded(AgentImage.self)
+                    imageCache[ref.id] = ImageAttachment(id: ref.id, name: ref.name, mediaType: ref.mediaType, data: image.data)
+                    images.append(ref)
+                }
+                if let steeringOperationID {
+                    // Keep the original operation target even if it finishes during upload.
+                    // A rejected/uncertain queue request must never become a new turn.
+                    struct Steering: Encodable { let operationID: String; let text: String; let images: [AgentImage] }
+                    _ = try await api.send("POST", AgentAPI.path(id, "/steer"), body: Steering(
+                        operationID: steeringOperationID.uuidString.lowercased(), text: text, images: images))
                 } else {
-                    var images: [AgentImage] = []
-                    for image in inputImages {
-                        let value = try await api.request("POST", AgentAPI.path(id, "/images"), .object([
-                            "name": .string(image.name), "base64": .string(image.data.base64EncodedString())]))
-                        let ref = try value.decoded(AgentImage.self)
-                        imageCache[ref.id] = ImageAttachment(id: ref.id, name: ref.name, mediaType: ref.mediaType, data: image.data)
-                        images.append(ref)
-                    }
                     struct Turn: Encodable { let text: String; let images: [AgentImage] }
                     let receipt = try await api.send("POST", AgentAPI.path(id, "/turns"), body: Turn(text: text, images: images))
                     acceptedOperationID = receipt["operationID"].string.flatMap(UUID.init(uuidString:))
