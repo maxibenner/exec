@@ -273,7 +273,7 @@ pub(crate) fn permits(method: &str, path: &str) -> bool {
     if method == "PATCH" && path == "/v1/library" {
         return true;
     }
-    if method == "POST" && path == "/v1/conversations" {
+    if method == "POST" && matches!(path, "/v1/conversations" | "/v1/workspaces/browse") {
         return true;
     }
     let parts: Vec<_> = path.split('/').collect();
@@ -285,7 +285,7 @@ pub(crate) fn permits(method: &str, path: &str) -> bool {
         return false;
     }
     if parts.len() == 4 {
-        return method == "GET";
+        return method == "GET" || method == "DELETE";
     }
     parts.len() == 5
         && match method {

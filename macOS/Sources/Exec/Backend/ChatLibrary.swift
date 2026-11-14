@@ -182,7 +182,7 @@ import Observation
             }
         }
     }
-    private func refreshSharedState() async throws {
+    func refreshSharedState() async throws {
         guard !navigating, defaultsTask == nil else { return }
         let revision = defaultsRevision
         try await sessions.restore()
@@ -196,7 +196,20 @@ import Observation
         searchModel = config.settings.searchModel ?? ""
         defaultAutoApproveTools = config.settings.autoApprove
         restoringDefaults = false
+        let observedIDs = Set(openConversations.compactMap(\.currentSessionID))
         try await refreshCatalog()
+        guard !navigating else { return }
+        let persisted = Set(savedSummaries.map(\.id))
+        for conversation in openConversations {
+            guard let id = conversation.currentSessionID, observedIDs.contains(id), !persisted.contains(id),
+                  !registeringIDs.contains(id), conversation.markDeletedRemotely() else { continue }
+            if !conversation.hasUnsentDraft {
+                detachedSessionIDs.remove(id)
+                openConversations.removeAll { $0 === conversation }
+                sidebarOrder.removeAll { $0 == id }
+                if current === conversation { activate(try makeConversation()) }
+            }
+        }
         for conversation in openConversations { conversation.reconnectIfNeeded() }
         connectionError = nil
     }

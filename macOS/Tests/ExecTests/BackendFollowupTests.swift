@@ -55,6 +55,34 @@ import Foundation
         }
     }
 
+    func remoteDeletionReconcilesAndPreservesLocalDraft() async throws {
+        for draft in ["", "Keep this local draft"] {
+            let transport = FakeAgentTransport()
+            let suite = "exec-remote-deletion-\(UUID().uuidString)"
+            let preferences = UserDefaults(suiteName: suite)!
+            defer { preferences.removePersistentDomain(forName: suite) }
+            let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
+            defer { library.closePresentations() }
+            let prior = library.current
+            try prior.apply(snapshot("completed"))
+            prior.draft = draft
+            let config = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(AgentLibraryConfiguration()))
+            try await transport.reply("/v1/library", config)
+            try await transport.reply("/v1/conversations", .array([]))
+            try await library.refreshSharedState()
+            try expect(prior.deletedRemotely && prior.messages.isEmpty && !prior.canFork && !prior.canRequestCommands)
+            if draft.isEmpty {
+                try expect(library.current !== prior && library.sessionList.isEmpty)
+            } else {
+                try expect(library.current === prior && prior.draft == draft && prior.summary?.title == "Unsent draft")
+                prior.send()
+                await Task.yield()
+                let writes = await transport.requests.filter { $0.method != "GET" }
+                try expect(writes.isEmpty)
+            }
+        }
+    }
+
     func inheritedWorkspaceCanBeChosenExactlyOnce() async throws {
         let transport = FakeAgentTransport()
         let provider = AgentAccounts(api: AgentAPI(transport: transport))

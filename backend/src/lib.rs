@@ -13,6 +13,7 @@ pub mod shell_logs;
 pub mod storage;
 pub mod tools;
 mod workspace_instructions;
+mod workspace_picker;
 
 use std::fmt;
 pub type Result<T> = std::result::Result<T, Error>;

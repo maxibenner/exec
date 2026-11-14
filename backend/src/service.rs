@@ -449,6 +449,13 @@ async fn handle(
         }
     }
     let options = &host.options;
+    if method == "POST" && route == "/v1/workspaces/browse" {
+        let input: crate::workspace_picker::Browse = body(request).await?;
+        return Ok(json_response(
+            200,
+            crate::workspace_picker::browse(input, request_cancel).await?,
+        ));
+    }
     if method == "POST" && route == "/v1/native/events" {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]

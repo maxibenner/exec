@@ -10,7 +10,7 @@ Requires iOS 17+ and Xcode with an iOS SDK. Open `ExecRemote.xcodeproj`; its onl
 2. Build/open the current Mac app; configure **Settings → Remote Access** with `ws://127.0.0.1:8787` and **Local development relay** enabled.
 3. Run the `ExecRemote` scheme on an iPhone simulator.
 4. On Mac, create a pairing QR code and choose **Copy Pairing Invitation**. Paste into the iOS pairing field and tap **Pair**. The Simulator has no camera.
-5. Open an existing conversation or create one using an absolute workspace path **on the agent host**.
+5. Open an existing conversation, or create one and tap **Choose Folder** to browse directories **on the agent host**. Folder Options also allows entering an absolute path or showing hidden folders.
 
 CLI simulator build:
 
@@ -35,7 +35,8 @@ The app icon is an opaque 1024px derivative of the existing Exec artwork. Device
 ## First-version scope
 
 - QR/pasted invitation pairing, one saved host, per-device identity stored in Keychain (`WhenUnlockedThisDeviceOnly`, not synced).
-- Conversation list, text transcript/tool summaries, new conversations, send, stop, explicit approval/denial, and shared default settings.
+- Conversation list with native expanding red swipe-to-delete (including full-swipe deletion, no confirmation dialog), text transcript/tool summaries, host folder selection, new conversations, send, stop, explicit approval/denial, and shared default settings. Active conversations must be stopped before deletion.
+- Native multiline composer with system Liquid Glass on iOS 26+, and system material on older supported iOS versions.
 - Foreground snapshot polling every 1.5 seconds; reconnect fetches authoritative state. Sends/approvals/settings changes are never automatically retried. Following an uncertain send, inspect the refreshed conversation before manually sending again.
 - Shared settings are agent-owned; selected conversation, scroll position and drafts are local. Drafts are currently in memory, not durable across process termination.
 - A native, selectable **plain-text** transcript; rich desktop Markdown/diff rendering, image viewing/upload, steering UI, push notifications, and background execution are not included.

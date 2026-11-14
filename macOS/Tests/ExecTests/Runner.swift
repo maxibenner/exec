@@ -64,6 +64,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("New session rows start at the top before catalog persistence", { try SessionPresentationTests().newSessionStartsAtTop() }),
             ("Deletion suppresses expected stream closure and preserves real failures", { try await SessionPresentationTests().deletionIgnoresStreamClosureAndResumesOnFailure() }),
             ("Unsubmitted drafts survive navigation and uncertain creation", { try await BackendFollowupTests().localDraftSurvivesNavigationAndUncertainCreate() }),
+            ("Remote deletion reconciles without losing local drafts", { try await BackendFollowupTests().remoteDeletionReconcilesAndPreservesLocalDraft() }),
             ("Inherited workspaces permit one explicit choice before starting", { try await BackendFollowupTests().inheritedWorkspaceCanBeChosenExactlyOnce() }),
             ("Account usage refreshes only on opening settings", { try await BackendFollowupTests().usageRefreshesOnlyOnSettingsRequest() }),
             ("Mid-turn commands apply once after idle", { try await BackendFollowupTests().commandsWaitForIdleAndPreserveApprovals() }),

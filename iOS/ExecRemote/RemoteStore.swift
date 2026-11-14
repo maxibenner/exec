@@ -46,6 +46,12 @@ import ExecRemote
             conversations = []; snapshot = .null; drafts = [:]; error = nil
         } catch { self.error = error.localizedDescription }
     }
+    func browseFolders(_ path: String?, showHidden: Bool) async throws -> RemoteJSON {
+        guard connected else { throw RemoteFailure("Connect to the agent first.") }
+        return try await client.request("POST", "/v1/workspaces/browse", body: .object([
+            "path": .optional(path), "showHidden": .bool(showHidden)
+        ]))
+    }
     func refresh() async throws {
         let list = try await client.request("GET", "/v1/conversations").array
         let settings = try await client.request("GET", "/v1/library")
@@ -81,6 +87,12 @@ import ExecRemote
             onSuccess?(value)
             try await refresh()
         } catch { self.error = error.localizedDescription }
+    }
+    func deleteConversation(_ id: String) async {
+        await mutate("DELETE", "/v1/conversations/\(id)", .null) { _ in
+            self.drafts.removeValue(forKey: id)
+            if self.selected == id { self.selected = nil; self.snapshot = .null }
+        }
     }
     func send() async {
         guard let id = selected, !active, snapshot["id"].string == id, let text = drafts[id], !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }

@@ -16,13 +16,14 @@ import CryptoKit
     var model: ChatModel? { models.first { $0.id == selectedModel } }
     var effectiveEffort: String? { model?.efforts.contains { $0.id == selectedEffort } == true ? selectedEffort : nil }
     var account: String? { provider.account }
-    var hasUsableModel: Bool { model != nil && provider.isModelAvailable(selectedModel) && !hasUnsavedChanges }
+    var hasUsableModel: Bool { model != nil && provider.isModelAvailable(selectedModel) && !hasUnsavedChanges && !deletedRemotely }
     var requestModelID: String { selectedModel }
     private(set) var messages: [Message] = []
+    private(set) var deletedRemotely = false
     var draft = ""
     var draftImages: [ImageAttachment] = []
     private(set) var isImportingImages = false
-    var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || isImportingImages || snapshot?.pendingInput.isEmpty == false }
+    var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || isImportingImages || (!deletedRemotely && snapshot?.pendingInput.isEmpty == false) }
     var error: String?
     private(set) var currentSessionID: UUID?
     private(set) var workspace: Workspace?
@@ -39,7 +40,7 @@ import CryptoKit
     private var snapshot: AgentSnapshot?
     private var operationActive: Bool { snapshot?.operation?.active == true }
     private var backendBusy: Bool { isRestoringSession || submitting || operationActive || isStopping }
-    var busy: Bool { backendBusy || commandTask != nil }
+    var busy: Bool { !deletedRemotely && (backendBusy || commandTask != nil) }
     private var commandTask: Task<Void, Never>?
     private var pendingCommands: [(key: String, action: @MainActor () async throws -> Void)] = []
     private var commandsClosed = false
@@ -112,7 +113,26 @@ import CryptoKit
     private(set) var contextUsage: ContextUsage?
     private(set) var needsInitialWorkspaceSelection = false
     let tools = ToolApprovalState()
-    var summary: SessionSummary? { snapshot.map(SessionSummary.init) }
+    var summary: SessionSummary? {
+        guard var summary = snapshot.map(SessionSummary.init) else { return nil }
+        if deletedRemotely {
+            guard hasUnsentDraft else { return nil }
+            summary.title = "Unsent draft"; summary.customTitle = nil
+        }
+        return summary
+    }
+    /// A deleted remote conversation never resumes or resaves. Keep any local
+    /// unsent draft available for copying rather than discarding another device's work.
+    @discardableResult func markDeletedRemotely() -> Bool {
+        guard task == nil, !isSaving, !isStopping, !isRestoringSession else { return false }
+        closePresentation()
+        deletedRemotely = true
+        isSending = false; isCompacting = false
+        try? tools.apply(nil)
+        messages = []
+        error = hasUnsentDraft ? "This conversation was deleted on another device. Copy your unsent draft before closing it." : nil
+        return true
+    }
     var didCheckpoint: (() async throws -> Void)?
     var didFinish: (() -> Void)?
     private var task: Task<Void, Never>?
@@ -187,6 +207,7 @@ import CryptoKit
         try await persistConfiguration(allowInheritedWorkspace: force)
     }
     private func persistConfiguration(allowInheritedWorkspace: Bool = false) async throws {
+        guard !deletedRemotely else { throw ExecError("This conversation was deleted on another device.") }
         guard !configurationUncertain else { throw ExecError("The previous configuration request could not be confirmed. Reopen the conversation before making further changes.") }
         guard let workspace, !selectedModel.isEmpty else { return }
         // A newly inherited workspace is a suggestion, not an explicit choice. Do not
@@ -234,7 +255,7 @@ import CryptoKit
         observe()
     }
     func reconnectIfNeeded() {
-        guard !deletionPending, observationLost || configurationUncertain, let id = currentSessionID, task == nil else { return }
+        guard !deletedRemotely, !deletionPending, observationLost || configurationUncertain, let id = currentSessionID, task == nil else { return }
         task = Task {
             defer { task = nil }
             do { try await loadSession(id); error = snapshot?.storageError ?? snapshot?.operation?.error }
@@ -461,7 +482,7 @@ import CryptoKit
         }
     }
     var canRequestFork: Bool { canRequestCommands && !hasUnsavedChanges && currentSessionID != nil }
-    var canFork: Bool { !backendBusy && !isSaving && !hasUnsavedChanges && snapshot?.pendingInput.isEmpty != false && currentSessionID != nil }
+    var canFork: Bool { !deletedRemotely && !backendBusy && !isSaving && !hasUnsavedChanges && snapshot?.pendingInput.isEmpty != false && currentSessionID != nil }
     func copyConversation(from source: ChatStore) async throws {
         guard source.canFork, let id = source.currentSessionID else { throw ExecError("Wait for the conversation to finish before forking it.") }
         let value = try await api.request("POST", AgentAPI.path(id, "/fork"), .object([:]))

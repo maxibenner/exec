@@ -17,7 +17,13 @@ The local HTTP listener and its ephemeral administrator/native credentials are u
 - TLS still matters: the host's relay-registration credential and metadata must be protected between endpoints and relay. Local development weakens that outer transport only. The relay sees routing, timing, sizes and connection metadata, not API payloads.
 - Revocation/disable closes established sessions. A command already accepted before revocation can still complete; revocation is not cancellation or rollback. At most eight devices may be paired.
 
-Remote routes are deny-by-default: health, models, library reads/targeted patches, conversation list/create/read, text turns/steering/cancel/approvals and selected per-conversation metadata/settings writes. No remote provider management, native registration/desktop grants, pairing administration, arbitrary filesystem browser or arbitrary HTTP proxying. Tools still execute with the backend user's privileges; pairing grants significant control of that host, not a sandbox.
+Remote routes are deny-by-default: health, models, library reads/targeted patches, conversation list/create/read/delete, directory-only workspace browsing, text turns/steering/cancel/approvals and selected per-conversation metadata/settings writes. No remote provider management, native registration/desktop grants, pairing administration, file-content browsing or arbitrary HTTP proxying. Tools still execute with the backend user's privileges; pairing grants significant control of that host, not a sandbox.
+
+### Host folder selection and deletion
+
+`POST /v1/workspaces/browse` accepts `{path?: absolute host path, showHidden?: false}` and returns `{path, parent, directories: [{name, path}], truncated}`. Omitted/null path starts in the host home folder. It lists directories only, skips symlink entries, validates UTF-8/absolute paths, and bounds scanning/results. This is available to authenticated local and paired clients, never the public relay. The iOS sheet uses native navigation and list controls rather than the device-local Files picker.
+
+Remote `DELETE /v1/conversations/:id` uses the existing durable deletion handler; active work still rejects with 409. The iOS list uses standard full-swipe destructive actions without an extra confirmation dialog. Mac catalog refresh removes deleted conversations. An unsent Mac-local draft is retained as an explicitly read-only **Unsent draft** entry for copying, never resubmitted or silently discarded by another device's deletion.
 
 ## Synchronization and load
 
