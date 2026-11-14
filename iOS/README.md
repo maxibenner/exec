@@ -24,7 +24,7 @@ Keep Xcode's default **Sign to Run Locally** simulator signing enabled. An unsig
 
 ## Device / TestFlight
 
-1. Open the project in Xcode; select your Apple Developer team and an available bundle identifier under Signing & Capabilities. The placeholder is `app.exec.remote`; no team/profile is committed.
+1. Open the project in Xcode. Debug and Release use automatic signing for Numbers Office LLC (team `88P8NTGNTW`), bundle identifier `com.numbersoffice.exec.remote`, and initial version/build `1.0 / 1`. Sign in with an Apple Developer account authorized for that team; provisioning profiles and credentials are not committed. Use your own team and bundle identifier for independent builds.
 2. For a physical local test, use the Mac's LAN relay address, not `127.0.0.1`; grant camera/local-network access. For internet testing, deploy the relay behind your TLS reverse proxy and use `wss://`.
 3. Create the matching App Store Connect app record. Set the marketing version/build number, select a generic iOS device, and **Product → Archive**.
 4. Distribute through Organizer to App Store Connect and add TestFlight testers. You must complete Apple's encryption/export-compliance questions: this app uses authenticated HPKE end-to-end encryption in addition to TLS. No exemption is predeclared in the plist.
