@@ -9,6 +9,8 @@ struct NativeTranscript: UIViewControllerRepresentable {
     let conversationID: String?
     let snapshot: RemoteJSON
     let bottomPadding: CGFloat
+    let hasEarlier: Bool
+    let loadEarlier: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIViewController(context: Context) -> UITableViewController {
         // Expose the primary scroll view through a native controller so navigation
@@ -35,6 +37,10 @@ struct NativeTranscript: UIViewControllerRepresentable {
         let paddingChanged = abs(table.contentInset.bottom - bottomPadding - 12) > 1
         table.contentInset.bottom = bottomPadding + 12
         table.verticalScrollIndicatorInsets.bottom = bottomPadding
+        if let table = table as? TranscriptTableView {
+            table.hasEarlier = hasEarlier
+            table.loadEarlier = loadEarlier
+        }
         context.coordinator.update(conversationID: conversationID, snapshot: snapshot, table: table, followBottom: paddingChanged && nearBottom)
     }
     @MainActor final class Coordinator {
@@ -87,6 +93,11 @@ struct NativeTranscript: UIViewControllerRepresentable {
             guard changedConversation || next != rows || active != nextActive || followBottom else { return }
             active = nextActive
             let previousIDs = Set(source.snapshot().itemIdentifiers)
+            let firstOld = source.snapshot().itemIdentifiers.first
+            let prepending = !changedConversation && firstOld.map { ids.first != $0 && ids.contains($0) } == true
+            let anchor = prepending ? table.indexPathsForVisibleRows?.min().flatMap { source.itemIdentifier(for: $0) } ?? firstOld : nil
+            let oldPosition = anchor.flatMap { source.indexPath(for: $0) }
+                .map { table.rectForRow(at: $0).minY - table.contentOffset.y }
             let changed = ids.filter { previousIDs.contains($0) && next[$0] != rows[$0] }
             if changedConversation { expansion.removeAll() }
             else { expansion = expansion.filter { next[$0.key] != nil } }
@@ -95,6 +106,11 @@ struct NativeTranscript: UIViewControllerRepresentable {
             snapshot.appendSections([0]); snapshot.appendItems(ids)
             snapshot.reconfigureItems(changed)
             source.apply(snapshot, animatingDifferences: false) {
+                if let anchor, let oldPosition, let path = source.indexPath(for: anchor) {
+                    table.layoutIfNeeded()
+                    table.contentOffset.y = table.rectForRow(at: path).minY - oldPosition
+                    return
+                }
                 guard changedConversation || nearBottom, !ids.isEmpty, !table.isDragging, !table.isDecelerating else { return }
                 (table as? TranscriptTableView)?.followBottom()
             }
@@ -144,6 +160,9 @@ private struct MobileToolCard: View {
 }
 
 @MainActor private final class TranscriptTableView: UITableView {
+    var hasEarlier = false
+    var loadEarlier: (() -> Void)?
+    private var requestedEarlier = false
     private var previousHeight: CGFloat = 0
     private var previousContentHeight: CGFloat = 0
     private var previousBottomInset: CGFloat = 0
@@ -157,6 +176,12 @@ private struct MobileToolCard: View {
             // User scrolling takes priority over following new content, including
             // deceleration. Programmatic size corrections don't change intent.
             if isTracking || isDragging || isDecelerating { wasNearBottom = nearBottom }
+            if contentOffset.y > -adjustedContentInset.top + 250 { requestedEarlier = false }
+            if (isTracking || isDragging), hasEarlier, !requestedEarlier,
+               contentOffset.y < -adjustedContentInset.top + 120 {
+                requestedEarlier = true
+                loadEarlier?()
+            }
         }
     }
     func followBottom() {

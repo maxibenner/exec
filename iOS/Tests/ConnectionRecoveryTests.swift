@@ -14,6 +14,7 @@ private actor FakeTransport: RemoteTransport {
     private var connectionWaiter: CheckedContinuation<Void, Never>?
     private var heldRequest: String?
     private var requestWaiter: CheckedContinuation<Void, Never>?
+    var resetNextSync = false
     var waitingForConnection: Bool { connectionWaiter != nil }
     var waitingForRequest: Bool { requestWaiter != nil }
     func holdNextRequest(_ method: String, _ path: String) { heldRequest = method + " " + path }
@@ -36,6 +37,24 @@ private actor FakeTransport: RemoteTransport {
     func holdNextConnection() { holdConnection = true }
     func releaseConnection() { connectionWaiter?.resume(); connectionWaiter = nil }
     func setConversation(_ value: RemoteJSON) { conversation = value }
+    func forceReset() { resetNextSync = true }
+    private func sync(_ path: String) -> RemoteJSON {
+        let messages = conversation["messages"].array
+        let query = path.split(separator: "?", maxSplits: 1).dropFirst().first.map(String.init)
+        let before = query?.hasPrefix("before=") == true
+        let anchor = before ? query?.dropFirst("before=".count).description : query?.split(separator: "&").first.map { String($0.dropFirst("after=".count)) }
+        let index = anchor.flatMap { id in messages.firstIndex { $0["id"].string == id } }
+        let reset = resetNextSync || (query != nil && index == nil) || (!before && index.map { messages.count - $0 > 64 } == true)
+        resetNextSync = false
+        let end = before && !reset ? index ?? messages.count : messages.count
+        let offset = before && !reset ? max(0, end - 64) : (!reset && query != nil ? index ?? 0 : max(0, end - 64))
+        var value: [String: RemoteJSON] = [:]
+        if case .object(let fields) = conversation { value = fields }
+        value["messages"] = .array(Array(messages[offset..<end]))
+        return .object(["snapshot": .object(value), "offset": .number(Double(offset)),
+                        "total": .number(Double(messages.count)), "reset": .bool(reset || query == nil),
+                        "prefix": messages.isEmpty ? .null : .string(String(repeating: "a", count: 64))])
+    }
     func request(_ method: String, _ path: String, body: RemoteJSON?) async throws -> RemoteJSON {
         guard isConnected else { throw RemoteFailure("Disconnected.") }
         let key = method + " " + path
@@ -55,7 +74,7 @@ private actor FakeTransport: RemoteTransport {
         switch path {
         case "/v1/models": return .array([])
         case "/v1/conversations": return .array([.object(["id": .string("session")])])
-        case "/v1/conversations/session": return conversation
+        case let path where path.hasPrefix("/v1/conversations/session/sync"): return sync(path)
         default: return .object([:])
         }
     }
@@ -78,7 +97,7 @@ private actor FakeTransport: RemoteTransport {
         await store.poll()
         await store.open("session").value
         store.drafts["session"] = "Unsent draft"
-        await transport.failNext("GET", "/v1/conversations/session")
+        await transport.failNext("GET", "/v1/conversations/session/sync")
         await store.poll()
         XCTAssertFalse(store.connected)
         XCTAssertEqual(store.snapshot["id"].string, "session")
@@ -171,7 +190,7 @@ private actor FakeTransport: RemoteTransport {
     func testReturningToAllSessionsDoesNotCancelSharedConnection() async throws {
         let transport = FakeTransport(), store = try makeStore(transport)
         await store.poll()
-        await transport.holdNextRequest("GET", "/v1/conversations/session")
+        await transport.holdNextRequest("GET", "/v1/conversations/session/sync")
         let viewTask = Task { await store.open("session").value }
         for _ in 0..<1000 {
             if await transport.waitingForRequest { break }
@@ -192,6 +211,41 @@ private actor FakeTransport: RemoteTransport {
         XCTAssertEqual(attempts, 1, "Navigation should not require a new connection")
         store.selected = "session"
         XCTAssertEqual(store.snapshot["id"].string, "session", "The completed read remains cached")
+    }
+
+    func testPagedOpenIncrementalPollAndOlderHistory() async throws {
+        let transport = FakeTransport(), store = try makeStore(transport)
+        func message(_ index: Int, text: String? = nil) -> RemoteJSON {
+            .object(["id": .string("message-\(index)"), "role": .string("assistant"),
+                     "text": .string(text ?? "Text \(index)")])
+        }
+        func conversation(_ messages: [RemoteJSON]) -> RemoteJSON {
+            .object(["id": .string("session"), "messages": .array(messages),
+                     "operation": .object(["state": .string("running")])])
+        }
+        let original = (0..<80).map { message($0) }
+        await transport.setConversation(conversation(original))
+        await store.poll()
+        await store.open("session").value
+        XCTAssertEqual(store.snapshot["messages"].array.count, 64)
+        XCTAssertEqual(store.snapshot["messages"].array.first?["id"].string, "message-16")
+        XCTAssertTrue(store.hasEarlierMessages)
+
+        await transport.setConversation(conversation(Array(original.dropLast()) + [message(79, text: "Streaming update"), message(80)]))
+        await store.poll()
+        XCTAssertEqual(store.snapshot["messages"].array.count, 65)
+        XCTAssertEqual(store.snapshot["messages"].array[63]["text"].string, "Streaming update")
+        let requests = await transport.requests
+        XCTAssertTrue(requests.contains { $0.hasPrefix("GET /v1/conversations/session/sync?after=message-79&prefix=") })
+
+        await store.loadEarlier()
+        XCTAssertFalse(store.hasEarlierMessages)
+        XCTAssertEqual(store.snapshot["messages"].array.count, 81)
+        XCTAssertEqual(store.snapshot["messages"].array.first?["id"].string, "message-0")
+        await transport.forceReset()
+        await store.poll()
+        XCTAssertEqual(store.snapshot["messages"].array.count, 64)
+        XCTAssertTrue(store.hasEarlierMessages)
     }
 
     func testCancelledObserverDoesNotConnect() async throws {

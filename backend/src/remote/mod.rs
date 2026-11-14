@@ -1,6 +1,6 @@
 mod crypto;
 mod tunnel;
-use crate::{Error, Result};
+use crate::{Error, Result, core::valid_id};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -259,7 +259,32 @@ impl RemoteAccess {
 
 /// Deliberate, fixed remote-client capability set. New API routes are denied by default.
 pub(crate) fn permits(method: &str, path: &str) -> bool {
-    if path.contains('?') || path.contains('%') {
+    if path.contains('%') {
+        return false;
+    }
+    if method == "GET" {
+        if let Some((route, query)) = path.split_once('?') {
+            let Some(id) = route
+                .strip_prefix("/v1/conversations/")
+                .and_then(|tail| tail.strip_suffix("/sync"))
+            else {
+                return false;
+            };
+            if !valid_id(id) {
+                return false;
+            }
+            let anchor = query.strip_prefix("before=").or_else(|| {
+                query.strip_prefix("after=").and_then(|tail| {
+                    tail.split_once("&prefix=").and_then(|(id, proof)| {
+                        (proof.len() == 64 && proof.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                            .then_some(id)
+                    })
+                })
+            });
+            return anchor.is_some_and(valid_id);
+        }
+    }
+    if path.contains('?') {
         return false;
     }
     if method == "GET"
@@ -289,6 +314,7 @@ pub(crate) fn permits(method: &str, path: &str) -> bool {
     }
     parts.len() == 5
         && match method {
+            "GET" => parts[4] == "sync",
             "POST" => matches!(parts[4], "turns" | "steer" | "cancel" | "approvals"),
             "PUT" => matches!(parts[4], "settings" | "model" | "title"),
             _ => false,
@@ -360,5 +386,30 @@ mod tests {
         assert!(validate_relay("ws://127.0.0.1:8787", false).is_err());
         assert!(validate_relay("wss://example.com", false).is_ok());
         assert!(validate_relay("wss://user:secret@example.com", false).is_err());
+    }
+    #[test]
+    fn sync_queries_are_read_only_and_strictly_scoped() {
+        let id = crate::core::new_id();
+        let message = crate::core::new_id();
+        let route = format!("/v1/conversations/{id}/sync");
+        assert!(permits("GET", &route));
+        assert!(permits("GET", &format!("{route}?before={message}")));
+        assert!(permits(
+            "GET",
+            &format!("{route}?after={message}&prefix={}", "a".repeat(64))
+        ));
+        assert!(!permits("POST", &route));
+        assert!(!permits(
+            "GET",
+            &format!("{route}?before={message}&other=x")
+        ));
+        assert!(!permits(
+            "GET",
+            &format!("{route}?after={message}&prefix=bad")
+        ));
+        assert!(!permits(
+            "GET",
+            &format!("/v1/conversations/{id}?before={message}")
+        ));
     }
 }

@@ -150,7 +150,9 @@ struct ConversationScreen: View {
     @Bindable var store: RemoteStore
     @State private var composerHeight: CGFloat = 68
     var body: some View {
-        NativeTranscript(conversationID: store.selected, snapshot: store.displaySnapshot, bottomPadding: composerHeight)
+        NativeTranscript(conversationID: store.selected, snapshot: store.displaySnapshot,
+                         bottomPadding: composerHeight, hasEarlier: store.hasEarlierMessages,
+                         loadEarlier: { Task { await store.loadEarlier() } })
         .ignoresSafeArea(.container, edges: .bottom)
         .navigationTitle(store.snapshot["metadata"]["title"].string ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)

@@ -26,6 +26,7 @@ extension RelayClient: RemoteTransport {}
         didSet {
             guard selected != oldValue else { return }
             snapshot = selected.flatMap { recentConversations.visit($0) } ?? .null
+            syncStates = syncStates.filter { recentConversations.contains($0.key) }
         }
     }
     var snapshot: RemoteJSON = .null {
@@ -44,6 +45,10 @@ extension RelayClient: RemoteTransport {}
     }
     var awaitingSendSnapshot: Bool { selected.flatMap { optimisticMessages[$0]?.awaitingSnapshot } ?? false }
     private var recentConversations = RecentConversationCache()
+    private var syncStates: [String: RemoteTranscriptSync] = [:]
+    private var readTickets: [String: Int] = [:]
+    private var loadingEarlier: Set<String> = []
+    var hasEarlierMessages: Bool { selected.flatMap { syncStates[$0]?.hasEarlier } ?? false }
     private var hostGeneration = 0
     private var connectionGeneration = 0
     private(set) var reconnectDelay = 1.5
@@ -117,6 +122,7 @@ extension RelayClient: RemoteTransport {}
     private func clearConversationState() {
         hostGeneration += 1
         recentConversations = RecentConversationCache()
+        syncStates = [:]; readTickets = [:]; loadingEarlier = []
         optimisticMessages = [:]
         snapshotGeneration += 1
         selected = nil; snapshot = .null; conversations = []; drafts = [:]
@@ -137,17 +143,44 @@ extension RelayClient: RemoteTransport {}
         conversations = list; library = settings
         let ids = Set(list.compactMap { $0["id"].string })
         recentConversations.retain(ids)
+        syncStates = syncStates.filter { recentConversations.contains($0.key) }
         optimisticMessages = optimisticMessages.filter { ids.contains($0.key) }
         if let id = selected, !ids.contains(id) { selected = nil; snapshot = .null }
         else if selected == visibleID, let readFailure { throw readFailure }
     }
     private func refreshConversation(_ id: String) async throws {
         let generation = hostGeneration, readGeneration = snapshotGeneration
-        let value = try await client.request("GET", "/v1/conversations/\(id)")
-        guard generation == hostGeneration, readGeneration == snapshotGeneration else { return }
-        optimisticMessages[id]?.reconcile(value)
-        recentConversations.update(value)
-        if selected == id { snapshot = value }
+        readTickets[id, default: 0] += 1
+        let ticket = readTickets[id]
+        let path = "/v1/conversations/\(id)/sync"
+        let value = try await client.request("GET", syncStates[id]?.refreshPath(path) ?? path)
+        guard generation == hostGeneration, readGeneration == snapshotGeneration,
+              ticket == readTickets[id] else { return }
+        let state = try syncStates[id].map { try $0.refreshed(value) } ?? RemoteTranscriptSync.initial(value)
+        guard recentConversations.contains(id) else { return }
+        syncStates[id] = state
+        recentConversations.update(state.snapshot)
+        if selected == id { snapshot = state.snapshot }
+    }
+    func loadEarlier() async {
+        guard connected, let id = selected, !loadingEarlier.contains(id),
+              let state = syncStates[id], let path = state.earlierPath("/v1/conversations/\(id)/sync") else { return }
+        loadingEarlier.insert(id)
+        defer { loadingEarlier.remove(id) }
+        let generation = hostGeneration, readGeneration = snapshotGeneration
+        let first = state.snapshot["messages"].array.first?["id"].string
+        do {
+            let value = try await client.request("GET", path)
+            guard generation == hostGeneration, readGeneration == snapshotGeneration,
+                  selected == id, let current = syncStates[id],
+                  current.snapshot["messages"].array.first?["id"].string == first else { return }
+            let older = try current.prepending(value)
+            syncStates[id] = older
+            snapshot = older.snapshot
+        } catch {
+            guard generation == hostGeneration, selected == id else { return }
+            self.error = error.localizedDescription
+        }
     }
     func observe() async {
         while !Task.isCancelled {
@@ -208,6 +241,8 @@ extension RelayClient: RemoteTransport {}
     func deleteConversation(_ id: String) async {
         await mutate("DELETE", "/v1/conversations/\(id)", .null) { _ in
             self.recentConversations.remove(id)
+            self.syncStates.removeValue(forKey: id)
+            self.readTickets[id, default: 0] += 1
             self.optimisticMessages.removeValue(forKey: id)
             self.drafts.removeValue(forKey: id)
             if self.selected == id { self.selected = nil; self.snapshot = .null }

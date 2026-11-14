@@ -382,6 +382,67 @@ struct Resolve {
     approval_id: String,
     approved: bool,
 }
+fn sync_page(
+    mut snapshot: ConversationSnapshot,
+    query: Option<&str>,
+) -> ApiResult<serde_json::Value> {
+    use sha2::{Digest, Sha256};
+    const PAGE_SIZE: usize = 64;
+    fn prefix(messages: &[Message]) -> String {
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(messages).unwrap())
+        )
+    }
+    let total = snapshot.messages.len();
+    let (offset, end, reset) = match query {
+        None => (total.saturating_sub(PAGE_SIZE), total, true),
+        Some(query) if query.starts_with("before=") => {
+            let anchor = &query["before=".len()..];
+            identifier(anchor)?;
+            let index = snapshot
+                .messages
+                .iter()
+                .position(|message| message.id() == anchor)
+                .ok_or(ApiError(
+                    409,
+                    "Conversation history changed. Refresh the conversation.",
+                ))?;
+            (index.saturating_sub(PAGE_SIZE), index, false)
+        }
+        Some(query) if query.starts_with("after=") => {
+            let (anchor, proof) = query["after=".len()..]
+                .split_once("&prefix=")
+                .ok_or(ApiError(400, "Invalid sync cursor."))?;
+            identifier(anchor)?;
+            if proof.len() != 64 || !proof.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(ApiError(400, "Invalid sync cursor."));
+            }
+            match snapshot
+                .messages
+                .iter()
+                .position(|message| message.id() == anchor)
+            {
+                Some(index)
+                    if total - index <= PAGE_SIZE
+                        && prefix(&snapshot.messages[..index]) == proof =>
+                {
+                    (index, total, false)
+                }
+                _ => (total.saturating_sub(PAGE_SIZE), total, true),
+            }
+        }
+        _ => return Err(ApiError(400, "Invalid sync cursor.")),
+    };
+    let proof = total
+        .checked_sub(1)
+        .map(|index| prefix(&snapshot.messages[..index]));
+    snapshot.messages = snapshot.messages[offset..end].to_vec();
+    Ok(
+        json!({"snapshot": snapshot, "offset": offset, "total": total, "reset": reset, "prefix": proof}),
+    )
+}
+
 async fn handle(
     host: Arc<Host>,
     request: Request<Body>,
@@ -417,12 +478,10 @@ async fn handle(
     if host.stop.is_cancelled() {
         return Err(ApiError(503, "Service is stopping."));
     }
-    let route = request
-        .uri()
-        .path_and_query()
-        .map(|v| v.as_str())
-        .unwrap_or("")
-        .to_owned();
+    let route = request.uri().path().to_owned();
+    if request.uri().query().is_some() && !route.ends_with("/sync") {
+        return Err(ApiError(404, "Route not found."));
+    }
     let method = request.method().as_str().to_owned();
     if route.starts_with("/v1/remote") {
         let remote = host.remote.as_ref().ok_or(ApiError(
@@ -758,6 +817,7 @@ async fn handle(
         || parts.get(1).is_some_and(|s| {
             ![
                 "events",
+                "sync",
                 "turns",
                 "cancel",
                 "approvals",
@@ -798,6 +858,10 @@ async fn handle(
     let action = parts.get(1).copied();
     match (method.as_str(), action) {
         ("GET", None) => Ok(json_response(200, conversation.snapshot())),
+        ("GET", Some("sync")) => Ok(json_response(
+            200,
+            sync_page(conversation.snapshot(), request.uri().query())?,
+        )),
         ("DELETE", None) => {
             if host.stop.is_cancelled() {
                 return Err(ApiError(503, "Service is stopping."));

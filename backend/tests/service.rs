@@ -80,6 +80,116 @@ fn snapshot(frame: ServiceEvent) -> Option<ConversationSnapshot> {
     }
 }
 #[tokio::test]
+async fn sync_pages_overlap_the_latest_message_and_reset_on_stale_prefix() {
+    let f = setup(FakeProvider::new(vec![answer(), answer()]), vec![]).await;
+    let c = f
+        .client
+        .create("fake", f.root.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let path = format!("/v1/conversations/{}/sync", c.id);
+    let empty = f.client.call("GET", &path, None).await.unwrap();
+    assert_eq!(empty["total"], 0);
+    f.client.submit(&c.id, "first").await.unwrap();
+    let first = terminal(&f.client, &c.id).await;
+    let page = f.client.call("GET", &path, None).await.unwrap();
+    assert_eq!(page["total"], first.messages.len());
+    let anchor = first.messages.last().unwrap().id();
+    let proof = page["prefix"].as_str().unwrap();
+    let current = f
+        .client
+        .call(
+            "GET",
+            &format!("{path}?after={anchor}&prefix={proof}"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(current["reset"], false);
+    assert_eq!(current["snapshot"]["messages"].as_array().unwrap().len(), 1);
+    f.client.submit(&c.id, "second").await.unwrap();
+    let second = terminal(&f.client, &c.id).await;
+    let delta = f
+        .client
+        .call(
+            "GET",
+            &format!("{path}?after={anchor}&prefix={proof}"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        delta["snapshot"]["messages"].as_array().unwrap().len(),
+        second.messages.len() - first.messages.len() + 1
+    );
+    assert_eq!(delta["reset"], false);
+    let stale = f
+        .client
+        .call(
+            "GET",
+            &format!("{path}?after={anchor}&prefix={}", "0".repeat(64)),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale["reset"], true);
+    assert_eq!(stale["total"], second.messages.len());
+    let before = f
+        .client
+        .call("GET", &format!("{path}?before={anchor}"), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        before["snapshot"]["messages"].as_array().unwrap().len(),
+        first.messages.len() - 1
+    );
+    assert_eq!(
+        f.client
+            .call("GET", &format!("{path}?after={anchor}&prefix=no"), None)
+            .await
+            .unwrap_err(),
+        Error::Api(400)
+    );
+    f.service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_loads_older_pages_without_resending_the_entire_history() {
+    let f = setup(
+        FakeProvider::new((0..33).map(|_| answer()).collect()),
+        vec![],
+    )
+    .await;
+    let c = f
+        .client
+        .create("fake", f.root.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let path = format!("/v1/conversations/{}/sync", c.id);
+    for _ in 0..33 {
+        f.client.submit(&c.id, "next").await.unwrap();
+        terminal(&f.client, &c.id).await;
+    }
+    let latest = f.client.call("GET", &path, None).await.unwrap();
+    assert_eq!(latest["offset"], 2);
+    assert_eq!(latest["total"], 66);
+    assert_eq!(latest["snapshot"]["messages"].as_array().unwrap().len(), 64);
+    let anchor = latest["snapshot"]["messages"][0]["id"].as_str().unwrap();
+    let older = f
+        .client
+        .call("GET", &format!("{path}?before={anchor}"), None)
+        .await
+        .unwrap();
+    assert_eq!(older["offset"], 0);
+    assert_eq!(older["snapshot"]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        older["snapshot"]["messages"][1]["id"],
+        f.client.get(&c.id).await.unwrap().messages[1].id()
+    );
+    f.service.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn api_default_auto_and_durable_settings_updates_reconcile_observers() {
     let root = directory();
     let p = FakeProvider::new(vec![answer()]);

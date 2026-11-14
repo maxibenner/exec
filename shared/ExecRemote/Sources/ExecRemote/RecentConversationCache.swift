@@ -17,6 +17,8 @@ public struct RecentConversationCache {
         return snapshots[id]
     }
 
+    public func contains(_ id: String) -> Bool { recent.contains(id) }
+
     public mutating func update(_ snapshot: RemoteJSON) {
         guard let id = snapshot["id"].string, recent.contains(id) else { return }
         snapshots[id] = snapshot
