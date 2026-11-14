@@ -98,13 +98,17 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(conversation["metadata"]["title"].string ?? conversation["title"].string ?? "New Chat")
                     .font(.headline).foregroundStyle(Color(uiColor: .label)).lineLimit(1)
-                HStack {
+                HStack(spacing: 8) {
                     Text(RemoteSessionDay.activityDate(conversation), format: .dateTime.hour().minute())
                         .fixedSize()
-                    Spacer(minLength: 16)
                     if let workspace = conversation["workspace"].string, !workspace.isEmpty {
                         Text(URL(fileURLWithPath: workspace).lastPathComponent)
                             .lineLimit(1).truncationMode(.middle)
+                    }
+                    Spacer(minLength: 4)
+                    if ["running", "cancelling"].contains(conversation["operation"]["state"].string ?? "") {
+                        ProgressView().controlSize(.mini).accessibilityLabel("Running")
+                            .frame(width: 16, height: 20)
                     }
                 }
                 .font(.subheadline).foregroundStyle(Color(uiColor: .secondaryLabel))
