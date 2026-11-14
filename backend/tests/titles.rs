@@ -32,6 +32,9 @@ async fn automatic_titles_are_isolated_and_manual_names_survive_restart() {
         assert_eq!(requests.len(), 2);
         assert!(requests[0].tools.is_empty());
         assert!(requests[0].provider_state.is_none());
+        assert_eq!(requests[0].message_ids.len(), requests[0].messages.len());
+        assert!(valid_id(&requests[0].message_ids[0]));
+        assert_ne!(requests[0].message_ids[0], requests[1].message_ids[0]);
         let ContextMessage::User { text } = &requests[0].messages[0] else {
             panic!()
         };
