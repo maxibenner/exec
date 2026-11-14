@@ -103,6 +103,94 @@ fn save(path: &std::path::Path, value: &Session) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
 }
 #[tokio::test]
+async fn automatic_titles_use_valid_openai_requests_without_polluting_chat_context() {
+    let root = support::directory();
+    let workspace = support::directory();
+    let path = root.path().join("credentials.json");
+    save(&path, &session(false));
+    let transport = Fake::new(|request| async move {
+        if matches!(request.endpoint, Endpoint::Models) {
+            return Ok(response(
+                json!({"models":[{"slug":"test","context_window":10000}]}),
+            ));
+        }
+        assert!(matches!(request.endpoint, Endpoint::Responses));
+        let body: Value = serde_json::from_str(request.body.as_ref().unwrap()).unwrap();
+        let input = body["input"].as_array().unwrap();
+        let content = input.last().unwrap()["content"].as_str().unwrap();
+        let text = if let Ok(fields) = serde_json::from_str::<Value>(content) {
+            assert_eq!(input.len(), 1);
+            assert_eq!(body["tools"], json!([]));
+            match fields["latest_user_message"].as_str().unwrap() {
+                "Plan a garden" => {
+                    assert_eq!(fields["current_title"], "");
+                    "Vegetable Garden Plan"
+                }
+                "Now plan a trip" => {
+                    assert_eq!(fields["current_title"], "Vegetable Garden Plan");
+                    "Weekend Travel Plan"
+                }
+                _ => panic!("Unexpected title request"),
+            }
+        } else {
+            assert!(matches!(content, "Plan a garden" | "Now plan a trip"));
+            assert!(!body["input"].to_string().contains("latest_user_message"));
+            assert!(!body["input"].to_string().contains("Vegetable Garden Plan"));
+            "Completed answer"
+        };
+        Ok(wire(vec![
+            json!({"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":text}]}]}}),
+        ]))
+    });
+    let auth = Authentication::open(path, None, transport.clone())
+        .await
+        .unwrap();
+    let provider = Arc::new(OpenAIProvider::new(auth, transport.clone()));
+    let manager = exec_agent::manager::AgentManager::default();
+    let conversation = manager
+        .create(ConversationOptions::new(
+            provider,
+            "test",
+            workspace.path().to_str().unwrap(),
+        ))
+        .await
+        .unwrap();
+    for (message, title) in [
+        ("Plan a garden", "Vegetable Garden Plan"),
+        ("Now plan a trip", "Weekend Travel Plan"),
+    ] {
+        let operation = support::complete(
+            manager
+                .submit(&conversation.id, message.into())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(operation.state, OperationState::Completed);
+        assert_eq!(
+            conversation.snapshot().metadata.title.as_deref(),
+            Some(title)
+        );
+    }
+    assert_eq!(conversation.snapshot().messages.len(), 4);
+    let requests = transport.requests.lock().unwrap();
+    let inference: Vec<_> = requests
+        .iter()
+        .filter(|r| matches!(r.endpoint, Endpoint::Responses))
+        .map(|r| serde_json::from_str::<Value>(r.body.as_ref().unwrap()).unwrap())
+        .collect();
+    assert_eq!(inference.len(), 4);
+    assert_ne!(
+        inference[0]["prompt_cache_key"],
+        inference[1]["prompt_cache_key"]
+    );
+    assert_ne!(
+        inference[0]["prompt_cache_key"],
+        inference[2]["prompt_cache_key"]
+    );
+}
+
+#[tokio::test]
 async fn rotating_refresh_is_single_flight_and_persists_before_releasing_credentials() {
     let root = support::directory();
     let path = root.path().join("credentials.json");
