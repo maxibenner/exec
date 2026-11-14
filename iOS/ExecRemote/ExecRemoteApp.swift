@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import ExecRemote
 
 @main struct ExecRemoteApp: App {
@@ -72,19 +73,15 @@ struct RootView: View {
             .navigationTitle(store.host == nil ? "" : "All Sessions")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(store.host == nil ? .hidden : .visible, for: .navigationBar)
-            .toolbar {
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 if store.host != nil {
-                    ToolbarItem(placement: .bottomBar) {
-                        Menu {
-                            Button("Settings", systemImage: "gearshape") { settings = true }
-                            Button("Reconnect", systemImage: "arrow.clockwise") { Task { await store.connect() } }
-                            Button("Forget Host", systemImage: "trash", role: .destructive) { Task { await store.forget() } }
-                        } label: { Label("Session Options", systemImage: "ellipsis") }.disabled(store.busy)
-                    }
-                    ToolbarItem(placement: .bottomBar) { Spacer() }
-                    ToolbarItem(placement: .bottomBar) {
-                        Button("New Chat", systemImage: "square.and.pencil") { creating = true }.disabled(!store.connected || store.busy)
-                    }
+                    SessionToolbar(busy: store.busy, connected: store.connected,
+                                   settings: { settings = true },
+                                   reconnect: { Task { await store.connect() } },
+                                   forget: { Task { await store.forget() } },
+                                   create: { creating = true })
+                        .frame(height: 44)
+                        .background(.bar)
                 }
             }
             .navigationDestination(isPresented: Binding(get: { store.selected != nil }, set: { if !$0 { store.selected = nil } })) {
@@ -171,6 +168,48 @@ struct RootView: View {
             .disabled(store.busy)
             .padding()
         }
+    }
+}
+
+/// Embed the native bar through SwiftUI's supported UIKit bridge. The SwiftUI
+/// bottom-bar implementation reparents its UIKitToolbar into the hosting view.
+private struct SessionToolbar: UIViewRepresentable {
+    let busy: Bool
+    let connected: Bool
+    let settings: () -> Void
+    let reconnect: () -> Void
+    let forget: () -> Void
+    let create: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> UIToolbar {
+        let toolbar = UIToolbar()
+        toolbar.accessibilityIdentifier = "session-toolbar"
+        let coordinator = context.coordinator
+        let menu = UIMenu(children: [
+            UIAction(title: "Settings", image: UIImage(systemName: "gearshape")) { _ in coordinator.owner.settings() },
+            UIAction(title: "Reconnect", image: UIImage(systemName: "arrow.clockwise")) { _ in coordinator.owner.reconnect() },
+            UIAction(title: "Forget Host", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in coordinator.owner.forget() }
+        ])
+        let options = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: menu)
+        options.accessibilityLabel = "Session Options"
+        let newChat = UIBarButtonItem(image: UIImage(systemName: "square.and.pencil"),
+                                      primaryAction: UIAction { _ in coordinator.owner.create() })
+        newChat.accessibilityLabel = "New Chat"
+        toolbar.setItems([options, UIBarButtonItem(systemItem: .flexibleSpace), newChat], animated: false)
+        return toolbar
+    }
+
+    func updateUIView(_ toolbar: UIToolbar, context: Context) {
+        context.coordinator.owner = self
+        toolbar.items?.first?.isEnabled = !busy
+        toolbar.items?.last?.isEnabled = connected && !busy
+    }
+
+    @MainActor final class Coordinator {
+        var owner: SessionToolbar
+        init(_ owner: SessionToolbar) { self.owner = owner }
     }
 }
 

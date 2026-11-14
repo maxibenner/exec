@@ -262,27 +262,27 @@ pub(crate) fn permits(method: &str, path: &str) -> bool {
     if path.contains('%') {
         return false;
     }
-    if method == "GET" {
-        if let Some((route, query)) = path.split_once('?') {
-            let Some(id) = route
-                .strip_prefix("/v1/conversations/")
-                .and_then(|tail| tail.strip_suffix("/sync"))
-            else {
-                return false;
-            };
-            if !valid_id(id) {
-                return false;
-            }
-            let anchor = query.strip_prefix("before=").or_else(|| {
-                query.strip_prefix("after=").and_then(|tail| {
-                    tail.split_once("&prefix=").and_then(|(id, proof)| {
-                        (proof.len() == 64 && proof.bytes().all(|byte| byte.is_ascii_hexdigit()))
-                            .then_some(id)
-                    })
-                })
-            });
-            return anchor.is_some_and(valid_id);
+    if method == "GET"
+        && let Some((route, query)) = path.split_once('?')
+    {
+        let Some(id) = route
+            .strip_prefix("/v1/conversations/")
+            .and_then(|tail| tail.strip_suffix("/sync"))
+        else {
+            return false;
+        };
+        if !valid_id(id) {
+            return false;
         }
+        let anchor = query.strip_prefix("before=").or_else(|| {
+            query.strip_prefix("after=").and_then(|tail| {
+                tail.split_once("&prefix=").and_then(|(id, proof)| {
+                    (proof.len() == 64 && proof.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                        .then_some(id)
+                })
+            })
+        });
+        return anchor.is_some_and(valid_id);
     }
     if path.contains('?') {
         return false;

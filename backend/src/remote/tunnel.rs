@@ -118,7 +118,7 @@ impl RemoteAccess {
                                         let _ = out.send(Envelope { kind:"close".into(), client:frame.client, data:String::new() }).await;
                                     });
                                 }
-                                "data" => { if let Some(client) = clients.get(&frame.client) { if client.try_send(frame.data).is_err() { return Err(Error::Busy); } } }
+                                "data" => { if let Some(client) = clients.get(&frame.client) && client.try_send(frame.data).is_err() { return Err(Error::Busy); } }
                                 "close" => { clients.remove(&frame.client); }
                                 _ => return Err(Error::Internal),
                             }

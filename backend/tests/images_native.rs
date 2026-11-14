@@ -211,7 +211,7 @@ async fn active_image_uploads_queue_once_and_survive_cancellation() {
                 OperationState::Interrupted
             );
             assert!(
-                matches!(&snapshot.pending_input[..], [Message::User { images, text, .. }] if images == &[image.clone()] && text.is_empty())
+                matches!(&snapshot.pending_input[..], [Message::User { images, text, .. }] if images == std::slice::from_ref(&image) && text.is_empty())
             );
             assert_eq!(provider.requests.lock().unwrap().len(), 1);
         } else {

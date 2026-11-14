@@ -24,7 +24,7 @@ Keep Xcode's default **Sign to Run Locally** simulator signing enabled. An unsig
 
 ## Isolated UI checks
 
-The `ExecRemote` scheme includes three focused UI tests for navigation underlap/keyboard geometry, optimistic deletion failure recovery, and an accepted deletion followed by a failed refresh. Screenshot attachments include the native middle-row swipe state. The app target is named `ExecRemoteMobile` to disambiguate it from the `ExecRemote` Swift package; the scheme, app product and bundle identifier are unchanged.
+The `ExecRemote` scheme includes focused UI tests for navigation underlap/keyboard geometry, session switching and activity, native toolbar actions, optimistic deletion failure recovery, and an accepted deletion followed by a failed refresh. Screenshot attachments include the native middle-row swipe state. The session toolbar uses a `UIToolbar` embedded through `UIViewRepresentable` in a bottom safe-area inset, avoiding SwiftUI's bottom-toolbar hosting-view hierarchy warning while retaining native controls. The app target is named `ExecRemoteMobile` to disambiguate it from the `ExecRemote` Swift package; the scheme, app product and bundle identifier are unchanged.
 
 Run from `iOS/` on an installed simulator (replace the device ID):
 

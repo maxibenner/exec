@@ -94,7 +94,9 @@ fn display_email(access: &str) -> Option<String> {
     let claims: Value = serde_json::from_slice(&B64.decode(payload).ok()?).ok()?;
     claims["https://api.openai.com/profile"]["email"]
         .as_str()
-        .filter(|email| !email.is_empty() && email.len() <= 320 && !email.chars().any(char::is_control))
+        .filter(|email| {
+            !email.is_empty() && email.len() <= 320 && !email.chars().any(char::is_control)
+        })
         .map(str::to_owned)
 }
 
@@ -248,7 +250,9 @@ impl Authentication {
                 "json"
             }
             .into(),
-            email: state.session.as_ref()
+            email: state
+                .session
+                .as_ref()
                 .filter(|s| !state.blocked && !s.requires_reconnect)
                 .and_then(|s| display_email(&s.access_token)),
             manageable: !self.environment && !state.blocked,

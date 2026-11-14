@@ -58,6 +58,28 @@ import XCTest
         }
     }
 
+    func testSessionToolbarActionsAndNavigation() {
+        let app = launch()
+        let toolbar = app.toolbars["session-toolbar"]
+        XCTAssertTrue(toolbar.waitForExistence(timeout: 5))
+        let options = toolbar.buttons["Session Options"]
+        let newChat = toolbar.buttons["New Chat"]
+        XCTAssertLessThan(options.frame.maxX, newChat.frame.minX)
+        options.tap()
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        app.buttons["Done"].tap()
+        newChat.tap()
+        XCTAssertTrue(app.navigationBars["New Chat"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        app.buttons["session-fixture-1"].tap()
+        XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 5))
+        XCTAssertFalse(toolbar.exists, "Session controls must not occupy the conversation's composer area.")
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(toolbar.waitForExistence(timeout: 5))
+        capture("native-session-toolbar", app: app)
+    }
+
     func testActiveSessionIndicatorsIncludeApprovalAndCancellation() {
         let app = launch(["--activity-fixture"])
         for index in 1...3 {
