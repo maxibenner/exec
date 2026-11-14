@@ -101,6 +101,7 @@ pub struct Conversation {
     tools: HashMap<String, Arc<dyn Tool>>,
     definitions: Vec<ToolDefinition>,
     persist: Option<Arc<dyn Checkpoint>>,
+    checkpoint_lock: tokio::sync::Mutex<()>,
     images: Mutex<Option<Arc<dyn ImageReader>>>,
     events: EventHub,
     input_arrived: Notify,
@@ -170,6 +171,7 @@ impl Conversation {
             tools,
             definitions,
             persist: options.checkpoint,
+            checkpoint_lock: tokio::sync::Mutex::new(()),
             images: Mutex::new(options.images),
             events,
             input_arrived: Notify::new(),
@@ -373,17 +375,7 @@ impl Conversation {
         instructions: Option<String>,
         automatic_titles: bool,
     ) -> Result<Submission> {
-        if images.len() > 8
-            || images.iter().any(|i| i.validate().is_err())
-            || images.iter().map(|i| i.byte_count).sum::<usize>() > 16 * 1024 * 1024
-        {
-            return Err(Error::Invalid(
-                "At most eight images and 16 MiB per message are allowed.",
-            ));
-        }
-        for image in &images {
-            image.validate()?;
-        }
+        super::images::validate_message_images(&text, &images)?;
         let mut s = self.state();
         if s.disposed {
             return Err(Error::Invalid("Conversation is closed."));
@@ -393,14 +385,6 @@ impl Conversation {
         }
         if s.active.is_some() || s.updating {
             return Err(Error::Busy);
-        }
-        if (!valid_input(&text) && images.is_empty())
-            || text.len() > 128 * 1024
-            || text.contains('\0')
-        {
-            return Err(Error::Invalid(
-                "Message must contain text or images within the input bounds.",
-            ));
         }
         if let Some(value) = &instructions {
             validate_instructions(value)?;
@@ -590,9 +574,15 @@ impl Conversation {
     /// In-memory acceptance, like submit. The runner checkpoints pending input;
     /// no client-side queue or competing execution loop is involved.
     pub fn steer(&self, operation_id: &str, text: String) -> Result<String> {
-        if !valid_input(&text) {
-            return Err(Error::Invalid("Invalid steering input."));
-        }
+        self.steer_images(operation_id, text, vec![])
+    }
+    pub fn steer_images(
+        &self,
+        operation_id: &str,
+        text: String,
+        images: Vec<ImageRef>,
+    ) -> Result<String> {
+        super::images::validate_message_images(&text, &images)?;
         let mut s = self.state();
         if s.storage_error.is_some() {
             return Err(Error::Storage);
@@ -608,13 +598,21 @@ impl Conversation {
         {
             return Err(Error::Busy);
         }
+        if images.iter().any(|image| {
+            !s.record
+                .resources
+                .iter()
+                .any(|r| r.id == image.id && r.kind == ResourceKind::Image)
+        }) {
+            return Err(Error::Invalid("Image is not owned by this conversation."));
+        }
         if s.record.pending_input.len() >= 32 {
             return Err(Error::Busy);
         }
         let id = new_id();
         s.record.metadata.activity_at = SessionMetadata::activity();
         s.record.pending_input.push(Message::User {
-            images: vec![],
+            images,
             id: id.clone(),
             text,
         });
@@ -679,7 +677,55 @@ impl Conversation {
         }
         true
     }
+    /// Reserve upload ownership without replacing a concurrently changing transcript.
+    pub(crate) async fn store_image(
+        self: &Arc<Self>,
+        resource: ResourceRef,
+        upload: impl std::future::Future<Output = Result<ImageRef>> + Send + 'static,
+    ) -> Result<ImageRef> {
+        {
+            let mut state = self.state();
+            if state.disposed || state.updating {
+                return Err(Error::Busy);
+            }
+            if state.storage_error.is_some() {
+                return Err(Error::Storage);
+            }
+            if state.record.resources.len() >= 4096 {
+                return Err(Error::Invalid("Too many conversation resources."));
+            }
+            state.record.resources.push(resource);
+            state.updating = true;
+        }
+        let conversation = self.clone();
+        tokio::spawn(async move {
+            let saved = AssertUnwindSafe(conversation.checkpoint(None))
+                .catch_unwind()
+                .await
+                .unwrap_or(Err(Error::Storage));
+            let result = match saved {
+                Ok(()) => AssertUnwindSafe(upload)
+                    .catch_unwind()
+                    .await
+                    .unwrap_or(Err(Error::Internal)),
+                Err(error) => {
+                    conversation.state().storage_error = Some(Error::Storage.to_string());
+                    Err(error)
+                }
+            };
+            let mut state = conversation.state();
+            state.updating = false;
+            conversation.events.send(Arc::new(ServiceEvent::Snapshot {
+                snapshot: state.snapshot(conversation.provider.as_ref()),
+            }));
+            result
+        })
+        .await
+        .map_err(|_| Error::Internal)?
+    }
     async fn checkpoint(&self, terminal: Option<OperationState>) -> Result<()> {
+        // Upload ownership and the runner share ordered, fresh snapshots.
+        let _checkpoint = self.checkpoint_lock.lock().await;
         let mut record = {
             let s = self.state();
             if s.storage_error.is_some() {
@@ -697,6 +743,12 @@ impl Conversation {
         {
             self.state().storage_error = Some(Error::Storage.to_string());
             return Err(Error::Storage);
+        }
+        // Keep later upload checkpoints from persisting a pre-terminal operation.
+        if let Some(terminal) = terminal
+            && let Some(operation) = &mut self.state().record.operation
+        {
+            operation.state = terminal;
         }
         Ok(())
     }

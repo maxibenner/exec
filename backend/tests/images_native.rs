@@ -28,6 +28,8 @@ fn png() -> Vec<u8> {
 struct Provider {
     requests: Mutex<Vec<ProviderRequest>>,
     generated: AtomicUsize,
+    entered: CancellationToken,
+    release: CancellationToken,
 }
 #[async_trait]
 impl ChatProvider for Provider {
@@ -59,6 +61,16 @@ impl ChatProvider for Provider {
     }
     fn stream(&self, r: ProviderRequest) -> BoxStream<'static, Result<ProviderEvent>> {
         self.requests.lock().unwrap().push(r.clone());
+        if matches!(r.messages.last(), Some(ContextMessage::User { text }) if text == "hold for queued image")
+        {
+            let entered = self.entered.clone();
+            let release = self.release.clone();
+            return Box::pin(async_stream::try_stream! {
+                entered.cancel();
+                tokio::select! { _ = release.cancelled() => {}, _ = r.cancel.cancelled() => {} }
+                yield ProviderEvent::Done;
+            });
+        }
         let events = match r.messages.last() {
             Some(ContextMessage::User { text }) if text == "generate" => vec![
                 ProviderEvent::ToolCall(ToolCall {
@@ -111,6 +123,151 @@ async fn terminal(client: &AgentClient, id: &str) -> ConversationSnapshot {
     .await
     .unwrap()
 }
+#[tokio::test]
+async fn active_image_uploads_queue_once_and_survive_cancellation() {
+    for cancel in [false, true] {
+        let root = support::directory();
+        let workspace = support::directory();
+        let provider = Arc::new(Provider::default());
+        let service = start_persistent_service(
+            root.path(),
+            provider.clone(),
+            false,
+            "127.0.0.1:0".parse().unwrap(),
+            support::http_access(),
+        )
+        .await
+        .unwrap();
+        let client = AgentClient::new(service.address).unwrap();
+        let mut library = client.library().await.unwrap();
+        library.automatic_titles = false;
+        client.update_library(library).await.unwrap();
+        let conversation = client
+            .create("test", workspace.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let other = client
+            .create("test", workspace.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let foreign = client
+            .upload_image(&other.id, "foreign.png", &png())
+            .await
+            .unwrap();
+        let receipt = client
+            .submit(&conversation.id, "hold for queued image")
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), provider.entered.cancelled())
+            .await
+            .unwrap();
+        let image = client
+            .upload_image(&conversation.id, "queued.png", &png())
+            .await
+            .unwrap();
+        let route = format!("/v1/conversations/{}/steer", conversation.id);
+        let operation = receipt.as_str();
+        for (operation, images) in [
+            (operation.to_owned(), vec![foreign]),
+            (operation.to_owned(), vec![image.clone(); 9]),
+            (new_id(), vec![image.clone()]),
+        ] {
+            assert!(
+                client
+                    .call(
+                        "POST",
+                        &route,
+                        Some(json!({"operationID":operation,"text":"","images":images}))
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+        let queued = client
+            .call(
+                "POST",
+                &route,
+                Some(json!({"operationID":operation,"text":"","images":[image]})),
+            )
+            .await
+            .unwrap();
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
+        if cancel {
+            client
+                .call(
+                    "POST",
+                    &format!("/v1/conversations/{}/cancel", conversation.id),
+                    Some(json!({"operationID":operation})),
+                )
+                .await
+                .unwrap();
+        } else {
+            provider.release.cancel();
+        }
+        let snapshot = terminal(&client, &conversation.id).await;
+        if cancel {
+            assert_eq!(
+                snapshot.operation.unwrap().state,
+                OperationState::Interrupted
+            );
+            assert!(
+                matches!(&snapshot.pending_input[..], [Message::User { images, text, .. }] if images == &[image.clone()] && text.is_empty())
+            );
+            assert_eq!(provider.requests.lock().unwrap().len(), 1);
+        } else {
+            assert_eq!(snapshot.operation.unwrap().state, OperationState::Completed);
+            assert!(snapshot.pending_input.is_empty());
+            assert_eq!(
+                snapshot
+                    .messages
+                    .iter()
+                    .filter(|m| m.id() == queued["messageID"].as_str().unwrap())
+                    .count(),
+                1
+            );
+            let requests = provider.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert!(requests[0].images.is_empty());
+            assert_eq!(requests[1].images.values().map(Vec::len).sum::<usize>(), 1);
+        }
+        assert!(
+            client
+                .call(
+                    "POST",
+                    &route,
+                    Some(json!({"operationID":operation,"text":"","images":[image]}))
+                )
+                .await
+                .is_err()
+        );
+        service.close().await.unwrap();
+        // Restart validates ownership and queued image-only input without replaying it.
+        let restored = start_persistent_service(
+            root.path(),
+            provider.clone(),
+            false,
+            "127.0.0.1:0".parse().unwrap(),
+            support::http_access(),
+        )
+        .await
+        .unwrap();
+        let client = AgentClient::new(restored.address).unwrap();
+        let snapshot = client
+            .call(
+                "GET",
+                &format!("/v1/conversations/{}", conversation.id),
+                None,
+            )
+            .await
+            .unwrap();
+        if cancel {
+            assert_eq!(snapshot["pendingInput"][0]["images"][0]["id"], image.id);
+        }
+        assert!(client.read_image(&image.id).await.is_ok());
+        restored.close().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn uploaded_and_generated_images_survive_restart_and_last_fork_owns_deletion() {
     let root = support::directory();
