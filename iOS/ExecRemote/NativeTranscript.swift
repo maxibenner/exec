@@ -8,9 +8,10 @@ import ExecTranscript
 struct NativeTranscript: UIViewRepresentable {
     let conversationID: String?
     let snapshot: RemoteJSON
+    let bottomPadding: CGFloat
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIView(context: Context) -> UITableView {
-        let table = UITableView(frame: .zero, style: .plain)
+        let table = TranscriptTableView(frame: .zero, style: .plain)
         table.backgroundColor = .systemBackground
         table.separatorStyle = .none
         table.rowHeight = UITableView.automaticDimension
@@ -19,23 +20,39 @@ struct NativeTranscript: UIViewRepresentable {
         table.allowsSelection = false
         table.register(MessageCell.self, forCellReuseIdentifier: "message")
         table.register(UITableViewCell.self, forCellReuseIdentifier: "tool")
+        table.register(UITableViewCell.self, forCellReuseIdentifier: "working")
         context.coordinator.attach(table)
         return table
     }
     func updateUIView(_ table: UITableView, context: Context) {
-        context.coordinator.update(conversationID: conversationID, snapshot: snapshot, table: table)
+        let nearBottom = table.contentOffset.y + table.bounds.height - table.adjustedContentInset.bottom >= table.contentSize.height - 60
+        let paddingChanged = abs(table.contentInset.bottom - bottomPadding - 12) > 1
+        table.contentInset.bottom = bottomPadding + 12
+        table.verticalScrollIndicatorInsets.bottom = bottomPadding
+        context.coordinator.update(conversationID: conversationID, snapshot: snapshot, table: table, followBottom: paddingChanged && nearBottom)
     }
     @MainActor final class Coordinator {
         private var source: UITableViewDiffableDataSource<Int, String>?
         private var rows: [String: RemoteTranscriptRow] = [:]
         private var conversationID: String?
         private var expansion: [String: Bool] = [:]
+        private var active = false
+        private static let workingID = "transcript-working-indicator"
         func attach(_ table: UITableView) {
             source = UITableViewDiffableDataSource(tableView: table) { [weak self] table, path, id in
-                guard let self, let row = self.rows[id] else { return UITableViewCell() }
+                guard let self else { return UITableViewCell() }
+                if id == Self.workingID {
+                    let cell = table.dequeueReusableCell(withIdentifier: "working", for: path)
+                    cell.contentConfiguration = UIHostingConfiguration {
+                        MobileWorkingIndicator().frame(width: 28, height: 16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }.margins(.horizontal, 16).margins(.vertical, 12)
+                    return cell
+                }
+                guard let row = self.rows[id] else { return UITableViewCell() }
                 if let call = row.call {
                     let cell = table.dequeueReusableCell(withIdentifier: "tool", for: path)
-                    let binding = Binding(get: { [weak self] in self?.expansion[id] ?? (row.message["details"]["type"].string == "edit") }, set: { [weak self] value in
+                    let binding = Binding(get: { [weak self] in self?.expansion[id] ?? false }, set: { [weak self] value in
                         guard let self, self.rows[id] != nil, let source = self.source else { return }
                         self.expansion[id] = value
                         var snapshot = source.snapshot()
@@ -52,14 +69,17 @@ struct NativeTranscript: UIViewRepresentable {
                 return cell
             }
         }
-        func update(conversationID: String?, snapshot: RemoteJSON, table: UITableView) {
+        func update(conversationID: String?, snapshot: RemoteJSON, table: UITableView, followBottom: Bool) {
             guard let source else { return }
             let changedConversation = self.conversationID != conversationID
-            let nearBottom = table.contentOffset.y + table.bounds.height - table.adjustedContentInset.bottom >= table.contentSize.height - 60
+            let nearBottom = followBottom || table.contentOffset.y + table.bounds.height - table.adjustedContentInset.bottom >= table.contentSize.height - 60
             var next: [String: RemoteTranscriptRow] = [:]
             var ids: [String] = []
             for row in RemoteTranscriptRow.project(snapshot) where !row.id.isEmpty && next[row.id] == nil { ids.append(row.id); next[row.id] = row }
-            guard changedConversation || next != rows else { return }
+            let nextActive = RemoteMessageSubmission.isActive(snapshot)
+            if nextActive { ids.append(Self.workingID) }
+            guard changedConversation || next != rows || active != nextActive || followBottom else { return }
+            active = nextActive
             let previousIDs = Set(source.snapshot().itemIdentifiers)
             let changed = ids.filter { previousIDs.contains($0) && next[$0] != rows[$0] }
             if changedConversation { expansion.removeAll() }
@@ -118,56 +138,83 @@ private struct MobileToolCard: View {
     }
 }
 
+@MainActor private final class TranscriptTableView: UITableView {
+    private var previousHeight: CGFloat = 0
+    private var wasNearBottom = true
+    override func layoutSubviews() {
+        let resized = previousHeight > 0 && abs(previousHeight - bounds.height) > 1
+        super.layoutSubviews()
+        if resized, wasNearBottom, !isDragging, !isDecelerating {
+            contentOffset.y = max(-adjustedContentInset.top, contentSize.height - bounds.height + adjustedContentInset.bottom)
+        }
+        previousHeight = bounds.height
+        wasNearBottom = contentOffset.y + bounds.height - adjustedContentInset.bottom >= contentSize.height - 60
+    }
+}
+
 @MainActor private final class MessageCell: UITableViewCell, UITextViewDelegate {
-    private let role = UILabel()
     private let text = UITextView()
+    private var textWidth: NSLayoutConstraint!
     private var sourceText: String?
     private var markdown = false
+    private var isUser = false
     private var blocks: [MarkdownBlock] = []
     private var renderedWidth: CGFloat = 0
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
-        role.font = .preferredFont(forTextStyle: .caption1)
-        role.adjustsFontForContentSizeCategory = true; role.textColor = .secondaryLabel
         text.isEditable = false; text.isSelectable = true; text.isScrollEnabled = false
         text.backgroundColor = .clear; text.delegate = self
         text.adjustsFontForContentSizeCategory = true
-        text.textContainerInset = .zero; text.textContainer.lineFragmentPadding = 0
+        text.textContainer.lineFragmentPadding = 0
         text.dataDetectorTypes = []
-        let stack = UIStackView(arrangedSubviews: [role, text])
-        stack.axis = .vertical; stack.spacing = 5; stack.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(stack)
+        text.translatesAutoresizingMaskIntoConstraints = false
+        text.layer.cornerRadius = 10
+        text.layer.cornerCurve = .continuous
+        contentView.addSubview(text)
+        textWidth = text.widthAnchor.constraint(equalToConstant: 100)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
-            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12)
+            text.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 16),
+            text.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            text.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
+            text.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -10),
+            textWidth
         ])
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (cell: MessageCell, _: UITraitCollection) in
-            cell.render(width: cell.renderedWidth)
+            cell.render(width: max(100, cell.contentView.bounds.width - 32))
         }
     }
     required init?(coder: NSCoder) { fatalError("Use init(style:reuseIdentifier:)") }
     override func prepareForReuse() { super.prepareForReuse(); sourceText = nil; blocks = [] }
     override func layoutSubviews() {
+        let width = max(100, contentView.bounds.width - 32)
+        if sourceText != nil, abs(width - renderedWidth) > 1 { render(width: width) }
         super.layoutSubviews()
-        if sourceText != nil, text.bounds.width > 0, abs(text.bounds.width - renderedWidth) > 1 { render(width: text.bounds.width) }
     }
     func configure(_ message: RemoteJSON, width: CGFloat) {
-        role.text = message["role"].string?.capitalized ?? "Message"
         var content = message["text"].string ?? ""
         if !message["images"].array.isEmpty { content += "\n[Image attachment]" }
         let useMarkdown = message["role"].string == "assistant"
-        guard sourceText != content || markdown != useMarkdown else { return }
-        sourceText = content; markdown = useMarkdown
+        let user = message["role"].string == "user"
+        guard sourceText != content || markdown != useMarkdown || isUser != user else { return }
+        sourceText = content; markdown = useMarkdown; isUser = user
         blocks = useMarkdown ? MarkdownDocument.parse(content) : []
+        text.backgroundColor = user ? UIColor.systemBlue.withAlphaComponent(0.18) : .clear
+        text.textContainerInset = user ? UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12) : .zero
         render(width: width)
     }
     private func render(width: CGFloat) {
         guard let sourceText else { return }
         renderedWidth = max(100, width)
-        text.attributedText = markdown ? UIKitMarkdownText.render(blocks, width: renderedWidth) : NSAttributedString(string: sourceText,
+        let attributed = markdown ? UIKitMarkdownText.render(blocks, width: renderedWidth) : NSAttributedString(string: sourceText,
             attributes: [.font:UIFont.preferredFont(forTextStyle: .body), .foregroundColor:UIColor.label])
+        if isUser {
+            let maximum = renderedWidth * 0.85
+            let bounds = attributed.boundingRect(with: CGSize(width: maximum - 24, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+            textWidth.constant = min(maximum, max(40, ceil(bounds.width) + 24))
+        } else {
+            textWidth.constant = renderedWidth
+        }
+        text.attributedText = attributed
     }
     func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
         MarkdownDocument.allowsLink(URL)

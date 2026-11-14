@@ -35,12 +35,15 @@ The app icon is an opaque 1024px derivative of the existing Exec artwork. Device
 ## First-version scope
 
 - QR/pasted invitation pairing, one saved host, per-device identity stored in Keychain (`WhenUnlockedThisDeviceOnly`, not synced).
-- Conversation list with native expanding red swipe-to-delete (including full-swipe deletion, no confirmation dialog), text transcript/tool summaries, host folder selection, new conversations, send, stop, explicit approval/denial, and shared default settings. Active conversations must be stopped before deletion.
-- Native multiline composer with system Liquid Glass on iOS 26+, and system material on older supported iOS versions.
+- Native inset-grouped session list on the system grouped background, sorted by last activity with daily sections (Today, Yesterday, then dates). The centered All Sessions navigation header and bottom toolbar use system styling; options are bottom-left and new chat bottom-right. Native destructive swipe actions support full-swipe deletion. Active conversations must be stopped before deletion.
+- Native multiline composer with system Liquid Glass on iOS 26+, and system material on older supported iOS versions. The transcript scrolls beneath the floating composer with measured bottom padding. Sending keeps keyboard focus; the transcript supports interactive swipe-down keyboard dismissal.
+- During an active turn, an empty composer shows Stop; entering text switches to Send and submits to the host's operation-bound steering queue. Accepted queued messages remain visible in the transcript. Drafts clear only on acceptance; failures never trigger automatic resubmission.
 - Foreground snapshot polling every 1.5 seconds; reconnect fetches authoritative state. Sends/approvals/settings changes are never automatically retried. Following an uncertain send, inspect the refreshed conversation before manually sending again.
+- The last three viewed conversations are cached in memory. Reopening displays the last snapshot immediately and refreshes without first clearing the transcript. Refresh failures retain cached contents; deletion and host changes invalidate them. This is not an offline conversation database and does not survive process termination.
 - Shared settings are agent-owned; selected conversation, scroll position and drafts are local. Drafts are currently in memory, not durable across process termination.
-- Native selectable Markdown (headings, emphasis, lists, quotes, fenced code, safe links and text tables), using the same bounded parser as macOS. Tool cards, headers and input/result summaries are shared with the Mac; expansion state survives cell reuse and pending-to-completed tool updates.
-- iOS uses UIKit TextKit rather than AppKit text tables. Tool edit diffs are selectable monospace text; desktop diff decorations, image viewing/upload, steering UI, push notifications and background execution are not included.
+- Native selectable Markdown (headings, emphasis, lists, quotes, fenced code, safe links and text tables), using the same bounded parser as macOS. User messages are right-aligned blue bubbles without speaker labels. Tool cards start collapsed, including edit calls; explicit expansion survives cell reuse and pending-to-completed tool updates.
+- The transcript's active indicator shares the Mac's neuron pulse curves and uses Core Animation, not a per-frame application timer. Animation stops offscreen/in the background and respects Reduce Motion.
+- iOS uses UIKit TextKit rather than AppKit text tables. Tool edit diffs are selectable monospace text; desktop diff decorations, image viewing/upload, push notifications and background execution are not included.
 - Quit/sleep/offline Mac means the hosted agent is unavailable. The Mac app still owns its bundled helper's lifecycle. Standalone installation is not part of this feature.
 
 Revoke on the Mac to remove authorization. **Forget Host** only removes the phone's local credential.

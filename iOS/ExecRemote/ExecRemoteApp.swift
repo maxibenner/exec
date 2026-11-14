@@ -27,40 +27,43 @@ struct RootView: View {
             Group {
                 if store.host == nil { pairing }
                 else {
-                    List(store.conversations, id: \.id) { conversation in
-                        Button { store.selected = conversation.id } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(conversation["metadata"]["title"].string ?? conversation["title"].string ?? "New Chat")
-                                    .foregroundStyle(.primary).lineLimit(2)
-                                Text(conversation["workspace"].string ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        List {
+                            ForEach(RemoteSessionDay.group(store.conversations)) { day in
+                                Section {
+                                    ForEach(day.conversations, id: \.id) { conversation in
+                                        sessionRow(conversation)
+                                    }
+                                } header: {
+                                    Text(day.title(now: context.date))
+                                        .font(.title3.bold())
+                                        .foregroundStyle(.primary)
+                                        .textCase(nil)
+                                        .padding(.vertical, 8)
+                                }
                             }
-                        }.disabled(conversation["unreadable"].bool)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button(role: .destructive) { Task { await store.deleteConversation(conversation.id) } } label: {
-                                Image(systemName: "trash")
-                            }
-                                .labelStyle(.iconOnly)
-                                .accessibilityLabel("Delete")
-                                .disabled(store.busy || !store.connected || ["running", "awaiting_approval", "cancelling"].contains(conversation["operation"]["state"].string ?? ""))
                         }
+                        .listStyle(.insetGrouped)
+                        .scrollContentBackground(.hidden)
+                        .background(Color(uiColor: .systemGroupedBackground))
+                        .refreshable { do { try await store.refresh() } catch { store.error = error.localizedDescription } }
+                        .overlay { if store.conversations.isEmpty { ContentUnavailableView("No Sessions", systemImage: "bubble.left.and.bubble.right") } }
                     }
-                    .listStyle(.plain)
-                    .refreshable { do { try await store.refresh() } catch { store.error = error.localizedDescription } }
-                    .overlay { if store.conversations.isEmpty { ContentUnavailableView("No Conversations", systemImage: "bubble.left.and.bubble.right") } }
                 }
             }
-            .navigationTitle(store.host == nil ? "Exec" : "")
+            .navigationTitle(store.host == nil ? "Exec" : "All Sessions")
             .navigationBarTitleDisplayMode(store.host == nil ? .large : .inline)
             .toolbar {
                 if store.host != nil {
-                    ToolbarItem(placement: .topBarLeading) {
+                    ToolbarItem(placement: .bottomBar) {
                         Menu {
                             Button("Settings", systemImage: "gearshape") { settings = true }
                             Button("Reconnect", systemImage: "arrow.clockwise") { Task { await store.connect() } }
                             Button("Forget Host", systemImage: "trash", role: .destructive) { forgetting = true }
-                        } label: { Image(systemName: "ellipsis.circle") }.disabled(store.busy)
+                        } label: { Label("Session Options", systemImage: "ellipsis") }.disabled(store.busy)
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .bottomBar) { Spacer() }
+                    ToolbarItem(placement: .bottomBar) {
                         Button("New Chat", systemImage: "square.and.pencil") { creating = true }.disabled(!store.connected || store.busy)
                     }
                 }
@@ -90,6 +93,32 @@ struct RootView: View {
             }
         }
     }
+    private func sessionRow(_ conversation: RemoteJSON) -> some View {
+        Button { store.selected = conversation.id } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(conversation["metadata"]["title"].string ?? conversation["title"].string ?? "New Chat")
+                    .font(.headline).foregroundStyle(.primary).lineLimit(1)
+                Text(RemoteSessionDay.activityDate(conversation), format: .dateTime.hour().minute())
+                    .font(.subheadline).foregroundStyle(.secondary)
+                if let workspace = conversation["workspace"].string, !workspace.isEmpty {
+                    Label(URL(fileURLWithPath: workspace).lastPathComponent, systemImage: "folder")
+                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .disabled(conversation["unreadable"].bool)
+        .listRowBackground(Color(uiColor: .secondarySystemGroupedBackground))
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                Task { await store.deleteConversation(conversation.id) }
+            }
+            .disabled(store.busy || !store.connected || RemoteMessageSubmission.isActive(conversation))
+        }
+    }
+
     private var pairing: some View {
         Form {
             Section {
@@ -111,76 +140,114 @@ struct RootView: View {
 
 struct ConversationScreen: View {
     @Bindable var store: RemoteStore
+    @State private var composerHeight: CGFloat = 68
     var body: some View {
-        NativeTranscript(conversationID: store.selected, snapshot: store.snapshot)
+        NativeTranscript(conversationID: store.selected, snapshot: store.snapshot, bottomPadding: composerHeight)
+        .ignoresSafeArea(.container, edges: .bottom)
         .navigationTitle(store.snapshot["metadata"]["title"].string ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .bottomBar)
         .task(id: store.selected) { if let id = store.selected { await store.open(id) } }
-        .safeAreaInset(edge: .bottom) {
+        .overlay(alignment: .bottom) {
             VStack(spacing: 10) {
                 if let failure = store.snapshot["operation"]["error"].string ?? store.snapshot["storageError"].string {
                     Text(failure).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                        .padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
                 if store.snapshot["approval"] != .null {
-                    Text(store.snapshot["approval"]["description"].string ?? "Approve tool execution?").font(.callout).textSelection(.enabled)
-                    DisclosureGroup("Tool Details") {
-                        Text(String(decoding: (try? JSONEncoder().encode(store.snapshot["approval"]["call"])) ?? Data(), as: UTF8.self))
-                            .font(.caption.monospaced()).textSelection(.enabled).frame(maxHeight: 140)
+                    VStack(spacing: 10) {
+                        Text(store.snapshot["approval"]["description"].string ?? "Approve tool execution?").font(.callout).textSelection(.enabled)
+                        DisclosureGroup("Tool Details") {
+                            Text(String(decoding: (try? JSONEncoder().encode(store.snapshot["approval"]["call"])) ?? Data(), as: UTF8.self))
+                                .font(.caption.monospaced()).textSelection(.enabled).frame(maxHeight: 140)
+                        }
+                        HStack {
+                            Button("Deny", role: .destructive) { Task { await store.approve(false) } }
+                            Spacer()
+                            Button("Approve") { Task { await store.approve(true) } }.buttonStyle(.borderedProminent)
+                        }
                     }
-                    HStack {
-                        Button("Deny", role: .destructive) { Task { await store.approve(false) } }
-                        Spacer()
-                        Button("Approve") { Task { await store.approve(true) } }.buttonStyle(.borderedProminent)
-                    }
+                    .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .disabled(store.busy || !store.connected)
                 }
                 RemoteChatComposer(store: store)
-            }.padding(.horizontal, 12).padding(.vertical, 8).disabled(store.busy || !store.connected)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(key: ComposerHeightKey.self, value: geometry.size.height)
+                }
+            }
         }
+        .onPreferenceChange(ComposerHeightKey.self) { composerHeight = $0 }
     }
+}
+
+private struct ComposerHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 68
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 private struct RemoteChatComposer: View {
     let store: RemoteStore
+    @State private var fieldHeight: CGFloat = 48
     private var draft: Binding<String> {
         Binding(get: { store.selected.flatMap { store.drafts[$0] } ?? "" },
                 set: { if let id = store.selected { store.drafts[id] = $0 } })
     }
+    private var stopping: Bool { RemoteMessageSubmission.showsStop(snapshot: store.snapshot, draft: draft.wrappedValue) }
     private var field: some View {
         TextField("Message", text: draft, axis: .vertical)
             .lineLimit(1...6)
             .textFieldStyle(.plain)
             .padding(.horizontal, 18)
             .padding(.vertical, 13)
+            .frame(minHeight: 48)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(key: ComposerFieldHeightKey.self, value: geometry.size.height)
+                }
+            }
     }
     private var action: some View {
         Button {
-            let stopping = store.active
+            let stopping = stopping
             Task { if stopping { await store.stop() } else { await store.send() } }
         } label: {
-            Image(systemName: store.active ? "stop.fill" : "arrow.up")
+            Image(systemName: stopping ? "stop.fill" : "arrow.up")
                 .font(.body.weight(.semibold))
-                .frame(width: 24, height: 24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Capsule())
         }
-        .accessibilityLabel(store.active ? "Stop" : "Send")
-        .buttonBorderShape(.circle)
-        .controlSize(.large)
-        .disabled(!store.active && draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .accessibilityLabel(stopping ? "Stop" : (store.active ? "Queue Message" : "Send"))
+        .buttonBorderShape(.capsule)
+        .disabled(store.busy || !store.connected || (!stopping && draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
     }
     var body: some View {
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 8) {
+        Group {
+            if #available(iOS 26.0, *) {
+                GlassEffectContainer(spacing: 8) {
+                    HStack(alignment: .bottom, spacing: 8) {
+                        field.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
+                        action.buttonStyle(.glassProminent).frame(width: 48, height: fieldHeight)
+                    }
+                }
+            } else {
                 HStack(alignment: .bottom, spacing: 8) {
-                    field.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
-                    action.buttonStyle(.glassProminent)
+                    field.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26))
+                    action.buttonStyle(.plain).foregroundStyle(.white)
+                        .frame(width: 48, height: fieldHeight)
+                        .background(.blue, in: Capsule())
                 }
             }
-        } else {
-            HStack(alignment: .bottom, spacing: 8) {
-                field.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26))
-                action.buttonStyle(.borderedProminent)
-            }
         }
+        .onPreferenceChange(ComposerFieldHeightKey.self) { fieldHeight = $0 }
     }
+}
+
+private struct ComposerFieldHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 48
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 struct NewChatScreen: View {

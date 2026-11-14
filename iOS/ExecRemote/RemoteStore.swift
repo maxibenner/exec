@@ -9,12 +9,21 @@ import ExecRemote
     var conversations: [RemoteJSON] = []
     var models: [RemoteJSON] = []
     var library: RemoteJSON = .null
-    var selected: String?
-    var snapshot: RemoteJSON = .null
+    var selected: String? {
+        didSet {
+            guard selected != oldValue else { return }
+            snapshot = selected.flatMap { recentConversations.visit($0) } ?? .null
+        }
+    }
+    var snapshot: RemoteJSON = .null {
+        didSet { recentConversations.update(snapshot) }
+    }
     var drafts: [String:String] = [:]
+    private var recentConversations = RecentConversationCache()
+    private var hostGeneration = 0
     private let client = RelayClient()
     init() { do { host = try DeviceStore.load() } catch { self.error = error.localizedDescription } }
-    var active: Bool { ["running", "awaiting_approval", "cancelling"].contains(snapshot["operation"]["state"].string ?? "") }
+    var active: Bool { RemoteMessageSubmission.isActive(snapshot) }
     func pair(_ text: String) async {
         guard !busy else { return }
         do {
@@ -22,7 +31,9 @@ import ExecRemote
             let host = PairedHost(invitation: invitation, deviceName: "iPhone")
             // Save before pairing. A lost acknowledgement must not lose the identity
             // that the host may already have registered.
-            try DeviceStore.save(host); self.host = host
+            try DeviceStore.save(host)
+            clearConversationState()
+            self.host = host
             await connect()
         } catch { self.error = error.localizedDescription }
     }
@@ -42,8 +53,11 @@ import ExecRemote
     func forget() async {
         guard !busy else { return }
         do {
-            try DeviceStore.forget(); await suspend(); host = nil; selected = nil
-            conversations = []; snapshot = .null; drafts = [:]; error = nil
+            try DeviceStore.forget()
+            clearConversationState()
+            host = nil
+            await suspend()
+            error = nil
         } catch { self.error = error.localizedDescription }
     }
     func browseFolders(_ path: String?, showHidden: Bool) async throws -> RemoteJSON {
@@ -52,13 +66,23 @@ import ExecRemote
             "path": .optional(path), "showHidden": .bool(showHidden)
         ]))
     }
+    private func clearConversationState() {
+        hostGeneration += 1
+        recentConversations = RecentConversationCache()
+        selected = nil; snapshot = .null; conversations = []; drafts = [:]
+    }
     func refresh() async throws {
+        let generation = hostGeneration
         let list = try await client.request("GET", "/v1/conversations").array
         let settings = try await client.request("GET", "/v1/library")
+        guard generation == hostGeneration else { return }
         conversations = list; library = settings
+        recentConversations.retain(Set(list.compactMap { $0["id"].string }))
         if let id = selected {
             if !list.contains(where: { $0["id"].string == id }) { selected = nil; snapshot = .null; return }
             let value = try await client.request("GET", "/v1/conversations/\(id)")
+            guard generation == hostGeneration else { return }
+            recentConversations.update(value)
             if selected == id { snapshot = value }
         }
     }
@@ -73,11 +97,16 @@ import ExecRemote
         }
     }
     func open(_ id: String) async {
-        selected = id; snapshot = .null
+        selected = id
+        let generation = hostGeneration
         do {
             let value = try await client.request("GET", "/v1/conversations/\(id)")
+            guard generation == hostGeneration else { return }
+            recentConversations.update(value)
             if selected == id { snapshot = value }
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            if generation == hostGeneration, selected == id { self.error = error.localizedDescription }
+        }
     }
     func mutate(_ method: String, _ path: String, _ body: RemoteJSON, onSuccess: ((RemoteJSON) -> Void)? = nil) async {
         guard connected, !busy else { return }; busy = true; error = nil
@@ -90,15 +119,17 @@ import ExecRemote
     }
     func deleteConversation(_ id: String) async {
         await mutate("DELETE", "/v1/conversations/\(id)", .null) { _ in
+            self.recentConversations.remove(id)
             self.drafts.removeValue(forKey: id)
             if self.selected == id { self.selected = nil; self.snapshot = .null }
         }
     }
     func send() async {
-        guard let id = selected, !active, snapshot["id"].string == id, let text = drafts[id], !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let id = selected, let text = drafts[id],
+              let submission = RemoteMessageSubmission(conversationID: id, snapshot: snapshot, text: text) else { return }
         // Clear only after acceptance. An interrupted send preserves the draft but
-        // is never automatically resubmitted.
-        await mutate("POST", "/v1/conversations/\(id)/turns", .object(["text":.string(text)])) { _ in
+        // is never automatically resubmitted, including queued steering input.
+        await mutate("POST", submission.path, submission.body) { _ in
             if self.drafts[id] == text { self.drafts[id] = "" }
         }
     }

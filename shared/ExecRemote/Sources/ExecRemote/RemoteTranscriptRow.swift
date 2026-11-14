@@ -28,6 +28,12 @@ public struct RemoteTranscriptRow: Equatable, Sendable {
                 }
             }
         }
+        // Accepted steering messages remain visible while the current operation
+        // reaches an input boundary. Keep their identity when they enter messages.
+        let displayed = Set(rows.map(\.id))
+        for message in snapshot["pendingInput"].array where !displayed.contains(identifier(message)) {
+            rows.append(Self(id: identifier(message), message: message))
+        }
         return rows
     }
 }

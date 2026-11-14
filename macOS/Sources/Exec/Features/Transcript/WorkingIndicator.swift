@@ -1,6 +1,9 @@
 import AppKit
 import QuartzCore
 import SwiftUI
+#if canImport(ExecTranscript)
+import ExecTranscript
+#endif
 
 /// Independent neuron pulses played by Core Animation, without a per-frame app timer.
 struct WorkingIndicator: NSViewRepresentable {
@@ -27,25 +30,10 @@ struct WorkingIndicator: NSViewRepresentable {
         private(set) var isAnimating = false
         override var intrinsicContentSize: NSSize { NSSize(width: 28, height: 16) }
 
-        // All pulse frequencies are multiples of 0.01, at 1.5× speed. Their common
-        // period preserves the exact independent-neuron pattern without a loop seam.
-        private static let duration = 2 * Double.pi / (0.01 * 1.5)
-        private static let curves: [[NSNumber]] = {
-            let samples = Int(ceil(duration * 30))
-            return (0..<15).map { dot in
-                (0...samples).map { sample in
-                    NSNumber(value: brightness(dot: dot, time: duration * Double(sample) / Double(samples)))
-                }
-            }
-        }()
-
+        private static let duration = NeuralPulse.duration
+        private static let curves = NeuralPulse.curves
         private static func brightness(dot: Int, time: Double) -> Float {
-            let index = Double((dot / 5) * 7 + dot % 5)
-            let phase = index * 2.399
-            let time = time * 1.5
-            let pulse = sin(time * (1.7 + index.truncatingRemainder(dividingBy: 5) * 0.19) + phase)
-            let value = pulse * 0.75 + sin(time * 0.7 + phase * 1.3) * 0.25
-            return Float(min(1, pow(max(0, value + 0.1), 2) * 2.5))
+            NeuralPulse.brightness(dot: dot, time: time)
         }
 
         override init(frame frameRect: NSRect) {
