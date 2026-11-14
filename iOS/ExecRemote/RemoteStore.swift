@@ -23,7 +23,8 @@ import ExecRemote
     }
     var drafts: [String:String] = [:]
     private var optimisticMessages: [String: RemoteOptimisticMessages] = [:]
-    // Invalidate reads issued before a local send so they cannot roll it back.
+    private var deletions = RemoteSessionDeletions()
+    // Invalidate reads spanning local sends/deletions so they cannot roll back UI state.
     private var snapshotGeneration = 0
     var displaySnapshot: RemoteJSON {
         guard let selected else { return snapshot }
@@ -33,7 +34,22 @@ import ExecRemote
     private var recentConversations = RecentConversationCache()
     private var hostGeneration = 0
     private let client = RelayClient()
-    init() { do { host = try DeviceStore.load() } catch { self.error = error.localizedDescription } }
+    init() {
+        #if DEBUG && targetEnvironment(simulator)
+        if RemoteUIFixture.enabled {
+            host = RemoteUIFixture.host; connected = true
+            conversations = RemoteUIFixture.conversations
+            return
+        }
+        #endif
+        do { host = try DeviceStore.load() } catch { self.error = error.localizedDescription }
+    }
+    private func request(_ method: String, _ path: String, body: RemoteJSON? = nil) async throws -> RemoteJSON {
+        #if DEBUG && targetEnvironment(simulator)
+        if RemoteUIFixture.enabled { return try await RemoteUIFixture.request(method, path) }
+        #endif
+        return try await client.request(method, path, body: body)
+    }
     var active: Bool { RemoteMessageSubmission.isActive(snapshot) }
     func pair(_ text: String) async {
         guard !busy else { return }
@@ -56,7 +72,7 @@ import ExecRemote
             try await client.connect(host)
             host.invitation.secret = nil
             try DeviceStore.save(host); self.host = host; connected = true
-            models = try await client.request("GET", "/v1/models").array
+            models = try await request("GET", "/v1/models").array
             try await refresh()
         } catch { connected = false; self.error = error.localizedDescription }
     }
@@ -73,7 +89,7 @@ import ExecRemote
     }
     func browseFolders(_ path: String?, showHidden: Bool) async throws -> RemoteJSON {
         guard connected else { throw RemoteFailure("Connect to the agent first.") }
-        return try await client.request("POST", "/v1/workspaces/browse", body: .object([
+        return try await request("POST", "/v1/workspaces/browse", body: .object([
             "path": .optional(path), "showHidden": .bool(showHidden)
         ]))
     }
@@ -81,6 +97,7 @@ import ExecRemote
         hostGeneration += 1
         recentConversations = RecentConversationCache()
         optimisticMessages = [:]
+        deletions = RemoteSessionDeletions()
         snapshotGeneration += 1
         selected = nil; snapshot = .null; conversations = []; drafts = [:]
     }
@@ -94,11 +111,11 @@ import ExecRemote
             do { try await refreshConversation(id) }
             catch { readFailure = error }
         }
-        let list = try await client.request("GET", "/v1/conversations").array
-        let settings = try await client.request("GET", "/v1/library")
+        let list = try await request("GET", "/v1/conversations").array
+        let settings = try await request("GET", "/v1/library")
         guard generation == hostGeneration, readGeneration == snapshotGeneration else { return }
-        conversations = list; library = settings
-        let ids = Set(list.compactMap { $0["id"].string })
+        conversations = deletions.reconcile(list); library = settings
+        let ids = Set(conversations.compactMap { $0["id"].string }).union(deletions.pendingIDs)
         recentConversations.retain(ids)
         optimisticMessages = optimisticMessages.filter { ids.contains($0.key) }
         if let id = selected, !ids.contains(id) { selected = nil; snapshot = .null }
@@ -106,13 +123,16 @@ import ExecRemote
     }
     private func refreshConversation(_ id: String) async throws {
         let generation = hostGeneration, readGeneration = snapshotGeneration
-        let value = try await client.request("GET", "/v1/conversations/\(id)")
+        let value = try await request("GET", "/v1/conversations/\(id)")
         guard generation == hostGeneration, readGeneration == snapshotGeneration else { return }
         optimisticMessages[id]?.reconcile(value)
         recentConversations.update(value)
         if selected == id { snapshot = value }
     }
     func observe() async {
+        #if DEBUG && targetEnvironment(simulator)
+        if RemoteUIFixture.enabled { connected = true; return }
+        #endif
         if host != nil, !connected { await connect() }
         while !Task.isCancelled {
             do {
@@ -138,18 +158,41 @@ import ExecRemote
         guard connected, !busy else { return }; busy = true; error = nil
         defer { busy = false }
         do {
-            let value = try await client.request(method, path, body: body)
+            let value = try await request(method, path, body: body)
             onSuccess?(value)
             try await refresh()
         } catch { self.error = error.localizedDescription }
     }
     func deleteConversation(_ id: String) async {
-        await mutate("DELETE", "/v1/conversations/\(id)", .null) { _ in
-            self.recentConversations.remove(id)
-            self.optimisticMessages.removeValue(forKey: id)
-            self.drafts.removeValue(forKey: id)
-            if self.selected == id { self.selected = nil; self.snapshot = .null }
+        guard connected, !busy, let conversation = conversations.first(where: { $0.id == id }),
+              !RemoteMessageSubmission.isActive(conversation) else { return }
+        busy = true; error = nil
+        let generation = hostGeneration
+        snapshotGeneration += 1
+        deletions.begin(conversation)
+        withAnimation { conversations = deletions.project(conversations) }
+        if selected == id { selected = nil }
+        defer { busy = false }
+        do {
+            _ = try await request("DELETE", "/v1/conversations/\(id)")
+            guard generation == hostGeneration else { return }
+            snapshotGeneration += 1
+            deletions.accept(id)
+            recentConversations.remove(id)
+            optimisticMessages.removeValue(forKey: id)
+            drafts.removeValue(forKey: id)
+        } catch {
+            guard generation == hostGeneration else { return }
+            snapshotGeneration += 1
+            if let restored = deletions.fail(id), !conversations.contains(where: { $0.id == id }) {
+                withAnimation { conversations.append(restored) }
+            }
+            self.error = error.localizedDescription
+            return
         }
+        // Acceptance is final. A later refresh error must not resurrect the row.
+        do { try await refresh() }
+        catch { if generation == hostGeneration { self.error = error.localizedDescription } }
     }
     func send() async {
         guard connected, !busy, !awaitingSendSnapshot,
@@ -162,7 +205,7 @@ import ExecRemote
         drafts[id] = ""
         defer { busy = false }
         do {
-            let response = try await client.request("POST", submission.path, body: submission.body)
+            let response = try await request("POST", submission.path, body: submission.body)
             guard generation == hostGeneration else { return }
             optimisticMessages[id]?.accept(localID, response: response)
         } catch {

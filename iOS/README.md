@@ -22,6 +22,23 @@ xcodebuild -project ExecRemote.xcodeproj -scheme ExecRemote \
 
 Keep Xcode's default **Sign to Run Locally** simulator signing enabled. An unsigned simulator build can launch but cannot use its Keychain. In Xcode 27, the simulator UI is **Device Hub** (`Xcode.app/Contents/Applications/DeviceHub.app`).
 
+## Isolated UI checks
+
+The `ExecRemote` scheme includes three focused UI tests for navigation underlap/keyboard geometry, optimistic deletion failure recovery, and an accepted deletion followed by a failed refresh. Screenshot attachments include the native middle-row swipe state. The app target is named `ExecRemoteMobile` to disambiguate it from the `ExecRemote` Swift package; the scheme, app product and bundle identifier are unchanged.
+
+Run from `iOS/` on an installed simulator (replace the device ID):
+
+```sh
+xcodebuild -project ExecRemote.xcodeproj -scheme ExecRemote \
+  -configuration Debug -destination 'platform=iOS Simulator,id=SIMULATOR_ID' \
+  -derivedDataPath .build -resultBundlePath .build/ui-checks.xcresult \
+  -parallel-testing-enabled NO test
+xcrun xcresulttool export attachments --path .build/ui-checks.xcresult \
+  --output-path .build/ui-screenshots
+```
+
+The tests launch with `--ui-fixture`, using only synthetic sessions and delayed fake responses. This launch mode exists only in Debug simulator builds and bypasses saved-host loading, Keychain and transport observation. It is not compiled into device/Release builds. Debug builds target only the active simulator architecture so local packages and the app agree. Results do not verify live-relay behavior or physical-device rendering.
+
 ## Device / TestFlight
 
 1. Open the project in Xcode. Debug and Release use automatic signing for Numbers Office LLC (team `88P8NTGNTW`), bundle identifier `com.numbersoffice.exec.remote`, and initial version/build `1.0 / 1`. Sign in with an Apple Developer account authorized for that team; provisioning profiles and credentials are not committed. Use your own team and bundle identifier for independent builds.
@@ -35,8 +52,8 @@ The app icon is an opaque 1024px derivative of the existing Exec artwork. Device
 ## First-version scope
 
 - QR/pasted invitation pairing, one saved host, per-device identity stored in Keychain (`WhenUnlockedThisDeviceOnly`, not synced).
-- Native inset-grouped session list on the system grouped background, sorted by last activity with primary-label daily sections (Today, Yesterday, then dates). Neutral rows show a title above a single time/workspace row, without folder icons. The centered All Sessions navigation header and bottom toolbar use system styling; options are bottom-left and new chat bottom-right. Native destructive swipe actions support full-swipe deletion. Active conversations must be stopped before deletion.
-- Native multiline composer with system Liquid Glass on iOS 26+, and system material on older supported iOS versions. A native table controller exposes the transcript's scroll view to the navigation bar for system scroll-edge styling. The transcript scrolls beneath the floating composer with measured bottom padding, following content-height and inset changes while at the bottom without interrupting reading above. Sending keeps keyboard focus; the transcript supports interactive swipe-down keyboard dismissal.
+- Native inset-grouped session list on the system grouped background, sorted by last activity with primary-label daily sections (Today, Yesterday, then dates). Neutral rows show a title above a single time/workspace row, without folder icons. The centered All Sessions navigation header and bottom toolbar use system styling; options are bottom-left and new chat bottom-right. Native destructive swipe actions support full-swipe deletion. Rows retain the system background and animated trailing-corner mask instead of overriding it with a flat custom background. Deletions hide the row immediately and suppress stale refreshes; a failed deletion restores it, but a failed refresh after host acceptance does not. Active conversations must be stopped before deletion.
+- Native multiline composer with system Liquid Glass on iOS 26+, and system material on older supported iOS versions. The transcript extends underneath the top navigation bar, retaining UIKit's automatic safe-area content inset. Its native table controller registers the scroll view with the SwiftUI navigation owner (not just the embedded child) for system translucency and scroll-edge styling. The transcript scrolls beneath the floating composer with measured bottom padding, following content-height and inset changes while at the bottom without interrupting reading above. Sending keeps keyboard focus; the transcript supports interactive swipe-down keyboard dismissal.
 - During an active turn, an empty composer shows Stop; entering text switches to Send and submits to the host's operation-bound steering queue. Sent/queued text and the active indicator appear immediately through a display-only overlay, with stable row identity after reconciliation. Drafts clear immediately and are restored on send failure without discarding newer typing; failures never trigger automatic resubmission. An accepted send whose refresh fails retains its local row, not a restored draft. Execution/cancellation always use authoritative state, never the visual overlay.
 - Foreground snapshot polling every 1.5 seconds when idle, or every 0.5 seconds for the selected active/pending session (plus request latency). Visible-session reads take priority over list/settings reads. Reconnect fetches authoritative state. Sends/approvals/settings changes are never automatically retried. Following an uncertain send, inspect the refreshed conversation before manually sending again.
 - The last three viewed conversations are cached in memory. Reopening displays the last snapshot immediately and refreshes without first clearing the transcript. Refresh failures retain cached contents; deletion and host changes invalidate them. This is not an offline conversation database and does not survive process termination.
