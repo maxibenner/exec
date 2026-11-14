@@ -191,7 +191,7 @@ private struct SessionControls: View {
             }
         }
         .labelStyle(.iconOnly)
-        .font(.title3)
+        .font(.body.weight(.semibold))
         .buttonBorderShape(.circle)
         .controlSize(.large)
     }
