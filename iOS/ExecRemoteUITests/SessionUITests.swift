@@ -20,11 +20,16 @@ import XCTest
         capture("sessions-rest", app: app)
         let row = app.buttons["session-fixture-3"]
         print("ROW BEFORE SWIPE", row.frame)
+        XCTAssertEqual(row.frame.minX, app.frame.minX, accuracy: 2)
+        XCTAssertEqual(row.frame.maxX, app.frame.maxX, accuracy: 2,
+                       "Session rows must span the screen rather than an inset clipping container.")
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
             .press(forDuration: 0.05, thenDragTo: row.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5)))
         capture("sessions-swipe", app: app)
         print("ROW AFTER SWIPE", row.frame)
-        print("DELETE ACTION", app.buttons["Delete"].firstMatch.frame)
+        let deleteAction = app.buttons["Delete"].firstMatch
+        XCTAssertTrue(deleteAction.waitForExistence(timeout: 3))
+        print("DELETE ACTION", deleteAction.frame)
         app.buttons["session-fixture-1"].tap()
         // The first tap may close the native swipe action without navigating.
         if !app.tables.firstMatch.waitForExistence(timeout: 2) { app.buttons["session-fixture-1"].tap() }
