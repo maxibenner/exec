@@ -30,7 +30,9 @@ struct AccountUsageLabel: View {
                                 .frame(maxWidth: .infinity)
                             Text("\(window.remainingPercent)%")
                                 .monospacedDigit()
-                                .frame(width: 32, alignment: .trailing)
+                                .foregroundStyle(.secondary)
+                                .gridColumnAlignment(.trailing)
+                                .fixedSize()
                         }
                         .help("\(title): \(description)")
                         .accessibilityElement(children: .ignore)
@@ -40,8 +42,8 @@ struct AccountUsageLabel: View {
                 }
             }
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        .font(.body)
+        .foregroundStyle(.primary)
     }
 
     static func name(_ seconds: Int) -> String {
