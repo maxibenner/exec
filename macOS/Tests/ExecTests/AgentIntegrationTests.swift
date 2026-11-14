@@ -70,7 +70,7 @@ actor FakeAgentTransport: AgentTransport {
         try expect(store.messages.count == 3)
         try expect(store.messages[0].id == Self.userID)
         try expect(store.messages[2].pendingTool?.isAwaitingApproval == true)
-        try expect(store.busy && store.isSending && !store.canFork)
+        try expect(store.busy && store.isSending && store.canFork)
         try expect(store.contextUsage?.percent == 12)
         try expect(store.tools.pendingApproval?.content == "printf hello")
         try expect(store.tools.pendingApproval?.timeoutSeconds == 10)
@@ -89,6 +89,15 @@ actor FakeAgentTransport: AgentTransport {
         try expect(decision["operationID"].string == Self.operationID.uuidString.lowercased())
         try expect(decision["approvalID"].string == Self.approvalID.uuidString.lowercased())
         try expect(!decision["approved"].bool)
+        let sourceApproval = store.tools.pendingApproval?.id
+        let fork = ChatStore(provider: provider)
+        defer { fork.closePresentation() }
+        let forkPath = AgentAPI.path(Self.conversationID, "/fork")
+        try await transport.reply(forkPath, Self.fixture(state: "interrupted", result: true))
+        try await fork.copyConversation(from: store)
+        let forkRequests = await transport.requests.filter { $0.path == forkPath }
+        try expect(forkRequests.count == 1 && forkRequests[0].method == "POST")
+        try expect(store.busy && !fork.busy && store.tools.pendingApproval?.id == sourceApproval)
         try store.apply(Self.fixture(state: "completed", result: true).decoded(AgentSnapshot.self))
         try expect(!store.busy && store.canFork && store.tools.pendingApproval == nil)
         try expect(store.messages[2].id == rowID && store.messages[2].toolResult?.outcome == "denied")

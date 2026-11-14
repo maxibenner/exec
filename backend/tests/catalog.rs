@@ -116,9 +116,17 @@ async fn defaults_order_rename_model_and_fork_survive_restart_without_mutating_s
 }
 
 #[tokio::test]
-async fn busy_sessions_reject_rename_model_and_fork() {
+async fn busy_sessions_reject_mutations_but_fork_without_waiting() {
     let entered = CancellationToken::new();
-    let p = FakeProvider::new(vec![waiting(entered.clone())]);
+    let signal = entered.clone();
+    let p = FakeProvider::new(vec![script(move |request| {
+        Box::pin(async_stream::try_stream! {
+            yield ProviderEvent::Text("Partial answer".into());
+            signal.cancel();
+            request.cancel.cancelled().await;
+            Err(Error::Cancelled)?;
+        })
+    })]);
     let manager = Arc::new(AgentManager::default());
     let c = manager.create(options(p.clone(), vec![])).await.unwrap();
     let run = c.submit("work".into()).unwrap();
@@ -134,10 +142,116 @@ async fn busy_sessions_reject_rename_model_and_fork() {
             .unwrap_err(),
         Error::Busy
     );
-    assert!(matches!(
-        manager.fork(&c.id, p, vec![]).await,
-        Err(Error::Busy)
-    ));
+    c.steer(&run.operation_id, "queued input".into()).unwrap();
+    let source = c.snapshot();
+    let fork = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        manager.fork(&c.id, p.clone(), vec![]),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let snapshot = fork.snapshot();
+    assert_eq!(snapshot.messages, source.messages[..1]);
+    assert!(snapshot.pending_input.is_empty());
+    assert!(!snapshot.operation.unwrap().state.active());
+    assert_eq!(c.snapshot(), source);
+    assert!(c.busy());
+    c.cancel(&run.operation_id);
+    complete(run).await;
+    let idle_fork = manager.fork(&c.id, p, vec![]).await.unwrap();
+    assert!(idle_fork.snapshot().pending_input.is_empty());
+    manager.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn active_fork_preserves_completed_tool_pieces_and_continues_independently() {
+    let entered = CancellationToken::new();
+    let blocked = entered.clone();
+    let tools = vec![tool(None, move |context| {
+        let entered = blocked.clone();
+        async move {
+            if context.call_id == "second" {
+                entered.cancel();
+                context.cancel.cancelled().await;
+                return Err(Error::Cancelled);
+            }
+            Ok("finished first tool".into())
+        }
+    })];
+    let p = FakeProvider::new(vec![
+        response(vec![
+            ProviderEvent::Text("Completed tool request".into()),
+            call("first"),
+            call("second"),
+            ProviderEvent::Done,
+        ]),
+        answer(),
+    ]);
+    let root = directory();
+    let store = JsonConversationStore::open(root.path()).await.unwrap();
+    let manager = AgentManager::open(store, |_| (p.clone(), tools.clone()))
+        .await
+        .unwrap();
+    let c = manager
+        .create(options(p.clone(), tools.clone()))
+        .await
+        .unwrap();
+    let run = c.submit("work".into()).unwrap();
+    entered.cancelled().await;
+    let source = c.snapshot();
+    let fork = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        manager.fork(&c.id, p.clone(), tools.clone()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let snapshot = fork.snapshot();
+    assert_eq!(snapshot.messages.len(), 3);
+    assert_eq!(snapshot.messages[0], source.messages[0]);
+    assert_eq!(snapshot.messages[2], source.messages[2]);
+    assert!(
+        matches!(&snapshot.messages[1], Message::Assistant { text, calls, status: MessageStatus::Completed, .. }
+        if text == "Completed tool request" && calls.len() == 1 && calls[0].id == "first")
+    );
+    fork.record().validate().unwrap();
+    assert!(fork.record().provider_state.is_none());
+    assert!(snapshot.approval.is_none() && snapshot.active_tool_call_id.is_none());
+    assert_eq!(c.snapshot(), source);
+    assert!(c.busy());
+    complete(fork.submit("Continue fork".into()).unwrap()).await;
+    assert_eq!(c.snapshot(), source);
+    let saved = fork.snapshot();
+    c.cancel(&run.operation_id);
+    complete(run).await;
+    manager.close().await.unwrap();
+    let store = JsonConversationStore::open(root.path()).await.unwrap();
+    let restored = AgentManager::open(store, |_| (p.clone(), tools.clone()))
+        .await
+        .unwrap();
+    assert_eq!(restored.get(&fork.id).unwrap().snapshot(), saved);
+    restored.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn fork_during_approval_does_not_copy_or_resolve_the_live_action() {
+    let tools = vec![tool(Some("Confirm"), |_| async {
+        panic!("must not execute")
+    })];
+    let p = FakeProvider::new(vec![response(vec![call("pending"), ProviderEvent::Done])]);
+    let manager = AgentManager::default();
+    let c = manager
+        .create(options(p.clone(), tools.clone()))
+        .await
+        .unwrap();
+    let run = c.submit("work".into()).unwrap();
+    let pending = approval(&c).await;
+    let fork = manager.fork(&c.id, p, tools).await.unwrap();
+    let snapshot = fork.snapshot();
+    assert!(snapshot.approval.is_none());
+    assert!(matches!(&snapshot.messages[1], Message::Assistant { calls, .. } if calls.is_empty()));
+    assert_eq!(c.snapshot().approval.unwrap().id, pending.id);
     c.cancel(&run.operation_id);
     complete(run).await;
     manager.close().await.unwrap();

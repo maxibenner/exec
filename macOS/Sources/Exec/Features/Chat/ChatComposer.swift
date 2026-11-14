@@ -282,12 +282,8 @@ struct ChatComposer: View {
             case .fork:
                 guard store.library.canRequestFork(store.current) else { return }
                 store.draft = ""
-                store.current.whenIdle("fork") {
-                    guard store.library.canForkConversation(store.current) else { throw ExecError("Cannot fork this conversation right now.") }
-                    if let windows { windows.forkConversation(store.current) }
-                    else { store.library.forkConversation(store.current) }
-                    await store.library.waitForNavigation()
-                }
+                if let windows { windows.forkConversation(store.current) }
+                else { store.library.forkConversation(store.current) }
                 close()
             case .workspace:
                 guard store.canChooseWorkspace else { return }

@@ -234,7 +234,7 @@ import Foundation
         for _ in 0..<5 { await Task.yield() }
         let before = await transport.requests
         try expect(before.isEmpty && actions.isEmpty && store.tools.pendingApproval?.id == oldApproval)
-        try expect(store.canCompact && store.canRequestFork && !store.canFork)
+        try expect(store.canCompact && store.canRequestFork && store.canFork)
         let terminal = try snapshot("completed")
         let desired = try snapshot("completed", model: "openai/next", auto: true)
         let value = try snapshotJSON("completed", model: "openai/next", auto: true)
