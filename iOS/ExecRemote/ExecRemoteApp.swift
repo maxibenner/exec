@@ -47,7 +47,8 @@ struct RootView: View {
                                 }
                             }
                         }
-                        .listStyle(.insetGrouped)
+                        // Full-width sections let native swipe actions reach the screen edge.
+                        .listStyle(.grouped)
                         .scrollContentBackground(.hidden)
                         .background(Color(uiColor: .systemGroupedBackground))
                         .refreshable { do { try await store.refresh() } catch { store.error = error.localizedDescription } }
