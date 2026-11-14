@@ -2,7 +2,12 @@ import SwiftUI
 import ExecRemote
 
 @main struct ExecRemoteApp: App {
-    @State private var store = RemoteStore()
+    @State private var store: RemoteStore = {
+        #if DEBUG && targetEnvironment(simulator)
+        if RemoteUIFixture.enabled { return RemoteUIFixture.makeStore() }
+        #endif
+        return RemoteStore()
+    }()
     @Environment(\.scenePhase) private var phase
     var body: some Scene {
         WindowGroup {
@@ -117,8 +122,10 @@ struct RootView: View {
             .padding(.vertical, 6)
             .contentShape(Rectangle())
         }
+        .accessibilityIdentifier("session-\(conversation.id)")
         .disabled(conversation["unreadable"].bool)
-        .listRowBackground(Color(uiColor: .secondarySystemGroupedBackground))
+        // Keep the system row background: it owns the animated trailing-corner
+        // mask during native swipe actions, including middle rows in a section.
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button("Delete", systemImage: "trash", role: .destructive) {
                 Task { await store.deleteConversation(conversation.id) }
@@ -153,7 +160,7 @@ struct ConversationScreen: View {
         NativeTranscript(conversationID: store.selected, snapshot: store.displaySnapshot,
                          bottomPadding: composerHeight, hasEarlier: store.hasEarlierMessages,
                          loadEarlier: { Task { await store.loadEarlier() } })
-        .ignoresSafeArea(.container, edges: .bottom)
+        .ignoresSafeArea(.container, edges: [.top, .bottom])
         .navigationTitle(store.snapshot["metadata"]["title"].string ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .bottomBar)
@@ -210,6 +217,7 @@ private struct RemoteChatComposer: View {
     private var stopping: Bool { RemoteMessageSubmission.showsStop(snapshot: store.displaySnapshot, draft: draft.wrappedValue) }
     private var field: some View {
         TextField("Message", text: draft, axis: .vertical)
+            .accessibilityIdentifier("message-composer")
             .lineLimit(1...6)
             .textFieldStyle(.plain)
             .padding(.horizontal, 18)

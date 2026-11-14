@@ -248,6 +248,50 @@ private actor FakeTransport: RemoteTransport {
         XCTAssertTrue(store.hasEarlierMessages)
     }
 
+    func testPendingDeletionSurvivesRefreshAndFailureRestoresDraft() async throws {
+        let transport = FakeTransport(), store = try makeStore(transport)
+        await store.poll()
+        store.drafts["session"] = "Keep this draft"
+        await transport.holdNextRequest("DELETE", "/v1/conversations/session")
+        await transport.failNext("DELETE", "/v1/conversations/session", disconnect: false)
+        let deletion = Task { await store.deleteConversation("session") }
+        for _ in 0..<1000 {
+            if await transport.waitingForRequest { break }
+            await Task.yield()
+        }
+        let waiting = await transport.waitingForRequest
+        XCTAssertTrue(waiting)
+        XCTAssertTrue(store.conversations.isEmpty)
+        // A stale successful read during the pending DELETE cannot resurrect it.
+        try await store.refresh()
+        XCTAssertTrue(store.conversations.isEmpty)
+        await transport.releaseRequest()
+        await deletion.value
+        XCTAssertEqual(store.conversations.map(\.id), ["session"])
+        XCTAssertEqual(store.drafts["session"], "Keep this draft")
+        XCTAssertEqual(store.error, "Request rejected.")
+        await store.poll()
+        let deletes = await transport.requests.filter { $0.hasPrefix("DELETE ") }
+        XCTAssertEqual(deletes.count, 1)
+    }
+
+    func testAcceptedDeletionIsNotRestoredByRefreshFailureOrRecovery() async throws {
+        let transport = FakeTransport(), store = try makeStore(transport)
+        await store.poll()
+        store.drafts["session"] = "Remove only after acceptance"
+        await transport.failNext("GET", "/v1/library")
+        await store.deleteConversation("session")
+        XCTAssertTrue(store.conversations.isEmpty)
+        XCTAssertNil(store.drafts["session"])
+        XCTAssertEqual(store.error, "Interrupted.")
+        // Reconnection returns the fake's stale list; the tombstone still wins.
+        await store.poll()
+        XCTAssertTrue(store.connected)
+        XCTAssertTrue(store.conversations.isEmpty)
+        let deletes = await transport.requests.filter { $0.hasPrefix("DELETE ") }
+        XCTAssertEqual(deletes.count, 1)
+    }
+
     func testCancelledObserverDoesNotConnect() async throws {
         let transport = FakeTransport(), store = try makeStore(transport)
         let observer = Task { await store.observe() }

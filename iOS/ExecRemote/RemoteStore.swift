@@ -37,7 +37,8 @@ extension RelayClient: RemoteTransport {}
     }
     var drafts: [String:String] = [:]
     private var optimisticMessages: [String: RemoteOptimisticMessages] = [:]
-    // Invalidate reads issued before a local send so they cannot roll it back.
+    private var deletions = RemoteSessionDeletions()
+    // Invalidate reads spanning local sends/deletions so they cannot roll back UI state.
     private var snapshotGeneration = 0
     var displaySnapshot: RemoteJSON {
         guard let selected else { return snapshot }
@@ -124,6 +125,7 @@ extension RelayClient: RemoteTransport {}
         recentConversations = RecentConversationCache()
         syncStates = [:]; readTickets = [:]; loadingEarlier = []
         optimisticMessages = [:]
+        deletions = RemoteSessionDeletions()
         snapshotGeneration += 1
         selected = nil; snapshot = .null; conversations = []; drafts = [:]
     }
@@ -140,8 +142,8 @@ extension RelayClient: RemoteTransport {}
         let list = try await client.request("GET", "/v1/conversations").array
         let settings = try await client.request("GET", "/v1/library")
         guard generation == hostGeneration, readGeneration == snapshotGeneration else { return }
-        conversations = list; library = settings
-        let ids = Set(list.compactMap { $0["id"].string })
+        conversations = deletions.reconcile(list); library = settings
+        let ids = Set(conversations.compactMap { $0["id"].string }).union(deletions.pendingIDs)
         recentConversations.retain(ids)
         syncStates = syncStates.filter { recentConversations.contains($0.key) }
         optimisticMessages = optimisticMessages.filter { ids.contains($0.key) }
@@ -239,14 +241,37 @@ extension RelayClient: RemoteTransport {}
         } catch { self.error = error.localizedDescription }
     }
     func deleteConversation(_ id: String) async {
-        await mutate("DELETE", "/v1/conversations/\(id)", .null) { _ in
-            self.recentConversations.remove(id)
-            self.syncStates.removeValue(forKey: id)
-            self.readTickets[id, default: 0] += 1
-            self.optimisticMessages.removeValue(forKey: id)
-            self.drafts.removeValue(forKey: id)
-            if self.selected == id { self.selected = nil; self.snapshot = .null }
+        guard connected, !busy, let conversation = conversations.first(where: { $0.id == id }),
+              !RemoteMessageSubmission.isActive(conversation) else { return }
+        busy = true; error = nil
+        let generation = hostGeneration
+        snapshotGeneration += 1
+        deletions.begin(conversation)
+        withAnimation { conversations = deletions.project(conversations) }
+        if selected == id { selected = nil }
+        defer { busy = false }
+        do {
+            _ = try await client.request("DELETE", "/v1/conversations/\(id)")
+            guard generation == hostGeneration else { return }
+            snapshotGeneration += 1
+            deletions.accept(id)
+            recentConversations.remove(id)
+            syncStates.removeValue(forKey: id)
+            readTickets[id, default: 0] += 1
+            optimisticMessages.removeValue(forKey: id)
+            drafts.removeValue(forKey: id)
+        } catch {
+            guard generation == hostGeneration else { return }
+            snapshotGeneration += 1
+            if let restored = deletions.fail(id), !conversations.contains(where: { $0.id == id }) {
+                withAnimation { conversations.append(restored) }
+            }
+            self.error = error.localizedDescription
+            return
         }
+        // Acceptance is final. A later refresh error must not resurrect the row.
+        do { try await refresh() }
+        catch { if generation == hostGeneration { self.error = error.localizedDescription } }
     }
     func send() async {
         guard connected, !busy, !awaitingSendSnapshot,

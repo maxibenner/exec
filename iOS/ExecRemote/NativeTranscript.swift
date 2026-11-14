@@ -13,9 +13,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
     let loadEarlier: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIViewController(context: Context) -> UITableViewController {
-        // Expose the primary scroll view through a native controller so navigation
-        // bars get the system scroll-edge/Liquid Glass treatment, like SwiftUI List.
-        let controller = UITableViewController(style: .plain)
+        let controller = TranscriptViewController(style: .plain)
         let table = TranscriptTableView(frame: .zero, style: .plain)
         controller.tableView = table
         controller.setContentScrollView(table, for: .top)
@@ -115,6 +113,24 @@ struct NativeTranscript: UIViewControllerRepresentable {
                 (table as? TranscriptTableView)?.followBottom()
             }
         }
+    }
+}
+
+/// The navigation item belongs to SwiftUI's hosting controller, not this child.
+/// Register the actual underlapping scroll view with that owner; leave the bar's
+/// appearance and scroll-edge effect entirely to UIKit.
+@MainActor private final class TranscriptViewController: UITableViewController {
+    private weak var navigationOwner: UIViewController?
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard let owner = navigationController?.topViewController, owner !== navigationOwner else { return }
+        navigationOwner = owner
+        owner.setContentScrollView(tableView, for: .top)
+    }
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        navigationOwner?.setContentScrollView(nil, for: .top)
+        navigationOwner = nil
     }
 }
 
