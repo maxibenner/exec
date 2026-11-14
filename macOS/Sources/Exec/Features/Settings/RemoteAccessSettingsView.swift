@@ -3,7 +3,8 @@ import CoreImage.CIFilterBuiltins
 
 struct RemoteAccessSettingsView: View {
     let api: AgentAPI
-    @State private var relay = ""
+    private static let defaultRelay = "wss://relay.numbersoffice.com"
+    @State private var relay = Self.defaultRelay
     @State private var enabled = false
     @State private var localDevelopment = false
     @State private var status: AgentJSON = .null
@@ -19,52 +20,65 @@ struct RemoteAccessSettingsView: View {
         Form {
             Section {
                 Toggle("Remote access", isOn: $enabled)
-                TextField("Relay", text: $relay, prompt: Text("wss://relay.example.com"))
-                Toggle("Local development relay", isOn: $localDevelopment)
-                    .onChange(of: localDevelopment) { _, local in
-                        if local && relay.isEmpty { relay = "ws://127.0.0.1:8787" }
-                    }
-                Button("Save") { perform {
-                    status = try await api.request("PUT", "/v1/remote", .object([
-                        "relay":.string(relay), "enabled":.bool(enabled), "localDevelopment":.bool(localDevelopment)
-                    ]))
-                    invitation = nil
-                } }
-                if status["enabled"].bool {
-                    LabeledContent("Relay", value: status["connected"].bool ? "Connected" : "Disconnected")
-                }
+                LabeledContent("Status", value: status["connected"].bool ? "Connected" : "Disconnected")
             } footer: {
-                Text("Remote devices can run tools on this Mac. Exec must remain open and the Mac awake. Production relays require wss://.")
+                Text("Exec must remain open and the Mac awake.")
             }
-            if status["enabled"].bool {
-                Section("Pair a Device") {
-                    Button("Create Pairing QR Code") { perform {
-                        invitation = try await api.request("POST", "/v1/remote/invitations", .object([:]))
+            Section {
+                TextField("Relay", text: $relay)
+            } footer: {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("You can host your own relay as a docker container. Find the code on [Github](https://github.com/maxibenner/exec/tree/main/relay).")
+                        .font(.caption).tint(.blue)
+                    Button("Save") { perform {
+                        status = try await api.request("PUT", "/v1/remote", .object([
+                            "relay":.string(relay), "enabled":.bool(enabled), "localDevelopment":.bool(localDevelopment)
+                        ]))
+                        invitation = nil
                     } }
-                    .disabled(!status["connected"].bool)
-                    if let text = invitationText, let image = qr(text) {
-                        HStack {
-                            Spacer()
-                            Image(nsImage: image).interpolation(.none).resizable().frame(width: 220, height: 220)
-                                .padding(12).background(.white).accessibilityLabel("Pairing QR code")
-                            Spacer()
-                        }
-                        Button("Copy Pairing Invitation") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(text, forType: .string)
-                        }
-                        Text("Single use. Expires after five minutes. Only share with a device you trust.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                    .buttonStyle(.bordered)
+                    .foregroundStyle(.primary)
                 }
             }
-            if !status["devices"].array.isEmpty {
-                Section("Paired Devices") {
+            if status["enabled"].bool || !status["devices"].array.isEmpty {
+                Section {
+                    if status["devices"].array.isEmpty {
+                        Text("No paired devices").foregroundStyle(.secondary)
+                    }
                     ForEach(status["devices"].array, id: \.selfID) { device in
                         HStack {
                             Text(device["name"].string ?? "Device")
                             Spacer()
                             Button("Revoke", role: .destructive) { revoking = device["id"].string }
+                        }
+                    }
+                } header: {
+                    Text("Paired Devices")
+                } footer: {
+                    if status["enabled"].bool {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Button("Create Pairing QR Code") { perform {
+                                invitation = try await api.request("POST", "/v1/remote/invitations", .object([:]))
+                            } }
+                            .buttonStyle(.bordered)
+                            .foregroundStyle(.primary)
+                            .disabled(!status["connected"].bool)
+                            if let text = invitationText, let image = qr(text) {
+                                HStack {
+                                    Spacer()
+                                    Image(nsImage: image).interpolation(.none).resizable().frame(width: 220, height: 220)
+                                        .padding(12).background(.white).accessibilityLabel("Pairing QR code")
+                                    Spacer()
+                                }
+                                Button("Copy Pairing Invitation") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(text, forType: .string)
+                                }
+                                .buttonStyle(.bordered)
+                                .foregroundStyle(.primary)
+                                Text("Single use. Expires after five minutes. Only share with a device you trust.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -82,7 +96,11 @@ struct RemoteAccessSettingsView: View {
         .task {
             do {
                 status = try await api.get("/v1/remote")
-                relay = status["relay"].string ?? ""; enabled = status["enabled"].bool; localDevelopment = status["localDevelopment"].bool
+                let savedRelay = status["relay"].string ?? ""
+                relay = savedRelay.isEmpty ? Self.defaultRelay : savedRelay
+                enabled = status["enabled"].bool
+                // Preserve existing local configurations without offering plaintext opt-in in the UI.
+                localDevelopment = status["localDevelopment"].bool
                 while !Task.isCancelled {
                     try await Task.sleep(for: .seconds(2))
                     if !busy { status = try await api.get("/v1/remote") }
