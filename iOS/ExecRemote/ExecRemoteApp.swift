@@ -267,19 +267,7 @@ struct NewChatScreen: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Button { choosingFolder = true } label: {
-                        HStack {
-                            Image(systemName: "folder")
-                            Text(workspace.isEmpty ? "Choose Folder" : workspace)
-                                .foregroundStyle(workspace.isEmpty ? .secondary : .primary)
-                                .multilineTextAlignment(.leading)
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                        }
-                    }
-                }
-                Section {
+                Section("Session settings") {
                     Picker("Model", selection: $model) {
                         ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
                     }
@@ -290,6 +278,18 @@ struct NewChatScreen: View {
                         }
                     }
                     .disabled(selectedModel["efforts"].array.isEmpty)
+                }
+                Section("Workspace") {
+                    Button { choosingFolder = true } label: {
+                        HStack {
+                            Image(systemName: "folder")
+                            Text(workspace.isEmpty ? "Choose Folder" : workspace)
+                                .foregroundStyle(workspace.isEmpty ? .secondary : .primary)
+                                .multilineTextAlignment(.leading)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                        }
+                    }
                 }
             }
             .sheet(isPresented: $choosingFolder) {
