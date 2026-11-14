@@ -20,15 +20,18 @@ import XCTest
         capture("sessions-rest", app: app)
         let row = app.buttons["session-fixture-3"]
         print("ROW BEFORE SWIPE", row.frame)
-        XCTAssertEqual(row.frame.minX, app.frame.minX, accuracy: 2)
-        XCTAssertEqual(row.frame.maxX, app.frame.maxX, accuracy: 2,
-                       "Session rows must span the screen rather than an inset clipping container.")
+        XCTAssertGreaterThan(row.frame.minX, app.frame.minX + 10)
+        XCTAssertLessThan(row.frame.maxX, app.frame.maxX - 10,
+                          "Session rows must retain horizontal margins.")
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
             .press(forDuration: 0.05, thenDragTo: row.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5)))
         capture("sessions-swipe", app: app)
         print("ROW AFTER SWIPE", row.frame)
         let deleteAction = app.buttons["Delete"].firstMatch
         XCTAssertTrue(deleteAction.waitForExistence(timeout: 3))
+        XCTAssertTrue(deleteAction.isHittable)
+        XCTAssertGreaterThanOrEqual(deleteAction.frame.minX, app.frame.minX)
+        XCTAssertLessThanOrEqual(deleteAction.frame.maxX, app.frame.maxX)
         print("DELETE ACTION", deleteAction.frame)
         app.buttons["session-fixture-1"].tap()
         // The first tap may close the native swipe action without navigating.
@@ -63,12 +66,12 @@ import XCTest
         }
     }
 
-    func testSessionToolbarActionsAndNavigation() {
+    func testSessionControlsAndNavigation() {
         let app = launch()
-        let toolbar = app.toolbars["session-toolbar"]
-        XCTAssertTrue(toolbar.waitForExistence(timeout: 5))
-        let options = toolbar.buttons["Session Options"]
-        let newChat = toolbar.buttons["New Chat"]
+        XCTAssertFalse(app.toolbars["session-toolbar"].exists)
+        let options = app.buttons["Session Options"]
+        let newChat = app.buttons["New Chat"]
+        XCTAssertTrue(options.waitForExistence(timeout: 5))
         XCTAssertLessThan(options.frame.maxX, newChat.frame.minX)
         options.tap()
         app.buttons["Settings"].tap()
@@ -79,10 +82,12 @@ import XCTest
         app.buttons["Cancel"].tap()
         app.buttons["session-fixture-1"].tap()
         XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 5))
-        XCTAssertFalse(toolbar.exists, "Session controls must not occupy the conversation's composer area.")
+        XCTAssertFalse(options.exists, "Session controls must not occupy the conversation's composer area.")
+        XCTAssertFalse(newChat.exists)
         app.navigationBars.buttons.firstMatch.tap()
-        XCTAssertTrue(toolbar.waitForExistence(timeout: 5))
-        capture("native-session-toolbar", app: app)
+        XCTAssertTrue(options.waitForExistence(timeout: 5))
+        XCTAssertTrue(newChat.isHittable)
+        capture("floating-session-controls", app: app)
     }
 
     func testActiveSessionIndicatorsIncludeApprovalAndCancellation() {

@@ -34,21 +34,24 @@ struct RootView: View {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
                         List {
                             ForEach(RemoteSessionDay.group(store.conversations)) { day in
-                                Section {
-                                    ForEach(day.conversations, id: \.id) { conversation in
+                                ForEach(day.conversations, id: \.id) { conversation in
+                                    // Single-row sections give every swipe its own rounded boundary.
+                                    Section {
                                         sessionRow(conversation)
+                                    } header: {
+                                        if conversation.id == day.conversations.first?.id {
+                                            Text(day.title(now: context.date))
+                                                .font(.title3.bold())
+                                                .foregroundStyle(Color(uiColor: .label))
+                                                .textCase(nil)
+                                                .padding(.vertical, 8)
+                                        }
                                     }
-                                } header: {
-                                    Text(day.title(now: context.date))
-                                        .font(.title3.bold())
-                                        .foregroundStyle(Color(uiColor: .label))
-                                        .textCase(nil)
-                                        .padding(.vertical, 8)
                                 }
                             }
                         }
-                        // Full-width sections let native swipe actions reach the screen edge.
-                        .listStyle(.grouped)
+                        .listStyle(.insetGrouped)
+                        .listSectionSpacing(0)
                         .scrollContentBackground(.hidden)
                         .background(Color(uiColor: .systemGroupedBackground))
                         .refreshable { do { try await store.refresh() } catch { store.error = error.localizedDescription } }
@@ -76,15 +79,16 @@ struct RootView: View {
             .toolbar(store.host == nil ? .hidden : .visible, for: .navigationBar)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if store.host != nil {
-                    SessionToolbar(busy: store.busy, connected: store.connected,
-                                   settings: { settings = true },
-                                   reconnect: { Task { await store.connect() } },
-                                   forget: { Task { await store.forget() } },
-                                   create: { creating = true })
-                        .frame(height: 44)
-                        .background(.bar)
+                    SessionControls(busy: store.busy, connected: store.connected,
+                                    settings: { settings = true },
+                                    reconnect: { Task { await store.connect() } },
+                                    forget: { Task { await store.forget() } },
+                                    create: { creating = true })
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
                 }
             }
+            .background(Color(uiColor: store.host == nil ? .systemBackground : .systemGroupedBackground))
             .navigationDestination(isPresented: Binding(get: { store.selected != nil }, set: { if !$0 { store.selected = nil } })) {
                 ConversationScreen(store: store)
             }
@@ -134,8 +138,8 @@ struct RootView: View {
         }
         .accessibilityIdentifier("session-\(conversation.id)")
         .disabled(conversation["unreadable"].bool)
-        // Keep the system row background: it owns the animated trailing-corner
-        // mask during native swipe actions, including middle rows in a section.
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button("Delete", systemImage: "trash", role: .destructive) {
                 Task { await store.deleteConversation(conversation.id) }
@@ -172,9 +176,7 @@ struct RootView: View {
     }
 }
 
-/// Embed the native bar through SwiftUI's supported UIKit bridge. The SwiftUI
-/// bottom-bar implementation reparents its UIKitToolbar into the hosting view.
-private struct SessionToolbar: UIViewRepresentable {
+private struct SessionControls: View {
     let busy: Bool
     let connected: Bool
     let settings: () -> Void
@@ -182,35 +184,35 @@ private struct SessionToolbar: UIViewRepresentable {
     let forget: () -> Void
     let create: () -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    func makeUIView(context: Context) -> UIToolbar {
-        let toolbar = UIToolbar()
-        toolbar.accessibilityIdentifier = "session-toolbar"
-        let coordinator = context.coordinator
-        let menu = UIMenu(children: [
-            UIAction(title: "Settings", image: UIImage(systemName: "gearshape")) { _ in coordinator.owner.settings() },
-            UIAction(title: "Reconnect", image: UIImage(systemName: "arrow.clockwise")) { _ in coordinator.owner.reconnect() },
-            UIAction(title: "Forget Host", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in coordinator.owner.forget() }
-        ])
-        let options = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: menu)
-        options.accessibilityLabel = "Session Options"
-        let newChat = UIBarButtonItem(image: UIImage(systemName: "square.and.pencil"),
-                                      primaryAction: UIAction { _ in coordinator.owner.create() })
-        newChat.accessibilityLabel = "New Chat"
-        toolbar.setItems([options, UIBarButtonItem(systemItem: .flexibleSpace), newChat], animated: false)
-        return toolbar
+    var body: some View {
+        HStack {
+            if #available(iOS 26.0, *) {
+                controls.buttonStyle(.glass)
+            } else {
+                controls.buttonStyle(.bordered)
+            }
+        }
+        .labelStyle(.iconOnly)
+        .buttonBorderShape(.circle)
+        .controlSize(.large)
     }
 
-    func updateUIView(_ toolbar: UIToolbar, context: Context) {
-        context.coordinator.owner = self
-        toolbar.items?.first?.isEnabled = !busy
-        toolbar.items?.last?.isEnabled = connected && !busy
-    }
-
-    @MainActor final class Coordinator {
-        var owner: SessionToolbar
-        init(_ owner: SessionToolbar) { self.owner = owner }
+    @ViewBuilder private var controls: some View {
+        Menu {
+            Button("Settings", systemImage: "gearshape", action: settings)
+            Button("Reconnect", systemImage: "arrow.clockwise", action: reconnect)
+            Button("Forget Host", systemImage: "trash", role: .destructive, action: forget)
+        } label: {
+            Label("Session Options", systemImage: "ellipsis")
+                .frame(width: 24, height: 24)
+        }
+        .disabled(busy)
+        Spacer()
+        Button(action: create) {
+            Label("New Chat", systemImage: "square.and.pencil")
+                .frame(width: 24, height: 24)
+        }
+        .disabled(busy || !connected)
     }
 }
 
