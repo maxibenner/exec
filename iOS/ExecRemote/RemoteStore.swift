@@ -1,6 +1,19 @@
 import SwiftUI
 import ExecRemote
 
+protocol RemoteTransport: Sendable {
+    var isConnected: Bool { get async }
+    func connect(_ host: PairedHost) async throws
+    func disconnect() async
+    func request(_ method: String, _ path: String, body: RemoteJSON?) async throws -> RemoteJSON
+}
+extension RemoteTransport {
+    func request(_ method: String, _ path: String) async throws -> RemoteJSON {
+        try await request(method, path, body: nil)
+    }
+}
+extension RelayClient: RemoteTransport {}
+
 @MainActor @Observable final class RemoteStore {
     var host: PairedHost?
     var connected = false
@@ -32,8 +45,18 @@ import ExecRemote
     var awaitingSendSnapshot: Bool { selected.flatMap { optimisticMessages[$0]?.awaitingSnapshot } ?? false }
     private var recentConversations = RecentConversationCache()
     private var hostGeneration = 0
-    private let client = RelayClient()
-    init() { do { host = try DeviceStore.load() } catch { self.error = error.localizedDescription } }
+    private var connectionGeneration = 0
+    private(set) var reconnectDelay = 1.5
+    private let client: any RemoteTransport
+    private let saveHost: (PairedHost) throws -> Void
+    private let forgetHost: () throws -> Void
+    init(client: any RemoteTransport = RelayClient(),
+         loadHost: () throws -> PairedHost? = { try DeviceStore.load() },
+         saveHost: @escaping (PairedHost) throws -> Void = { try DeviceStore.save($0) },
+         forgetHost: @escaping () throws -> Void = { try DeviceStore.forget() }) {
+        self.client = client; self.saveHost = saveHost; self.forgetHost = forgetHost
+        do { host = try loadHost() } catch { self.error = error.localizedDescription }
+    }
     var active: Bool { RemoteMessageSubmission.isActive(snapshot) }
     func pair(_ text: String) async {
         guard !busy else { return }
@@ -42,29 +65,43 @@ import ExecRemote
             let host = PairedHost(invitation: invitation, deviceName: "iPhone")
             // Save before pairing. A lost acknowledgement must not lose the identity
             // that the host may already have registered.
-            try DeviceStore.save(host)
+            try saveHost(host)
             clearConversationState()
             self.host = host
             await connect()
         } catch { self.error = error.localizedDescription }
     }
     func connect() async {
-        guard var host, !busy else { return }
-        busy = true; error = nil
+        guard var host, !busy, !Task.isCancelled else { return }
+        let generation = connectionGeneration
+        busy = true; connected = false; error = nil
         defer { busy = false }
         do {
             try await client.connect(host)
+            guard generation == connectionGeneration, !Task.isCancelled else { return }
             host.invitation.secret = nil
-            try DeviceStore.save(host); self.host = host; connected = true
-            models = try await client.request("GET", "/v1/models").array
+            try saveHost(host); self.host = host
+            let models = try await client.request("GET", "/v1/models").array
+            guard generation == connectionGeneration, !Task.isCancelled else { return }
             try await refresh()
-        } catch { connected = false; self.error = error.localizedDescription }
+            guard generation == connectionGeneration, !Task.isCancelled else { return }
+            self.models = models; connected = true; reconnectDelay = 1.5
+        } catch {
+            guard generation == connectionGeneration, !Task.isCancelled else { return }
+            connected = false; self.error = error.localizedDescription
+            reconnectDelay = min(reconnectDelay * 2, 30)
+        }
     }
-    func suspend() async { connected = false; await client.disconnect() }
+    func suspend() async {
+        connectionGeneration += 1
+        snapshotGeneration += 1
+        connected = false
+        await client.disconnect()
+    }
     func forget() async {
         guard !busy else { return }
         do {
-            try DeviceStore.forget()
+            try forgetHost()
             clearConversationState()
             host = nil
             await suspend()
@@ -113,25 +150,50 @@ import ExecRemote
         if selected == id { snapshot = value }
     }
     func observe() async {
-        if host != nil, !connected { await connect() }
         while !Task.isCancelled {
+            await poll()
             do {
-                try await Task.sleep(for: .seconds(active || awaitingSendSnapshot ? 0.5 : 1.5))
-                if connected && !busy {
-                    if let id = selected, active || awaitingSendSnapshot { try await refreshConversation(id) }
-                    else { try await refresh() }
-                }
-            } catch is CancellationError { break }
-            catch { if !Task.isCancelled { connected = false; self.error = error.localizedDescription } }
+                let delay = connected ? (active || awaitingSendSnapshot ? 0.5 : 1.5) : reconnectDelay
+                try await Task.sleep(for: .seconds(delay))
+            } catch { return }
         }
     }
-    func open(_ id: String) async {
-        selected = id
-        let generation = hostGeneration
+    // Only the foreground observer calls this. Recovery opens a fresh channel
+    // and reads authoritative state; it never queues or replays a command.
+    func poll() async {
+        guard host != nil, !busy, !Task.isCancelled else { return }
+        let generation = connectionGeneration
+        let transportConnected = await client.isConnected
+        guard generation == connectionGeneration, !Task.isCancelled else { return }
+        if !transportConnected { connected = false }
+        if !connected { await connect(); return }
         do {
-            try await refreshConversation(id)
+            if let id = selected, active || awaitingSendSnapshot { try await refreshConversation(id) }
+            else { try await refresh() }
         } catch {
-            if generation == hostGeneration, selected == id { self.error = error.localizedDescription }
+            let transportConnected = await client.isConnected
+            guard generation == connectionGeneration, !Task.isCancelled else { return }
+            // An API rejection does not mean the WebSocket was lost.
+            if !transportConnected { connected = false }
+            self.error = error.localizedDescription
+        }
+    }
+    @discardableResult func open(_ id: String) -> Task<Void, Never> {
+        selected = id
+        let generation = hostGeneration, connection = connectionGeneration
+        // This read belongs to the store, not the conversation view. Cancelling
+        // a view-owned in-flight read would close the shared ordered WebSocket
+        // when navigating back to All Sessions. Finish it and cache the result;
+        // refreshConversation only displays it if the same session is selected.
+        return Task {
+            guard generation == hostGeneration, connection == connectionGeneration else { return }
+            do {
+                try await refreshConversation(id)
+            } catch {
+                if generation == hostGeneration, connection == connectionGeneration, selected == id {
+                    self.error = error.localizedDescription
+                }
+            }
         }
     }
     func mutate(_ method: String, _ path: String, _ body: RemoteJSON, onSuccess: ((RemoteJSON) -> Void)? = nil) async {

@@ -151,7 +151,9 @@ struct ConversationScreen: View {
         .navigationTitle(store.snapshot["metadata"]["title"].string ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .bottomBar)
-        .task(id: store.selected) { if let id = store.selected { await store.open(id) } }
+        .onChange(of: store.selected, initial: true) { _, id in
+            if let id { store.open(id) }
+        }
         .overlay(alignment: .bottom) {
             VStack(spacing: 10) {
                 if let failure = store.snapshot["operation"]["error"].string ?? store.snapshot["storageError"].string {

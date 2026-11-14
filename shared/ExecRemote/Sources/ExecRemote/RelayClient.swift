@@ -94,8 +94,10 @@ public actor RelayClient {
         configuration.timeoutIntervalForRequest = 30
         session = URLSession(configuration: configuration, delegate: RelaySessionDelegate(), delegateQueue: nil)
     }
+    public var isConnected: Bool { socket != nil && channel != nil }
     public func disconnect() { socket?.cancel(with: .goingAway, reason: nil); socket = nil; channel = nil }
     public func connect(_ host: PairedHost) async throws {
+        try Task.checkCancellation()
         guard !busy else { throw RemoteFailure("A request is still in progress.") }
         busy = true; defer { busy = false }
         disconnect()
@@ -113,13 +115,20 @@ public actor RelayClient {
             try await send(socket, channel.seal(hello, initial: true))
             let ready = try channel.open(await receive(socket))
             guard ready["ready"].bool else { throw RemoteFailure("Pairing was rejected.") }
+            try Task.checkCancellation()
+            guard self.socket === socket else { throw CancellationError() }
             self.channel = channel
-        } catch { disconnect(); throw RemoteFailure("Could not connect or authenticate. Check that the agent and relay are running; create a new invitation if this device is not paired.") }
+        } catch {
+            if self.socket === socket { disconnect() }
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
+            throw RemoteFailure("Could not connect or authenticate. Check that the agent and relay are running; create a new invitation if this device is not paired.")
+        }
     }
     public func request(_ method: String, _ path: String, body: RemoteJSON? = nil) async throws -> RemoteJSON {
         // Concurrent UI reads wait, but a disconnected command is never queued for replay.
         guard let expectedSocket = socket else { throw RemoteFailure("Connect to the agent first.") }
         while busy { try await Task.sleep(for: .milliseconds(20)) }
+        try Task.checkCancellation()
         guard socket === expectedSocket, let socket, var channel else { throw RemoteFailure("Connect to the agent first.") }
         busy = true; defer { busy = false }
         let timeout = Task { try await Task.sleep(for: .seconds(45)); socket.cancel(with: .goingAway, reason: nil) }
@@ -136,12 +145,18 @@ public actor RelayClient {
                 bytes.append(chunk); status = response["status"].number ?? 500
                 if response["done"].bool { break }
             }
+            try Task.checkCancellation()
+            guard self.socket === socket else { throw CancellationError() }
             self.channel = channel
             let value = try JSONDecoder().decode(RemoteJSON.self, from: bytes)
             guard (200..<300).contains(status) else { throw APIRejection(message: value["error"].string ?? "Request rejected.") }
             return value
         } catch let rejection as APIRejection { throw RemoteFailure(rejection.message) }
-        catch { disconnect(); throw RemoteFailure("Connection interrupted. The request may have taken effect. Reconnect to refresh; it was not retried.") }
+        catch {
+            if self.socket === socket { disconnect() }
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
+            throw RemoteFailure("Connection interrupted. The request may have taken effect. It was not retried.")
+        }
     }
     private struct APIRejection: Error { let message: String }
     private func send(_ socket: URLSessionWebSocketTask, _ value: RemoteJSON) async throws {
