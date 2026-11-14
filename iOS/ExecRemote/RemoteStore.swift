@@ -16,9 +16,20 @@ import ExecRemote
         }
     }
     var snapshot: RemoteJSON = .null {
-        didSet { recentConversations.update(snapshot) }
+        didSet {
+            recentConversations.update(snapshot)
+            if let id = snapshot["id"].string { optimisticMessages[id]?.reconcile(snapshot) }
+        }
     }
     var drafts: [String:String] = [:]
+    private var optimisticMessages: [String: RemoteOptimisticMessages] = [:]
+    // Invalidate reads issued before a local send so they cannot roll it back.
+    private var snapshotGeneration = 0
+    var displaySnapshot: RemoteJSON {
+        guard let selected else { return snapshot }
+        return optimisticMessages[selected]?.project(snapshot) ?? snapshot
+    }
+    var awaitingSendSnapshot: Bool { selected.flatMap { optimisticMessages[$0]?.awaitingSnapshot } ?? false }
     private var recentConversations = RecentConversationCache()
     private var hostGeneration = 0
     private let client = RelayClient()
@@ -69,29 +80,47 @@ import ExecRemote
     private func clearConversationState() {
         hostGeneration += 1
         recentConversations = RecentConversationCache()
+        optimisticMessages = [:]
+        snapshotGeneration += 1
         selected = nil; snapshot = .null; conversations = []; drafts = [:]
     }
     func refresh() async throws {
-        let generation = hostGeneration
+        let generation = hostGeneration, readGeneration = snapshotGeneration
+        // Prioritize the visible turn (including its terminal state) rather than
+        // making it wait behind list and settings round trips.
+        let visibleID = selected
+        var readFailure: Error?
+        if let id = visibleID {
+            do { try await refreshConversation(id) }
+            catch { readFailure = error }
+        }
         let list = try await client.request("GET", "/v1/conversations").array
         let settings = try await client.request("GET", "/v1/library")
-        guard generation == hostGeneration else { return }
+        guard generation == hostGeneration, readGeneration == snapshotGeneration else { return }
         conversations = list; library = settings
-        recentConversations.retain(Set(list.compactMap { $0["id"].string }))
-        if let id = selected {
-            if !list.contains(where: { $0["id"].string == id }) { selected = nil; snapshot = .null; return }
-            let value = try await client.request("GET", "/v1/conversations/\(id)")
-            guard generation == hostGeneration else { return }
-            recentConversations.update(value)
-            if selected == id { snapshot = value }
-        }
+        let ids = Set(list.compactMap { $0["id"].string })
+        recentConversations.retain(ids)
+        optimisticMessages = optimisticMessages.filter { ids.contains($0.key) }
+        if let id = selected, !ids.contains(id) { selected = nil; snapshot = .null }
+        else if selected == visibleID, let readFailure { throw readFailure }
+    }
+    private func refreshConversation(_ id: String) async throws {
+        let generation = hostGeneration, readGeneration = snapshotGeneration
+        let value = try await client.request("GET", "/v1/conversations/\(id)")
+        guard generation == hostGeneration, readGeneration == snapshotGeneration else { return }
+        optimisticMessages[id]?.reconcile(value)
+        recentConversations.update(value)
+        if selected == id { snapshot = value }
     }
     func observe() async {
         if host != nil, !connected { await connect() }
         while !Task.isCancelled {
             do {
-                try await Task.sleep(for: .seconds(1.5))
-                if connected && !busy { try await refresh() }
+                try await Task.sleep(for: .seconds(active || awaitingSendSnapshot ? 0.5 : 1.5))
+                if connected && !busy {
+                    if let id = selected, active || awaitingSendSnapshot { try await refreshConversation(id) }
+                    else { try await refresh() }
+                }
             } catch is CancellationError { break }
             catch { if !Task.isCancelled { connected = false; self.error = error.localizedDescription } }
         }
@@ -100,10 +129,7 @@ import ExecRemote
         selected = id
         let generation = hostGeneration
         do {
-            let value = try await client.request("GET", "/v1/conversations/\(id)")
-            guard generation == hostGeneration else { return }
-            recentConversations.update(value)
-            if selected == id { snapshot = value }
+            try await refreshConversation(id)
         } catch {
             if generation == hostGeneration, selected == id { self.error = error.localizedDescription }
         }
@@ -120,18 +146,39 @@ import ExecRemote
     func deleteConversation(_ id: String) async {
         await mutate("DELETE", "/v1/conversations/\(id)", .null) { _ in
             self.recentConversations.remove(id)
+            self.optimisticMessages.removeValue(forKey: id)
             self.drafts.removeValue(forKey: id)
             if self.selected == id { self.selected = nil; self.snapshot = .null }
         }
     }
     func send() async {
-        guard let id = selected, let text = drafts[id],
+        guard connected, !busy, !awaitingSendSnapshot,
+              let id = selected, let text = drafts[id],
               let submission = RemoteMessageSubmission(conversationID: id, snapshot: snapshot, text: text) else { return }
-        // Clear only after acceptance. An interrupted send preserves the draft but
-        // is never automatically resubmitted, including queued steering input.
-        await mutate("POST", submission.path, submission.body) { _ in
-            if self.drafts[id] == text { self.drafts[id] = "" }
+        busy = true; error = nil
+        snapshotGeneration += 1
+        let generation = hostGeneration
+        let localID = optimisticMessages[id, default: RemoteOptimisticMessages()].begin(text: text, snapshot: snapshot)
+        drafts[id] = ""
+        defer { busy = false }
+        do {
+            let response = try await client.request("POST", submission.path, body: submission.body)
+            guard generation == hostGeneration else { return }
+            optimisticMessages[id]?.accept(localID, response: response)
+        } catch {
+            guard generation == hostGeneration else { return }
+            optimisticMessages[id]?.remove(localID)
+            // Preserve anything typed while the request was in flight. Never
+            // automatically resubmit a request whose acknowledgement was lost.
+            let newerDraft = drafts[id] ?? ""
+            drafts[id] = newerDraft.isEmpty ? text : text + "\n\n" + newerDraft
+            self.error = error.localizedDescription + " Check the refreshed conversation before sending again."
+            return
         }
+        // A failed read after acceptance is not a failed send. Keep its local
+        // row until a later snapshot confirms it, without restoring the draft.
+        do { try await refreshConversation(id) }
+        catch { self.error = error.localizedDescription }
     }
     func stop() async {
         guard let id = selected, let operation = snapshot["operation"]["id"].string else { return }

@@ -37,7 +37,7 @@ struct RootView: View {
                                 } header: {
                                     Text(day.title(now: context.date))
                                         .font(.title3.bold())
-                                        .foregroundStyle(.primary)
+                                        .foregroundStyle(Color(uiColor: .label))
                                         .textCase(nil)
                                         .padding(.vertical, 8)
                                 }
@@ -97,13 +97,17 @@ struct RootView: View {
         Button { store.selected = conversation.id } label: {
             VStack(alignment: .leading, spacing: 5) {
                 Text(conversation["metadata"]["title"].string ?? conversation["title"].string ?? "New Chat")
-                    .font(.headline).foregroundStyle(.primary).lineLimit(1)
-                Text(RemoteSessionDay.activityDate(conversation), format: .dateTime.hour().minute())
-                    .font(.subheadline).foregroundStyle(.secondary)
-                if let workspace = conversation["workspace"].string, !workspace.isEmpty {
-                    Label(URL(fileURLWithPath: workspace).lastPathComponent, systemImage: "folder")
-                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.headline).foregroundStyle(Color(uiColor: .label)).lineLimit(1)
+                HStack {
+                    Text(RemoteSessionDay.activityDate(conversation), format: .dateTime.hour().minute())
+                        .fixedSize()
+                    Spacer(minLength: 16)
+                    if let workspace = conversation["workspace"].string, !workspace.isEmpty {
+                        Text(URL(fileURLWithPath: workspace).lastPathComponent)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
                 }
+                .font(.subheadline).foregroundStyle(Color(uiColor: .secondaryLabel))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 6)
@@ -142,7 +146,7 @@ struct ConversationScreen: View {
     @Bindable var store: RemoteStore
     @State private var composerHeight: CGFloat = 68
     var body: some View {
-        NativeTranscript(conversationID: store.selected, snapshot: store.snapshot, bottomPadding: composerHeight)
+        NativeTranscript(conversationID: store.selected, snapshot: store.displaySnapshot, bottomPadding: composerHeight)
         .ignoresSafeArea(.container, edges: .bottom)
         .navigationTitle(store.snapshot["metadata"]["title"].string ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
@@ -195,7 +199,7 @@ private struct RemoteChatComposer: View {
         Binding(get: { store.selected.flatMap { store.drafts[$0] } ?? "" },
                 set: { if let id = store.selected { store.drafts[id] = $0 } })
     }
-    private var stopping: Bool { RemoteMessageSubmission.showsStop(snapshot: store.snapshot, draft: draft.wrappedValue) }
+    private var stopping: Bool { RemoteMessageSubmission.showsStop(snapshot: store.displaySnapshot, draft: draft.wrappedValue) }
     private var field: some View {
         TextField("Message", text: draft, axis: .vertical)
             .lineLimit(1...6)
@@ -221,7 +225,7 @@ private struct RemoteChatComposer: View {
         }
         .accessibilityLabel(stopping ? "Stop" : (store.active ? "Queue Message" : "Send"))
         .buttonBorderShape(.capsule)
-        .disabled(store.busy || !store.connected || (!stopping && draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+        .disabled(store.busy || store.awaitingSendSnapshot || !store.connected || (!stopping && draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
     }
     var body: some View {
         Group {
@@ -255,7 +259,9 @@ struct NewChatScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var workspace = ""
     @State private var model = ""
+    @State private var effort = ""
     @State private var choosingFolder = false
+    private var selectedModel: RemoteJSON { store.models.first { $0.id == model } ?? .null }
     var body: some View {
         NavigationStack {
             Form {
@@ -270,9 +276,18 @@ struct NewChatScreen: View {
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                         }
                     }
-                } header: { Text("Workspace on Host") }
-                Picker("Model", selection: $model) {
-                    ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
+                }
+                Section {
+                    Picker("Model", selection: $model) {
+                        ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
+                    }
+                    Picker("Reasoning", selection: $effort) {
+                        Text("Default").tag("")
+                        ForEach(selectedModel["efforts"].array, id: \.id) { option in
+                            Text(option["name"].string ?? option.id).tag(option.id)
+                        }
+                    }
+                    .disabled(selectedModel["efforts"].array.isEmpty)
                 }
             }
             .sheet(isPresented: $choosingFolder) {
@@ -283,7 +298,9 @@ struct NewChatScreen: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") { Task {
-                        await store.mutate("POST", "/v1/conversations", .object(["workspace":.string(workspace), "model":.string(model)])) { value in
+                        let body = RemoteSessionCreation.body(workspace: workspace, model: selectedModel,
+                                                              effort: effort, settings: store.library["settings"])
+                        await store.mutate("POST", "/v1/conversations", body) { value in
                             store.selected = value.id; dismiss()
                         }
                     } }.disabled(!workspace.hasPrefix("/") || model.isEmpty || store.busy)
@@ -292,8 +309,13 @@ struct NewChatScreen: View {
             .onAppear {
                 workspace = store.conversations.first?["workspace"].string ?? ""
                 model = store.library["defaultModel"].string ?? store.models.first?.id ?? ""
+                resetEffort()
             }
+            .onChange(of: model) { _, _ in resetEffort() }
         }
+    }
+    private func resetEffort() {
+        effort = RemoteSessionCreation.initialEffort(model: selectedModel, settings: store.library["settings"])
     }
 }
 
@@ -332,33 +354,24 @@ struct SharedSettingsScreen: View {
 /// UIDocumentPicker would select an iPhone folder, not a workspace on the host.
 private struct HostFolderPicker: View {
     let store: RemoteStore
-    let initialPath: String
     let choose: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var listing: RemoteJSON = .null
     @State private var requestedPath: String?
-    @State private var showHidden = false
     @State private var loading = false
     @State private var failure: String?
-    @State private var enteringPath = false
-    @State private var enteredPath = ""
     init(store: RemoteStore, initialPath: String, choose: @escaping (String) -> Void) {
-        self.store = store; self.initialPath = initialPath; self.choose = choose
+        self.store = store; self.choose = choose
         _requestedPath = State(initialValue: initialPath.isEmpty ? nil : initialPath)
     }
     private var currentPath: String? { listing["path"].string }
     var body: some View {
         NavigationStack {
             List {
-                if let currentPath {
-                    Section {
-                        Text(currentPath).font(.callout).textSelection(.enabled)
-                        if let parent = listing["parent"].string {
-                            Button("Parent Folder", systemImage: "arrow.up") { requestedPath = parent }
-                        }
-                    } header: { Text("On the Agent Host") }
-                }
                 Section {
+                    if let parent = listing["parent"].string {
+                        Button("back up", systemImage: "arrow.turn.left.up") { requestedPath = parent }
+                    }
                     ForEach(listing["directories"].array, id: \.folderPath) { directory in
                         Button { requestedPath = directory["path"].string } label: {
                             HStack {
@@ -368,9 +381,14 @@ private struct HostFolderPicker: View {
                             }
                         }
                     }
+                } header: {
+                    if let currentPath {
+                        Text(currentPath).font(.callout).textCase(nil).textSelection(.enabled)
+                            .padding(.bottom, 8)
+                    }
                 }
                 if listing["truncated"].bool {
-                    Text("This folder is too large to list completely. Use Open Path to choose a missing folder.").font(.caption)
+                    Text("This folder is too large to list completely. Some folders are not shown.").font(.caption)
                 }
                 if let failure { Text(failure).foregroundStyle(.red) }
             }
@@ -383,30 +401,15 @@ private struct HostFolderPicker: View {
                     Button("Choose") { if let currentPath { choose(currentPath); dismiss() } }
                         .disabled(currentPath == nil || loading || failure != nil)
                 }
-                ToolbarItem(placement: .bottomBar) {
-                    Menu {
-                        Toggle("Show Hidden Folders", isOn: $showHidden)
-                        Button("Open Path…", systemImage: "folder.badge.questionmark") {
-                            enteredPath = currentPath ?? ""; enteringPath = true
-                        }
-                        Button("Home Folder", systemImage: "house") { requestedPath = nil }
-                    } label: { Label("Folder Options", systemImage: "ellipsis.circle") }
-                    .disabled(loading)
-                }
             }
-            .alert("Open Host Folder", isPresented: $enteringPath) {
-                TextField("Absolute path", text: $enteredPath).textInputAutocapitalization(.never).autocorrectionDisabled()
-                Button("Open") { requestedPath = enteredPath }
-                Button("Cancel", role: .cancel) {}
-            }
-            .task(id: BrowseLocation(path: requestedPath, hidden: showHidden)) {
+            .task(id: requestedPath) {
                 loading = true; failure = nil
                 defer { loading = false }
                 do {
                     // Let an already-issued read finish when dismissing the sheet;
                     // cancelling a secure-channel receive would close the shared socket.
-                    let path = requestedPath, hidden = showHidden
-                    let request = Task { try await store.browseFolders(path, showHidden: hidden) }
+                    let path = requestedPath
+                    let request = Task { try await store.browseFolders(path, showHidden: false) }
                     let value = try await request.value
                     try Task.checkCancellation()
                     listing = value
@@ -414,6 +417,5 @@ private struct HostFolderPicker: View {
             }
         }
     }
-    private struct BrowseLocation: Hashable { let path: String?; let hidden: Bool }
 }
 private extension RemoteJSON { var folderPath: String { self["path"].string ?? "" } }

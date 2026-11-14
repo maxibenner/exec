@@ -5,13 +5,18 @@ import ExecTranscript
 
 /// UIKit owns virtualization and reuse. Tool rows host the same SwiftUI card as
 /// macOS; message rows use selectable TextKit with the shared Markdown parser.
-struct NativeTranscript: UIViewRepresentable {
+struct NativeTranscript: UIViewControllerRepresentable {
     let conversationID: String?
     let snapshot: RemoteJSON
     let bottomPadding: CGFloat
     func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeUIView(context: Context) -> UITableView {
+    func makeUIViewController(context: Context) -> UITableViewController {
+        // Expose the primary scroll view through a native controller so navigation
+        // bars get the system scroll-edge/Liquid Glass treatment, like SwiftUI List.
+        let controller = UITableViewController(style: .plain)
         let table = TranscriptTableView(frame: .zero, style: .plain)
+        controller.tableView = table
+        controller.setContentScrollView(table, for: .top)
         table.backgroundColor = .systemBackground
         table.separatorStyle = .none
         table.rowHeight = UITableView.automaticDimension
@@ -22,9 +27,10 @@ struct NativeTranscript: UIViewRepresentable {
         table.register(UITableViewCell.self, forCellReuseIdentifier: "tool")
         table.register(UITableViewCell.self, forCellReuseIdentifier: "working")
         context.coordinator.attach(table)
-        return table
+        return controller
     }
-    func updateUIView(_ table: UITableView, context: Context) {
+    func updateUIViewController(_ controller: UITableViewController, context: Context) {
+        let table = controller.tableView!
         let nearBottom = table.contentOffset.y + table.bounds.height - table.adjustedContentInset.bottom >= table.contentSize.height - 60
         let paddingChanged = abs(table.contentInset.bottom - bottomPadding - 12) > 1
         table.contentInset.bottom = bottomPadding + 12
@@ -90,8 +96,7 @@ struct NativeTranscript: UIViewRepresentable {
             snapshot.reconfigureItems(changed)
             source.apply(snapshot, animatingDifferences: false) {
                 guard changedConversation || nearBottom, !ids.isEmpty, !table.isDragging, !table.isDecelerating else { return }
-                table.layoutIfNeeded()
-                table.scrollToRow(at: IndexPath(row: ids.count - 1, section: 0), at: .bottom, animated: false)
+                (table as? TranscriptTableView)?.followBottom()
             }
         }
     }
@@ -140,15 +145,43 @@ private struct MobileToolCard: View {
 
 @MainActor private final class TranscriptTableView: UITableView {
     private var previousHeight: CGFloat = 0
+    private var previousContentHeight: CGFloat = 0
+    private var previousBottomInset: CGFloat = 0
     private var wasNearBottom = true
-    override func layoutSubviews() {
-        let resized = previousHeight > 0 && abs(previousHeight - bounds.height) > 1
-        super.layoutSubviews()
-        if resized, wasNearBottom, !isDragging, !isDecelerating {
-            contentOffset.y = max(-adjustedContentInset.top, contentSize.height - bounds.height + adjustedContentInset.bottom)
+    private var needsBottomAlignment = false
+    private var nearBottom: Bool {
+        contentOffset.y + bounds.height - adjustedContentInset.bottom >= contentSize.height - 60
+    }
+    override var contentOffset: CGPoint {
+        didSet {
+            // User scrolling takes priority over following new content, including
+            // deceleration. Programmatic size corrections don't change intent.
+            if isTracking || isDragging || isDecelerating { wasNearBottom = nearBottom }
         }
+    }
+    func followBottom() {
+        wasNearBottom = true
+        needsBottomAlignment = true
+        setNeedsLayout()
+        layoutIfNeeded()
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let geometryChanged = abs(previousHeight - bounds.height) > 1
+            || abs(previousContentHeight - contentSize.height) > 1
+            || abs(previousBottomInset - adjustedContentInset.bottom) > 1
+        // Self-sizing cells can resolve over several layout passes, after a
+        // diffable update completes. Follow those changes as well as keyboard
+        // and composer resizing, keeping the working row above the composer.
+        if (geometryChanged || needsBottomAlignment), wasNearBottom,
+           !isTracking, !isDragging, !isDecelerating {
+            let bottom = max(-adjustedContentInset.top, contentSize.height - bounds.height + adjustedContentInset.bottom)
+            if abs(contentOffset.y - bottom) > 1 { contentOffset.y = bottom }
+        }
+        needsBottomAlignment = false
         previousHeight = bounds.height
-        wasNearBottom = contentOffset.y + bounds.height - adjustedContentInset.bottom >= contentSize.height - 60
+        previousContentHeight = contentSize.height
+        previousBottomInset = adjustedContentInset.bottom
     }
 }
 
