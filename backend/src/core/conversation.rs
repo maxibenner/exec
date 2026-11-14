@@ -867,7 +867,6 @@ impl Conversation {
     async fn respond(&self, cancel: &CancellationToken) -> Result<Vec<ToolCall>> {
         let (mut request, index, mut known) = {
             let mut s = self.state();
-            s.record.usage = None;
             let messages = context(&s.record.messages);
             let known: HashSet<String> = s
                 .record
@@ -990,7 +989,12 @@ impl Conversation {
                         if let Some((state, usage)) = metadata {
                             let mut s = self.state();
                             s.record.provider_state = state;
-                            s.record.usage = usage;
+                            // A response that reports no measurement leaves the
+                            // last known context usage in place instead of
+                            // falling back to "unknown".
+                            if usage.is_some() {
+                                s.record.usage = usage;
+                            }
                         }
                         return Ok(calls);
                     }

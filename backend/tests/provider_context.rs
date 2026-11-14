@@ -1,7 +1,9 @@
 #[path = "support/http.rs"]
 mod http;
 mod support;
+use async_trait::async_trait;
 use exec_agent::{Error, core::*, manager::AgentManager, storage::JsonConversationStore};
+use futures_util::stream::BoxStream;
 use http::*;
 use serde_json::json;
 use std::sync::{
@@ -9,6 +11,21 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use support::{complete as settle, directory};
+use tokio_util::sync::CancellationToken;
+
+struct Windowed(Arc<support::FakeProvider>);
+#[async_trait]
+impl ChatProvider for Windowed {
+    fn context_window(&self, _: &str) -> Option<u64> {
+        Some(1000)
+    }
+    fn stream(
+        &self,
+        request: ProviderRequest,
+    ) -> BoxStream<'static, exec_agent::Result<ProviderEvent>> {
+        self.0.stream(request)
+    }
+}
 
 #[tokio::test]
 async fn thinking_state_continues_tools_and_survives_restart_without_entering_snapshots() {
@@ -128,6 +145,58 @@ async fn failed_stream_does_not_commit_staged_state_or_usage() {
     );
     assert!(c.record().provider_state.is_none());
     assert!(c.snapshot().usage.is_none());
+}
+
+#[tokio::test]
+async fn reported_context_usage_survives_in_flight_and_failed_requests() {
+    let entered = CancellationToken::new();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let p = support::FakeProvider::new(vec![
+        support::response(vec![
+            ProviderEvent::Metadata {
+                state: None,
+                usage: Some(TokenUsage {
+                    input_tokens: Some(120),
+                    output_tokens: Some(8),
+                    total_tokens: Some(128),
+                }),
+            },
+            ProviderEvent::Done,
+        ]),
+        {
+            let entered = entered.clone();
+            let release = release.clone();
+            support::script(move |_| {
+                Box::pin(async_stream::try_stream! {
+                    entered.cancel();
+                    release.notified().await;
+                    Err(Error::Internal)?;
+                    yield ProviderEvent::Done;
+                })
+            })
+        },
+        support::answer(),
+    ]);
+    let c = support::conversation(Arc::new(Windowed(p.clone())), vec![]);
+    assert_eq!(
+        settle(c.submit("first".into()).unwrap()).await.state,
+        OperationState::Completed
+    );
+    let reported = c.snapshot().context_usage.unwrap();
+    assert_eq!((reported.tokens, reported.limit), (128, 1000));
+
+    let run = c.submit("second".into()).unwrap();
+    entered.cancelled().await;
+    assert_eq!(c.snapshot().context_usage.unwrap().tokens, 128);
+    release.notify_one();
+    assert_eq!(settle(run).await.state, OperationState::Failed);
+    assert_eq!(c.snapshot().context_usage.unwrap().tokens, 128);
+
+    assert_eq!(
+        settle(c.submit("third".into()).unwrap()).await.state,
+        OperationState::Completed
+    );
+    assert_eq!(c.snapshot().context_usage.unwrap().tokens, 128);
 }
 
 #[tokio::test]
