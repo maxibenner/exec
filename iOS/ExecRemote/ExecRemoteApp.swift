@@ -44,7 +44,8 @@ struct RootView: View {
                     .overlay { if store.conversations.isEmpty { ContentUnavailableView("No Conversations", systemImage: "bubble.left.and.bubble.right") } }
                 }
             }
-            .navigationTitle("Exec")
+            .navigationTitle(store.host == nil ? "Exec" : "")
+            .navigationBarTitleDisplayMode(store.host == nil ? .large : .inline)
             .toolbar {
                 if store.host != nil {
                     ToolbarItem(placement: .topBarLeading) {
