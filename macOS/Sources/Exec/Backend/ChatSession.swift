@@ -286,25 +286,32 @@ import CryptoKit
         let generation = UUID()
         observerGeneration = generation
         observationLost = false
-        let stream = api.stream(id)
+        let api = api
         observer = Task { [weak self] in
-            do {
-                for try await data in stream {
-                    guard let self, self.observerGeneration == generation, !Task.isCancelled else { return }
-                    let frame = try JSONDecoder().decode(AgentEvent.self, from: data)
-                    if let snapshot = frame.snapshot { try self.apply(snapshot) }
-                    else if let event = frame.event, event.type == "text", event.conversationID == id,
-                            event.operationID == self.snapshot?.operation?.id,
-                            let messageID = event.messageID, let delta = event.delta,
-                            let index = self.messages.firstIndex(where: { $0.id == messageID && $0.status == .streaming }) {
-                        self.messages[index].text += delta
+            // Reconnect only the read-only observer, once. Never replay a mutation.
+            for attempt in 0..<2 {
+                guard self?.observerGeneration == generation, !Task.isCancelled else { return }
+                do {
+                    for try await data in api.stream(id) {
+                        guard let self, self.observerGeneration == generation, !Task.isCancelled else { return }
+                        let frame = try JSONDecoder().decode(AgentEvent.self, from: data)
+                        if let snapshot = frame.snapshot { try self.apply(snapshot) }
+                        else if let event = frame.event, event.type == "text", event.conversationID == id,
+                                event.operationID == self.snapshot?.operation?.id,
+                                let messageID = event.messageID, let delta = event.delta,
+                                let index = self.messages.firstIndex(where: { $0.id == messageID && $0.status == .streaming }) {
+                            self.messages[index].text += delta
+                        }
                     }
+                } catch {
+                    // EOF and transport failures both mean observation was lost.
                 }
-            } catch {
                 guard let self, self.observerGeneration == generation, !Task.isCancelled else { return }
-                self.observationLost = true
-                self.error = error.localizedDescription
-                // Keep the last known operation ownership. Disconnection is not completion.
+                if attempt == 1 {
+                    self.observationLost = true
+                    self.error = "Lost connection to this conversation. Reopen it to reconnect; work may still be running."
+                    // Keep the last known operation ownership. Disconnection is not completion.
+                }
             }
         }
     }

@@ -72,6 +72,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Desktop grants and cancellation never share late captures", { try await BackendFollowupTests().desktopRequiresExplicitGrantAndDiscardsCancelledCapture() }),
             ("Desktop replies preserve correlation without retry", { try await BackendFollowupTests().desktopRepliesExactlyOnceWithoutRetry() }),
             ("Agent streamed Unicode reconciles by stable identity", { try await AgentEventTests().streamsAndReconcilesWithoutReplacingRenderer() }),
+            ("Agent observer reconnects once without replaying work", { try await AgentEventTests().reconnectsObserverOnceWithoutReplayingWork() }),
             ("Cancellation keeps ownership through cleanup", { try await AgentEventTests().cancellationOwnsCleanupAndUsesExactID() }),
             ("Uncertain configuration never retries", { try await AgentEventTests().configurationFailureDoesNotRetry() }),
             ("Agent snapshot reconciliation and approvals", { try await AgentIntegrationTests().snapshotAndApproval() }),

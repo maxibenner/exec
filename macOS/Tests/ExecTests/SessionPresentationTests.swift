@@ -46,16 +46,21 @@ private final class SessionEventTransport: AgentTransport, @unchecked Sendable {
         let value = try AgentIntegrationTests.fixture(state: "completed", result: true)
         try await transport.responses.reply(AgentAPI.path(AgentIntegrationTests.conversationID), value)
         try await store.loadSession(AgentIntegrationTests.conversationID)
+        for _ in 0..<100 where transport.streamCount < 1 { try await Task.sleep(for: .milliseconds(5)) }
         try expect(transport.streamCount == 1)
         store.beginDeletion()
         transport.failLatestStream()
         for _ in 0..<10 { await Task.yield() }
         try expect(store.error == nil && !store.hasUnsavedChanges)
         store.resumeAfterFailedDeletion()
+        for _ in 0..<100 where transport.streamCount < 2 { try await Task.sleep(for: .milliseconds(5)) }
         try expect(transport.streamCount == 2)
-        // A genuine subsequent stream failure must still be surfaced.
+        // A genuine failure gets one read-only reconnect, then is surfaced.
+        transport.failLatestStream()
+        for _ in 0..<100 where transport.streamCount < 3 { try await Task.sleep(for: .milliseconds(5)) }
+        try expect(transport.streamCount == 3 && store.error == nil)
         transport.failLatestStream()
         for _ in 0..<100 where store.error == nil { try await Task.sleep(for: .milliseconds(5)) }
-        try expect(store.error == "Session no longer exists")
+        try expect(store.error == "Lost connection to this conversation. Reopen it to reconnect; work may still be running.")
     }
 }
