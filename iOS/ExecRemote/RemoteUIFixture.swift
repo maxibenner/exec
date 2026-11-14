@@ -2,10 +2,16 @@
 import Foundation
 import ExecRemote
 
-/// Simulator-only data for UI regression checks. Never load a saved host, access
-/// Keychain, or start observation/transport when this launch argument is present.
+/// Simulator-only data for UI regression checks. Inject a fake transport and
+/// in-memory host storage, exercising the real store lifecycle without Keychain
+/// or network access.
 @MainActor enum RemoteUIFixture {
     static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--ui-fixture") }
+    static func makeStore() -> RemoteStore {
+        let store = RemoteStore(client: FixtureTransport(), loadHost: { host }, saveHost: { _ in }, forgetHost: {})
+        store.conversations = conversations
+        return store
+    }
     static var host: PairedHost {
         let invitation = try! RemoteJSON.object([
             "version": .number(1), "relay": .string("ws://127.0.0.1:1"),
@@ -36,6 +42,7 @@ import ExecRemote
             }
             return .array(conversations.filter { !deleted.contains($0["id"].string ?? "") })
         }
+        if path == "/v1/models" { return .array([]) }
         if path == "/v1/library" { return .object([:]) }
         if method == "GET", path.hasPrefix("/v1/conversations/") { return snapshot(String(path.split(separator: "/").last!)) }
         throw RemoteFailure("Unsupported UI fixture request.")
@@ -49,6 +56,16 @@ import ExecRemote
         return .object(["id": .string(id), "metadata": .object(["title": .string("Session 1")]),
                         "messages": .array(messages),
                         "operation": .object(["id": .string("fixture-operation"), "state": .string("running")])])
+    }
+}
+
+private actor FixtureTransport: RemoteTransport {
+    var isConnected = false
+    func connect(_ host: PairedHost) { isConnected = true }
+    func disconnect() { isConnected = false }
+    func request(_ method: String, _ path: String, body: RemoteJSON?) async throws -> RemoteJSON {
+        guard isConnected else { throw RemoteFailure("Fixture is disconnected.") }
+        return try await RemoteUIFixture.request(method, path)
     }
 }
 #endif

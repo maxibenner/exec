@@ -2,7 +2,12 @@ import SwiftUI
 import ExecRemote
 
 @main struct ExecRemoteApp: App {
-    @State private var store = RemoteStore()
+    @State private var store: RemoteStore = {
+        #if DEBUG && targetEnvironment(simulator)
+        if RemoteUIFixture.enabled { return RemoteUIFixture.makeStore() }
+        #endif
+        return RemoteStore()
+    }()
     @Environment(\.scenePhase) private var phase
     var body: some Scene {
         WindowGroup {
@@ -98,13 +103,17 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(conversation["metadata"]["title"].string ?? conversation["title"].string ?? "New Chat")
                     .font(.headline).foregroundStyle(Color(uiColor: .label)).lineLimit(1)
-                HStack {
+                HStack(spacing: 8) {
                     Text(RemoteSessionDay.activityDate(conversation), format: .dateTime.hour().minute())
                         .fixedSize()
-                    Spacer(minLength: 16)
                     if let workspace = conversation["workspace"].string, !workspace.isEmpty {
                         Text(URL(fileURLWithPath: workspace).lastPathComponent)
                             .lineLimit(1).truncationMode(.middle)
+                    }
+                    Spacer(minLength: 4)
+                    if ["running", "cancelling"].contains(conversation["operation"]["state"].string ?? "") {
+                        ProgressView().controlSize(.mini).accessibilityLabel("Running")
+                            .frame(width: 16, height: 20)
                     }
                 }
                 .font(.subheadline).foregroundStyle(Color(uiColor: .secondaryLabel))
@@ -153,7 +162,9 @@ struct ConversationScreen: View {
         .navigationTitle(store.snapshot["metadata"]["title"].string ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .bottomBar)
-        .task(id: store.selected) { if let id = store.selected { await store.open(id) } }
+        .onChange(of: store.selected, initial: true) { _, id in
+            if let id { store.open(id) }
+        }
         .overlay(alignment: .bottom) {
             VStack(spacing: 10) {
                 if let failure = store.snapshot["operation"]["error"].string ?? store.snapshot["storageError"].string {
@@ -268,19 +279,7 @@ struct NewChatScreen: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Button { choosingFolder = true } label: {
-                        HStack {
-                            Image(systemName: "folder")
-                            Text(workspace.isEmpty ? "Choose Folder" : workspace)
-                                .foregroundStyle(workspace.isEmpty ? .secondary : .primary)
-                                .multilineTextAlignment(.leading)
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                        }
-                    }
-                }
-                Section {
+                Section("Session settings") {
                     Picker("Model", selection: $model) {
                         ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
                     }
@@ -291,6 +290,18 @@ struct NewChatScreen: View {
                         }
                     }
                     .disabled(selectedModel["efforts"].array.isEmpty)
+                }
+                Section("Workspace") {
+                    Button { choosingFolder = true } label: {
+                        HStack {
+                            Image(systemName: "folder")
+                            Text(workspace.isEmpty ? "Choose Folder" : workspace)
+                                .foregroundStyle(workspace.isEmpty ? .secondary : .primary)
+                                .multilineTextAlignment(.leading)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                        }
+                    }
                 }
             }
             .sheet(isPresented: $choosingFolder) {
