@@ -233,6 +233,10 @@ impl From<Error> for ApiError {
     fn from(error: Error) -> Self {
         match error {
             Error::Busy => Self(409, "Conversation is busy."),
+            Error::WorkspaceLocked => Self(
+                409,
+                "Workspace cannot be changed after the first accepted turn.",
+            ),
             Error::Invalid(message) => Self(400, message),
             _ => Self(
                 500,
@@ -341,6 +345,11 @@ struct Empty {}
 #[serde(deny_unknown_fields)]
 struct Rename {
     title: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SelectWorkspace {
+    workspace: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -827,6 +836,7 @@ async fn handle(
                 "steer",
                 "title",
                 "model",
+                "workspace",
                 "fork",
                 "compact",
                 "images",
@@ -898,6 +908,20 @@ async fn handle(
             Ok(json_response(
                 200,
                 options.manager.select_model(parts[0], input.model).await?,
+            ))
+        }
+        ("PUT", Some("workspace")) => {
+            let input: SelectWorkspace = body(request).await?;
+            text(&input.workspace, 4096)?;
+            if host.stop.is_cancelled() {
+                return Err(ApiError(503, "Service is stopping."));
+            }
+            Ok(json_response(
+                200,
+                options
+                    .manager
+                    .select_workspace(parts[0], input.workspace)
+                    .await?,
             ))
         }
         ("POST", Some("fork")) => {

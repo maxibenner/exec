@@ -80,6 +80,61 @@ fn snapshot(frame: ServiceEvent) -> Option<ConversationSnapshot> {
     }
 }
 #[tokio::test]
+async fn workspace_updates_validate_paths_publish_snapshots_and_lock_after_acceptance() {
+    let f = setup(FakeProvider::new(vec![answer()]), vec![]).await;
+    let target = directory();
+    let c = f
+        .client
+        .create("fake", f.root.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let path = format!("/v1/conversations/{}/workspace", c.id);
+    let file = f.root.path().join("not-a-directory");
+    fs::write(&file, "text").unwrap();
+    for body in [
+        json!({"workspace":"relative"}),
+        json!({"workspace":file}),
+        json!({"workspace":f.root.path().join("missing")}),
+        json!({"workspace":"/a\u{0000}b"}),
+        json!({"workspace":format!("/{}", "x".repeat(4096))}),
+        json!({"workspace":target.path(), "unexpected":true}),
+        json!({}),
+    ] {
+        assert_eq!(
+            f.client.call("PUT", &path, Some(body)).await.unwrap_err(),
+            Error::Api(400)
+        );
+    }
+    let mut events = f.client.events(&c.id, CancellationToken::new());
+    events.next().await.unwrap().unwrap();
+    let body = json!({"workspace":target.path().join(".")});
+    let updated = f
+        .client
+        .call("PUT", &path, Some(body.clone()))
+        .await
+        .unwrap();
+    let canonical = fs::canonicalize(target.path()).unwrap();
+    assert_eq!(updated["workspace"], canonical.to_str().unwrap());
+    assert_eq!(updated["configuration"]["instructionsFrozen"], false);
+    let published = tokio::time::timeout(Duration::from_secs(5), events.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        snapshot(published).unwrap().workspace,
+        canonical.to_str().unwrap()
+    );
+    f.client.submit(&c.id, "first").await.unwrap();
+    terminal(&f.client, &c.id).await;
+    assert_eq!(
+        f.client.call("PUT", &path, Some(body)).await.unwrap_err(),
+        Error::Api(409)
+    );
+    f.service.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn sync_pages_overlap_the_latest_message_and_reset_on_stale_prefix() {
     let f = setup(FakeProvider::new(vec![answer(), answer()]), vec![]).await;
     let c = f

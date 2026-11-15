@@ -331,7 +331,7 @@ pub(crate) fn permits(method: &str, path: &str) -> bool {
         && match method {
             "GET" => parts[4] == "sync",
             "POST" => matches!(parts[4], "turns" | "steer" | "cancel" | "approvals"),
-            "PUT" => matches!(parts[4], "settings" | "model" | "title"),
+            "PUT" => matches!(parts[4], "settings" | "model" | "title" | "workspace"),
             _ => false,
         }
 }
@@ -463,6 +463,15 @@ mod tests {
         assert!(validate_relay("wss://example.com", false).is_ok());
         assert!(validate_relay("wss://user:secret@example.com", false).is_err());
     }
+    #[test]
+    fn workspace_updates_are_scoped_to_the_existing_conversation() {
+        let route = format!("/v1/conversations/{}/workspace", crate::core::new_id());
+        assert!(permits("PUT", &route));
+        assert!(!permits("POST", &route));
+        assert!(!permits("PUT", &format!("{route}?override=true")));
+        assert!(!permits("PUT", "/v1/conversations/not-an-id/workspace"));
+    }
+
     #[test]
     fn sync_queries_are_read_only_and_strictly_scoped() {
         let id = crate::core::new_id();

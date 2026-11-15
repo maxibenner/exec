@@ -36,6 +36,22 @@ impl Default for AgentManager {
         }
     }
 }
+async fn canonical_workspace(workspace: String) -> Result<String> {
+    if !std::path::Path::new(&workspace).is_absolute() {
+        return Err(Error::Invalid("Workspace must be absolute."));
+    }
+    let workspace = tokio::fs::canonicalize(workspace)
+        .await
+        .map_err(|_| Error::Invalid("Workspace must be an existing directory."))?;
+    if !tokio::fs::metadata(&workspace)
+        .await
+        .map_err(|_| Error::Invalid("Workspace must be an existing directory."))?
+        .is_dir()
+    {
+        return Err(Error::Invalid("Workspace must be a directory."));
+    }
+    Ok(workspace.to_string_lossy().into_owned())
+}
 impl AgentManager {
     pub async fn open(
         store: Arc<dyn ConversationStore>,
@@ -413,20 +429,8 @@ impl AgentManager {
         }
         let settings = settings.unwrap_or(defaults.settings);
         settings.validate()?;
-        if !std::path::Path::new(&workspace).is_absolute() {
-            return Err(Error::Invalid("Workspace must be absolute."));
-        }
-        let workspace = tokio::fs::canonicalize(workspace)
-            .await
-            .map_err(|_| Error::Invalid("Workspace must be an existing directory."))?;
-        if !tokio::fs::metadata(&workspace)
-            .await
-            .map_err(|_| Error::Invalid("Workspace must be an existing directory."))?
-            .is_dir()
-        {
-            return Err(Error::Invalid("Workspace must be a directory."));
-        }
-        let mut options = ConversationOptions::new(provider, model, workspace.to_string_lossy());
+        let workspace = canonical_workspace(workspace).await?;
+        let mut options = ConversationOptions::new(provider, model, workspace);
         options.tools = tools;
         options.settings = settings;
         self.create(options).await
@@ -447,6 +451,31 @@ impl AgentManager {
         self.get(id)?
             .mutate_record(move |record| {
                 record.model = model;
+                record.usage = None;
+                Ok(())
+            })
+            .await
+    }
+    pub async fn select_workspace(
+        &self,
+        id: &str,
+        workspace: String,
+    ) -> Result<ConversationSnapshot> {
+        let conversation = self.get(id)?;
+        let workspace = canonical_workspace(workspace).await?;
+        conversation
+            .mutate_record(move |record| {
+                let config = record.configuration.as_mut().unwrap();
+                if config.instructions_frozen
+                    || !record.messages.is_empty()
+                    || !record.pending_input.is_empty()
+                    || record.operation.is_some()
+                {
+                    return Err(Error::WorkspaceLocked);
+                }
+                record.workspace = workspace;
+                config.workspace_instructions = None;
+                record.provider_state = None;
                 record.usage = None;
                 Ok(())
             })
@@ -512,7 +541,7 @@ impl AgentManager {
         let instructions = if snapshot.configuration.instructions_frozen {
             None
         } else {
-            crate::workspace_instructions::load(snapshot.workspace).await?
+            crate::workspace_instructions::load(snapshot.workspace.clone()).await?
         };
         let catalog = self.catalog.lock().unwrap();
         if catalog.closed || catalog.account_busy {
@@ -523,6 +552,7 @@ impl AgentManager {
             images,
             instructions,
             !catalog.library_error && catalog.library.automatic_titles,
+            Some(&snapshot.workspace),
         )
     }
     pub fn compact(&self, id: &str) -> Result<Submission> {

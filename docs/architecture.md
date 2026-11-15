@@ -60,7 +60,7 @@ Capture requires a separately authenticated live native channel, macOS Screen Re
 
 - Automatic titles are backend-owned and enabled by default. Manual names are never replaced; title inference is bounded, isolated from history and never retried.
 - Model/reasoning/auto-mode changes chosen mid-turn coalesce and apply once idle, before queued compaction/fork commands. A desired auto-mode change does not resolve a live approval. Stop discards queued actions; quit prevents them from starting.
-- A new conversation can inherit a suggested workspace, but permits one explicit choice before becoming immutable. Existing history is never rebound to another folder.
+- The backend permits durable workspace changes before the first accepted turn and rejects them permanently afterward, including after failure or cancellation. Existing history is never rebound to another folder. Frontends retain their existing creation flows; macOS still limits workspace selection to unsaved conversations, and iOS chooses the folder before creation.
 - Steering is text-only. Images submitted during a response, or input during manual compaction, retain the draft rather than silently scheduling another turn.
 - Drafts clear on backend acknowledgement. Uncertain acceptance retains the draft and reconciles state without resubmission; inspect history before explicitly resending.
 - Account allowance refreshes only when Settings opens. No per-turn quota attribution is invented.

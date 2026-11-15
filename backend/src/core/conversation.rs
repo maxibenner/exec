@@ -408,7 +408,7 @@ impl Conversation {
         images: Vec<ImageRef>,
         instructions: Option<String>,
     ) -> Result<Submission> {
-        self.submit_images_with_naming(text, images, instructions, false)
+        self.submit_images_with_naming(text, images, instructions, false, None)
     }
     pub(crate) fn submit_images_with_naming(
         self: &Arc<Self>,
@@ -416,6 +416,7 @@ impl Conversation {
         images: Vec<ImageRef>,
         instructions: Option<String>,
         automatic_titles: bool,
+        expected_workspace: Option<&str>,
     ) -> Result<Submission> {
         super::images::validate_message_images(&text, &images)?;
         let mut s = self.state();
@@ -426,6 +427,11 @@ impl Conversation {
             return Err(Error::Storage);
         }
         if s.active.is_some() || s.updating {
+            return Err(Error::Busy);
+        }
+        // Instruction loading awaits filesystem I/O outside this lock. Reject a
+        // concurrent folder change rather than freezing context from the old folder.
+        if expected_workspace.is_some_and(|workspace| workspace != s.record.workspace) {
             return Err(Error::Busy);
         }
         if let Some(value) = &instructions {
@@ -1281,5 +1287,43 @@ impl Conversation {
             self.checkpoint(None).await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoInference;
+    impl ChatProvider for NoInference {
+        fn stream(
+            &self,
+            _: ProviderRequest,
+        ) -> futures_util::stream::BoxStream<'static, Result<ProviderEvent>> {
+            panic!("A stale workspace must not reach inference")
+        }
+    }
+
+    #[test]
+    fn stale_workspace_instructions_are_rejected_before_acceptance() {
+        let c = Conversation::new(
+            ConversationOptions::new(Arc::new(NoInference), "fake", "/new"),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            c.submit_images_with_naming(
+                "first".into(),
+                vec![],
+                Some("old instructions".into()),
+                false,
+                Some("/old"),
+            ),
+            Err(Error::Busy)
+        ));
+        let snapshot = c.snapshot();
+        assert!(snapshot.messages.is_empty() && snapshot.operation.is_none());
+        assert!(!snapshot.configuration.instructions_frozen);
+        assert_eq!(snapshot.configuration.workspace_instructions, None);
     }
 }

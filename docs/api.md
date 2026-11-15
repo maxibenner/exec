@@ -142,6 +142,7 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | GET | `/v1/conversations/:id` | `ConversationSnapshot` |
 | PUT | `/v1/conversations/:id/title` | `{title}` → saved idle snapshot |
 | PUT | `/v1/conversations/:id/model` | `{model}` → saved idle snapshot |
+| PUT | `/v1/conversations/:id/workspace` | `{workspace}` → saved idle snapshot, only before the first accepted turn; otherwise 409 |
 | POST | `/v1/conversations/:id/fork` | `{}` → `201` independent saved snapshot of the transcript, including during an active turn |
 | DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after durable deletion; active work returns 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
@@ -164,6 +165,16 @@ Optional creation `settings` is `{systemPrompt:string,autoApprove:boolean}`; whe
 its default is `{systemPrompt:"",autoApprove:true}`. Both fields are required when supplying
 settings. Settings replacement is idle-only (409 while working/updating); no live approval
 is implicitly resolved by a configuration request. Failed writes block further work.
+
+Workspace replacement uses the same absolute, existing-directory validation and
+canonicalization as creation. It is checkpointed before publication and remains available
+after reloading an unused session. The first accepted turn locks the workspace, even if
+that turn subsequently fails or is cancelled; forks with existing history and legacy
+sessions with frozen instructions stay locked. Failed turn validation before acceptance
+does not lock it. A concurrent workspace change and send cannot mix folders with stale
+project instructions: one may return 409 before acceptance. No operation is retried.
+The endpoint is also available over the encrypted remote route; existing frontend flows
+remain compatible and need not expose it.
 
 Snapshots include `configuration: {settings, instructionsFrozen, workspaceInstructions}`.
 The nullable workspace instructions are loaded by the manager from root AGENTS.md at the
