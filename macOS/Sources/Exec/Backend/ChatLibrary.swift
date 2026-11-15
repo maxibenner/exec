@@ -15,6 +15,7 @@ import Observation
     private var modelRefreshError: String?
     private var savedSummaries: [SessionSummary] = []
     private var sidebarOrder: [UUID] = []
+    private var sidebarSelectionBeforeCreation: UUID?
     private var catalogRequest = 0
     private(set) var openConversations: [ChatStore] = []
     private(set) var detachedSessionIDs: Set<UUID> = []
@@ -142,7 +143,13 @@ import Observation
     func searchModels(for providerID: String) -> [ChatModel] { searchModels.filter { provider.providerID(for: $0.id) == providerID } }
     func providerName(for model: String) -> String { connections.first { $0.id == provider.providerID(for: model) }?.name ?? "" }
     var currentSessionID: UUID? { current.currentSessionID }
-    var sidebarSelectionID: UUID? { openingSessionID ?? currentSessionID }
+    var sidebarSelectionID: UUID? {
+        if let id = openingSessionID ?? currentSessionID { return id }
+        guard current.error == nil, !current.hasUnsavedChanges else { return nil }
+        // Keep the old highlight until the create snapshot supplies both the new
+        // row and its selection. Do not show a frame with neither row selected.
+        return sidebarSelectionBeforeCreation
+    }
     var canNavigate: Bool { !authenticating && (!navigating || openingSessionID != nil) }
     private var canModify: Bool { !navigating && !authenticating }
     var canReorderSessions: Bool { canModify }
@@ -406,7 +413,7 @@ import Observation
         do {
             let next = try makeConversation(workspace: current.workspace)
             next.requestInitialWorkspaceSelection()
-            activate(next)
+            activate(next, preserveSidebarSelection: next.workspace != nil && !next.selectedModel.isEmpty)
             next.scheduleSave(force: next.workspace != nil)
         } catch { navigationError = error.localizedDescription }
     }
@@ -602,8 +609,9 @@ import Observation
         }
     }
 
-    private func activate(_ conversation: ChatStore) {
+    private func activate(_ conversation: ChatStore, preserveSidebarSelection: Bool = false) {
         let previous = current
+        sidebarSelectionBeforeCreation = preserveSidebarSelection ? sidebarSelectionID : nil
         if previous !== conversation, previous.currentSessionID == nil, previous.hasUnsentDraft {
             previous.scheduleSave(force: true)
             Task {
