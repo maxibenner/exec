@@ -27,8 +27,6 @@ import CryptoKit
     var error: String?
     private(set) var currentSessionID: UUID?
     private(set) var workspace: Workspace?
-    private var workspaceChosen = false
-    private var commitInheritedWorkspace = false
     private(set) var isRestoringSession = false
     private(set) var isSending = false
     private(set) var isCompacting = false
@@ -46,7 +44,11 @@ import CryptoKit
     private var commandsClosed = false
     var canRequestCommands: Bool { !commandsClosed && !isRestoringSession && !configurationUncertain }
     var desktop: AgentDesktop { api.desktop }
-    var screenshotsEnabled: Bool { currentSessionID.map { desktop.enabled.contains($0) } ?? false }
+    private var pendingScreenshotFrontendID: String?
+    var screenshotsEnabled: Bool {
+        if let id = currentSessionID { return desktop.enabled.contains(id) }
+        return pendingScreenshotFrontendID != nil && pendingScreenshotFrontendID == desktop.frontendID
+    }
     private var desktopTask: Task<Void, Never>?
     var changingScreenshots: Bool { desktopTask != nil || (currentSessionID.map { desktop.changing.contains($0) } ?? false) }
 
@@ -60,7 +62,7 @@ import CryptoKit
     }
     private func drainCommands() {
         guard !commandsClosed, !configurationUncertain, !backendBusy, !isSaving, commandTask == nil,
-              currentSessionID != nil || workspaceChosen || !pendingCommands.isEmpty,
+              currentSessionID != nil || !pendingCommands.isEmpty,
               settingsDirty || !pendingCommands.isEmpty else { return }
         commandTask = Task {
             defer { commandTask = nil; updateSleepActivity() }
@@ -95,26 +97,29 @@ import CryptoKit
         desktopTask = Task {
             defer { desktopTask = nil }
             do {
-                if currentSessionID == nil {
-                    scheduleSave(force: true)
-                    await waitUntilIdle()
-                    await waitForPendingSave()
+                if let id = currentSessionID {
+                    try await desktop.setEnabled(enable, for: id)
+                } else if enable {
+                    try await desktop.preparePermission()
+                    try Task.checkCancellation()
+                    pendingScreenshotFrontendID = desktop.frontendID
+                } else {
+                    pendingScreenshotFrontendID = nil
                 }
-                try Task.checkCancellation()
-                guard let id = currentSessionID else { throw ExecError("Choose a workspace and model before enabling screenshots.") }
-                try await desktop.setEnabled(enable, for: id)
             } catch { self.error = error.localizedDescription }
         }
     }
     var isWorking: Bool { busy }
     var canEditDraft: Bool { !isRestoringSession && !isStopping }
-    var canSelectWorkspace: Bool { !busy && !isSaving && !workspaceChosen && currentSessionID == nil && messages.isEmpty }
+    var canSelectWorkspace: Bool { !busy && !isSaving && !changingScreenshots && !configurationUncertain && currentSessionID == nil && messages.isEmpty }
     private(set) var autoApproveTools: Bool
     private(set) var contextUsage: ContextUsage?
     private(set) var needsInitialWorkspaceSelection = false
     let tools = ToolApprovalState()
     var summary: SessionSummary? {
-        guard var summary = snapshot.map(SessionSummary.init) else { return nil }
+        guard var summary = snapshot.map(SessionSummary.init) else {
+            return hasUnsentDraft ? SessionSummary(localDraft: id, workspace: workspace?.root.path) : nil
+        }
         if deletedRemotely {
             guard hasUnsentDraft else { return nil }
             summary.title = "Unsent draft"; summary.customTitle = nil
@@ -175,7 +180,6 @@ import CryptoKit
     func setInitialWorkspace(_ workspace: Workspace) throws {
         guard canSelectWorkspace else { throw ExecError("Choose a workspace in a new conversation.") }
         self.workspace = workspace
-        workspaceChosen = true
         needsInitialWorkspaceSelection = false
     }
     func waitUntilIdle() async { await task?.value }
@@ -190,29 +194,28 @@ import CryptoKit
         autoApproveTools = enabled
         scheduleSave()
     }
-    func scheduleSave(force: Bool = false) {
+    func scheduleSave() {
         settingsDirty = true
-        commitInheritedWorkspace = commitInheritedWorkspace || force
-        guard !busy, !isSaving, saveTask == nil, !commandsClosed else { return }
+        guard currentSessionID != nil, !busy, !isSaving, saveTask == nil, !commandsClosed else { return }
         saveTask = Task {
             defer { saveTask = nil; drainCommands() }
             do { try await saveIfIdle() }
             catch { self.error = error.localizedDescription }
         }
     }
-    func saveIfIdle(force: Bool = false) async throws {
+    func saveIfIdle() async throws {
         guard !busy, !isSaving else { return }
         isSaving = true
         defer { isSaving = false; drainCommands() }
-        try await persistConfiguration(allowInheritedWorkspace: force)
+        try await persistConfiguration()
     }
-    private func persistConfiguration(allowInheritedWorkspace: Bool = false) async throws {
+    private func persistConfiguration(createIfNeeded: Bool = false) async throws {
         guard !deletedRemotely else { throw ExecError("This conversation was deleted on another device.") }
         guard !configurationUncertain else { throw ExecError("The previous configuration request could not be confirmed. Reopen the conversation before making further changes.") }
         guard let workspace, !selectedModel.isEmpty else { return }
-        // A newly inherited workspace is a suggestion, not an explicit choice. Do not
-        // create an immutable Rust session until selection, sending, or leaving a draft.
-        guard currentSessionID != nil || workspaceChosen || commitInheritedWorkspace || allowInheritedWorkspace else { return }
+        // New conversations stay local, including workspace and settings changes.
+        // Only sending the first message may create an immutable backend session.
+        guard currentSessionID != nil || createIfNeeded else { return }
         let desiredSettings = settings
         let desiredModel = selectedModel
         do {
@@ -385,7 +388,7 @@ import CryptoKit
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !draftImages.isEmpty, canEditDraft, !isImportingImages, !submitting, !isSaving, commandTask == nil, hasUsableModel else { return }
+        guard !text.isEmpty || !draftImages.isEmpty, canEditDraft, !isImportingImages, !changingScreenshots, !submitting, !isSaving, commandTask == nil, hasUsableModel else { return }
         if operationActive && isCompacting {
             error = "Wait for compaction to finish before sending a message."
             return
@@ -400,8 +403,15 @@ import CryptoKit
             defer { submitting = false; task = nil; updateSleepActivity(); drainCommands() }
             do {
                 await waitForPendingSave()
-                if steeringOperationID == nil { try await persistConfiguration(allowInheritedWorkspace: true) }
+                if steeringOperationID == nil { try await persistConfiguration(createIfNeeded: true) }
                 guard let id = currentSessionID else { throw ExecError("Choose a workspace and model before sending a message.") }
+                if let frontendID = pendingScreenshotFrontendID {
+                    pendingScreenshotFrontendID = nil // Never retry an uncertain grant.
+                    guard desktop.frontendID == frontendID else {
+                        throw ExecError("Screenshot access disconnected. Enable screenshots again before sending.")
+                    }
+                    try await desktop.setEnabled(true, for: id, requestPermissionIfNeeded: false)
+                }
                 var images: [AgentImage] = []
                 for image in inputImages {
                     let value = try await api.request("POST", AgentAPI.path(id, "/images"), .object([

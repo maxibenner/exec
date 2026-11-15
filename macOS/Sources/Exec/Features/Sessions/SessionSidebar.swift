@@ -28,7 +28,7 @@ struct SessionSidebar: View {
                                 .fill(store.sidebarSelectionID == session.id
                                       ? Color.primary.opacity(0.08) : Color.clear)
                         )
-                        .moveDisabled(!store.canReorderSessions)
+                        .moveDisabled(!store.canReorderSessions || session.isLocalDraft)
                 }
                 .onMove { offsets, destination in
                     store.moveSidebarSessions(from: offsets, to: destination)
@@ -103,11 +103,11 @@ struct SessionRow: View {
         .padding(.vertical, 5)
         .contentShape(Rectangle())
         .contextMenu {
-            Button("Rename…", action: rename).disabled(session.unreadable || store.navigating || running)
+            Button("Rename…", action: rename).disabled(session.unreadable || session.isLocalDraft || store.navigating || running)
             Divider()
             Button("Delete Conversation", role: .destructive, action: delete).disabled(running)
         }
-        .accessibilityAction(named: "Rename Conversation") { if !session.unreadable { rename() } }
+        .accessibilityAction(named: "Rename Conversation") { if !session.unreadable && !session.isLocalDraft { rename() } }
         .accessibilityAction(named: "Delete Conversation") { if !running { delete() } }
     }
 }

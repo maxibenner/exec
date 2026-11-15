@@ -87,17 +87,24 @@ import Observation
         reportedPermission = granted
     }
 
-    func setEnabled(_ grant: Bool, for conversation: UUID) async throws {
+    /// Authorize screen access without creating or granting a conversation yet.
+    func preparePermission(requestIfNeeded: Bool = true) async throws {
+        guard let frontendID else { throw ExecError(error ?? "Screenshot access is unavailable. Restart Exec to establish its trusted channel.") }
+        guard preflight() || (requestIfNeeded && requestPermission()) else {
+            throw ExecError("Allow Exec in System Settings → Privacy & Security → Screen Recording, then enable screenshots again. You may need to restart Exec.")
+        }
+        try await reportPermission()
+        guard reportedPermission, self.frontendID == frontendID else {
+            throw ExecError("Screen Recording permission is not available yet. Restart Exec after granting it in System Settings.")
+        }
+    }
+
+    func setEnabled(_ grant: Bool, for conversation: UUID, requestPermissionIfNeeded: Bool = true) async throws {
         guard changing.insert(conversation).inserted else { return }
         defer { changing.remove(conversation) }
         guard let frontendID else { throw ExecError(error ?? "Screenshot access is unavailable. Restart Exec to establish its trusted channel.") }
         if grant {
-            // Only this explicit user action may request macOS Screen Recording access.
-            guard preflight() || requestPermission() else {
-                throw ExecError("Allow Exec in System Settings → Privacy & Security → Screen Recording, then enable screenshots again. You may need to restart Exec.")
-            }
-            try await reportPermission()
-            guard reportedPermission else { throw ExecError("Screen Recording permission is not available yet. Restart Exec after granting it in System Settings.") }
+            try await preparePermission(requestIfNeeded: requestPermissionIfNeeded)
         } else {
             enabled.remove(conversation)
             cancelCaptures() // Conservative: never share an in-flight capture after revocation.

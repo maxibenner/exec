@@ -118,7 +118,7 @@ import Observation
         // Show those new residents at the top from their very first frame.
         let knownIDs = Set(sidebarOrder + savedSummaries.map(\.id))
         var result = openConversations.reversed().compactMap { item -> SessionSummary? in
-            guard let id = item.currentSessionID, !knownIDs.contains(id) else { return nil }
+            guard let id = item.summary?.id, !knownIDs.contains(id) else { return nil }
             return summaries.removeValue(forKey: id)
         }
         result += sidebarOrder.compactMap { summaries.removeValue(forKey: $0) }
@@ -142,7 +142,7 @@ import Observation
     func searchModels(for providerID: String) -> [ChatModel] { searchModels.filter { provider.providerID(for: $0.id) == providerID } }
     func providerName(for model: String) -> String { connections.first { $0.id == provider.providerID(for: model) }?.name ?? "" }
     var currentSessionID: UUID? { current.currentSessionID }
-    var sidebarSelectionID: UUID? { openingSessionID ?? currentSessionID }
+    var sidebarSelectionID: UUID? { openingSessionID ?? current.summary?.id }
     var canNavigate: Bool { !authenticating && (!navigating || openingSessionID != nil) }
     private var canModify: Bool { !navigating && !authenticating }
     var canReorderSessions: Bool { canModify }
@@ -159,7 +159,7 @@ import Observation
         if let loading, !result.contains(where: { $0 === loading }) { result.append(loading) }
         return result
     }
-    private func conversation(_ id: UUID) -> ChatStore? { openConversations.first { $0.currentSessionID == id } }
+    private func conversation(_ id: UUID) -> ChatStore? { openConversations.first { ($0.currentSessionID ?? $0.id) == id } }
     func isSessionRunning(_ id: UUID) -> Bool { conversation(id)?.busy == true }
     func isSessionResponding(_ id: UUID) -> Bool { conversation(id).map { $0.isSending || $0.isCompacting } == true }
     func needsApproval(_ id: UUID) -> Bool { conversation(id)?.tools.pendingApproval != nil }
@@ -309,7 +309,7 @@ import Observation
     /// Window ownership never creates a second runner or restores a resident provider.
     func detachSession(_ id: UUID, present: @escaping (ChatStore) -> Void) {
         guard canModify, !detachedSessionIDs.contains(id),
-              sessionList.contains(where: { $0.id == id && !$0.unreadable }) else { return }
+              sessionList.contains(where: { $0.id == id && !$0.unreadable && !$0.isLocalDraft }) else { return }
         func finish(_ conversation: ChatStore) throws {
             // Prepare the replacement before changing ownership, so failure is atomic.
             var replacement = current
@@ -388,7 +388,7 @@ import Observation
             let next = try self.makeConversation()
             self.loading = next
             try await next.copyConversation(from: source)
-            try await next.saveIfIdle(force: true)
+            try await next.saveIfIdle()
             try Task.checkCancellation()
             if source.draft == commandDraft, let command = ComposerCommand(commandDraft),
                command.page == .fork || (command.page == nil && ComposerCommand.Page.fork.matches(command.query)) {
@@ -407,7 +407,6 @@ import Observation
             let next = try makeConversation(workspace: current.workspace)
             next.requestInitialWorkspaceSelection()
             activate(next)
-            next.scheduleSave(force: next.workspace != nil)
         } catch { navigationError = error.localizedDescription }
     }
 
@@ -467,33 +466,26 @@ import Observation
               offsets.allSatisfy({ ids.indices.contains($0) }),
               (0...ids.count).contains(destination) else { return }
         let moving = offsets.map { ids[$0] }
+        let localIDs = Set(sessionList.filter(\.isLocalDraft).map(\.id))
+        guard localIDs.isDisjoint(with: moving) else { return }
         var reordered = ids.enumerated().filter { !offsets.contains($0.offset) }.map(\.element)
         reordered.insert(contentsOf: moving, at: destination - offsets.filter { $0 < destination }.count)
         guard reordered != ids else { return }
         navigate {
-            // A visible draft may not have a snapshot yet. Save it before making
-            // its position durable, without interrupting any running conversation.
-            for id in ids where !self.savedSummaries.contains(where: { $0.id == id }) {
-                if let conversation = self.conversation(id) {
-                    await conversation.waitForPendingSave()
-                    try Task.checkCancellation()
-                    try await conversation.saveIfIdle(force: true)
-                }
-            }
-            try Task.checkCancellation()
-            try await self.sessions.reorder(reordered)
+            // Local draft IDs must never enter the durable catalog.
+            try await self.sessions.reorder(reordered.filter { !localIDs.contains($0) })
             try await self.refreshCatalog()
         }
     }
 
     func renameSession(_ id: UUID, title: String) {
-        guard canModify, !isSessionRunning(id), sessionList.contains(where: { $0.id == id && !$0.unreadable }) else { return }
+        guard canModify, !isSessionRunning(id), sessionList.contains(where: { $0.id == id && !$0.unreadable && !$0.isLocalDraft }) else { return }
         navigate {
-            // Persist an unsaved idle draft/workspace session before changing its metadata.
+            // Flush pending settings before changing saved metadata.
             if let conversation = self.conversation(id) {
                 await conversation.waitForPendingSave()
                 try Task.checkCancellation()
-                try await conversation.saveIfIdle(force: true)
+                try await conversation.saveIfIdle()
             }
             try await self.sessions.rename(id: id, title: title)
             try await self.refreshCatalog()
@@ -506,6 +498,15 @@ import Observation
 
     func deleteSession(_ id: UUID) {
         guard canDeleteSession(id) else { return }
+        if let local = conversation(id), local.currentSessionID == nil {
+            local.closePresentation()
+            openConversations.removeAll { $0 === local }
+            if current === local {
+                do { activate(try makeConversation()) }
+                catch { navigationError = error.localizedDescription }
+            }
+            return
+        }
         let wasDetached = detachedSessionIDs.contains(id)
         let rows = sidebarSessions.map(\.id)
         // Deleting a detached conversation must not change the main selection.
@@ -603,22 +604,6 @@ import Observation
     }
 
     private func activate(_ conversation: ChatStore) {
-        let previous = current
-        if previous !== conversation, previous.currentSessionID == nil, previous.hasUnsentDraft {
-            previous.scheduleSave(force: true)
-            Task {
-                await previous.waitUntilIdle()
-                await previous.waitForPendingSave()
-                do {
-                    guard previous.currentSessionID != nil else { throw ExecError(previous.error ?? "Choose a workspace and model before leaving this draft.") }
-                } catch {
-                    previous.error = error.localizedDescription
-                    // A failed/uncertain create is not retried or allowed to hide the draft.
-                    if self.current === conversation { self.current = previous; self.persistSelection() }
-                    self.navigationError = error.localizedDescription
-                }
-            }
-        }
         applyModels(to: conversation)
         remember(conversation)
         current = conversation

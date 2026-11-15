@@ -20,39 +20,34 @@ import Foundation
     private func snapshot(_ state: String, model: String = "openai/test", auto: Bool = false) throws -> AgentSnapshot {
         try snapshotJSON(state, model: model, auto: auto).decoded(AgentSnapshot.self)
     }
-    func localDraftSurvivesNavigationAndUncertainCreate() async throws {
-        for fail in [false, true] {
-            let transport = FakeAgentTransport()
-            let suite = "exec-draft-navigation-\(UUID().uuidString)"
-            let preferences = UserDefaults(suiteName: suite)!
-            defer { preferences.removePersistentDomain(forName: suite) }
-            let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
-            defer { library.closePresentations() }
-            try library.current.setInitialWorkspace(Workspace(root: URL(fileURLWithPath: "/tmp")))
-            library.newConversation()
-            let source = library.current
-            await source.waitForPendingSave()
-            source.selectedModel = "openai/test"
-            source.draft = "Keep this unsubmitted draft"
-            let config = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(AgentLibraryConfiguration()))
-            try await transport.reply("/v1/library", config)
-            try await transport.reply("/v1/conversations", snapshotJSON("completed"))
-            if fail { await transport.fail("/v1/conversations") }
-            library.newConversation()
-            if fail {
-                try await wait { library.current === source && source.hasUnsavedChanges }
-                library.newConversation()
-                try await wait { library.current === source }
-            } else {
-                try await wait { source.currentSessionID != nil && !source.isSaving }
-                try expect(library.current !== source && library.openConversations.contains { $0 === source })
-                library.openSession(source.currentSessionID!)
-                try expect(library.current === source)
-            }
-            try expect(source.draft == "Keep this unsubmitted draft")
-            let creates = await transport.requests.filter { $0.method == "POST" && $0.path == "/v1/conversations" }
-            try expect(creates.count == 1)
-        }
+    func localDraftSurvivesNavigationWithoutSaving() async throws {
+        let transport = FakeAgentTransport()
+        let suite = "exec-draft-navigation-\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
+        defer { library.closePresentations() }
+        try library.current.setInitialWorkspace(Workspace(root: URL(fileURLWithPath: "/tmp")))
+        let source = library.current
+        source.selectedModel = "openai/test"
+        source.draft = "Keep this unsubmitted draft"
+        source.scheduleSave()
+        await source.waitForPendingSave()
+        library.newConversation()
+        try expect(library.current !== source && library.openConversations.contains { $0 === source })
+        try expect(source.currentSessionID == nil && source.canSelectWorkspace)
+        try expect(library.sidebarSessions.contains { $0.id == source.id && $0.isLocalDraft })
+        library.openSession(source.id)
+        try expect(library.current === source && source.draft == "Keep this unsubmitted draft")
+        try expect(library.sidebarSelectionID == source.id)
+        // Metadata actions must not accidentally persist a local draft.
+        library.renameSession(source.id, title: "Do not save")
+        library.moveSession(source.id, before: nil)
+        await library.waitForNavigation()
+        library.deleteSession(source.id)
+        try expect(library.current !== source && !library.openConversations.contains { $0 === source })
+        let requests = await transport.requests
+        try expect(requests.isEmpty)
     }
 
     func remoteDeletionReconcilesAndPreservesLocalDraft() async throws {
@@ -83,7 +78,7 @@ import Foundation
         }
     }
 
-    func inheritedWorkspaceCanBeChosenExactlyOnce() async throws {
+    func newConversationsStayLocalUntilFirstSend() async throws {
         let transport = FakeAgentTransport()
         let provider = AgentAccounts(api: AgentAPI(transport: transport))
         let suite = "exec-workspace-choice-\(UUID().uuidString)"
@@ -97,35 +92,112 @@ import Foundation
         let inherited = library.current
         await inherited.waitForPendingSave()
         try expect(inherited !== previous && inherited.workspace?.root == previous.workspace?.root)
-        inherited.selectedModel = "openai/test"
-        try await transport.reply("/v1/conversations", snapshotJSON("completed"))
-        let config = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(AgentLibraryConfiguration()))
-        try await transport.reply("/v1/library", config)
+        inherited.installModels([ChatModel(id: "openai/test", name: "Test")])
+        inherited.systemPrompt = "Keep this prompt"
+        inherited.setAutoApproveTools(false)
+        inherited.selectedEffort = "high"
         inherited.scheduleSave()
         await inherited.waitForPendingSave()
-        try expect(!inherited.canSelectWorkspace && inherited.currentSessionID != nil)
-        try expect(library.sidebarSessions.contains { $0.id == inherited.currentSessionID })
-        try expect(inherited.draft.isEmpty)
-        try expectFailure { try inherited.setInitialWorkspace(Workspace(root: URL(fileURLWithPath: "/tmp/another"))) }
+        try expect(inherited.currentSessionID == nil && inherited.canSelectWorkspace)
+        try expect(!library.sidebarSessions.contains { $0.id == inherited.id })
+        // Explicit selection and later changes stay local, not just inheritance.
+        try inherited.setInitialWorkspace(Workspace(root: URL(fileURLWithPath: "/tmp/another")))
+        try await inherited.saveIfIdle()
+        try expect(inherited.canSelectWorkspace)
+        try inherited.setInitialWorkspace(Workspace(root: URL(fileURLWithPath: "/tmp/final")))
+        try await inherited.saveIfIdle()
+        let beforeSend = await transport.requests
+        try expect(beforeSend.isEmpty && inherited.currentSessionID == nil)
         try expect(previous.workspace?.root.path == "/tmp")
 
-        // Sending directly in the inherited folder starts the immutable backend session.
         try await transport.reply("/v1/providers", .array([.object(["id": .string("openai"), "name": .string("OpenAI"), "connected": .bool(true)])]))
         try await provider.refreshConnections()
-        let store = ChatStore(provider: provider, workspace: Workspace(root: URL(fileURLWithPath: "/tmp")), defaultAutoApproveTools: false)
-        defer { store.closePresentation() }
-        store.systemPrompt = "Keep this prompt"
-        store.installModels([ChatModel(id: "openai/test", name: "Test")])
         let terminal = try snapshotJSON("completed")
         try await transport.reply("/v1/conversations", terminal)
         try await transport.reply(AgentAPI.path(AgentIntegrationTests.conversationID), terminal)
-        store.draft = "Test"
-        try expect(store.canSelectWorkspace)
+        let config = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(AgentLibraryConfiguration()))
+        try await transport.reply("/v1/library", config)
+        inherited.draft = "Test"
+        inherited.send()
+        await inherited.waitUntilIdle()
+        try expect(inherited.currentSessionID != nil && !inherited.canSelectWorkspace)
+        try expect(inherited.draft.isEmpty)
+        try expectFailure { try inherited.setInitialWorkspace(Workspace(root: URL(fileURLWithPath: "/tmp/too-late"))) }
+        let writes = await transport.requests.filter { $0.method == "POST" }
+        try expect(writes.map(\.path) == ["/v1/conversations", AgentAPI.path(AgentIntegrationTests.conversationID, "/turns")])
+        let create = try JSONDecoder().decode(AgentJSON.self, from: writes[0].body!)
+        try expect(create["workspace"].string == "/tmp/final" && create["model"].string == "openai/test")
+        try expect(create["settings"]["systemPrompt"].string == "Keep this prompt")
+        try expect(!create["settings"]["autoApprove"].bool && create["settings"]["effort"].string == "high")
+    }
+
+    func uncertainFirstSendDoesNotRetryCreation() async throws {
+        let transport = FakeAgentTransport()
+        let provider = AgentAccounts(api: AgentAPI(transport: transport))
+        try await transport.reply("/v1/providers", .array([.object(["id": .string("openai"), "name": .string("OpenAI"), "connected": .bool(true)])]))
+        try await provider.refreshConnections()
+        let store = ChatStore(provider: provider, workspace: Workspace(root: URL(fileURLWithPath: "/tmp")))
+        defer { store.closePresentation() }
+        store.installModels([ChatModel(id: "openai/test", name: "Test")])
+        store.draft = "Keep this message"
+        await transport.fail("/v1/conversations")
         store.send()
         await store.waitUntilIdle()
-        try expect(store.currentSessionID != nil && !store.canSelectWorkspace)
+        try expect(store.hasUnsavedChanges && store.currentSessionID == nil && !store.canSelectWorkspace)
+        store.send()
+        store.scheduleSave()
+        await store.waitForPendingSave()
+        try expect(store.draft == "Keep this message")
         let creates = await transport.requests.filter { $0.method == "POST" && $0.path == "/v1/conversations" }
-        try expect(creates.count == 2)
+        try expect(creates.count == 1)
+    }
+
+    func screenshotSelectionDoesNotCreateConversation() async throws {
+        for revokePermission in [false, true] {
+            let transport = FakeAgentTransport()
+            let native = ControlledAgentTransport()
+            let api = AgentAPI(transport: transport)
+            var permission = false, permissionRequests = 0
+            let desktop = AgentDesktop(api: AgentAPI(transport: native), preflight: { permission }, requestPermission: {
+                permissionRequests += 1; permission = true; return true
+            })
+            api.desktop = desktop
+            let provider = AgentAccounts(api: api)
+            let store = ChatStore(provider: provider, workspace: Workspace(root: URL(fileURLWithPath: "/tmp")))
+            defer { store.closePresentation(); desktop.stop() }
+            try native.emit(.object(["type": .string("registered"), "frontendID": .string(UUID().uuidString.lowercased())]))
+            try await desktop.start()
+            store.toggleScreenshots()
+            try await wait { !store.changingScreenshots }
+            try expect(store.screenshotsEnabled && store.currentSessionID == nil && store.canSelectWorkspace)
+            let beforeSend = await transport.requests
+            let nativeBeforeSend = await native.requests.requests
+            try expect(beforeSend.isEmpty && !nativeBeforeSend.contains { $0.path.hasSuffix("/desktop") })
+            store.toggleScreenshots()
+            try await wait { !store.changingScreenshots }
+            try expect(!store.screenshotsEnabled)
+            store.toggleScreenshots()
+            try await wait { !store.changingScreenshots }
+            permission = !revokePermission
+
+            try await transport.reply("/v1/providers", .array([.object(["id": .string("openai"), "name": .string("OpenAI"), "connected": .bool(true)])]))
+            try await provider.refreshConnections()
+            store.installModels([ChatModel(id: "openai/test", name: "Test")])
+            let terminal = try snapshotJSON("completed")
+            try await transport.reply("/v1/conversations", terminal)
+            try await transport.reply(AgentAPI.path(AgentIntegrationTests.conversationID), terminal)
+            store.draft = "Test"
+            store.send()
+            await store.waitUntilIdle()
+            let grants = await native.requests.requests.filter { $0.path.hasSuffix("/desktop") }
+            let turns = await transport.requests.filter { $0.path.hasSuffix("/turns") }
+            try expect(permissionRequests == 1) // Sending never asks for OS permission again.
+            if revokePermission {
+                try expect(grants.isEmpty && turns.isEmpty && store.draft == "Test" && store.error != nil)
+            } else {
+                try expect(grants.count == 1 && turns.count == 1 && store.screenshotsEnabled)
+            }
+        }
     }
 
     func modelCatalogSurvivesLaunchAndRefreshes() async throws {

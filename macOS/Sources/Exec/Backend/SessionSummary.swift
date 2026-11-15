@@ -8,6 +8,15 @@ struct SessionSummary: Identifiable, Sendable {
     let workspace: String?
     let updatedAt: Date
     var unreadable = false
+    var isLocalDraft = false
+
+    init(localDraft id: UUID, workspace: String?) {
+        self.id = id
+        title = "Unsent draft"
+        self.workspace = workspace
+        updatedAt = .now
+        isLocalDraft = true
+    }
 
     init(_ value: AgentJSON) throws {
         guard let raw = value["id"].string, let id = UUID(uuidString: raw) else { throw ExecError("The backend returned an invalid conversation ID.") }
