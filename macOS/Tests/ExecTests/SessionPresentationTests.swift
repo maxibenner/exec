@@ -55,6 +55,33 @@ private actor SessionCreationTransport: AgentTransport {
     }
 }
 
+private actor SessionReorderTransport: AgentTransport {
+    nonisolated let responses = FakeAgentTransport()
+    private var pending: CheckedContinuation<Data, Error>?
+    private(set) var writes = 0
+    var isWaiting: Bool { pending != nil }
+
+    func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
+        if method == "PATCH", path == "/v1/library" {
+            writes += 1
+            return try await withCheckedThrowingContinuation { pending = $0 }
+        }
+        return try await responses.request(method, path, body: body)
+    }
+    nonisolated func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
+        responses.events(method, path, body: body)
+    }
+    func finish(_ configuration: AgentLibraryConfiguration?) throws {
+        guard let pending else { throw CheckFailure(description: "No pending reorder") }
+        self.pending = nil
+        if let configuration {
+            pending.resume(returning: try JSONEncoder().encode(configuration))
+        } else {
+            pending.resume(throwing: ExecError("Reorder could not be confirmed."))
+        }
+    }
+}
+
 @MainActor struct SessionPresentationTests {
     private func newSnapshot() throws -> AgentJSON {
         let encoded = String(decoding: try JSONEncoder().encode(AgentIntegrationTests.fixture(state: "completed", result: true)), as: UTF8.self)
@@ -80,6 +107,57 @@ private actor SessionCreationTransport: AgentTransport {
             try await Task.sleep(for: .milliseconds(5))
         }
         throw CheckFailure(description: "Timed out awaiting session creation")
+    }
+
+    func reorderPublishesBeforePersistenceAndReconciles() async throws {
+        for succeeds in [true, false] {
+            let suite = "exec-sidebar-drop-\(UUID())"
+            let preferences = UserDefaults(suiteName: suite)!
+            defer { preferences.removePersistentDomain(forName: suite) }
+            let transport = SessionReorderTransport()
+            let first = try AgentIntegrationTests.fixture(state: "completed", result: true)
+            let second = try newSnapshot()
+            let ids = try [first, second].map { try $0.decoded(AgentSnapshot.self).id }
+            var configuration = AgentLibraryConfiguration()
+            configuration.order = ids
+            let configJSON = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(configuration))
+            try await transport.responses.reply("/v1/library", configJSON)
+            try await transport.responses.reply("/v1/conversations", .array([first, second]))
+            let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
+            defer { library.closePresentations() }
+            try await library.refreshSharedState()
+            try expect(library.sidebarSessions.map(\.id) == ids)
+
+            library.moveSidebarSessions(from: IndexSet(integer: 0), to: 2)
+            let dropped = Array(ids.reversed())
+            // No yield: the native drop needs this order in the same transaction.
+            try expect(library.sidebarSessions.map(\.id) == dropped)
+            try expect(library.isReorderingSessions && !library.canReorderSessions)
+            for _ in 0..<200 {
+                if await transport.isWaiting { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            let waiting = await transport.isWaiting
+            try expect(waiting)
+            // Polling is gated during navigation; checkpoint refreshes can still
+            // arrive and must not undo the pending drop.
+            try await library.refreshSharedState()
+            try await library.current.didCheckpoint?()
+            try expect(library.sidebarSessions.map(\.id) == dropped)
+            library.moveSidebarSessions(from: IndexSet(integer: 0), to: 2)
+            try expect(library.sidebarSessions.map(\.id) == dropped)
+            configuration.order = dropped
+            try await transport.finish(succeeds ? configuration : nil)
+            for _ in 0..<200 {
+                if !library.navigating { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            try expect(!library.navigating && !library.isReorderingSessions)
+            try expect(library.sidebarSessions.map(\.id) == (succeeds ? dropped : ids))
+            try expect((library.error == nil) == succeeds)
+            let writes = await transport.writes
+            try expect(writes == 1)
+        }
     }
 
     func newSessionStartsAtTop() async throws {
