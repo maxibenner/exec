@@ -155,7 +155,7 @@ struct ChatComposer: View {
         .padding(12)
         .background {
             composerBackground
-                .contentShape(Rectangle()).onTapGesture {
+                .contentShape(composerShape).onTapGesture {
                     guard store.canEditDraft else { return }
                     focused = true
                 }
@@ -164,9 +164,10 @@ struct ChatComposer: View {
             GeometryReader { geometry in ComposerCursor(exclusions: anchors.map { geometry[$0] }) }
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(attachmentDropTargeted || focused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: attachmentDropTargeted ? 4 : 1)
+            composerShape
+                .strokeBorder(attachmentDropTargeted || focused ? Color.accentColor.opacity(0.6) : Color.clear, lineWidth: attachmentDropTargeted ? 4 : 1)
                 .allowsHitTesting(false)
+                .animation(.easeOut(duration: 0.18), value: focused)
         }
         .overlay {
             // Keep file/image drops above the native text field so its default
@@ -182,11 +183,15 @@ struct ChatComposer: View {
         }
     }
 
+    private var composerShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+    }
+
     @ViewBuilder private var composerBackground: some View {
         if #available(macOS 26.0, *) {
-            Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
+            Color.clear.glassEffect(.regular.interactive(), in: composerShape)
         } else {
-            RoundedRectangle(cornerRadius: 12).fill(.regularMaterial)
+            composerShape.fill(.regularMaterial)
         }
     }
 
