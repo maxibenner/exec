@@ -4,11 +4,10 @@ import SwiftUI
 @MainActor struct TranscriptTests {
     private struct ComposerPreview: View {
         let panel: ChatPanel
-        let overlayScrollerInset: CGFloat
         @FocusState private var focused: Bool
 
         var body: some View {
-            ChatComposer(store: panel, overlayScrollerInset: overlayScrollerInset, focused: $focused)
+            ChatComposer(store: panel, focused: $focused)
         }
     }
 
@@ -384,23 +383,20 @@ import SwiftUI
                 }
                 try expect(abs(row.frame.minX - composerLeft) < 0.5)
                 try expect(abs(row.frame.maxX - (composerLeft + composerWidth)) < 0.5)
-                try expect(style == .overlay ? state.overlayScrollerInset > 0 : state.overlayScrollerInset == 0)
-                if style == .overlay {
-                    try expect(state.overlayScrollerInset >= (view.verticalScroller?.frame.width ?? 0))
-                }
-
-                // Check the actual painted footer, not just the input's alignment:
-                // an overlay scroller needs a transparent strip inside the viewport.
-                let renderer = ImageRenderer(content: ComposerPreview(panel: panel, overlayScrollerInset: state.overlayScrollerInset)
+                // The sides and the fixed 20pt idle gap must remain transparent
+                // so the transcript and either scrollbar style can show through.
+                let renderer = ImageRenderer(content: ComposerPreview(panel: panel)
                     .frame(width: availableWidth).environment(\.colorScheme, .light))
                 guard let image = renderer.cgImage else { throw CheckFailure(description: "Missing composer rendering") }
                 let bitmap = NSBitmapImageRep(cgImage: image)
                 func maximumAlpha(at x: Int) -> CGFloat {
                     (0..<bitmap.pixelsHigh).map { bitmap.colorAt(x: x, y: $0)?.alphaComponent ?? 0 }.max() ?? 0
                 }
-                try expect(maximumAlpha(at: 1) > 0.99)
-                let rightAlpha = maximumAlpha(at: bitmap.pixelsWide - 2)
-                try expect(style == .overlay ? rightAlpha < 0.01 : rightAlpha > 0.99)
+                // Liquid Glass can cast a soft shadow into the surrounding gap;
+                // reject an opaque footer without requiring zero shadow alpha.
+                try expect(maximumAlpha(at: 1) < 0.5)
+                try expect(maximumAlpha(at: bitmap.pixelsWide - 2) < 0.5)
+                try expect((bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh - 1)?.alphaComponent ?? 0) < 0.5)
             }
         }
     }

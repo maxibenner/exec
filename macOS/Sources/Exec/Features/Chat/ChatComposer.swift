@@ -4,7 +4,6 @@ import UniformTypeIdentifiers
 struct ChatComposer: View {
     @Bindable var store: ChatPanel
     @Environment(SessionWindows.self) private var windows: SessionWindows?
-    var overlayScrollerInset: CGFloat = 0
     @FocusState.Binding var focused: Bool
     @State private var imageDropTargeted = false
     @State private var dismissedDraft: String?
@@ -88,9 +87,8 @@ struct ChatComposer: View {
                     .frame(maxWidth: 820)
                     .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12)
                     .frame(maxWidth: .infinity)
-                    .background { footerBackground }
             } else {
-                footerBackground.frame(height: 20)
+                Color.clear.frame(height: 20).allowsHitTesting(false)
             }
         }
         .frame(maxWidth: .infinity)
@@ -103,12 +101,6 @@ struct ChatComposer: View {
             if paletteVisible { close(); focused = true }
             else if store.isWorking { store.stop() }
         }
-    }
-
-    private var footerBackground: some View {
-        Rectangle().fill(.background)
-            .padding(.trailing, overlayScrollerInset)
-            .allowsHitTesting(false)
     }
 
     private var input: some View {

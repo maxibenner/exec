@@ -58,6 +58,8 @@ struct ConversationView: View {
 
     private var conversation: some View {
         ZStack(alignment: .bottom) {
+            // Keep the scroll surface full-height. The measured overlay height is
+            // trailing document space, not a clipped viewport or safe-area inset.
             TranscriptView(messages: panel.current.messages, state: presentation, bottomInset: composerHeight)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             VStack(spacing: 0) {
@@ -70,7 +72,7 @@ struct ConversationView: View {
                         .background(.background)
                 }
                 if let error { errorView(error).background(.background) }
-                ChatComposer(store: panel, overlayScrollerInset: presentation.overlayScrollerInset, focused: $composerFocused)
+                ChatComposer(store: panel, focused: $composerFocused)
                     .disabled(panel.navigating)
             }
             .padding(.trailing, presentation.trailingInset)
