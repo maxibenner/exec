@@ -10,7 +10,7 @@ fn delegate(id: &str, task: &str) -> ProviderEvent {
     ProviderEvent::ToolCall(ToolCall {
         id: id.into(),
         name: "delegate".into(),
-        arguments: serde_json::json!({"task": task})
+        arguments: serde_json::json!({"task": task, "title": "Parser review"})
             .as_object()
             .unwrap()
             .clone(),
@@ -128,11 +128,11 @@ async fn delegation_reuses_sessions_without_sharing_context_and_survives_restore
             tool_call_id: "delegate-one".into()
         })
     );
-    assert_eq!(saved.metadata.title.as_deref(), Some("Inspect the parser"));
+    assert_eq!(saved.metadata.title.as_deref(), Some("Parser review"));
     assert_eq!(saved.configuration, parent.snapshot().configuration);
     assert_eq!(saved.model, parent.snapshot().model);
     assert_eq!(saved.workspace, parent.snapshot().workspace);
-    assert_eq!(child.record().max_steps, 16);
+    assert_eq!(child.record().max_steps, 128);
     release.cancel();
     assert_eq!(finish(submission).await.state, OperationState::Completed);
     assert!(manager.get(&child.id).is_err());
@@ -422,8 +422,12 @@ async fn restart_preserves_parent_links_and_interrupts_both_sessions_without_res
     let store = JsonConversationStore::open(restored_profile.path())
         .await
         .unwrap();
-    store.save(parent.record()).await.unwrap();
-    store.save(child.record()).await.unwrap();
+    let mut legacy_parent = parent.record();
+    legacy_parent.max_steps = 64;
+    let mut legacy_child = child.record();
+    legacy_child.max_steps = 16;
+    store.save(legacy_parent).await.unwrap();
+    store.save(legacy_child).await.unwrap();
     exec_agent::storage::ConversationStore::close(store.as_ref())
         .await
         .unwrap();
@@ -444,6 +448,70 @@ async fn restart_preserves_parent_links_and_interrupts_both_sessions_without_res
         );
     }
     assert_eq!(restored.get(&child.id).unwrap().parent(), child.parent());
+    assert_eq!(restored.get(&parent.id).unwrap().record().max_steps, 128);
+    assert_eq!(restored.get(&child.id).unwrap().record().max_steps, 128);
     assert_eq!(provider.count(), 2);
     restored.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn parent_and_child_have_independent_full_step_budgets() {
+    for child_tool_steps in [127, 128] {
+        let workspace = directory();
+        let mut scripts = vec![response(vec![
+            delegate("delegate-budget", "Perform the child work"),
+            ProviderEvent::Done,
+        ])];
+        scripts.extend(
+            (0..child_tool_steps)
+                .map(|i| response(vec![call(&format!("child-{i}")), ProviderEvent::Done])),
+        );
+        if child_tool_steps == 127 {
+            scripts.push(answer());
+        }
+        // The parent can still use all 127 remaining steps, even when its child
+        // consumes its entire independent budget or fails at that boundary.
+        scripts.extend(
+            (0..126).map(|i| response(vec![call(&format!("parent-{i}")), ProviderEvent::Done])),
+        );
+        scripts.push(answer());
+        let provider = FakeProvider::new(scripts);
+        let manager = Arc::new(AgentManager::default());
+        let parent = root(
+            &manager,
+            provider.clone(),
+            vec![tool(None, |_| async { Ok("done".into()) })],
+            workspace.path(),
+        )
+        .await;
+        let operation = finish(
+            manager
+                .submit(&parent.id, "Delegate work".into())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(operation.state, OperationState::Completed);
+        assert_eq!(provider.count(), 256);
+        assert_eq!(outcomes(&parent).len(), 127);
+        let snapshot = parent.snapshot();
+        let child_result = snapshot
+            .messages
+            .iter()
+            .find_map(|message| match message {
+                Message::Tool {
+                    call_id, outcome, ..
+                } if call_id == "delegate-budget" => Some(*outcome),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            child_result,
+            if child_tool_steps == 127 {
+                ToolOutcome::Completed
+            } else {
+                ToolOutcome::Failed
+            }
+        );
+    }
 }

@@ -255,15 +255,15 @@ Version-3 checkpoints retain pending input; older versions are read conservative
 ## Sub-agent delegation
 
 Top-level sessions created through the session API, restored sessions, and explicit forks
-expose `delegate({"task":"..."})` for one child or
-`delegate({"tasks":["first independent task", "second independent task"]})` for concurrent
+expose `delegate({"task":"...", "title":"Parser review"})` for one child or
+`delegate({"tasks":[{"task":"first independent task", "title":"Parser review"}, {"task":"second independent task", "title":"Test review"}]})` for concurrent
 children. Supply exactly one form. The tool waits for all children and returns results in
 task order; ordinary tool calls remain sequential. This reuses the existing agent runtime:
 
 - The manager persists a normal child conversation before inference. Its optional
   `metadata.parent` is `{sessionId, operationId, toolCallId}`, identifying the managing
   session and the exact delegation call. Top-level sessions omit `parent`; clients must
-  tolerate its absence. The task supplies the child's initial title and first user message.
+  tolerate its absence. The explicit `title` supplies the child's initial title; `task` supplies its first user message.
 - Children inherit the parent's model, workspace, settings and frozen workspace
   instructions. They do **not** copy its transcript, opaque provider state, attachments,
   or transient native screen-access grants. Put necessary context in `task` (nonempty,
@@ -271,8 +271,11 @@ task order; ordinary tool calls remain sequential. This reuses the existing agen
 - The child uses ordinary tools and the inherited approval policy. Approvals remain on
   the child's session and are resolved through its existing approval endpoint. The parent
   waits without requiring a frontend to remain attached. Child sessions do not expose
-  `delegate`; limits are eight children per parent operation and 16 model steps per child.
-- Each task is nonempty and at most 16 KiB; batches contain one to eight tasks. The
+  `delegate`; limits are eight children per parent operation and 128 model steps per turn
+  independently for each session. Child steps do not consume the parent or sibling budgets.
+- Each task is nonempty and at most 16 KiB; batches contain one to eight task objects.
+  Every task requires a nonempty, single-line `title` of at most 60 characters, with no
+  control characters. All tasks and titles are validated before any children are created. The
   entire batch reserves its budget before any child starts. Deleting completed children
   does not reset the per-operation limit. Avoid conflicting writes to shared files.
 - Results include child IDs and at most 32 KiB of final answer text in total, divided

@@ -158,5 +158,15 @@ import Foundation
         let batchPresentation = ToolPresentation(call: batch, result: nil)
         try expect(batchPresentation.title == "Sub-agents")
         try expect(batchPresentation.inputs == [.init(title: "Task 1", text: "Inspect parser"), .init(title: "Task 2", text: "Inspect tests")])
+        let titled = ToolCall(id: "titled", name: "delegate", arguments: #"{"task":"Inspect the parser and report edge cases","title":"Review parser"}"#)
+        let titledPresentation = ToolPresentation(call: titled, result: nil)
+        try expect(titledPresentation.summary == "Review parser")
+        try expect(titledPresentation.icon == "person.2")
+        try expect(titledPresentation.inputs == [.init(title: "Task", text: "Inspect the parser and report edge cases")])
+        let titledBatch = ToolCall(id: "titled-batch", name: "delegate", arguments: #"{"tasks":[{"task":"Inspect parser","title":"Parser"},{"task":"Inspect tests","title":"Tests"}]}"#)
+        let titledBatchPresentation = ToolPresentation(call: titledBatch, result: nil)
+        try expect(titledBatchPresentation.title == "Sub-agents")
+        try expect(titledBatchPresentation.summary == "Parser · Tests")
+        try expect(titledBatchPresentation.inputs == batchPresentation.inputs)
     }
 }
