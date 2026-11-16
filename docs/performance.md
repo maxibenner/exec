@@ -11,34 +11,6 @@ It has no account access and does not modify the app's selected design. It uses 
 separate SwiftUI Canvas renderer for experimentation, not the production AppKit
 renderer; do not use this ten-animation window for performance comparisons.
 
-## Sidebar animation probe
-
-```sh
-mkdir -p .build
-swiftc -swift-version 6 -parse-as-library \
-  Sources/Exec/Features/Sessions/SidebarTableView.swift \
-  Tools/Benchmarks/SidebarAnimationProbe.swift -o .build/sidebar-animation-probe
-.build/sidebar-animation-probe native disable-detail
-.build/sidebar-animation-probe native disable-detail reduce-motion
-```
-
-Opens an isolated split-view window and measures active native row-layer animations
-through five insert/move/delete/drop cycles, including a content refresh mid-animation.
-`drop` exercises the production drop handler with stable IDs; it does not synthesize a
-physical mouse drag. The production AppKit table and hosting subclass are used with
-synthetic SwiftUI row content. The detail view changes identity and takes text-field
-focus, as the chat detail does. `disable-detail` also disables SwiftUI animations in
-that detail transaction. The viewport uses the same rounded clipping as the app.
-Finally, while the probe window is active/key, two mouse clicks are dispatched only
-to that window: expect two activations, no table focus, and selection highlight style
-`-1` (none). Clicks are skipped if focus has moved to another application.
-
-Every structural change should register native row animations, and `reduce-motion`
-should register none. Table identity should remain stable. These are layer-animation
-checks, not frame-rate measurements or a substitute for manual dragging and checking
-production row layout. No screenshot, profile, or live service is accessed. For the
-simplified SwiftUI comparison variants, replace `native` with `direct` or `snapshot`.
-
 ## Indicator comparison
 
 ```sh
