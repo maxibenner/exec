@@ -95,12 +95,15 @@ struct SessionSidebar: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
-                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                .listRowBackground(
+                // Keep the highlight on our padded content, not the native
+                // row background, which extends beyond the content's insets.
+                .background(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(store.sidebarSelectionID == session.id
                               ? Color.primary.opacity(0.08) : Color.clear)
                 )
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                .listRowBackground(Color.clear)
                 .moveDisabled(!store.canReorderSessions)
             }
             .onMove { offsets, destination in
