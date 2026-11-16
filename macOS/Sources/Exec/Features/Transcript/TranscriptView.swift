@@ -212,9 +212,16 @@ private struct VirtualTranscript: NSViewRepresentable {
             readingAnchor = nil
             let maximum = max(0, content.bounds.height - contentView.bounds.height)
             let position = min(maximum, max(0, contentView.bounds.minY))
-            // Reaching the reserved blank space must not opt back into chasing
-            // a streaming answer. Following resumes only on an explicit jump.
-            let nearBottom = state.sentMessageID == nil && maximum - position <= 40
+            let previousPosition = state.anchor.flatMap { state.layout.position(of: $0) } ?? position
+            let scrolledDown = contentView.bounds.minY > max(0, previousPosition)
+            let distanceFromBottom = maximum - position
+            // A new turn resumes following only after a downward scroll reaches
+            // the bottom. Streaming/measurement corrections run under `updating`,
+            // and merely filling the reserved space leaves the reader in place.
+            // Preserve the usual near-bottom tolerance after following resumes.
+            let nearBottom = state.sentMessageID == nil ? distanceFromBottom <= 40 :
+                scrolledDown && distanceFromBottom < 1
+            if nearBottom { state.sentMessageID = nil }
             if state.followsLatest != nearBottom { state.followsLatest = nearBottom }
         }
         rememberAnchor()

@@ -95,6 +95,67 @@ import AppKit
         try expect(abs(view.contentView.bounds.maxY - view.documentView!.frame.height) < 1)
     }
 
+    func resumesFollowingOnlyAfterScrollingDownToBottom() throws {
+        _ = NSApplication.shared
+        // Cover both a short answer with reserved blank space and a response
+        // that has naturally grown beyond the fold without user interaction.
+        for longResponse in [false, true] {
+            let state = TranscriptState()
+            let view = TranscriptScrollView(state: state)
+            defer { view.detach() }
+            view.frame.size = NSSize(width: 700, height: 500)
+            view.updateHeaderInset(52)
+            var messages = [Message(role: .user, text: "Earlier question"),
+                            Message(role: .assistant, text: "Earlier answer")]
+            update(view, messages)
+            let sent = Message(role: .user, text: "New question")
+            messages += [sent, Message(role: .assistant, text: "", status: .streaming)]
+            update(view, messages)
+            let responseIndex = messages.count - 1
+            for count in longResponse ? [1, 10, 40] : [1] {
+                messages[responseIndex].text = String(repeating: "Response paragraph.\n\n", count: count)
+                update(view, messages)
+                try aligned(sent, in: view)
+                try expect(!state.followsLatest && state.sentMessageID == sent.id)
+            }
+            func scroll(to y: CGFloat) {
+                view.contentView.scroll(to: NSPoint(x: 0, y: y))
+                view.reflectScrolledClipView(view.contentView)
+                view.refresh()
+            }
+            // A bounds notification without downward movement is not an opt-in,
+            // even when the top-anchored short turn is already at document bottom.
+            NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: view.contentView)
+            view.refresh()
+            try expect(!state.followsLatest)
+            scroll(to: view.contentView.bounds.minY - 20)
+            try expect(!state.followsLatest)
+            let bottom = view.documentView!.frame.height - view.contentView.bounds.height
+            scroll(to: bottom - 10)
+            try expect(!state.followsLatest)
+            scroll(to: bottom)
+            try expect(state.followsLatest && state.sentMessageID == nil)
+            messages[responseIndex].text += String(repeating: "Additional response.\n\n", count: 30)
+            update(view, messages)
+            try expect(abs(view.contentView.bounds.maxY - view.documentView!.frame.height) < 1)
+            messages.append(Message(role: .assistant, text: "A later event", status: .streaming))
+            update(view, messages)
+            try expect(state.followsLatest)
+            try expect(abs(view.contentView.bounds.maxY - view.documentView!.frame.height) < 1)
+            scroll(to: view.contentView.bounds.minY - 100)
+            let readingY = view.contentView.bounds.minY
+            try expect(!state.followsLatest)
+            messages[messages.count - 1].text += String(repeating: "More content.\n\n", count: 10)
+            update(view, messages)
+            try expect(!state.followsLatest && abs(view.contentView.bounds.minY - readingY) < 1)
+            let next = Message(role: .user, text: "Next question")
+            messages.append(next)
+            update(view, messages)
+            try aligned(next, in: view)
+            try expect(!state.followsLatest && state.sentMessageID == next.id)
+        }
+    }
+
     func anchorsBeforeInitialLayout() throws {
         _ = NSApplication.shared
         let state = TranscriptState()

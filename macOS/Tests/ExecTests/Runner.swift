@@ -56,6 +56,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Composer cursor excludes controls", { try ComposerCursorTests().excludesControlsWithoutLeavingGaps() }),
             ("New sends reserve response space without following streaming content", { try TranscriptTurnScrollTests().anchorsNewSendsWhileResponsesFillSpace() }),
             ("Sent-turn scrolling survives resize, remount and manual reading", { try TranscriptTurnScrollTests().preservesReadingAndSupportsExplicitFollowing() }),
+            ("Downward scrolling to the bottom resumes transcript tracking, not streaming growth", { try TranscriptTurnScrollTests().resumesFollowingOnlyAfterScrollingDownToBottom() }),
             ("First sends anchor before the viewport is laid out", { try TranscriptTurnScrollTests().anchorsBeforeInitialLayout() }),
             ("Header underlap preserves transcript geometry and anchors", { try TranscriptScrollTests().headerUnderlapPreservesGeometryAndAnchors() }),
             ("Transcript scroll routing and gesture isolation", { try TranscriptScrollTests().routesVerticalGesturesWithoutStealingOtherScrolling() }),
