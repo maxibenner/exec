@@ -1,21 +1,31 @@
 import Foundation
 
-private final class SessionEventTransport: AgentTransport, @unchecked Sendable {
-    let responses = FakeAgentTransport()
-    private let lock = NSLock()
-    private var streams: [AsyncThrowingStream<Data, Error>.Continuation] = []
-    var streamCount: Int { lock.withLock { streams.count } }
+private actor SessionReadTransport: AgentTransport {
+    nonisolated let responses = FakeAgentTransport()
+    var holdReads = false
+    private var pending: (id: UUID, path: String, result: CheckedContinuation<Data, Error>)?
+    var hasPendingRead: Bool { pending != nil }
+    func setHolding(_ value: Bool) { holdReads = value }
     func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
-        try await responses.request(method, path, body: body)
+        guard holdReads, path.contains("/sync") else { return try await responses.request(method, path, body: body) }
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { pending = (id, path, $0) }
+        } onCancel: { Task { await self.cancelRead(id) } }
     }
-    func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
-        AsyncThrowingStream { continuation in
-            lock.withLock { streams.append(continuation) }
-        }
+    private func cancelRead(_ id: UUID) {
+        guard pending?.id == id else { return }
+        pending?.result.resume(throwing: CancellationError()); pending = nil
     }
-    func failLatestStream() {
-        let stream = lock.withLock { streams.last }
-        stream?.finish(throwing: ExecError("Session no longer exists"))
+    func finishRead(_ snapshot: AgentJSON) throws {
+        guard let pending else { throw CheckFailure(description: "No pending sync read") }
+        let page = try AgentSyncFixture.page(snapshot, path: pending.path)
+        self.pending = nil
+        pending.result.resume(returning: try JSONEncoder().encode(page))
+    }
+    nonisolated func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
+        responses.events(method, path, body: body)
     }
 }
 
@@ -33,7 +43,9 @@ private actor SessionCreationTransport: AgentTransport {
     nonisolated func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
         responses.events(method, path, body: body)
     }
-    func finishCreation(_ snapshot: AgentJSON) throws {
+    func finishCreation(_ snapshot: AgentJSON) async throws {
+        let id = try snapshot.decoded(AgentSnapshot.self).id
+        try await responses.reply(AgentAPI.path(id), snapshot)
         let data = try JSONEncoder().encode(snapshot)
         pending?.resume(returning: data); pending = nil
     }
@@ -124,27 +136,36 @@ private actor SessionCreationTransport: AgentTransport {
     }
 
     func deletionIgnoresStreamClosureAndResumesOnFailure() async throws {
-        let transport = SessionEventTransport()
+        let transport = SessionReadTransport()
         let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)))
         defer { store.closePresentation() }
-        let value = try AgentIntegrationTests.fixture(state: "completed", result: true)
-        try await transport.responses.reply(AgentAPI.path(AgentIntegrationTests.conversationID), value)
+        let active = try AgentIntegrationTests.fixture(state: "running")
+        try await transport.responses.reply(AgentAPI.path(AgentIntegrationTests.conversationID), active)
         try await store.loadSession(AgentIntegrationTests.conversationID)
-        for _ in 0..<100 where transport.streamCount < 1 { try await Task.sleep(for: .milliseconds(5)) }
-        try expect(transport.streamCount == 1)
+        await transport.setHolding(true)
+        for _ in 0..<200 {
+            if await transport.hasPendingRead { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let readPending = await transport.hasPendingRead
+        try expect(readPending)
         store.beginDeletion()
-        transport.failLatestStream()
-        for _ in 0..<10 { await Task.yield() }
+        for _ in 0..<100 {
+            if await !transport.hasPendingRead { break }
+            await Task.yield()
+        }
+        let readCancelled = await !transport.hasPendingRead
+        try expect(readCancelled)
         try expect(store.error == nil && !store.hasUnsavedChanges)
         store.resumeAfterFailedDeletion()
-        for _ in 0..<100 where transport.streamCount < 2 { try await Task.sleep(for: .milliseconds(5)) }
-        try expect(transport.streamCount == 2)
-        // A genuine failure gets one read-only reconnect, then is surfaced.
-        transport.failLatestStream()
-        for _ in 0..<100 where transport.streamCount < 3 { try await Task.sleep(for: .milliseconds(5)) }
-        try expect(transport.streamCount == 3 && store.error == nil)
-        transport.failLatestStream()
-        for _ in 0..<100 where store.error == nil { try await Task.sleep(for: .milliseconds(5)) }
-        try expect(store.error == "Lost connection to this conversation. Reopen it to reconnect; work may still be running.")
+        for _ in 0..<200 {
+            if await transport.hasPendingRead { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let resumed = await transport.hasPendingRead
+        try expect(resumed)
+        try await transport.finishRead(AgentIntegrationTests.fixture(state: "completed", result: true))
+        for _ in 0..<100 where store.busy { try await Task.sleep(for: .milliseconds(5)) }
+        try expect(!store.busy && store.error == nil)
     }
 }

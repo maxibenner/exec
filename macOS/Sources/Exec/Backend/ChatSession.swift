@@ -138,6 +138,7 @@ import CryptoKit
     private var task: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
     private var observer: Task<Void, Never>?
+    private var transcriptReader: AgentTranscriptReader?
     private var observerGeneration = UUID()
     private var observationLost = false
     private var deletionPending = false
@@ -215,6 +216,9 @@ import CryptoKit
         guard currentSessionID != nil || workspaceChosen || commitInheritedWorkspace || allowInheritedWorkspace else { return }
         let desiredSettings = settings
         let desiredModel = selectedModel
+        pauseObservation()
+        transcriptReader = nil
+        defer { observe() }
         do {
             if let id = currentSessionID {
                 if snapshot?.model != desiredModel {
@@ -229,7 +233,6 @@ import CryptoKit
                 struct Create: Encodable { let model: String; let workspace: String; let settings: AgentSettings }
                 let value = try await api.send("POST", "/v1/conversations", body: Create(model: desiredModel, workspace: workspace.root.path, settings: desiredSettings))
                 try apply(value.decoded(AgentSnapshot.self), preserveSettings: true)
-                observe()
             }
             settingsDirty = settings != desiredSettings || selectedModel != desiredModel
             hasUnsavedChanges = false
@@ -247,8 +250,11 @@ import CryptoKit
     func loadSession(_ id: UUID) async throws {
         isRestoringSession = true
         defer { isRestoringSession = false }
-        let value = try await api.snapshot(id)
+        pauseObservation()
+        let reader = api.transcriptReader(id)
+        let value = try await reader.read()
         try Task.checkCancellation()
+        transcriptReader = reader
         settingsDirty = false
         configurationUncertain = false
         try apply(value)
@@ -270,7 +276,10 @@ import CryptoKit
     private func resynchronize(_ id: UUID) async throws {
         pauseObservation()
         defer { observe() }
-        try apply(await api.snapshot(id))
+        let reader = api.transcriptReader(id)
+        let value = try await reader.read()
+        transcriptReader = reader
+        try apply(value)
     }
     func beginDeletion() {
         deletionPending = true
@@ -282,35 +291,36 @@ import CryptoKit
     }
     private func observe() {
         observer?.cancel()
-        guard !deletionPending, let id = currentSessionID else { return }
+        guard !commandsClosed, !deletedRemotely, !deletionPending, let id = currentSessionID else { return }
         let generation = UUID()
         observerGeneration = generation
         observationLost = false
-        let api = api
+        let reader = transcriptReader ?? api.transcriptReader(id)
+        transcriptReader = reader
         observer = Task { [weak self] in
-            // Reconnect only the read-only observer, once. Never replay a mutation.
+            var reader = reader
+            // Recover only the read-only cursor, once. Never replay a mutation.
             for attempt in 0..<2 {
                 guard self?.observerGeneration == generation, !Task.isCancelled else { return }
                 do {
-                    for try await data in api.stream(id) {
+                    while true {
+                        let snapshot = try await reader.next()
                         guard let self, self.observerGeneration == generation, !Task.isCancelled else { return }
-                        let frame = try JSONDecoder().decode(AgentEvent.self, from: data)
-                        if let snapshot = frame.snapshot { try self.apply(snapshot) }
-                        else if let event = frame.event, event.type == "text", event.conversationID == id,
-                                event.operationID == self.snapshot?.operation?.id,
-                                let messageID = event.messageID, let delta = event.delta,
-                                let index = self.messages.firstIndex(where: { $0.id == messageID && $0.status == .streaming }) {
-                            self.messages[index].text += delta
-                        }
+                        try self.apply(snapshot)
                     }
                 } catch {
-                    // EOF and transport failures both mean observation was lost.
+                    // Keep the last authoritative operation state during a read failure.
                 }
                 guard let self, self.observerGeneration == generation, !Task.isCancelled else { return }
                 if attempt == 1 {
                     self.observationLost = true
                     self.error = "Lost connection to this conversation. Reopen it to reconnect; work may still be running."
                     // Keep the last known operation ownership. Disconnection is not completion.
+                } else {
+                    // A stale cursor, partial page read, or rejected snapshot must
+                    // recover from fresh authoritative state, not skip an unchanged page.
+                    reader = self.api.transcriptReader(id)
+                    self.transcriptReader = reader
                 }
             }
         }
@@ -475,7 +485,9 @@ import CryptoKit
             do {
                 pauseObservation()
                 defer { observe() }
-                let current = try await api.snapshot(id)
+                let reader = api.transcriptReader(id)
+                let current = try await reader.read()
+                transcriptReader = reader
                 try apply(current)
                 guard let operation = current.operation, operation.active else { return }
                 guard let target = requestedID ?? (pending != nil ? acceptedOperationID : nil), operation.id == target else {
@@ -484,7 +496,7 @@ import CryptoKit
                 _ = try await api.request("POST", AgentAPI.path(id, "/cancel"), .object(["operationID": .string(operation.id.uuidString.lowercased())]))
                 // Explicit stop waits for cleanup even when the observer disconnected.
                 while true {
-                    let value = try await api.snapshot(id)
+                    let value = try await reader.read()
                     try apply(value)
                     if value.operation?.active != true || value.operation?.id != target { break }
                     try await Task.sleep(for: .milliseconds(100))

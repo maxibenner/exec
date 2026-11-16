@@ -40,7 +40,7 @@ These folders organize existing modules; they do not introduce additional packag
 
 ## Native frontend
 
-Swift retains the virtualized native transcript, Markdown/diff/image/tool presentation, composer, sidebar, detached windows, selection and scroll state. It also owns unsent drafts, attachment normalization, local window/selection preferences, Finder/Terminal actions and Sparkle updates. Snapshot reconciliation preserves message identity; streamed deltas target exact message/operation IDs.
+Swift retains the virtualized native transcript, Markdown/diff/image/tool presentation, composer, sidebar, detached windows, selection and scroll state. It also owns unsent drafts, attachment normalization, local window/selection preferences, Finder/Terminal actions and Sparkle updates. Snapshot reconciliation preserves message identity. Like iOS, macOS uses the shared incremental `/sync` cursor and prefix-proof contract rather than subscribing to full-history conversation events. It backfills older pages before publication to retain complete transcript navigation and tool-call/result pairing, then polls the changed suffix every 200 ms while active and every two seconds while idle. Unchanged snapshots do not trigger UI reconciliation; cancellation and mutations remain explicit, single-submit operations.
 
 The app always launches its own bundled helper at `127.0.0.1:8765`, with separate ephemeral API and native credentials passed through the child environment. It strips standalone endpoint/token overrides and ambient provider credentials. There is no external-backend selection, port fallback or automatic attachment to an existing listener. Quit awaits owned-helper cancellation, child reaping and checkpoint completion; it does not force-kill the helper.
 

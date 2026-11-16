@@ -20,23 +20,27 @@ async fn dropping_completion_receipt_detaches_without_aborting_work() {
 
 #[tokio::test]
 async fn stalled_observer_is_byte_bounded_and_does_not_block_execution() {
-    let c = conversation(
-        FakeProvider::new(vec![response(vec![
-            ProviderEvent::Text("a".repeat(600_000)),
-            ProviderEvent::Text("b".repeat(600_000)),
-            ProviderEvent::Done,
-        ])]),
-        vec![],
-    );
-    let (_, mut stalled) = c.subscribe();
-    assert_eq!(
-        complete(c.submit("Stream".into()).unwrap()).await.state,
-        OperationState::Completed
-    );
-    assert!(stalled.recv().await.is_err());
-    let (snapshot, _) = c.subscribe();
-    assert_eq!(snapshot.messages.last().unwrap().text().len(), 1_200_000);
-    assert_eq!(snapshot.operation.unwrap().state, OperationState::Completed);
+    for bytes in [600_000, 3_000_000] {
+        let c = conversation(
+            FakeProvider::new(vec![response(vec![
+                ProviderEvent::Text("a".repeat(bytes)),
+                ProviderEvent::Text("b".repeat(bytes)),
+                ProviderEvent::Done,
+            ])]),
+            vec![],
+        );
+        let (_, mut stalled) = c.subscribe();
+        assert_eq!(
+            complete(c.submit("Stream".into()).unwrap()).await.state,
+            OperationState::Completed
+        );
+        // Bursts above the former 1 MiB budget now fit; an actually stalled
+        // observer still disconnects when it exhausts the 5 MiB budget.
+        assert_eq!(stalled.recv().await.is_err(), bytes == 3_000_000);
+        let (snapshot, _) = c.subscribe();
+        assert_eq!(snapshot.messages.last().unwrap().text().len(), 2 * bytes);
+        assert_eq!(snapshot.operation.unwrap().state, OperationState::Completed);
+    }
 
     let mut deltas = vec![ProviderEvent::Text("x".into()); 100];
     deltas.push(ProviderEvent::Done);

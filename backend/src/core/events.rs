@@ -84,7 +84,7 @@ impl EventHub {
             let pending = observer.pending.fetch_add(bytes, Ordering::Relaxed);
             // Permit a single large snapshot, as the HTTP implementation does,
             // but never queue more behind it. Both bytes and event count are bounded.
-            if (pending != 0 && pending.saturating_add(bytes) > 1024 * 1024)
+            if (pending != 0 && pending.saturating_add(bytes) > 5 * 1024 * 1024)
                 || observer
                     .sender
                     .try_send(QueuedEvent {

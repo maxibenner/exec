@@ -6,11 +6,20 @@ actor FakeAgentTransport: AgentTransport {
     private(set) var requests: [Request] = []
     private var replies: [String: Data] = [:]
     private var failures: Set<String> = []
+    private var oneShotFailures: Set<String> = []
     func reply(_ path: String, _ value: AgentJSON) throws { replies[path] = try JSONEncoder().encode(value) }
     func fail(_ path: String) { failures.insert(path) }
+    func failNext(_ path: String) { oneShotFailures.insert(path) }
     func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
         requests.append(Request(method: method, path: path, body: body))
-        if failures.contains(path) { throw ExecError("Connection interrupted after acceptance. Not retried.") }
+        let route = String(path.split(separator: "?", maxSplits: 1)[0])
+        if failures.contains(route) || oneShotFailures.remove(route) != nil {
+            throw ExecError("Connection interrupted after acceptance. Not retried.")
+        }
+        if method == "GET", route.hasSuffix("/sync"), replies[path] == nil,
+           let snapshot = replies[String(route.dropLast(5))] {
+            return try JSONEncoder().encode(AgentSyncFixture.page(JSONDecoder().decode(AgentJSON.self, from: snapshot), path: path))
+        }
         return replies[path] ?? Data("{}".utf8)
     }
     nonisolated func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
@@ -260,12 +269,12 @@ actor FakeAgentTransport: AgentTransport {
         let store = ChatStore(provider: accounts)
         try await store.loadSession(snapshot.id)
         defer { store.closePresentation() }
-        let stream = api.stream(snapshot.id)
-        var iterator = stream.makeAsyncIterator()
-        let frame = try await iterator.next()
-        let event = try JSONDecoder().decode(AgentEvent.self, from: frame!)
-        try expect(event.snapshot?.id == snapshot.id)
+        let reader = api.transcriptReader(snapshot.id)
+        let initialSync = try await reader.read()
+        try expect(initialSync.id == snapshot.id)
         _ = try await api.request("PUT", AgentAPI.path(snapshot.id, "/title"), .object(["title": .string("Renamed")]))
+        let renamed = try await reader.read()
+        try expect(renamed.metadata.title == "Renamed")
         let catalog = try await api.get("/v1/conversations").array.map(SessionSummary.init)
         try expect(catalog.count == 1 && catalog[0].title == "Renamed")
         _ = try await api.send("PUT", AgentAPI.path(snapshot.id, "/settings"), body: AgentSettings(systemPrompt: "Updated", autoApprove: true))

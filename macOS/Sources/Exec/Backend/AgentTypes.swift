@@ -105,18 +105,6 @@ struct AgentSnapshot: Decodable, Sendable {
     let storageError: String?
     let contextUsage: ContextUsage?
 }
-struct AgentEvent: Decodable, Sendable {
-    let type: String
-    let snapshot: AgentSnapshot?
-    let event: Runtime?
-    struct Runtime: Decodable, Sendable {
-        let type: String
-        let conversationID: UUID
-        let operationID: UUID
-        let messageID: UUID?
-        let delta: String?
-    }
-}
 
 extension AgentSnapshot {
     /// Reconcile by stable message ID; pending cards are projections, never a second tool runner.

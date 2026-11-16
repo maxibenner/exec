@@ -11,23 +11,6 @@ struct ControlledAgentTransport: AgentTransport {
     func emit(_ value: AgentJSON) throws { channel.continuation.yield(try JSONEncoder().encode(value)) }
 }
 
-private final class ReconnectingAgentTransport: AgentTransport, @unchecked Sendable {
-    let requests = FakeAgentTransport()
-    let channels = (0..<3).map { _ in AsyncThrowingStream<Data, Error>.makeStream() }
-    private let lock = NSLock()
-    private var paths: [String] = []
-    var eventPaths: [String] { lock.withLock { paths } }
-    func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
-        try await requests.request(method, path, body: body)
-    }
-    func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
-        lock.withLock {
-            paths.append("\(method) \(path)")
-            return channels[min(paths.count - 1, channels.count - 1)].stream
-        }
-    }
-}
-
 @MainActor struct AgentEventTests {
     private func wait(_ predicate: @escaping @MainActor () -> Bool) async throws {
         for _ in 0..<200 {
@@ -45,58 +28,50 @@ private final class ReconnectingAgentTransport: AgentTransport, @unchecked Senda
         return .object(value)
     }
     func streamsAndReconcilesWithoutReplacingRenderer() async throws {
-        let transport = ControlledAgentTransport()
-        let id = AgentIntegrationTests.conversationID
-        let snapshot = try streamingSnapshot()
-        try await transport.requests.reply(AgentAPI.path(id), snapshot)
+        let transport = FakeAgentTransport()
+        let id = AgentIntegrationTests.conversationID, path = AgentAPI.path(AgentIntegrationTests.conversationID)
+        let initial = try streamingSnapshot()
+        try await transport.reply(path, initial)
         let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)))
         defer { store.closePresentation() }
         try await store.loadSession(id)
-        try transport.emit(.object(["type": .string("snapshot"), "snapshot": snapshot]))
-        for delta in ["Hello ", "世界", " 👋"] {
-            try transport.emit(.object(["type": .string("runtime"), "event": .object([
-                "type": .string("text"), "conversationID": .string(id.uuidString),
-                "operationID": .string(AgentIntegrationTests.operationID.uuidString),
-                "messageID": .string(AgentIntegrationTests.assistantID.uuidString), "delta": .string(delta)])]))
+        let messageIDs = store.messages.map(\.id)
+        for text in ["Hello ", "Hello 世界", "Hello 世界 👋"] {
+            guard case .object(var value) = initial, case .object(var assistant) = initial["messages"].array.last! else {
+                throw CheckFailure(description: "Invalid streaming fixture")
+            }
+            assistant["text"] = .string(text)
+            value["messages"] = .array([initial["messages"].array[0], .object(assistant)])
+            try await transport.reply(path, .object(value))
+            try await wait { store.messages.last?.text == text }
+            try expect(store.messages.map(\.id) == messageIDs)
         }
-        try await wait { store.messages.last?.text == "Hello 世界 👋" }
-        try expect(store.messages.count == 2 && store.messages.last?.status == .streaming)
-        // Terminal snapshot replaces provisional text/calls instead of appending another turn.
-        try transport.emit(.object(["type": .string("snapshot"), "snapshot": try AgentIntegrationTests.fixture(state: "completed", result: true)]))
+        try await transport.reply(path, AgentIntegrationTests.fixture(state: "completed", result: true))
         try await wait { !store.busy }
         try expect(store.messages.count == 3 && store.messages[1].text == "Checking…")
-        let final = store.messages
-        try transport.emit(.object(["type": .string("snapshot"), "snapshot": try AgentIntegrationTests.fixture(state: "completed", result: true)]))
-        for _ in 0..<5 { await Task.yield() }
-        try expect(store.messages == final)
-        transport.channel.continuation.finish(throwing: ExecError("Observer interrupted; work is not cancelled."))
-        try await wait { store.error != nil }
-        let requests = await transport.requests.requests
-        try expect(requests.allSatisfy { !$0.path.hasSuffix("/turns") && !$0.path.hasSuffix("/cancel") })
+        let requests = await transport.requests
+        try expect(requests.allSatisfy { $0.method == "GET" && $0.path.contains("/sync") })
+        try expect(requests.dropFirst().allSatisfy { $0.path.contains("?after=") })
     }
     func reconnectsObserverOnceWithoutReplayingWork() async throws {
-        let transport = ReconnectingAgentTransport()
-        let id = AgentIntegrationTests.conversationID
-        try await transport.requests.reply(AgentAPI.path(id), streamingSnapshot())
+        let transport = FakeAgentTransport()
+        let id = AgentIntegrationTests.conversationID, path = AgentAPI.path(AgentIntegrationTests.conversationID)
+        try await transport.reply(path, streamingSnapshot())
         let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)))
         defer { store.closePresentation() }
         try await store.loadSession(id)
-        try await wait { transport.eventPaths.count == 1 }
-        transport.channels[0].continuation.finish(throwing: ExecError("Connection lost"))
-        try await wait { transport.eventPaths.count == 2 }
+        await transport.failNext(path + "/sync")
+        for _ in 0..<200 {
+            if await transport.requests.count >= 3 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
         try expect(store.busy && store.error == nil)
-        let snapshot = try AgentIntegrationTests.fixture(state: "completed", result: true)
-        transport.channels[1].continuation.yield(try JSONEncoder().encode(
-            AgentJSON.object(["type": .string("snapshot"), "snapshot": snapshot])))
-        try await wait { !store.busy }
-        try expect(store.messages.count == 3 && store.error == nil)
-        // Even a clean EOF is a lost subscription, and must not start a retry loop.
-        transport.channels[1].continuation.finish()
+        await transport.fail(path + "/sync")
         try await wait { store.error != nil }
         try expect(store.error == "Lost connection to this conversation. Reopen it to reconnect; work may still be running.")
-        try expect(transport.eventPaths == Array(repeating: "GET \(AgentAPI.path(id, "/events"))", count: 2))
-        let requests = await transport.requests.requests
-        try expect(requests.allSatisfy { $0.method == "GET" })
+        try expect(store.busy) // A failed read never marks the turn completed or cancels it.
+        let requests = await transport.requests
+        try expect(requests.count >= 4 && requests.allSatisfy { $0.method == "GET" && $0.path.contains("/sync") })
     }
 
     func cancellationOwnsCleanupAndUsesExactID() async throws {

@@ -103,9 +103,11 @@ import Darwin
         let data = try await transport.request(method, path, body: JSONEncoder().encode(body))
         return try JSONDecoder().decode(AgentJSON.self, from: data)
     }
+    func transcriptReader(_ id: UUID) -> AgentTranscriptReader {
+        AgentTranscriptReader(transport: transport, id: id, path: Self.path(id, "/sync"))
+    }
     func snapshot(_ id: UUID) async throws -> AgentSnapshot {
-        try await get(Self.path(id)).decoded(AgentSnapshot.self)
+        try await transcriptReader(id).read()
     }
     static func path(_ id: UUID, _ suffix: String = "") -> String { "/v1/conversations/\(id.uuidString.lowercased())\(suffix)" }
-    func stream(_ id: UUID) -> AsyncThrowingStream<Data, Error> { transport.events("GET", Self.path(id, "/events"), body: nil) }
 }
