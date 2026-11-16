@@ -54,6 +54,8 @@ struct SessionSidebar: View {
                 // Offsets must still refer to the current catalog when a drag ends.
                 guard displayedSessions.map(\.id) == store.sidebarSessions.map(\.id) else { return }
                 store.moveSidebarSessions(from: offsets, to: destination)
+                // Commit in the native drop transaction, not a later catalog animation.
+                displayedSessions = store.sidebarSessions
             }
         }
         .listStyle(.sidebar)
@@ -62,12 +64,15 @@ struct SessionSidebar: View {
         // Conversation shortcuts remain available through SessionCommands.
         .focusable(false)
         .onChange(of: sessions) { _, updated in
+            guard displayedSessions != updated else { return }
             let structuralChange = displayedSessions.map(\.id) != updated.map(\.id)
             withAnimation(structuralChange && !reduceMotion ? .default : nil) {
                 displayedSessions = updated
             }
         }
-        .disabled(!store.canNavigate)
+        // Do not disable the native table mid-drop. Action guards still prevent
+        // navigation and additional mutations while the order is being persisted.
+        .disabled(!store.canNavigate && !store.isReorderingSessions)
         .alert("Rename Conversation", isPresented: $renaming) {
             TextField("Name", text: $renameTitle)
             Button("Rename") {

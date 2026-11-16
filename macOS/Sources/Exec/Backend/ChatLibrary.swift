@@ -15,6 +15,8 @@ import Observation
     private var modelRefreshError: String?
     private var savedSummaries: [SessionSummary] = []
     private var sidebarOrder: [UUID] = []
+    private var pendingSidebarOrder: [UUID]?
+    var isReorderingSessions: Bool { pendingSidebarOrder != nil }
     private var sidebarSelectionBeforeCreation: UUID?
     private var catalogRequest = 0
     private(set) var openConversations: [ChatStore] = []
@@ -138,6 +140,13 @@ import Observation
         result += sidebarOrder.compactMap { summaries.removeValue(forKey: $0) }
         result += savedSummaries.compactMap { summaries.removeValue(forKey: $0.id) }
         result += summaries.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        if let pendingSidebarOrder {
+            // Keep the dropped order through intervening checkpoint/catalog updates.
+            // New sessions still appear at the top; removed sessions stay removed.
+            var remaining = Dictionary(uniqueKeysWithValues: result.map { ($0.id, $0) })
+            let ordered = pendingSidebarOrder.compactMap { remaining.removeValue(forKey: $0) }
+            return result.filter { remaining[$0.id] != nil } + ordered
+        }
         return result
     }
     var sessionShortcuts: [(number: Int, session: SessionSummary)] { sidebarSessions.prefix(9).enumerated().map { ($0.offset + 1, $0.element) } }
@@ -508,6 +517,9 @@ import Observation
         var reordered = ids.enumerated().filter { !offsets.contains($0.offset) }.map(\.element)
         reordered.insert(contentsOf: moving, at: destination - offsets.filter { $0 < destination }.count)
         guard reordered != ids else { return }
+        // Publish synchronously in the native drop transaction. Persistence must
+        // not determine when the list commits its drag animation.
+        pendingSidebarOrder = reordered
         navigate {
             // A visible draft may not have a snapshot yet. Save it before making
             // its position durable, without interrupting any running conversation.
@@ -719,6 +731,9 @@ import Observation
         navigationTask = Task {
             defer {
                 if request == navigationRequest {
+                    // Clear optimistic ordering even if cancelled before operation starts.
+                    // Failures expose the latest confirmed catalog without replaying writes.
+                    pendingSidebarOrder = nil
                     navigating = false; openingSessionID = nil; loading = nil; navigationTask = nil
                 }
             }
