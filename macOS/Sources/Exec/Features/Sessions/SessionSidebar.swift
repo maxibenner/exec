@@ -95,15 +95,16 @@ struct SessionSidebar: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
-                // Keep the highlight on our padded content, not the native
-                // row background, which extends beyond the content's insets.
-                .background(
+                // macOS sidebar rows retain a 16-point content gutter even
+                // with zero listRowInsets. Cancel it on the content only; keep
+                // the native row background and the list's outer margin intact.
+                .padding(.horizontal, -16)
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                .listRowBackground(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(store.sidebarSelectionID == session.id
                               ? Color.primary.opacity(0.08) : Color.clear)
                 )
-                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                .listRowBackground(Color.clear)
                 .moveDisabled(!store.canReorderSessions)
             }
             .onMove { offsets, destination in
