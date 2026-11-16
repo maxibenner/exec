@@ -17,6 +17,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
 @main struct TestRunner {
     @MainActor static func main() async {
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Attachment remove marks stay centered at 1× and 2×", { try AttachmentRemoveButtonTests().marksStayCentered() }),
             ("Child-session navigation preserves approvals without replaying work", { try await DelegationTests().childNavigationPreservesApprovalAndDoesNotReplayWork() }),
             ("Child steering targets the owned operation, including initial snapshot races", { try await DelegationTests().childSteeringUsesExistingOperation() }),
             ("Deletion reconciles child sessions and returns focus to retained parents", { try await DelegationTests().parentDeletionRemovesResidentChildrenWithoutWaitingForSync() }),

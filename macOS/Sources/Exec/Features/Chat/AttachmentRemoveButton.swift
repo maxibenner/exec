@@ -10,12 +10,11 @@ struct AttachmentRemoveButton: View {
                 .fill(.black.opacity(0.8))
                 .frame(width: 13, height: 13)
                 .overlay {
-                    Image(systemName: "xmark")
-                        .resizable()
-                        .scaledToFit()
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.white)
-                        .frame(width: 6, height: 6)
+                    // Draw around the same center as the circle, without symbol
+                    // alignment metrics shifting the tiny mark at 1× scale.
+                    AttachmentRemoveMark()
+                        .stroke(.white, style: StrokeStyle(lineWidth: 1, lineCap: .round))
+                        .frame(width: 5, height: 5)
                 }
                 .padding(3)
                 .contentShape(Rectangle())
@@ -23,5 +22,16 @@ struct AttachmentRemoveButton: View {
         .buttonStyle(.plain)
         .help("Remove \(name)")
         .accessibilityLabel("Remove \(name)")
+    }
+}
+
+private struct AttachmentRemoveMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { path in
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+            path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        }
     }
 }
