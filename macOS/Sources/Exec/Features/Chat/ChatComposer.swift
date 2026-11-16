@@ -86,12 +86,16 @@ struct ChatComposer: View {
                     footerBackground.frame(height: 12)
                 }
                 .zIndex(1)
-            information
-                .padding(.horizontal, 12)
-                .frame(maxWidth: 820)
-                .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 20)
-                .frame(maxWidth: .infinity)
-                .background { footerBackground }
+            if store.isWorking {
+                information
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: 820)
+                    .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12)
+                    .frame(maxWidth: .infinity)
+                    .background { footerBackground }
+            } else {
+                footerBackground.frame(height: 20)
+            }
         }
         .frame(maxWidth: .infinity)
         .onChange(of: store.draft) { _, _ in highlighted = 0; dismissedDraft = nil }
