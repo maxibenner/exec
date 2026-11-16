@@ -46,6 +46,13 @@ struct AgentImage: Codable, Sendable, Equatable {
         try values.encode(sha256, forKey: .sha256)
     }
 }
+struct AgentFile: Codable, Sendable, Equatable {
+    let id: UUID
+    let name: String
+    let path: String
+    let byteCount: Int
+    let sha256: String
+}
 struct AgentCall: Decodable, Sendable {
     let id: String
     let name: String
@@ -66,6 +73,7 @@ struct AgentMessage: Decodable, Sendable {
     let outcome: String?
     let details: AgentJSON?
     let images: [AgentImage]?
+    let files: [AgentFile]?
 }
 struct AgentOperation: Decodable, Sendable {
     let id: UUID
@@ -116,7 +124,8 @@ extension AgentSnapshot {
         for message in messages + pendingInput.filter({ pending in !messages.contains { $0.id == pending.id } }) {
             switch message.role {
             case "user":
-                result.append(Message(id: message.id, role: .user, text: message.text, images: (message.images ?? []).compactMap { images[$0.id] }))
+                result.append(Message(id: message.id, role: .user, text: message.text, images: (message.images ?? []).compactMap { images[$0.id] },
+                                      files: (message.files ?? []).map { FileAttachment(id: $0.id, name: $0.name, path: $0.path) }))
             case "assistant":
                 let status: Message.Status = switch message.status {
                 case "streaming": .streaming

@@ -49,7 +49,7 @@ impl ConversationRecord {
             return Err(Error::Invalid("Invalid provider state."));
         }
         let bad = Error::Invalid("Invalid or unsupported conversation record.");
-        if !matches!(self.version, 1..=7)
+        if !matches!(self.version, 1..=8)
             || (self.version >= 2 && self.configuration.is_none())
             || (self.version == 1 && self.configuration.is_some())
             || !valid_id(&self.id)
@@ -78,7 +78,18 @@ impl ConversationRecord {
                 return Err(bad);
             }
             match message {
-                Message::User { images, .. } => {
+                Message::User { images, files, .. } => {
+                    if (self.version < 8 && !files.is_empty())
+                        || validate_message_files(files).is_err()
+                        || files.iter().any(|f| {
+                            !self
+                                .resources
+                                .iter()
+                                .any(|r| r.id == f.id && r.kind == ResourceKind::File)
+                        })
+                    {
+                        return Err(bad);
+                    }
                     if images.len() > 8
                         || images.iter().any(|i| i.validate().is_err())
                         || images.iter().map(|i| i.byte_count).sum::<usize>() > 16 * 1024 * 1024
@@ -171,8 +182,10 @@ impl ConversationRecord {
             return Err(bad);
         }
         for message in &self.pending_input {
-            if !matches!(message, Message::User { text, images, .. }
-                if super::images::validate_message_images(text, images).is_ok()
+            if !matches!(message, Message::User { text, images, files, .. }
+                if validate_message_input(text, images, files).is_ok()
+                    && (self.version >= 8 || files.is_empty())
+                    && files.iter().all(|f| self.resources.iter().any(|r| r.id == f.id && r.kind == ResourceKind::File))
                     && images.iter().all(|image| self.resources.iter().any(|r| r.id == image.id && r.kind == ResourceKind::Image)))
                 || !valid_id(message.id())
                 || !ids.insert(message.id())
@@ -185,7 +198,8 @@ impl ConversationRecord {
             || self.resources.iter().any(|r| {
                 !valid_id(&r.id)
                     || !(calls.contains(r.call_id.as_str())
-                        || (r.kind == ResourceKind::Image && r.call_id.is_empty()))
+                        || (matches!(r.kind, ResourceKind::Image | ResourceKind::File)
+                            && r.call_id.is_empty()))
                     || !resources.insert(&r.id)
             })
         {
@@ -222,7 +236,7 @@ impl ConversationRecord {
             self.version = 2;
             self.configuration = Some(ConversationConfiguration::legacy());
         }
-        self.version = 7;
+        self.version = 8;
         if let Some(op) = &mut self.operation
             && op.state.active()
         {

@@ -15,5 +15,7 @@ pub use record::*;
 pub use settings::*;
 pub use types::*;
 
+mod files;
+pub use files::*;
 mod images;
 pub use images::*;

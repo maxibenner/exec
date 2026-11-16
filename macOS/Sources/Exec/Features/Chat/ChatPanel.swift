@@ -166,7 +166,7 @@ import Observation
     func send() {
         guard canSend else { return }
         if workspace == nil && current.messages.isEmpty {
-            guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !current.draftImages.isEmpty else { return }
+            guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !current.draftImages.isEmpty || !current.draftFiles.isEmpty else { return }
             chooseWorkspace()
             return
         }

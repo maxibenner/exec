@@ -35,7 +35,7 @@ enum ImageDrop {
         return images
     }
 
-    @MainActor private static func data(from provider: NSItemProvider, type: String) async throws -> Data {
+    @MainActor static func data(from provider: NSItemProvider, type: String) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             provider.loadDataRepresentation(forTypeIdentifier: type) { data, error in
                 if let data { continuation.resume(returning: data) }

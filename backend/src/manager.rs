@@ -23,6 +23,7 @@ struct Catalog {
     logs: Option<Arc<crate::shell_logs::ShellLogStore>>,
     forking: usize,
     images: Option<Arc<crate::images::ImageStore>>,
+    files: Option<Arc<crate::files::FileStore>>,
 }
 pub struct AgentManager {
     catalog: Mutex<Catalog>,
@@ -530,6 +531,16 @@ impl AgentManager {
         text: String,
         images: Vec<ImageRef>,
     ) -> Result<Submission> {
+        self.submit_attachments(id, text, images, vec![]).await
+    }
+    pub async fn submit_attachments(
+        &self,
+        id: &str,
+        text: String,
+        images: Vec<ImageRef>,
+        file_ids: Vec<String>,
+    ) -> Result<Submission> {
+        let files = self.resolve_files(id, file_ids).await?;
         if self.catalog.lock().unwrap().account_busy {
             return Err(Error::Busy);
         }
@@ -547,9 +558,10 @@ impl AgentManager {
         if catalog.closed || catalog.account_busy {
             return Err(Error::Busy);
         }
-        conversation.submit_images_with_naming(
+        conversation.submit_attachments_with_naming(
             text,
             images,
+            files,
             instructions,
             !catalog.library_error && catalog.library.automatic_titles,
             Some(&snapshot.workspace),
@@ -577,6 +589,78 @@ impl AgentManager {
         images: Vec<ImageRef>,
     ) -> Result<String> {
         self.get(id)?.steer_images(operation_id, text, images)
+    }
+    pub async fn steer_attachments(
+        &self,
+        id: &str,
+        operation_id: &str,
+        text: String,
+        images: Vec<ImageRef>,
+        file_ids: Vec<String>,
+    ) -> Result<String> {
+        let files = self.resolve_files(id, file_ids).await?;
+        self.get(id)?
+            .steer_attachments(operation_id, text, images, files)
+    }
+    async fn resolve_files(&self, id: &str, ids: Vec<String>) -> Result<Vec<FileRef>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let resources = self.get(id)?.resources();
+        if ids.len() > 4
+            || ids.iter().any(|id| {
+                !resources
+                    .iter()
+                    .any(|r| r.id == *id && r.kind == ResourceKind::File)
+            })
+        {
+            return Err(Error::Invalid("File is not owned by this conversation."));
+        }
+        let store = self
+            .catalog
+            .lock()
+            .unwrap()
+            .files
+            .clone()
+            .ok_or(Error::Invalid("File storage is unavailable."))?;
+        store.resolve(ids).await
+    }
+    pub(crate) fn attach_files(&self, files: Arc<crate::files::FileStore>) {
+        self.catalog.lock().unwrap().files = Some(files);
+    }
+    pub async fn upload_file(
+        self: &Arc<Self>,
+        id: &str,
+        name: String,
+        bytes: Vec<u8>,
+    ) -> Result<FileRef> {
+        if !valid_file_name(&name) || bytes.len() > MAX_FILE_BYTES {
+            return Err(Error::Invalid(
+                "Use a valid filename and a file no larger than 8 MiB.",
+            ));
+        }
+        let conversation = self.get(id)?;
+        let files = {
+            let c = self.catalog.lock().unwrap();
+            if c.closed || c.account_busy || c.mutating.contains(id) {
+                return Err(Error::Busy);
+            }
+            c.files
+                .clone()
+                .ok_or(Error::Invalid("File storage is unavailable."))?
+        };
+        let asset_id = new_id();
+        let resource = ResourceRef {
+            id: asset_id.clone(),
+            call_id: String::new(),
+            kind: ResourceKind::File,
+        };
+        let session = id.to_owned();
+        conversation
+            .store_resource(resource, async move {
+                files.put(session, asset_id, name, bytes).await
+            })
+            .await
     }
     pub async fn update_settings(
         &self,
@@ -650,7 +734,7 @@ impl AgentManager {
         // Conversation ownership blocks deletion until storage settles, but leaves
         // reads and explicit cancellation available during an active upload.
         conversation
-            .store_image(
+            .store_resource(
                 resource,
                 async move { images.put(asset_id, name, bytes).await },
             )
@@ -795,12 +879,17 @@ impl AgentManager {
                     .into_iter()
                     .filter(|r| !referenced.contains(&r.id))
                     .collect();
-                Some((catalog.logs.clone(), catalog.images.clone(), unreferenced))
+                Some((
+                    catalog.logs.clone(),
+                    catalog.images.clone(),
+                    catalog.files.clone(),
+                    unreferenced,
+                ))
             } else {
                 None
             }
         };
-        let result = if let Some((logs, images, resources)) = cleanup {
+        let result = if let Some((logs, images, files, resources)) = cleanup {
             let logs_result = if let Some(logs) = logs {
                 logs.delete(
                     resources
@@ -810,6 +899,19 @@ impl AgentManager {
                         .collect(),
                 )
                 .await
+            } else {
+                Ok(())
+            };
+            let file_result = if let Some(files) = files {
+                files
+                    .delete(
+                        resources
+                            .iter()
+                            .filter(|r| r.kind == ResourceKind::File)
+                            .map(|r| r.id.clone())
+                            .collect(),
+                    )
+                    .await
             } else {
                 Ok(())
             };
@@ -826,7 +928,7 @@ impl AgentManager {
             } else {
                 Ok(())
             };
-            logs_result.and(image_result)
+            logs_result.and(image_result).and(file_result)
         } else {
             Ok(())
         };

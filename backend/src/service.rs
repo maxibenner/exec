@@ -100,6 +100,7 @@ pub async fn start_persistent_service_with_native(
     let profile = private_directory(profile).await?;
     let remote = crate::remote::RemoteAccess::load(&profile).await?;
     let images = crate::images::ImageStore::open(profile.join("images")).await?;
+    let files = crate::files::FileStore::open(profile.join("session-files")).await?;
     let logs = crate::shell_logs::ShellLogStore::open(profile.join("shell-logs")).await?;
     let mut tools = if workspace_tools {
         let mut tools = crate::tools::create_file_tools();
@@ -122,6 +123,7 @@ pub async fn start_persistent_service_with_native(
     let manager = AgentManager::open(store, |_| (provider.clone(), tools.clone())).await?;
     manager.attach_logs(logs);
     manager.attach_images(images);
+    manager.attach_files(files);
     manager.attach_native(native);
     match start_service_with_remote(
         ServiceOptions {
@@ -358,7 +360,7 @@ struct SelectModel {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct UploadImage {
+struct UploadAsset {
     name: String,
     base64: String,
 }
@@ -368,6 +370,8 @@ struct Submit {
     text: String,
     #[serde(default)]
     images: Vec<ImageRef>,
+    #[serde(default)]
+    files: Vec<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -377,6 +381,8 @@ struct Steer {
     text: String,
     #[serde(default)]
     images: Vec<ImageRef>,
+    #[serde(default)]
+    files: Vec<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -840,6 +846,7 @@ async fn handle(
                 "fork",
                 "compact",
                 "images",
+                "files",
                 "desktop",
             ]
             .contains(s)
@@ -971,7 +978,7 @@ async fn handle(
         }
         ("POST", Some("turns")) => {
             let submit: Submit = body(request).await?;
-            if submit.images.is_empty() {
+            if submit.images.is_empty() && submit.files.is_empty() {
                 text(&submit.text, 128 * 1024)?;
             } else if submit.text.len() > 128 * 1024 || submit.text.contains('\0') {
                 return Err(ApiError(400, "Invalid message."));
@@ -981,7 +988,7 @@ async fn handle(
             }
             let run = options
                 .manager
-                .submit_images(parts[0], submit.text, submit.images)
+                .submit_attachments(parts[0], submit.text, submit.images, submit.files)
                 .await
                 .map_err(|error| match error {
                     Error::Invalid(message) => ApiError(400, message),
@@ -1006,8 +1013,23 @@ async fn handle(
                 options.manager.set_desktop_permission(parts[0], input)?,
             ))
         }
+        ("POST", Some("files")) => {
+            let input: UploadAsset = body(request).await?;
+            use base64::Engine;
+            if input.base64.len() > MAX_FILE_BYTES.div_ceil(3) * 4 {
+                return Err(ApiError(400, "File exceeds 8 MiB."));
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&input.base64)
+                .map_err(|_| ApiError(400, "Invalid file data."))?;
+            let file = options
+                .manager
+                .upload_file(parts[0], input.name, bytes)
+                .await?;
+            Ok(json_response(201, file))
+        }
         ("POST", Some("images")) => {
-            let input: UploadImage = body(request).await?;
+            let input: UploadAsset = body(request).await?;
             let bytes = crate::images::decode_base64(&input.base64)
                 .map_err(|_| ApiError(400, "Invalid image data."))?;
             let image = options
@@ -1019,12 +1041,16 @@ async fn handle(
         ("POST", Some("steer")) => {
             let input: Steer = body(request).await?;
             identifier(&input.operation_id)?;
-            let id = options.manager.steer_images(
-                parts[0],
-                &input.operation_id,
-                input.text,
-                input.images,
-            )?;
+            let id = options
+                .manager
+                .steer_attachments(
+                    parts[0],
+                    &input.operation_id,
+                    input.text,
+                    input.images,
+                    input.files,
+                )
+                .await?;
             Ok(json_response(
                 202,
                 json!({"operationID":input.operation_id,"messageID":id}),

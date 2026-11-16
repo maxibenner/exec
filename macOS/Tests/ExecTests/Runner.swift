@@ -17,6 +17,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
 @main struct TestRunner {
     @MainActor static func main() async {
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("File drops copy bytes and preserve atomic mixed imports", { try await FileAttachmentTests().copiesFilesAndKeepsMixedImportsAtomic() }),
+            ("Queued files retain their operation, restore cards and never replay", { try await FileAttachmentTests().queuesFilesWithoutReplayingOrChangingOperation() }),
             ("Indicator gray bases stay visible under zero, partial and full blue pulses", { try WorkingIndicatorTests().grayBasesRemainVisibleUnderBluePulses() }),
             ("Indicator layers animate, freeze and stop when hidden or detached", { try WorkingIndicatorTests().layerAnimationLifecycle() }),
             ("Blue user bubbles support text and images in light and dark mode", { try await TranscriptTests().userBubblesSupportTextAndImagesInBothAppearances() }),

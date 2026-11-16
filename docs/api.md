@@ -146,8 +146,8 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | POST | `/v1/conversations/:id/fork` | `{}` → `201` independent saved snapshot of the transcript, including during an active turn |
 | DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after durable deletion; active work returns 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
-| POST | `/v1/conversations/:id/turns` | `{text,images?}` → `202 {operationID}` |
-| POST | `/v1/conversations/:id/steer` | `{operationID,text,images?}` → `202 {operationID,messageID}` |
+| POST | `/v1/conversations/:id/turns` | `{text,images?,files?:[assetID]}` → `202 {operationID}` |
+| POST | `/v1/conversations/:id/steer` | `{operationID,text,images?,files?:[assetID]}` → `202 {operationID,messageID}` |
 | POST | `/v1/conversations/:id/cancel` | `{operationID}` → `202 {accepted:true,operationID}` |
 | POST | `/v1/conversations/:id/approvals` | `{operationID,approvalID,approved:boolean}` → `{resolved:true}` |
 
@@ -357,7 +357,7 @@ Opaque per-conversation provider state is stored in version-4 checkpoints, never
 snapshots or user/model transcript text. DeepSeek retains reasoning only as needed to echo
 completed assistant tool calls in later requests. Reasoning streams are bounded at 4 MiB;
 combined opaque state is bounded at 8 MiB. Partial/failed streams cannot commit staged
-provider state or measurements. Version 1–3 records remain readable; writes use version 7.
+provider state or measurements. Version 1–3 records remain readable; writes use version 8.
 Thinking and non-thinking responses still require supported completion and `[DONE]`; no
 inference or rotating-token retries are introduced. Mock transport tests do not verify
 live model effort availability or service compatibility.
@@ -536,11 +536,47 @@ until the next ordinary response measures it. `contextUsage:{tokens,limit}` is a
 provider measurement, not an estimate of newly appended input. Neither compaction usage
 nor stale pre-compaction usage is presented as the replacement context's size.
 
+## Local file attachments
+
+`POST /v1/conversations/:id/files` accepts `{name,base64}` and returns `201 FileRef`:
+`{id,name,path,byteCount,sha256}`. Files are opaque bytes, up to 8 MiB each (including empty
+files); unsafe filenames, directories and symlinks are not accepted by the native importer.
+No PDF parser, OCR, provider upload or software installation runs during attachment import.
+The composer accepts up to four mixed image/file attachments; images retain their existing
+normalization and byte limits.
+
+New turns and steering accept optional `files:[assetID]`, at most four file IDs. IDs must
+belong to that conversation; clients cannot submit arbitrary local paths or forged file
+metadata. File-only messages are valid. Snapshots persist `files:[FileRef]` on user messages;
+the displayed message text remains unchanged. The provider-neutral context adds a JSON
+manifest of managed absolute paths and shell usage instructions, not the file contents.
+The agent uses the existing shell tool and approval policy to read selected lines, run
+analysis, or invoke installed PDF/document utilities. Parsing support depends on installed
+utilities; the agent must report missing tools or extraction limitations, and must not
+execute an attachment or install software just because a file was dropped. File contents
+and names remain untrusted data. Filesystem tools still restrict paths to the workspace;
+managed paths outside it are accessed through the shell.
+
+Original copies live under private `PROFILE/session-files/SESSION/ASSET/FILENAME`, with a
+small `ASSET.json` lookup manifest alongside the session directories. These are session
+scratch assets, retained across restarts rather than placed in purgeable OS temporary
+storage. Copies are created read-only (0400); this is an accidental-write safeguard, not a
+sandbox against shell commands running as the same user. Working copies and outputs belong
+in the workspace. Files are retained until the last owning conversation/fork is deleted;
+unreadable sessions conservatively prevent cleanup. Upload ownership is checkpointed before
+storage. Failed/uncertain uploads are never automatically repeated; unused uploaded files
+remain owned until conversation deletion. Incomplete crash artifacts are not promoted.
+
+Uploads are allowed during an active turn. Steering keeps the original operation ID across
+upload; a rejected/uncertain queue request never becomes a fresh turn. Accepted queued file
+references survive cancellation/restart without replay. Version 8 adds file references;
+versions 1–7 remain readable.
+
 ## Image assets, inputs and generation
 
 | Method | Path | Contract |
 |---|---|---|
-| POST | `/v1/conversations/:id/images` | `{name,base64}` → `201 ImageRef`; idle-only owned upload |
+| POST | `/v1/conversations/:id/images` | `{name,base64}` → `201 ImageRef`; conversation-owned upload, including during active turns |
 | GET | `/v1/images/:assetID` | `{image:ImageRef,base64}` for an asset referenced by an available conversation |
 | DELETE | `/v1/conversations/:id/images/:assetID` | Release an unused upload → `{released:true}`; cannot remove history independently |
 | POST | `/v1/conversations/:id/turns` | `{text,images?:[ImageRef]}`; image-only input is accepted |

@@ -126,7 +126,7 @@ impl Conversation {
             record
         } else {
             ConversationRecord {
-                version: 7,
+                version: 8,
                 resources: vec![],
                 provider_state: None,
                 usage: None,
@@ -408,17 +408,18 @@ impl Conversation {
         images: Vec<ImageRef>,
         instructions: Option<String>,
     ) -> Result<Submission> {
-        self.submit_images_with_naming(text, images, instructions, false, None)
+        self.submit_attachments_with_naming(text, images, vec![], instructions, false, None)
     }
-    pub(crate) fn submit_images_with_naming(
+    pub(crate) fn submit_attachments_with_naming(
         self: &Arc<Self>,
         text: String,
         images: Vec<ImageRef>,
+        files: Vec<FileRef>,
         instructions: Option<String>,
         automatic_titles: bool,
         expected_workspace: Option<&str>,
     ) -> Result<Submission> {
-        super::images::validate_message_images(&text, &images)?;
+        validate_message_input(&text, &images, &files)?;
         let mut s = self.state();
         if s.disposed {
             return Err(Error::Invalid("Conversation is closed."));
@@ -436,6 +437,14 @@ impl Conversation {
         }
         if let Some(value) = &instructions {
             validate_instructions(value)?;
+        }
+        if files.iter().any(|file| {
+            !s.record
+                .resources
+                .iter()
+                .any(|r| r.id == file.id && r.kind == ResourceKind::File)
+        }) {
+            return Err(Error::Invalid("File is not owned by this conversation."));
         }
         if images.iter().any(|image| {
             !s.record
@@ -458,7 +467,12 @@ impl Conversation {
         });
         s.record.metadata.activity_at = SessionMetadata::activity();
         if s.record.metadata.title.is_none() && text.trim().is_empty() {
-            s.record.metadata.title = Some("Image".into());
+            s.record.metadata.title = Some(
+                files
+                    .first()
+                    .map(|f| f.name.chars().take(80).collect())
+                    .unwrap_or_else(|| "Image".into()),
+            );
         }
         if s.record.metadata.title.is_none() {
             s.record.metadata.title = Some(
@@ -488,6 +502,7 @@ impl Conversation {
             id: new_id(),
             text,
             images,
+            files,
         });
         let runner = self.clone();
         let (settled, completion) = oneshot::channel();
@@ -630,7 +645,16 @@ impl Conversation {
         text: String,
         images: Vec<ImageRef>,
     ) -> Result<String> {
-        super::images::validate_message_images(&text, &images)?;
+        self.steer_attachments(operation_id, text, images, vec![])
+    }
+    pub(crate) fn steer_attachments(
+        &self,
+        operation_id: &str,
+        text: String,
+        images: Vec<ImageRef>,
+        files: Vec<FileRef>,
+    ) -> Result<String> {
+        validate_message_input(&text, &images, &files)?;
         let mut s = self.state();
         if s.storage_error.is_some() {
             return Err(Error::Storage);
@@ -646,6 +670,14 @@ impl Conversation {
         {
             return Err(Error::Busy);
         }
+        if files.iter().any(|file| {
+            !s.record
+                .resources
+                .iter()
+                .any(|r| r.id == file.id && r.kind == ResourceKind::File)
+        }) {
+            return Err(Error::Invalid("File is not owned by this conversation."));
+        }
         if images.iter().any(|image| {
             !s.record
                 .resources
@@ -660,6 +692,7 @@ impl Conversation {
         let id = new_id();
         s.record.metadata.activity_at = SessionMetadata::activity();
         s.record.pending_input.push(Message::User {
+            files,
             images,
             id: id.clone(),
             text,
@@ -726,11 +759,11 @@ impl Conversation {
         true
     }
     /// Reserve upload ownership without replacing a concurrently changing transcript.
-    pub(crate) async fn store_image(
+    pub(crate) async fn store_resource<T: Send + 'static>(
         self: &Arc<Self>,
         resource: ResourceRef,
-        upload: impl std::future::Future<Output = Result<ImageRef>> + Send + 'static,
-    ) -> Result<ImageRef> {
+        upload: impl std::future::Future<Output = Result<T>> + Send + 'static,
+    ) -> Result<T> {
         {
             let mut state = self.state();
             if state.disposed || state.updating {
@@ -1314,8 +1347,9 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            c.submit_images_with_naming(
+            c.submit_attachments_with_naming(
                 "first".into(),
+                vec![],
                 vec![],
                 Some("old instructions".into()),
                 false,

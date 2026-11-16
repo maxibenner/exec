@@ -5,7 +5,7 @@ struct ChatComposer: View {
     @Bindable var store: ChatPanel
     @Environment(SessionWindows.self) private var windows: SessionWindows?
     @FocusState.Binding var focused: Bool
-    @State private var imageDropTargeted = false
+    @State private var attachmentDropTargeted = false
     @State private var dismissedDraft: String?
     @State private var highlighted = 0
 
@@ -114,6 +114,13 @@ struct ChatComposer: View {
                 .disabled(!store.canNavigate)
                 .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
             }
+            if !store.current.draftFiles.isEmpty {
+                FileAttachmentStrip(files: store.current.draftFiles) { id in
+                    store.current.draftFiles.removeAll { $0.id == id }
+                }
+                .disabled(!store.canNavigate)
+                .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
+            }
             TextField(store.isWorking ? "Message or / for commands, esc to cancel" : "Message or / for commands",
                       text: $store.draft, axis: .vertical)
                 .lineLimit(1...8).textFieldStyle(.plain).font(.body)
@@ -158,7 +165,7 @@ struct ChatComposer: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(imageDropTargeted || focused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: imageDropTargeted ? 4 : 1)
+                .strokeBorder(attachmentDropTargeted || focused ? Color.accentColor.opacity(0.65) : Color.primary.opacity(0.18), lineWidth: attachmentDropTargeted ? 4 : 1)
                 .allowsHitTesting(false)
         }
         .overlay {
@@ -166,10 +173,10 @@ struct ChatComposer: View {
             // drop handling cannot insert a file path into the draft. Leave the
             // clear layer without a contentShape so clicks and selection pass through.
             Color.clear
-                .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: $imageDropTargeted) { providers in
+                .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: $attachmentDropTargeted) { providers in
                     guard store.canNavigate else { return false }
                     let destination = store.current
-                    return destination.importImages { try await ImageDrop.load(providers) } != nil
+                    return destination.importAttachments { try await AttachmentDrop.load(providers) } != nil
                 }
                 .accessibilityHidden(true)
         }

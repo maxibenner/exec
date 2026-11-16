@@ -2,6 +2,7 @@
 #![cfg(unix)]
 pub mod content_fetch;
 pub mod core;
+pub mod files;
 pub mod images;
 pub mod manager;
 pub mod native;

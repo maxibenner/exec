@@ -20,6 +20,7 @@ pub fn valid_id(id: &str) -> bool {
 pub enum ResourceKind {
     ShellLog,
     Image,
+    File,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +65,8 @@ pub enum Message {
     User {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<super::ImageRef>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<super::FileRef>,
         id: String,
         text: String,
     },
@@ -117,7 +120,9 @@ pub fn context(messages: &[Message]) -> Vec<ContextMessage> {
     messages
         .iter()
         .filter_map(|m| match m {
-            Message::User { text, .. } => Some(ContextMessage::User { text: text.clone() }),
+            Message::User { text, files, .. } => Some(ContextMessage::User {
+                text: super::file_context(text, files),
+            }),
             Message::Assistant {
                 text,
                 calls,

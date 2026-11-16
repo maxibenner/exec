@@ -19,18 +19,19 @@ struct Message: Identifiable, Codable, Sendable, Equatable {
     enum Compaction: String, Codable, Sendable { case manual, automatic }
     var compaction: Compaction?
     var images: [ImageAttachment]
+    var files: [FileAttachment]
 
     init(id: UUID = UUID(), role: Role, text: String, status: Status = .complete,
-         toolCalls: [ToolCall] = [], toolResult: ToolResult? = nil, images: [ImageAttachment] = [],
+         toolCalls: [ToolCall] = [], toolResult: ToolResult? = nil, images: [ImageAttachment] = [], files: [FileAttachment] = [],
          pendingTool: PendingTool? = nil, compaction: Compaction? = nil) {
         self.id = id; self.role = role; self.text = text; self.status = status
-        self.toolCalls = toolCalls; self.toolResult = toolResult; self.images = images
+        self.toolCalls = toolCalls; self.toolResult = toolResult; self.images = images; self.files = files
         self.pendingTool = pendingTool
         self.compaction = compaction
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, text, status, toolCalls, toolResult, images, pendingTool, compaction
+        case id, role, text, status, toolCalls, toolResult, images, files, pendingTool, compaction
     }
 
     init(from decoder: any Decoder) throws {
@@ -44,6 +45,8 @@ struct Message: Identifiable, Codable, Sendable, Equatable {
         pendingTool = try values.decodeIfPresent(PendingTool.self, forKey: .pendingTool)
         compaction = try values.decodeIfPresent(Compaction.self, forKey: .compaction)
         images = try values.decodeIfPresent([ImageAttachment].self, forKey: .images) ?? []
+        files = try values.decodeIfPresent([FileAttachment].self, forKey: .files) ?? []
+        try FileAttachment.validate(files)
         try ImageAttachment.validate(images)
     }
 }

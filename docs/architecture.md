@@ -11,7 +11,7 @@ Exec has one authoritative Rust execution engine and a thin native Swift client.
 | `backend/src/providers/` | Provider wire formats, authentication, discovery, account services and opaque context |
 | `backend/src/tools/` | Exact action preparation, approval descriptions, validation and execution |
 | `backend/src/storage.rs` | Private single-owner profiles and atomic checkpoints |
-| `backend/src/images.rs`, `shell_logs.rs` | Private image assets and retained subprocess output |
+| `backend/src/images.rs`, `files.rs`, `shell_logs.rs` | Private image/file assets and retained subprocess output |
 | `backend/src/native.rs` | Optional frontend capability broker, never headless capture |
 | `backend/src/service.rs`, `service_auth.rs` | HTTP/NDJSON boundary, authentication and composition |
 | `backend/src/main.rs` | Standalone launcher and signal-driven shutdown |

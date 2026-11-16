@@ -22,8 +22,10 @@ import CryptoKit
     private(set) var deletedRemotely = false
     var draft = ""
     var draftImages: [ImageAttachment] = []
-    private(set) var isImportingImages = false
-    var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || isImportingImages || (!deletedRemotely && snapshot?.pendingInput.isEmpty == false) }
+    var draftFiles: [FileAttachment] = []
+    private var uploadedFiles: [UUID: (session: UUID, file: AgentFile)] = [:]
+    private(set) var isImportingAttachments = false
+    var hasUnsentDraft: Bool { !draft.isEmpty || !draftImages.isEmpty || !draftFiles.isEmpty || isImportingAttachments || (!deletedRemotely && snapshot?.pendingInput.isEmpty == false) }
     var error: String?
     private(set) var currentSessionID: UUID?
     private(set) var workspace: Workspace?
@@ -362,25 +364,34 @@ import CryptoKit
             }
         }
     }
-    @discardableResult func importImages(_ load: @escaping @MainActor () async throws -> [ImageAttachment]) -> Task<Void, Never>? {
-        guard !isImportingImages, canEditDraft else { return nil }
-        isImportingImages = true
+    @discardableResult func importAttachments(_ load: @escaping @MainActor () async throws -> AttachmentDrop.Batch) -> Task<Void, Never>? {
+        guard !isImportingAttachments, canEditDraft else { return nil }
+        isImportingAttachments = true
         return Task {
-            defer { isImportingImages = false }
-            do { let images = try await load(); try ImageAttachment.validate(draftImages + images); draftImages += images }
-            catch { self.error = error.localizedDescription }
+            defer { isImportingAttachments = false }
+            do {
+                let batch = try await load()
+                guard draftImages.count + draftFiles.count + batch.images.count + batch.files.count <= 4 else {
+                    throw ExecError("Attach up to four images or files per message.")
+                }
+                try ImageAttachment.validate(draftImages + batch.images)
+                try FileAttachment.validate(draftFiles + batch.files)
+                draftImages += batch.images
+                draftFiles += batch.files
+            } catch { self.error = error.localizedDescription }
         }
     }
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !draftImages.isEmpty, canEditDraft, !isImportingImages, !submitting, !isSaving, commandTask == nil, hasUsableModel else { return }
+        guard !text.isEmpty || !draftImages.isEmpty || !draftFiles.isEmpty, canEditDraft, !isImportingAttachments, !submitting, !isSaving, commandTask == nil, hasUsableModel else { return }
         if operationActive && isCompacting {
             error = "Wait for compaction to finish before sending a message."
             return
         }
         let steeringOperationID = operationActive ? snapshot?.operation?.id : nil
         let inputImages = draftImages
+        let inputFiles = draftFiles
         let originalDraft = draft
         submitting = true
         acceptedOperationID = nil
@@ -403,19 +414,38 @@ import CryptoKit
                     imageCache[ref.id] = ImageAttachment(id: ref.id, name: ref.name, mediaType: ref.mediaType, data: image.data)
                     images.append(ref)
                 }
+                var files: [String] = []
+                for file in inputFiles {
+                    let ref: AgentFile
+                    if let uploaded = uploadedFiles[file.id], uploaded.session == id {
+                        ref = uploaded.file
+                    } else {
+                        let value = try await api.request("POST", AgentAPI.path(id, "/files"), .object([
+                            "name": .string(file.name), "base64": .string(file.data.base64EncodedString())]))
+                        ref = try value.decoded(AgentFile.self)
+                        guard ref.name == file.name, ref.byteCount == file.data.count,
+                              ref.sha256.lowercased() == SHA256.hash(data: file.data).map({ String(format: "%02x", $0) }).joined() else {
+                            throw ExecError("The backend returned an invalid file attachment.")
+                        }
+                        uploadedFiles[file.id] = (session: id, file: ref)
+                    }
+                    files.append(ref.id.uuidString.lowercased())
+                }
                 if let steeringOperationID {
                     // Keep the original operation target even if it finishes during upload.
                     // A rejected/uncertain queue request must never become a new turn.
-                    struct Steering: Encodable { let operationID: String; let text: String; let images: [AgentImage] }
+                    struct Steering: Encodable { let operationID: String; let text: String; let images: [AgentImage]; let files: [String] }
                     _ = try await api.send("POST", AgentAPI.path(id, "/steer"), body: Steering(
-                        operationID: steeringOperationID.uuidString.lowercased(), text: text, images: images))
+                        operationID: steeringOperationID.uuidString.lowercased(), text: text, images: images, files: files))
                 } else {
-                    struct Turn: Encodable { let text: String; let images: [AgentImage] }
-                    let receipt = try await api.send("POST", AgentAPI.path(id, "/turns"), body: Turn(text: text, images: images))
+                    struct Turn: Encodable { let text: String; let images: [AgentImage]; let files: [String] }
+                    let receipt = try await api.send("POST", AgentAPI.path(id, "/turns"), body: Turn(text: text, images: images, files: files))
                     acceptedOperationID = receipt["operationID"].string.flatMap(UUID.init(uuidString:))
                 }
                 if draft == originalDraft { draft = "" }
                 if draftImages == inputImages { draftImages = [] }
+                if draftFiles == inputFiles { draftFiles = [] }
+                for file in inputFiles { uploadedFiles.removeValue(forKey: file.id) }
                 // A full read reconciles even if the operation settled before HTTP acknowledgement.
                 try await resynchronize(id)
                 try await didCheckpoint?()
