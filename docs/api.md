@@ -255,7 +255,10 @@ Version-3 checkpoints retain pending input; older versions are read conservative
 ## Sub-agent delegation
 
 Top-level sessions created through the session API, restored sessions, and explicit forks
-expose `delegate({"task":"..."})`. This is a blocking tool, not a second agent runtime:
+expose `delegate({"task":"..."})` for one child or
+`delegate({"tasks":["first independent task", "second independent task"]})` for concurrent
+children. Supply exactly one form. The tool waits for all children and returns results in
+task order; ordinary tool calls remain sequential. This reuses the existing agent runtime:
 
 - The manager persists a normal child conversation before inference. Its optional
   `metadata.parent` is `{sessionId, operationId, toolCallId}`, identifying the managing
@@ -269,10 +272,17 @@ expose `delegate({"task":"..."})`. This is a blocking tool, not a second agent r
   the child's session and are resolved through its existing approval endpoint. The parent
   waits without requiring a frontend to remain attached. Child sessions do not expose
   `delegate`; limits are eight children per parent operation and 16 model steps per child.
-- A successful tool result contains the child ID and up to 32 KiB of its final response,
-  with an explicit truncation marker when necessary. Failure or independent child
-  cancellation produces a failed parent tool result, not a successful summary. No work
-  is retried automatically.
+- Each task is nonempty and at most 16 KiB; batches contain one to eight tasks. The
+  entire batch reserves its budget before any child starts. Deleting completed children
+  does not reset the per-operation limit. Avoid conflicting writes to shared files.
+- Results include child IDs and at most 32 KiB of final answer text in total, divided
+  equally among children, with explicit truncation markers. Single-child failure retains
+  a failed tool outcome. Batches report each child's success or failure separately and
+  keep waiting for siblings; a failed child never retries or cancels another child.
+- After the parent's tool result is durably saved, successfully completed child sessions
+  are automatically deleted. Failed/interrupted children remain inspectable. If the parent
+  is interrupted before saving results, children are retained rather than losing answers.
+  No work is retried automatically.
 - Parent cancellation cancels the child's operation and waits for its cleanup. Restart
   retains the relationship, marks unfinished operations interrupted and resumes neither.
   New turns/compaction/deletion on the child are blocked while its managing operation is
@@ -281,10 +291,15 @@ expose `delegate({"task":"..."})`. This is a blocking tool, not a second agent r
   history. Explicitly forking a child creates an independent top-level session, not another
   execution of the original delegation.
 
-Children appear in ordinary catalog/snapshot endpoints. macOS links delegation cards to
-child transcripts, exposes pending child approvals from the parent view, and provides a
-Sub-agents menu so history remains accessible independently of tool-card visibility.
-Children stay out of the main sidebar unless selected or their parent is absent.
+Children appear in ordinary catalog/snapshot endpoints while retained. macOS represents
+them within the delegation tool card and as compact, single-line, undated child rows
+attached beneath the parent sidebar row. Clicking a child opens its transcript and
+composer; steering uses the child's active operation, including while awaiting approval,
+and never starts a competing turn. Child rows show approval/attention indicators and
+are not standalone sessions or keyboard-shortcut entries. There is no Sub-agents menu
+or parent-navigation button. Successful children disappear after result cleanup; the
+parent's saved tool result remains. Local unsent drafts are preserved if cleanup occurs
+while the user is composing.
 Version-9 records persist this relationship; versions 1–8 remain readable. Low-level
 embedders using `AgentManager::create` retain control over their explicit tool list;
 `create_session` and `fork` require an `Arc<AgentManager>` to install delegation safely.

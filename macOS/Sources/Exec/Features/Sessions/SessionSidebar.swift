@@ -33,22 +33,53 @@ struct SessionSidebar: View {
         // selection binding (its active selection can turn blue on mouse-down).
         List {
             ForEach(displayedSessions) { session in
-                SessionRow(session: session, store: store,
-                           shortcut: shortcutIDs.firstIndex(of: session.id).map { $0 + 1 },
-                           rename: {
-                               guard store.canNavigate, !store.isSessionRunning(session.id) else { return }
-                               renameID = session.id; renameTitle = session.title; renaming = true
-                           }, delete: { delete(session) })
-                    // A row-wide Button interferes with native drag reordering.
-                    .onTapGesture { activate(session.id) }
-                    .accessibilityAction { activate(session.id) }
-                    .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
-                    .listRowBackground(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(store.sidebarSelectionID == session.id
-                                  ? Color.primary.opacity(0.08) : Color.clear)
-                    )
-                    .moveDisabled(!store.canReorderSessions)
+                VStack(alignment: .leading, spacing: 2) {
+                    SessionRow(session: session, store: store,
+                               shortcut: shortcutIDs.firstIndex(of: session.id).map { $0 + 1 },
+                               rename: {
+                                   guard store.canNavigate, !store.isSessionRunning(session.id) else { return }
+                                   renameID = session.id; renameTitle = session.title; renaming = true
+                               }, delete: { delete(session) })
+                        // A row-wide Button interferes with native drag reordering.
+                        .onTapGesture { activate(session.id) }
+                        .accessibilityAction { activate(session.id) }
+                        .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
+                    ForEach(store.childSessions(of: session.id)) { child in
+                        Button { activate(child.id) } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.turn.down.right").foregroundStyle(.tertiary)
+                                Text(verbatim: child.title).lineLimit(1).truncationMode(.tail)
+                                Spacer(minLength: 0)
+                                if store.needsApproval(child.id) {
+                                    Image(systemName: "hand.raised").foregroundStyle(.orange)
+                                        .accessibilityLabel("Approval required")
+                                } else if store.isSessionResponding(child.id) {
+                                    ProgressView().controlSize(.mini).accessibilityLabel("Running")
+                                } else if store.needsAttention(child.id) {
+                                    Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+                                }
+                            }
+                            .font(.caption).foregroundStyle(.secondary)
+                            .padding(.leading, 12).padding(.vertical, 3)
+                            .padding(.trailing, 4)
+                            .contentShape(Rectangle())
+                            .background(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 4))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(store.sidebarSelectionID == child.id ? [.isSelected] : [])
+                        .contextMenu {
+                            Button("Delete Sub-agent", role: .destructive) { delete(child) }
+                                .disabled(!store.canDeleteSession(child.id) || store.isSessionRunning(session.id))
+                        }
+                    }
+                }
+                .listRowBackground(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(store.sidebarSelectionID == session.id
+                              ? Color.primary.opacity(0.08) : Color.clear)
+                )
+                .moveDisabled(!store.canReorderSessions)
             }
             .onMove { offsets, destination in
                 // Offsets must still refer to the current catalog when a drag ends.

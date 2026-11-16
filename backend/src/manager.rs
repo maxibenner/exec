@@ -24,6 +24,9 @@ struct Catalog {
     forking: usize,
     images: Option<Arc<crate::images::ImageStore>>,
     files: Option<Arc<crate::files::FileStore>>,
+    // Active turns never resume after restart. Keep reservations even when a
+    // successful child is deleted, so cleanup cannot reset the spawn budget.
+    delegation_turns: BTreeMap<String, (String, HashSet<String>, usize)>,
 }
 pub struct AgentManager {
     catalog: Mutex<Catalog>,
@@ -436,16 +439,21 @@ impl AgentManager {
 
     /// Only the executing parent tool can create a child. Persist its provenance
     /// before starting inference; never resume or recreate it after interruption.
-    pub(crate) async fn create_child(
+    pub(crate) async fn create_children(
         &self,
         context: &ToolContext,
-        task: &str,
+        tasks: &[String],
         provider: Arc<dyn ChatProvider>,
         tools: Vec<Arc<dyn Tool>>,
-    ) -> Result<(Arc<Conversation>, Option<String>)> {
+    ) -> Result<Vec<(Arc<Conversation>, Option<String>)>> {
         crate::check_cancel(&context.cancel)?;
+        if tasks.is_empty() || tasks.len() > 8 {
+            return Err(Error::Tool(
+                "Delegation requires one to eight tasks.".into(),
+            ));
+        }
         let parent = {
-            let catalog = self.catalog.lock().unwrap();
+            let mut catalog = self.catalog.lock().unwrap();
             if catalog.closed
                 || catalog.account_busy
                 || catalog.mutating.contains(&context.conversation_id)
@@ -468,56 +476,64 @@ impl AgentManager {
                     "Delegation requires an executing parent tool.",
                 ));
             }
-            let children: Vec<_> = catalog
-                .conversations
-                .values()
-                .filter_map(|c| c.parent())
-                .filter(|p| p.session_id == context.conversation_id)
-                .collect();
-            if children.iter().any(|p| p.tool_call_id == context.call_id) {
+            let turn = catalog
+                .delegation_turns
+                .entry(context.conversation_id.clone())
+                .or_insert_with(|| (context.operation_id.clone(), HashSet::new(), 0));
+            if turn.0 != context.operation_id {
+                *turn = (context.operation_id.clone(), HashSet::new(), 0);
+            }
+            if turn.1.contains(&context.call_id) {
                 return Err(Error::Tool(
-                    "This delegation already has a child session; it was not restarted.".into(),
+                    "This delegation already ran; it was not restarted.".into(),
                 ));
             }
-            if children
-                .iter()
-                .filter(|p| p.operation_id == context.operation_id)
-                .count()
-                >= 8
-            {
+            if turn.2 + tasks.len() > 8 {
                 return Err(Error::Tool(
                     "The limit of eight sub-agents per turn was reached.".into(),
                 ));
             }
+            turn.1.insert(context.call_id.clone());
+            turn.2 += tasks.len();
             parent
         };
-        let mut options = ConversationOptions::new(provider, parent.model, parent.workspace);
-        options.tools = tools
-            .into_iter()
-            .filter(|tool| tool.definition().name != "delegate")
-            .collect();
-        options.settings = parent.configuration.settings;
-        options.max_steps = 16;
-        let title: String = task
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(80)
-            .collect();
-        options.metadata.title = Some(if title.is_empty() {
-            "Sub-agent".into()
-        } else {
-            title
-        });
-        options.metadata.parent = Some(SessionParent {
-            session_id: context.conversation_id.clone(),
-            operation_id: context.operation_id.clone(),
-            tool_call_id: context.call_id.clone(),
-        });
-        let child = self.create(options).await?;
-        Ok((child, parent.configuration.workspace_instructions))
+        let mut children = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            crate::check_cancel(&context.cancel)?;
+            let mut options = ConversationOptions::new(
+                provider.clone(),
+                parent.model.clone(),
+                parent.workspace.clone(),
+            );
+            options.tools = tools
+                .iter()
+                .filter(|tool| tool.definition().name != "delegate")
+                .cloned()
+                .collect();
+            options.settings = parent.configuration.settings.clone();
+            options.max_steps = 16;
+            let title: String = task
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(80)
+                .collect();
+            options.metadata.title = Some(if title.is_empty() {
+                "Sub-agent".into()
+            } else {
+                title
+            });
+            options.metadata.parent = Some(SessionParent {
+                session_id: context.conversation_id.clone(),
+                operation_id: context.operation_id.clone(),
+                tool_call_id: context.call_id.clone(),
+            });
+            let child = self.create(options).await?;
+            children.push((child, parent.configuration.workspace_instructions.clone()));
+        }
+        Ok(children)
     }
 
     pub async fn create_session(
@@ -968,6 +984,17 @@ impl AgentManager {
         Ok(result)
     }
     pub async fn delete(&self, id: &str) -> Result<()> {
+        self.delete_session(id, None).await
+    }
+    pub(crate) async fn delete_completed_child(
+        &self,
+        id: &str,
+        parent_id: &str,
+        call_id: &str,
+    ) -> Result<()> {
+        self.delete_session(id, Some((parent_id, call_id))).await
+    }
+    async fn delete_session(&self, id: &str, completed_child: Option<(&str, &str)>) -> Result<()> {
         let resources = {
             let mut catalog = self.catalog.lock().unwrap();
             if catalog.closed || catalog.mutating.contains(id) || catalog.forking > 0 {
@@ -983,7 +1010,20 @@ impl AgentManager {
                 ));
             }
             let resources = if let Some(conversation) = catalog.conversations.get(id) {
-                if Self::delegation_owned(&catalog, conversation) {
+                let cleanup_allowed = completed_child.is_some_and(|(parent_id, call_id)| {
+                    let snapshot = conversation.snapshot();
+                    snapshot
+                        .metadata
+                        .parent
+                        .is_some_and(|p| p.session_id == parent_id && p.tool_call_id == call_id)
+                        && snapshot
+                            .operation
+                            .is_some_and(|op| op.state == OperationState::Completed)
+                });
+                if completed_child.is_some() && !cleanup_allowed {
+                    return Err(Error::Busy);
+                }
+                if !cleanup_allowed && Self::delegation_owned(&catalog, conversation) {
                     return Err(Error::Busy);
                 }
                 conversation.dispose()?;
@@ -1008,6 +1048,7 @@ impl AgentManager {
         let cleanup = {
             let mut catalog = self.catalog.lock().unwrap();
             catalog.conversations.remove(id);
+            catalog.delegation_turns.remove(id);
             catalog.native.remove_session(id);
             catalog.unreadable.remove(id);
             let referenced: HashSet<_> = catalog

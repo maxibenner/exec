@@ -400,6 +400,17 @@ import CryptoKit
             defer { submitting = false; task = nil; updateSleepActivity(); drainCommands() }
             do {
                 await waitForPendingSave()
+                var steeringOperationID = steeringOperationID
+                if snapshot?.metadata.parent != nil, steeringOperationID == nil,
+                   let id = currentSessionID {
+                    // A child can be opened between creation and its first turn.
+                    // Refresh before choosing a route; never submit a competing turn.
+                    try await resynchronize(id)
+                    guard operationActive, let operation = snapshot?.operation else {
+                        throw ExecError("This sub-agent is no longer running. Send a new task in the parent session.")
+                    }
+                    steeringOperationID = operation.id
+                }
                 if steeringOperationID == nil { try await persistConfiguration(allowInheritedWorkspace: true) }
                 guard let id = currentSessionID else { throw ExecError("Choose a workspace and model before sending a message.") }
                 // Select the local capture adapter, without granting screen or OS access.

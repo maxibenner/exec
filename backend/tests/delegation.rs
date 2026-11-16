@@ -74,6 +74,8 @@ async fn delegation_reuses_sessions_without_sharing_context_and_survives_restore
         "Frozen project instructions",
     )
     .unwrap();
+    let release = CancellationToken::new();
+    let entered = CancellationToken::new();
     let large_answer = "é".repeat(20_000);
     let provider = FakeProvider::new(vec![
         response(vec![
@@ -84,7 +86,18 @@ async fn delegation_reuses_sessions_without_sharing_context_and_survives_restore
             },
             ProviderEvent::Done,
         ]),
-        response(vec![ProviderEvent::Text(large_answer), ProviderEvent::Done]),
+        script({
+            let release = release.clone();
+            let entered = entered.clone();
+            move |_| {
+                Box::pin(async_stream::try_stream! {
+                    entered.cancel();
+                    release.cancelled().await;
+                    yield ProviderEvent::Text(large_answer);
+                    yield ProviderEvent::Done;
+                })
+            }
+        }),
         answer(),
     ]);
     let manager = AgentManager::open(
@@ -102,7 +115,9 @@ async fn delegation_reuses_sessions_without_sharing_context_and_survives_restore
         .await
         .unwrap();
     let operation_id = submission.operation_id.clone();
-    assert_eq!(finish(submission).await.state, OperationState::Completed);
+    tokio::time::timeout(Duration::from_secs(5), entered.cancelled())
+        .await
+        .unwrap();
     let child = child(&manager).await;
     let saved = child.snapshot();
     assert_eq!(
@@ -118,6 +133,10 @@ async fn delegation_reuses_sessions_without_sharing_context_and_survives_restore
     assert_eq!(saved.model, parent.snapshot().model);
     assert_eq!(saved.workspace, parent.snapshot().workspace);
     assert_eq!(child.record().max_steps, 16);
+    assert!(manager.delete(&parent.id).await.is_err());
+    release.cancel();
+    assert_eq!(finish(submission).await.state, OperationState::Completed);
+    assert!(manager.get(&child.id).is_err());
     {
         let requests = provider.requests.lock().unwrap();
         assert_eq!(requests.len(), 3);
@@ -146,13 +165,7 @@ async fn delegation_reuses_sessions_without_sharing_context_and_survives_restore
         assert!(text.contains(&child.id) && text.contains("Response truncated"));
         assert!(text.len() < 33 * 1024);
     }
-    assert!(manager.delete(&parent.id).await.is_err());
-    let fork = manager
-        .fork(&child.id, provider.clone(), vec![])
-        .await
-        .unwrap();
-    assert!(fork.parent().is_none());
-    manager.delete(&fork.id).await.unwrap();
+    let saved_parent = parent.snapshot();
     manager.close().await.unwrap();
     let restored = AgentManager::open(
         JsonConversationStore::open(profile.path()).await.unwrap(),
@@ -160,9 +173,9 @@ async fn delegation_reuses_sessions_without_sharing_context_and_survives_restore
     )
     .await
     .unwrap();
-    assert_eq!(restored.get(&child.id).unwrap().snapshot(), saved);
+    assert!(restored.get(&child.id).is_err());
+    assert_eq!(restored.get(&parent.id).unwrap().snapshot(), saved_parent);
     assert_eq!(provider.count(), 3);
-    restored.delete(&child.id).await.unwrap();
     restored.delete(&parent.id).await.unwrap();
     restored.close().await.unwrap();
 }
@@ -303,8 +316,12 @@ async fn delegation_limits_spawning_and_children_cannot_recursively_delegate() {
     let parent = root(&manager, provider.clone(), vec![], workspace.path()).await;
     finish(manager.submit(&parent.id, "Delegate".into()).await.unwrap()).await;
     let sessions = manager.list().unwrap();
-    assert_eq!(sessions.len(), 9);
-    assert!(sessions.iter().any(|s| s.messages.iter().any(|m| matches!(m, Message::Tool { call_id, outcome: ToolOutcome::Failed, .. } if call_id == "nested"))));
+    assert_eq!(sessions.len(), 1);
+    assert!(
+        provider.requests.lock().unwrap()[2].messages.iter().any(
+            |m| matches!(m, ContextMessage::Tool { text, .. } if text.contains("Unknown tool"))
+        )
+    );
     assert!(parent.snapshot().messages.iter().any(|m| matches!(m, Message::Tool { call_id, text, outcome: ToolOutcome::Failed, .. } if call_id == "d-8" && text.contains("eight sub-agents"))));
     assert_eq!(provider.count(), 11);
 }

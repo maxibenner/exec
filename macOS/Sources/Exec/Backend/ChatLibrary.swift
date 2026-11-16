@@ -126,15 +126,7 @@ import Observation
         }
     }
     var sidebarSessions: [SessionSummary] {
-        let all = sessionList
-        let ids = Set(all.map(\.id))
-        return all.filter { session in
-            guard !detachedSessionIDs.contains(session.id) else { return false }
-            // Children are reached through delegation cards. Keep the selected
-            // child (and any orphan from an externally changed profile) accessible.
-            guard let parent = session.parent else { return true }
-            return session.id == sidebarSelectionID || !ids.contains(parent.sessionId)
-        }
+        sessionList.filter { $0.parent == nil && !detachedSessionIDs.contains($0.id) }
     }
     func childSessions(of id: UUID?) -> [SessionSummary] {
         guard let id else { return [] }
@@ -256,13 +248,21 @@ import Observation
         guard !navigating else { return }
         let persisted = Set(savedSummaries.map(\.id))
         for conversation in openConversations {
+            let parentID = conversation.summary?.parent?.sessionId
             guard let id = conversation.currentSessionID, observedIDs.contains(id), !persisted.contains(id),
                   !registeringIDs.contains(id), conversation.markDeletedRemotely() else { continue }
             if !conversation.hasUnsentDraft {
                 detachedSessionIDs.remove(id)
                 openConversations.removeAll { $0 === conversation }
                 sidebarOrder.removeAll { $0 == id }
-                if current === conversation { activate(try makeConversation()) }
+                if current === conversation {
+                    if let parentID,
+                       let parent = self.conversation(parentID) {
+                        activate(parent)
+                    } else {
+                        activate(try makeConversation())
+                    }
+                }
             }
         }
         for conversation in openConversations { conversation.reconnectIfNeeded() }

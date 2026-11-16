@@ -377,6 +377,11 @@ pub trait Tool: Send + Sync {
         true
     }
     fn definition(&self) -> ToolDefinition;
+    /// Optional cleanup after the tool result is durably checkpointed. Never
+    /// discard the only copy of a delegated answer before this boundary.
+    async fn result_saved(&self, _conversation_id: &str, _call_id: &str) -> Result<()> {
+        Ok(())
+    }
     async fn prepare(
         &self,
         arguments: Arguments,

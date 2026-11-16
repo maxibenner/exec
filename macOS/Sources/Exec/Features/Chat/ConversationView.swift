@@ -28,10 +28,6 @@ struct ConversationView: View {
     }
 
     private var children: [SessionSummary] { panel.library.childSessions(of: panel.current.currentSessionID) }
-    private func openRelated(_ id: UUID) {
-        if let openRelatedSession { openRelatedSession(id) }
-        else { panel.library.openSession(id) }
-    }
     private var error: String? { showsNavigationError ? panel.library.error : panel.current.error }
 
     var body: some View {
@@ -81,28 +77,6 @@ struct ConversationView: View {
             TranscriptView(messages: panel.current.messages, state: presentation, bottomInset: composerHeight)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             VStack(spacing: 0) {
-                if let parent = panel.current.summary?.parent,
-                   panel.library.sessionList.contains(where: { $0.id == parent.sessionId }) {
-                    Button { openRelated(parent.sessionId) } label: {
-                        Label("Open managing session", systemImage: "arrow.turn.up.left")
-                    }
-                    .buttonStyle(.link).padding(8).disabled(!panel.canNavigate)
-                }
-                if !children.isEmpty {
-                    Menu {
-                        ForEach(children) { child in
-                            Button(child.title) { openRelated(child.id) }
-                        }
-                    } label: { Label("Sub-agents", systemImage: "person.crop.square.on.square") }
-                    .menuStyle(.borderlessButton).fixedSize().padding(8).disabled(!panel.canNavigate)
-                }
-                // Child approvals remain actionable even when their tool card is offscreen.
-                ForEach(children.filter(\.awaitingApproval)) { child in
-                    Button { openRelated(child.id) } label: {
-                        Label("Review sub-agent approval", systemImage: "hand.raised")
-                    }
-                    .buttonStyle(.link).padding(8).disabled(!panel.canNavigate)
-                }
                 if let approval = panel.current.tools.pendingApproval {
                     let executor = panel.current.tools
                     ToolApprovalView(approval: approval, executor: executor,
