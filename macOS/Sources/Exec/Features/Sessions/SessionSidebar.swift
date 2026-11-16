@@ -9,70 +9,13 @@ struct SessionSidebar: View {
     @State private var renameID: UUID?
     @State private var renameTitle = ""
 
-    // A presentation snapshot gives asynchronous catalog changes an explicit
-    // transaction before List reconciles its native rows. No timers or delays.
-    @State private var displayedSessions: [SessionSummary]
-
-    init(store: ChatLibrary, open: @escaping (UUID) -> Void,
-         delete: @escaping (SessionSummary) -> Void) {
-        self.store = store
-        self.open = open
-        self.delete = delete
-        _displayedSessions = State(initialValue: store.sidebarSessions)
-    }
-
-    private func activate(_ id: UUID) {
-        guard store.canNavigate else { return }
-        open(id)
-    }
-
     var body: some View {
-        let sessions = store.sidebarSessions
-        let shortcutIDs = displayedSessions.prefix(9).map(\.id)
-        // The library owns the active session; do not give the native table a
-        // selection binding (its active selection can turn blue on mouse-down).
-        List {
-            ForEach(displayedSessions) { session in
-                SessionRow(session: session, store: store,
-                           shortcut: shortcutIDs.firstIndex(of: session.id).map { $0 + 1 },
-                           rename: {
-                               guard store.canNavigate, !store.isSessionRunning(session.id) else { return }
-                               renameID = session.id; renameTitle = session.title; renaming = true
-                           }, delete: { delete(session) })
-                    // A row-wide Button interferes with native drag reordering.
-                    .onTapGesture { activate(session.id) }
-                    .accessibilityAction { activate(session.id) }
-                    .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
-                    .listRowBackground(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(store.sidebarSelectionID == session.id
-                                  ? Color.primary.opacity(0.08) : Color.clear)
-                    )
-                    .moveDisabled(!store.canReorderSessions)
-            }
-            .onMove { offsets, destination in
-                // Offsets must still refer to the current catalog when a drag ends.
-                guard displayedSessions.map(\.id) == store.sidebarSessions.map(\.id) else { return }
-                store.moveSidebarSessions(from: offsets, to: destination)
-                // Commit in the native drop transaction, not a later catalog animation.
-                displayedSessions = store.sidebarSessions
-            }
-        }
-        .listStyle(.sidebar)
+        SessionTable(store: store, sessions: store.sidebarSessions, reduceMotion: reduceMotion,
+                     open: open, rename: { session in
+                         guard store.canNavigate, !store.isSessionRunning(session.id) else { return }
+                         renameID = session.id; renameTitle = session.title; renaming = true
+                     }, delete: delete)
         .padding(.horizontal, 10)
-        // Select conversations without making the sidebar a keyboard-focus target.
-        // Conversation shortcuts remain available through SessionCommands.
-        .focusable(false)
-        .onChange(of: sessions) { _, updated in
-            guard displayedSessions != updated else { return }
-            let structuralChange = displayedSessions.map(\.id) != updated.map(\.id)
-            withAnimation(structuralChange && !reduceMotion ? .default : nil) {
-                displayedSessions = updated
-            }
-        }
-        // Do not disable the native table mid-drop. Action guards still prevent
-        // navigation and additional mutations while the order is being persisted.
-        .disabled(!store.canNavigate && !store.isReorderingSessions)
         .alert("Rename Conversation", isPresented: $renaming) {
             TextField("Name", text: $renameTitle)
             Button("Rename") {
