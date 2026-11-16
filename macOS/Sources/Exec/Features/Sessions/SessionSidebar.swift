@@ -15,12 +15,16 @@ struct SessionSidebar: View {
     @State private var renameID: UUID?
     @State private var renameTitle = ""
     private let horizontalPadding: CGFloat = 12
+    private var rowAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.25) }
 
     // A presentation snapshot gives asynchronous catalog changes an explicit
     // transaction before List reconciles its native rows. No timers or delays.
     // Children are part of the native row's presentation snapshot, so catalog
     // changes invalidate its height without replacing its stable parent identity.
     @State private var displayedGroups: [SidebarSessionGroup]
+    // Keep appearance state above List's recycled rows. Scrolling an existing
+    // child back into view must not replay its insertion fade.
+    @State private var revealedChildIDs: Set<UUID>
     private var groups: [SidebarSessionGroup] {
         store.sidebarSessions.map { SidebarSessionGroup(session: $0, children: store.childSessions(of: $0.id)) }
     }
@@ -30,9 +34,11 @@ struct SessionSidebar: View {
         self.store = store
         self.open = open
         self.delete = delete
-        _displayedGroups = State(initialValue: store.sidebarSessions.map {
+        let initial = store.sidebarSessions.map {
             SidebarSessionGroup(session: $0, children: store.childSessions(of: $0.id))
-        })
+        }
+        _displayedGroups = State(initialValue: initial)
+        _revealedChildIDs = State(initialValue: Set(initial.flatMap { $0.children.map(\.id) }))
     }
 
     private func activate(_ id: UUID) {
@@ -78,6 +84,10 @@ struct SessionSidebar: View {
                         .contentShape(Rectangle())
                         .background(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 4))
+                        .modifier(SidebarChildAppearance(visible: revealedChildIDs.contains(child.id), animation: rowAnimation) {
+                            revealedChildIDs.insert(child.id)
+                        })
+                        .transition(.opacity)
                         .onTapGesture { activate(child.id) }
                         .accessibilityAction { activate(child.id) }
                         .accessibilityAddTraits(store.sidebarSelectionID == child.id ? [.isSelected] : [])
@@ -95,6 +105,7 @@ struct SessionSidebar: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
+                .modifier(SidebarAnimatedHeight(children: group.children.map(\.id), animation: rowAnimation))
                 // macOS sidebar rows retain a 16-point content gutter even
                 // with zero listRowInsets. Cancel it on the content only; keep
                 // the native row background and the list's outer margin intact.
@@ -113,6 +124,7 @@ struct SessionSidebar: View {
                 store.moveSidebarSessions(from: offsets, to: destination)
                 // Commit in the native drop transaction, not a later catalog animation.
                 displayedGroups = groups
+                revealedChildIDs.formIntersection(displayedGroups.flatMap { $0.children.map(\.id) })
             }
         }
         .listStyle(.sidebar)
@@ -123,8 +135,11 @@ struct SessionSidebar: View {
         .focusable(false)
         .onChange(of: sessions) { _, updated in
             guard displayedGroups != updated else { return }
-            let structuralChange = displayedGroups.map(\.id) != updated.map(\.id)
-            withAnimation(structuralChange && !reduceMotion ? .default : nil) {
+            let previousStructure = displayedGroups.map { [$0.id] + $0.children.map(\.id) }
+            let nextStructure = updated.map { [$0.id] + $0.children.map(\.id) }
+            let structuralChange = previousStructure != nextStructure
+            withAnimation(structuralChange ? rowAnimation : nil) {
+                revealedChildIDs.formIntersection(updated.flatMap { $0.children.map(\.id) })
                 displayedGroups = updated
             }
         }

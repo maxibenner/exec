@@ -11,6 +11,42 @@ It has no account access and does not modify the app's selected design. It uses 
 separate SwiftUI Canvas renderer for experimentation, not the production AppKit
 renderer; do not use this ten-animation window for performance comparisons.
 
+## Sidebar animation checks
+
+```sh
+./scripts/probe-sidebar.sh --check --output .build/sidebar-motion.json
+.build/sidebar-animation-probe --check --reduce-motion --output .build/sidebar-reduced.json
+.build/sidebar-animation-probe --check --dark --narrow --output .build/sidebar-dark-narrow.json
+```
+
+Opens an isolated window containing the production sidebar, split view and chat detail,
+including composer focus restoration. A fake transport and temporary preferences supply
+synthetic sessions; no service, Keychain, real profile or model is accessed. Keep the
+window visible while sampling. `--simple-detail` removes the chat detail for comparison.
+
+The build script adds transparent, noninteractive geometry markers to a generated copy
+of `SessionSidebar` under `.build/`. Production source is not instrumented. It also injects
+an explicit Reduce Motion policy into that copy; it never changes system preferences.
+
+The probe samples presentation-layer positions, sizes and inherited opacity roughly every
+10 ms through parent/child insertion, removal and reordering, persistence echoes and rollback,
+rapid child removal/reinsertion, metadata-only updates and offscreen row recycling. `--check`
+requires intermediate motion/fades, correct final row counts and visible content, stable table
+identity, no native selection, and preserved composer focus during child updates. It rejects
+snapping even when final geometry is correct. Reduce Motion requires no intermediate motion.
+Reports contain synthetic geometry only; no screenshots are captured.
+
+Analyze an existing report with:
+
+```sh
+.build/sidebar-animation-probe --analyze-report .build/sidebar-motion.json --check
+```
+
+These checks do **not** synthesize a physical drag, measure frame rate/GPU costs, or prove
+behavior on another macOS version. Manually check native dragging (including groups with
+children), selection, context menus and resizing before release. The normal regression suite
+separately checks stable row identity, final sizing and synchronous reorder persistence.
+
 ## Indicator comparison
 
 ```sh

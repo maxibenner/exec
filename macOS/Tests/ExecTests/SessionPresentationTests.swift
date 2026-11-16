@@ -283,14 +283,22 @@ private actor SessionReorderTransport: AgentTransport {
             fields["metadata"] = .object(metadata)
             return .object(fields)
         }
+        var childHeight: CGFloat?
         for count in [2, 1, 0] {
             try await transport.reply("/v1/conversations", .array([parent, neighbor] + Array(children.prefix(count))))
             try await library.refreshSharedState()
             var resized = false
+            var previousHeight: CGFloat?
+            var stableSamples = 0
             for _ in 0..<100 {
                 host.layoutSubtreeIfNeeded()
-                let delta = table.rect(ofRow: 0).height - initialHeight
-                if count == 0 ? abs(delta) < 1 : delta >= CGFloat(count * 15) && delta < CGFloat(count * 30) {
+                let height = table.rect(ofRow: 0).height
+                let delta = height - initialHeight
+                stableSamples = previousHeight.map { abs($0 - height) < 0.1 } == true ? stableSamples + 1 : 0
+                previousHeight = height
+                let expectedSize = count == 0 ? abs(delta) < 1 : delta >= CGFloat(count * 15) && delta < CGFloat(count * 30)
+                // Do not mistake an intermediate animated height for the final layout.
+                if expectedSize && stableSamples >= 3 {
                     resized = true
                     break
                 }
@@ -300,6 +308,8 @@ private actor SessionReorderTransport: AgentTransport {
             try expect(table.numberOfRows == 2 && table.selectedRow == -1)
             try expect(table.rowView(atRow: 0, makeIfNecessary: true) === parentRow)
             let heightDelta = table.rect(ofRow: 0).height - initialHeight
+            if count == 2 { childHeight = heightDelta / 2 }
+            try expect(abs(heightDelta - CGFloat(count) * (childHeight ?? 0)) < 1)
             try expect(abs(table.rect(ofRow: 1).minY - initialNeighborY - heightDelta) < 1)
             try expect(library.sidebarSelectionID == parentID)
         }
