@@ -45,10 +45,6 @@ import CryptoKit
     private var pendingCommands: [(key: String, action: @MainActor () async throws -> Void)] = []
     private var commandsClosed = false
     var canRequestCommands: Bool { !commandsClosed && !isRestoringSession && !configurationUncertain }
-    var desktop: AgentDesktop { api.desktop }
-    var screenshotsEnabled: Bool { currentSessionID.map { desktop.enabled.contains($0) } ?? false }
-    private var desktopTask: Task<Void, Never>?
-    var changingScreenshots: Bool { desktopTask != nil || (currentSessionID.map { desktop.changing.contains($0) } ?? false) }
 
     /// Coalesce repeat actions, bind them to this conversation, and never send an idle-only
     /// mutation against a running backend operation. Settings use their latest chosen value.
@@ -88,23 +84,6 @@ import CryptoKit
         commandsClosed = true
         pendingCommands.removeAll()
         commandTask?.cancel()
-    }
-    func toggleScreenshots() {
-        guard !changingScreenshots else { return }
-        let enable = !screenshotsEnabled
-        desktopTask = Task {
-            defer { desktopTask = nil }
-            do {
-                if currentSessionID == nil {
-                    scheduleSave(force: true)
-                    await waitUntilIdle()
-                    await waitForPendingSave()
-                }
-                try Task.checkCancellation()
-                guard let id = currentSessionID else { throw ExecError("Choose a workspace and model before enabling screenshots.") }
-                try await desktop.setEnabled(enable, for: id)
-            } catch { self.error = error.localizedDescription }
-        }
     }
     var isWorking: Bool { busy }
     var canEditDraft: Bool { !isRestoringSession && !isStopping }
@@ -412,6 +391,10 @@ import CryptoKit
                 await waitForPendingSave()
                 if steeringOperationID == nil { try await persistConfiguration(allowInheritedWorkspace: true) }
                 guard let id = currentSessionID else { throw ExecError("Choose a workspace and model before sending a message.") }
+                // Select the local capture adapter, without granting screen or OS access.
+                if steeringOperationID == nil, api.desktop.frontendID != nil, !api.desktop.enabled.contains(id) {
+                    try await api.desktop.setEnabled(true, for: id)
+                }
                 var images: [AgentImage] = []
                 for image in inputImages {
                     let value = try await api.request("POST", AgentAPI.path(id, "/images"), .object([
@@ -517,7 +500,6 @@ import CryptoKit
         if !busy, let activity = sleepActivity { sleepPrevention.end(activity); sleepActivity = nil }
     }
     func closePresentation() {
-        desktopTask?.cancel()
         cancelPendingCommands()
         pauseObservation()
         imageTask?.cancel(); imageTask = nil

@@ -1,6 +1,6 @@
 //! Optional native capture broker. No capture implementation or fallback exists here.
 //! HTTP registration requires the independently provisioned native capability.
-//! TCP does not attest process identity. OS permission and session enablement remain explicit.
+//! TCP does not attest process identity. Adapter binding, tool consent and OS access are separate.
 use crate::{
     Error, Result,
     core::{ToolContext, new_id, valid_id},
@@ -84,6 +84,7 @@ struct State {
     windows: HashMap<(String, String), std::collections::HashSet<u32>>,
     frontends: HashMap<String, Frontend>,
     permissions: HashMap<String, String>,
+    approved: std::collections::HashSet<String>,
     pending: HashMap<String, Pending>,
 }
 impl State {
@@ -161,7 +162,15 @@ impl NativeHub {
             .ok_or(Error::Invalid("Native frontend not found."))?;
         frontend.os_permission = granted;
         if !granted {
-            s.permissions.retain(|_, frontend| frontend != id);
+            let sessions: Vec<_> = s
+                .permissions
+                .iter()
+                .filter(|(_, frontend)| *frontend == id)
+                .map(|(session, _)| session.clone())
+                .collect();
+            for session in sessions {
+                s.approved.remove(&session);
+            }
             s.windows.retain(|(frontend, _), _| frontend != id);
             s.cancel_where(|request| request.frontend_id == id);
         }
@@ -183,24 +192,37 @@ impl NativeHub {
             let id = permission
                 .frontend_id
                 .ok_or(Error::Invalid("Select one eligible native frontend."))?;
-            if s.frontends
-                .get(&id)
-                .is_none_or(|f| !f.os_permission || f.requests.is_closed())
-            {
-                return Err(Error::Invalid("Native screen permission is not available."));
+            if s.frontends.get(&id).is_none_or(|f| f.requests.is_closed()) {
+                return Err(Error::Invalid("Native frontend is not available."));
             }
             if s.permissions
                 .get(conversation)
                 .is_some_and(|current| current != &id)
             {
+                s.approved.remove(conversation);
+                s.windows.retain(|(_, session), _| session != conversation);
                 s.cancel_where(|request| request.conversation_id == conversation);
             }
             s.permissions.insert(conversation.into(), id);
         } else {
             s.permissions.remove(conversation);
+            s.approved.remove(conversation);
             s.windows.retain(|(_, session), _| session != conversation);
             s.cancel_where(|request| request.conversation_id == conversation);
         }
+        Ok(())
+    }
+    pub fn approved(&self, conversation: &str) -> bool {
+        self.state.lock().unwrap().approved.contains(conversation)
+    }
+    pub fn approve(&self, conversation: &str, frontend: &str) -> Result<()> {
+        let mut s = self.state.lock().unwrap();
+        if s.permissions.get(conversation).map(String::as_str) != Some(frontend) {
+            return Err(Error::Invalid(
+                "The selected native frontend changed during approval.",
+            ));
+        }
+        s.approved.insert(conversation.into());
         Ok(())
     }
     pub fn bound_frontend(&self, conversation: &str) -> Result<String> {
@@ -208,10 +230,7 @@ impl NativeHub {
         let id = s.permissions.get(conversation).ok_or(Error::Invalid(
             "Desktop access is disabled for this conversation.",
         ))?;
-        if s.frontends
-            .get(id)
-            .is_none_or(|f| !f.os_permission || f.requests.is_closed())
-        {
+        if s.frontends.get(id).is_none_or(|f| f.requests.is_closed()) {
             return Err(Error::Invalid(
                 "The selected native frontend is unavailable.",
             ));
@@ -221,6 +240,7 @@ impl NativeHub {
     pub fn remove_session(&self, conversation: &str) {
         let mut s = self.state.lock().unwrap();
         s.permissions.remove(conversation);
+        s.approved.remove(conversation);
         s.windows.retain(|(_, session), _| session != conversation);
         s.cancel_where(|request| request.conversation_id == conversation);
     }
@@ -228,6 +248,15 @@ impl NativeHub {
         let mut s = self.state.lock().unwrap();
         s.frontends.remove(id);
         s.windows.retain(|(frontend, _), _| frontend != id);
+        let sessions: Vec<_> = s
+            .permissions
+            .iter()
+            .filter(|(_, frontend)| *frontend == id)
+            .map(|(session, _)| session.clone())
+            .collect();
+        for session in sessions {
+            s.approved.remove(&session);
+        }
         s.permissions.retain(|_, frontend| frontend != id);
         s.cancel_where(|request| request.frontend_id == id);
     }
@@ -239,7 +268,7 @@ impl NativeHub {
         if pending.request != reply.request
             || s.frontends
                 .get(&reply.request.frontend_id)
-                .is_none_or(|f| !f.os_permission)
+                .is_none_or(|f| !f.os_permission && !matches!(reply.result, NativePayload::Failed))
             || s.permissions.get(&reply.request.conversation_id) != Some(&reply.request.frontend_id)
         {
             return Err(Error::Invalid(
@@ -320,7 +349,6 @@ impl NativeHub {
             let frontend = s
                 .frontends
                 .get(&frontend_id)
-                .filter(|f| f.os_permission)
                 .ok_or(Error::Invalid("Native frontend disconnected."))?;
             frontend
                 .requests
@@ -446,7 +474,9 @@ mod tests {
                 enabled: true,
             };
             if mode == 2 {
-                assert!(hub.set_permission(&c.conversation_id, enabled).is_err());
+                hub.set_permission(&c.conversation_id, enabled).unwrap();
+                assert!(hub.bound_frontend(&c.conversation_id).is_ok());
+                assert!(!hub.approved(&c.conversation_id));
                 continue;
             }
             hub.set_permission(&c.conversation_id, enabled).unwrap();

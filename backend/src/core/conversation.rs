@@ -1198,10 +1198,12 @@ impl Conversation {
                         let prepared = tool.prepare(call.arguments.clone(),ToolContext{conversation_id:self.id.clone(),operation_id,search_model,call_id:call.id.clone(),model,workspace,cancel:cancel.clone()}).await?;
                         check_cancel(cancel)?;
                         let auto_approve = self.state().record.configuration.as_ref().unwrap().settings.auto_approve;
+                        let asks_approval = !auto_approve && prepared.approval().is_some();
                         let approved = if let Some(description) = prepared.approval().filter(|_| !auto_approve) { self.ask(call,description.into(),prepared.details(),cancel).await? } else { true };
                         check_cancel(cancel)?;
                         if self.has_pending_input() { return Ok((ToolOutcome::NotExecuted, "Not executed: new user input superseded this action. Reconsider using the new instructions.".into())); }
                         if !approved { return Ok((ToolOutcome::Denied,"User denied this action. Nothing was executed. Do not retry without a new user request.".into())); }
+                        if asks_approval { prepared.approval_granted()?; }
                         {
                             let resources = prepared.resources(); let mut s = self.state();
                             let mut ids: HashSet<_> = s.record.resources.iter().map(|r|r.id.clone()).collect();

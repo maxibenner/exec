@@ -29,7 +29,7 @@ These folders organize existing modules; they do not introduce additional packag
 - Rust owns inference, tools, approvals, provider credentials, settings, instructions, titles, history, forks, deletion, assets, checkpoints and recovery. Clients own presentation state, not competing execution state or durable transcripts.
 - The runtime depends on `ChatProvider`, not provider wire formats. It remains usable without HTTP through `exec_agent::manager::AgentManager` and `core::ConversationOptions`.
 - Independent conversations may run concurrently; each has one active operation. Explicit operation-targeted steering inserts text at safe boundaries, not a second runner.
-- Tools prepare exact actions without effects. Manual approval is single-use and identifies the conversation, operation and action. Persisted auto mode still validates, checkpoints intent and honors cancellation. Auto mode never grants desktop access.
+- Tools prepare exact actions without effects. Manual approval is single-use and identifies the conversation, operation and action. Persisted auto mode still validates, checkpoints intent and honors cancellation. Auto mode permits screenshot requests but cannot bypass native OS permission.
 - Cancellation retains ownership until provider/tool cleanup and final persistence settle. It cannot undo effects. Dropping an observer or completion receiver only detaches; embedders must explicitly cancel, await settlement, and close the manager.
 - Never automatically retry inference, tools, rotating-token exchanges, mutations or uncertain checkpoint writes. A failed acknowledgement does not prove the operation had no effects.
 - Partial assistant output stays visible but never becomes completed provider context. Finalized tool calls receive outcomes, including denial, failure, interruption and non-execution. Execution begins only after the complete provider response validates.
@@ -54,7 +54,7 @@ Normal shutdown releases the listener and store lock. After a crash, verify that
 
 ### Screenshots
 
-Capture requires a separately authenticated live native channel, macOS Screen Recording permission and explicit per-conversation `/screenshots` enablement. Manual mode still requires approval for each capture. Window capture requires prior enumeration through the same session/channel. Swift echoes exact correlation fields; cancellation, revocation and disconnect invalidate late results. Grants are transient, are not inherited by forks, and are never restored automatically. The backend does not capture screens itself.
+Capture requires a separately authenticated live native channel and macOS Screen Recording permission. The macOS app binds its local adapter before sending a turn, without prompting for OS access. Manual mode asks for screen access on the first screenshot tool call per conversation; later calls reuse that consent. Auto mode allows requests without a chat prompt and does not create manual consent. An authorized request triggers the native OS permission dialog if needed. Window capture requires prior enumeration through the same session/channel. Swift echoes exact correlation fields; cancellation, revocation and disconnect invalidate late results. Grants are transient, are not inherited by forks, and are never restored automatically. The backend does not capture screens itself.
 
 ## Current behavior and limitations
 

@@ -3,7 +3,7 @@ import Foundation
 /// Only a leading, single-line command is interpreted locally. Paths and prose stay drafts.
 struct ComposerCommand: Equatable {
     enum Page: String, CaseIterable {
-        case model, effort, approve, compact, fork, workspace, finder, terminal, screenshots
+        case model, effort, approve, compact, fork, workspace, finder, terminal
 
         var names: [String] {
             switch self {
@@ -15,7 +15,6 @@ struct ComposerCommand: Equatable {
             case .workspace: ["workspace"]
             case .finder: ["finder"]
             case .terminal: ["terminal"]
-            case .screenshots: ["screenshots"]
             }
         }
         var hasOptions: Bool { self == .model || self == .effort }

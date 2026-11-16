@@ -398,7 +398,7 @@ async fn image_store_rejects_bad_data_tampering_and_symlinks_without_overwrite()
     assert!(invalid.validate().is_err());
 }
 #[tokio::test]
-async fn native_http_requires_os_permission_session_enablement_and_exact_result() {
+async fn native_http_requests_os_permission_on_use_and_requires_exact_result() {
     let root = support::directory();
     let workspace = support::directory();
     let p = Arc::new(Provider::default());
@@ -419,7 +419,7 @@ async fn native_http_requires_os_permission_session_enablement_and_exact_result(
     library.automatic_titles = false;
     client.update_library(library).await.unwrap();
     let cancel = CancellationToken::new();
-    let mut native = client.native_events(true, cancel.clone());
+    let mut native = client.native_events(false, cancel.clone());
     let frontend = match native.next().await.unwrap().unwrap() {
         NativeEvent::Registered { frontend_id } => frontend_id,
         _ => panic!("missing registration"),
@@ -458,6 +458,19 @@ async fn native_http_requires_os_permission_session_enablement_and_exact_result(
             .is_err()
     );
     use base64::Engine;
+    // A request can reach the adapter before OS consent, but screen data cannot return yet.
+    assert!(
+        client
+            .native_reply(&NativeReply {
+                request: request.clone(),
+                result: NativePayload::Image {
+                    base64: base64::engine::general_purpose::STANDARD.encode(png())
+                },
+            })
+            .await
+            .is_err()
+    );
+    client.native_os_permission(&frontend, true).await.unwrap();
     client
         .native_reply(&NativeReply {
             request: request.clone(),
@@ -482,9 +495,10 @@ async fn native_http_requires_os_permission_session_enablement_and_exact_result(
     let fork = client.fork(&c.id).await.unwrap();
     assert!(!client.desktop_permission(&fork.id).await.unwrap().enabled);
     client.native_os_permission(&frontend, false).await.unwrap();
-    assert!(!client.desktop_permission(&c.id).await.unwrap().enabled);
+    assert!(client.desktop_permission(&c.id).await.unwrap().enabled);
+    assert!(!hub.approved(&c.id));
     client.native_os_permission(&frontend, true).await.unwrap();
-    assert!(!client.desktop_permission(&c.id).await.unwrap().enabled);
+    assert!(client.desktop_permission(&c.id).await.unwrap().enabled);
     client
         .set_desktop_permission(
             &c.id,
@@ -615,5 +629,138 @@ async fn releasing_unused_uploads_is_durable_and_preserves_other_fork_references
             .join(format!("{}.image", image.id))
             .exists()
     );
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn screenshot_consent_is_once_per_chat_and_auto_does_not_grant_manual_consent() {
+    let root = support::directory();
+    let workspace = support::directory();
+    let hub = Arc::new(NativeHub::default());
+    let service = start_persistent_service_with_native(
+        root.path(),
+        Arc::new(Provider::default()),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+        hub.clone(),
+        support::http_access(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
+    let mut library = client.library().await.unwrap();
+    library.automatic_titles = false;
+    client.update_library(library).await.unwrap();
+    let cancel = CancellationToken::new();
+    let mut native = client.native_events(false, cancel.clone());
+    let frontend = match native.next().await.unwrap().unwrap() {
+        NativeEvent::Registered { frontend_id } => frontend_id,
+        _ => panic!("missing registration"),
+    };
+    let c = client
+        .create("test", workspace.path().to_str().unwrap())
+        .await
+        .unwrap();
+    client
+        .set_desktop_permission(
+            &c.id,
+            &DesktopPermission {
+                frontend_id: Some(frontend.clone()),
+                enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+    // Auto reaches the adapter even without OS consent, but records no manual grant.
+    client.submit(&c.id, "capture").await.unwrap();
+    let request = match native.next().await.unwrap().unwrap() {
+        NativeEvent::Request { request } => request,
+        _ => panic!("missing request"),
+    };
+    client
+        .native_reply(&NativeReply {
+            request,
+            result: NativePayload::Failed,
+        })
+        .await
+        .unwrap();
+    terminal(&client, &c.id).await;
+    assert!(!hub.approved(&c.id));
+    client
+        .update_settings(
+            &c.id,
+            SessionSettings {
+                auto_approve: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    // Denial sends nothing to the native channel and grants nothing.
+    for approved in [false, true] {
+        let operation = client.submit(&c.id, "capture").await.unwrap();
+        let approval = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(approval) = client.get(&c.id).await.unwrap().approval {
+                    break approval;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!hub.approved(&c.id));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), native.next())
+                .await
+                .is_err()
+        );
+        client
+            .approve(&c.id, &operation, &approval.id, approved)
+            .await
+            .unwrap();
+        if approved {
+            let request = match native.next().await.unwrap().unwrap() {
+                NativeEvent::Request { request } => request,
+                _ => panic!("missing request"),
+            };
+            client.native_os_permission(&frontend, true).await.unwrap();
+            client
+                .native_reply(&NativeReply {
+                    request,
+                    result: NativePayload::Failed,
+                })
+                .await
+                .unwrap();
+        }
+        terminal(&client, &c.id).await;
+        assert_eq!(hub.approved(&c.id), approved);
+    }
+    // The next manual request reuses consent instead of waiting for another approval.
+    client.submit(&c.id, "capture").await.unwrap();
+    let request = match tokio::time::timeout(Duration::from_secs(3), native.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+    {
+        NativeEvent::Request { request } => request,
+        _ => panic!("missing request"),
+    };
+    assert!(client.get(&c.id).await.unwrap().approval.is_none());
+    client
+        .native_reply(&NativeReply {
+            request,
+            result: NativePayload::Failed,
+        })
+        .await
+        .unwrap();
+    terminal(&client, &c.id).await;
+    let fork = client.fork(&c.id).await.unwrap();
+    assert!(!hub.approved(&fork.id));
+    client.native_os_permission(&frontend, false).await.unwrap();
+    assert!(!hub.approved(&c.id));
+    cancel.cancel();
+    drop(native);
     service.close().await.unwrap();
 }
