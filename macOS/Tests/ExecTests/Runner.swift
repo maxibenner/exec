@@ -37,6 +37,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Sent-message navigation preserves targets and resumes from manual scrolling", { try MessageNavigationTests().preservesTargetDuringUpdatesAndResumesFromManualScroll() }),
             ("Sent-message navigation handles empty and independent transcripts", { try MessageNavigationTests().emptySingleAndIndependentTranscripts() }),
             ("Transcript click-away selection clearing", { try TranscriptSelectionTests().clearsOtherSelectionsWithoutStealingClicks() }),
+            ("Composer keeps its height while working and stopping", { try TranscriptTests().composerKeepsItsHeightWhileWorking() }),
             ("Composer aligns with overlay and legacy transcript scrollbars", { try await TranscriptTests().composerInsetMatchesTranscriptViewport() }),
             ("Transcript live resize commits widths before display", { try TranscriptTests().resizingCommitsRowsBeforeDisplay() }),
             ("Batched transcript measurements preserve geometry across resize and edits", { try TranscriptTests().batchedMeasurementsPreserveGeometryAcrossResizeAndEdits() }),

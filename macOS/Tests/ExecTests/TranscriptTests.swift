@@ -61,6 +61,11 @@ import SwiftUI
                 for awaiting in [false, true] {
                     let host = NSHostingView(rootView: card(nil, awaiting: awaiting).frame(width: width))
                     host.layoutSubtreeIfNeeded()
+                    try expect(containsSpinner(host) == !awaiting)
+                }
+                for text in ["Done", "Tool error: Failed", "Interrupted.", "User denied this tool call."] {
+                    let host = NSHostingView(rootView: card(ToolResult(call: call, text: text)).frame(width: width))
+                    host.layoutSubtreeIfNeeded()
                     try expect(!containsSpinner(host))
                 }
                 let resting = size(card(ToolResult(call: call, text: "Done")), width: width)
@@ -79,6 +84,32 @@ import SwiftUI
             let host = NSHostingView(rootView: ToolActivityIndicator(isRunning: running,
                 label: "Compaction active"))
             try expect(host.fittingSize == NSSize(width: 16, height: 16))
+        }
+    }
+
+    func composerKeepsItsHeightWhileWorking() throws {
+        _ = NSApplication.shared
+        let suite = "ComposerLayoutTests.\(UUID().uuidString)"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: FakeAgentTransport())),
+                                  preferences: preferences)
+        let panel = ChatPanel(library: library, conversation: library.current)
+        defer { panel.current.closePresentation() }
+        for width: CGFloat in [600, 1_000] {
+            var resting: NSSize?
+            for state in ["completed", "running", "cancelling", "interrupted"] {
+                try panel.current.apply(AgentIntegrationTests.fixture(state: state, result: true).decoded(AgentSnapshot.self))
+                try expect(panel.isWorking == (state == "running" || state == "cancelling"))
+                let host = NSHostingView(rootView: ComposerPreview(panel: panel)
+                    .frame(width: width).fixedSize(horizontal: false, vertical: true))
+                host.layoutSubtreeIfNeeded()
+                if let resting {
+                    try expect(host.fittingSize == resting)
+                } else {
+                    resting = host.fittingSize
+                }
+            }
         }
     }
 

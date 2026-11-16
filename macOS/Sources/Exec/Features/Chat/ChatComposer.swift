@@ -81,17 +81,19 @@ struct ChatComposer: View {
                 .padding(.horizontal, 20).padding(.top, 12)
                 .frame(maxWidth: .infinity)
                 .zIndex(1)
-            if store.isWorking {
-                information
-                    .padding(.horizontal, 12)
-                    .frame(maxWidth: 820)
-                    .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12)
-                    .frame(maxWidth: .infinity)
-            } else {
-                Color.clear.frame(height: 20).allowsHitTesting(false)
-            }
+            Color.clear.frame(height: 20).allowsHitTesting(false)
         }
         .frame(maxWidth: .infinity)
+        .background {
+            // Retain the window-wide cancellation shortcut without visible progress UI.
+            if store.isWorking {
+                Button("Stop", action: store.stop)
+                    .keyboardShortcut(".", modifiers: .command)
+                    .disabled(store.current.isStopping)
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+        }
         .onChange(of: store.draft) { _, _ in highlighted = 0; dismissedDraft = nil }
         .onChange(of: ObjectIdentifier(store.current)) { _, _ in close() }
         .onChange(of: store.canNavigate) { _, allowed in if !allowed { close() } }
@@ -112,7 +114,8 @@ struct ChatComposer: View {
                 .disabled(!store.canNavigate)
                 .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
             }
-            TextField("Message or / for commands", text: $store.draft, axis: .vertical)
+            TextField(store.isWorking ? "Message or / for commands, esc to cancel" : "Message or / for commands",
+                      text: $store.draft, axis: .vertical)
                 .lineLimit(1...8).textFieldStyle(.plain).font(.body)
                 .focused($focused)
                 .disabled(!store.canEditDraft).allowsHitTesting(!store.navigating)
@@ -180,38 +183,12 @@ struct ChatComposer: View {
         }
     }
 
-    private var information: some View {
-        workingControl
-            .font(.caption).foregroundStyle(.secondary)
-            .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 20)
-    }
-
     private var contextUsage: some View {
         let usage = store.current.contextUsage
         return Text(usage.map { "Context \($0.percent)%" } ?? "Context 0%")
             .monospacedDigit().fixedSize()
             .help(usage.map { "Last reported context: \($0.tokens.formatted()) / \($0.limit.formatted()) tokens. Excludes unsent drafts and unfinished responses." } ?? "Context usage has not been reported yet.")
             .accessibilityLabel(usage.map { "Context usage, \($0.percent) percent" } ?? "Context usage, 0 percent; not yet reported")
-    }
-
-    @ViewBuilder private var workingControl: some View {
-        if store.isWorking {
-            HStack(spacing: 8) {
-                Button(action: store.stop) {
-                    WorkingIndicator()
-                }
-                .buttonStyle(.plain).keyboardShortcut(".", modifiers: .command)
-                .help(store.current.isStopping ? "Stopping" : "Stop (Esc or ⌘.)")
-                .accessibilityLabel(store.current.isStopping ? "Stopping" : "Stop")
-                .disabled(store.current.isStopping)
-                Text(store.current.isStopping ? "stopping" : "esc")
-                    .font(.system(.caption, design: .monospaced))
-                    .allowsHitTesting(false)
-            }
-            .fixedSize()
-        }
     }
 
     private var palette: some View {

@@ -6,18 +6,22 @@ public struct ToolCard<Content: View>: View {
     let presentation: ToolPresentation
     @Binding var isExpanded: Bool
     let awaitingApproval: Bool
+    let isRunning: Bool
     let content: Content
-    public init(presentation: ToolPresentation, isExpanded: Binding<Bool>, awaitingApproval: Bool = false,
+    public init(presentation: ToolPresentation, isExpanded: Binding<Bool>, awaitingApproval: Bool = false, isRunning: Bool = false,
                 @ViewBuilder content: () -> Content) {
         self.presentation = presentation; _isExpanded = isExpanded
-        self.awaitingApproval = awaitingApproval; self.content = content()
+        self.awaitingApproval = awaitingApproval; self.isRunning = isRunning; self.content = content()
     }
     public var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) { content } label: {
             HStack(spacing: 8) {
                 ToolCallHeader(presentation: presentation)
                 Color.clear.frame(width: 16, height: 16).overlay {
-                    if awaitingApproval {
+                    if isRunning {
+                        ProgressView().controlSize(.small)
+                            .accessibilityLabel("Running")
+                    } else if awaitingApproval {
                         Image(systemName: "hand.raised").foregroundStyle(.secondary).accessibilityLabel("Awaiting approval")
                     }
                 }

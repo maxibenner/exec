@@ -31,7 +31,7 @@ struct ToolMessageView: View {
             state.followsLatest = false
             state.expanded[messageID] = value
             expanded = value
-        }), awaitingApproval: result == nil && isAwaitingApproval) {
+        }), isRunning: result == nil && !isAwaitingApproval) {
             VStack(alignment: .leading, spacing: 12) {
                 if let generated = result?.generatedImage {
                     GeneratedImageView(attachment: generated)
