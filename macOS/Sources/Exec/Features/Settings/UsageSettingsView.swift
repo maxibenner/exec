@@ -24,5 +24,9 @@ struct UsageSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .task(id: store.settingsTab == .usage && !store.authenticating) {
+            guard store.settingsTab == .usage else { return }
+            store.refreshAccountUsage()
+        }
     }
 }

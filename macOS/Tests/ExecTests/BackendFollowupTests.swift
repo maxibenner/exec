@@ -216,6 +216,42 @@ import Foundation
         try await wait { library.displayedAccountUsage != nil }
         let after = await transport.requests.filter { $0.path.hasSuffix("/usage") }
         try expect(after.count == 1)
+
+        // Both types of report are available synchronously after relaunch.
+        try await transport.reply("/v1/providers", .array([
+            .object(["id": .string("openai"), "name": .string("OpenAI"), "connected": .bool(true)]),
+            .object(["id": .string("deepseek"), "name": .string("DeepSeek"), "connected": .bool(true)])]))
+        let provider = AgentAccounts(api: AgentAPI(transport: transport))
+        try await provider.refreshConnections()
+        let relaunched = ChatLibrary(provider: provider, preferences: preferences)
+        defer { relaunched.closePresentations() }
+        try expect(relaunched.displayedAccountUsage == library.displayedAccountUsage)
+        try expect(relaunched.accountUsageFetchedAt == library.accountUsageFetchedAt)
+        try await transport.reply("/v1/providers/deepseek/balance", .array([
+            .object(["amount": .string("12.50"), "currency": .string("USD")])]))
+        await relaunched.refreshAccountBalance(for: "deepseek")
+        let nextLaunch = ChatLibrary(provider: provider, preferences: preferences)
+        defer { nextLaunch.closePresentations() }
+        try expect(nextLaunch.accountBalance(for: "deepseek") == [AccountBalance(amount: Decimal(string: "12.50")!, currency: "USD")])
+
+        // Refreshing keeps the previous value until a new report arrives.
+        try await transport.reply("/v1/providers/openai/usage", .object([
+            "fetchedAt": .number(Date().timeIntervalSince1970 * 1000),
+            "windows": .array([.object(["durationSeconds": .number(18000), "usedPercent": .number(40), "resetsAt": .number(Date().timeIntervalSince1970 + 3600)])])]))
+        nextLaunch.refreshAccountUsage()
+        try expect(nextLaunch.displayedAccountUsage?.windows.first?.usedPercent == 25)
+        try await wait { nextLaunch.displayedAccountUsage?.windows.first?.usedPercent == 40 }
+        await transport.fail("/v1/providers/deepseek/balance")
+        await nextLaunch.refreshAccountBalance(for: "deepseek")
+        try expect(nextLaunch.accountBalance(for: "deepseek") == relaunched.accountBalance(for: "deepseek"))
+
+        // Never show a cached report for a disconnected or different account.
+        try await transport.reply("/v1/providers", .array([
+            .object(["id": .string("openai"), "name": .string("OpenAI"), "connected": .bool(true), "email": .string("other@example.test")]),
+            .object(["id": .string("deepseek"), "name": .string("DeepSeek"), "connected": .bool(false)])]))
+        try await provider.refreshConnections()
+        try expect(nextLaunch.displayedAccountUsage == nil && nextLaunch.accountUsage == nil)
+        try expect(nextLaunch.accountBalance(for: "deepseek").isEmpty)
     }
 
     func commandsWaitForIdleAndPreserveApprovals() async throws {

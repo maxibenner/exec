@@ -27,7 +27,6 @@ struct SettingsView: View {
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
                 .tag(ChatLibrary.SettingsTab.updates)
         }
-        .onAppear { store.refreshAccountUsage() }
         .frame(width: 500)
         .frame(minHeight: 360, idealHeight: 560)
     }

@@ -36,11 +36,18 @@ import Observation
     private var restoringDefaults = false
     private var synchronization: Task<Void, Never>?
     var remoteAPI: AgentAPI { provider.api }
+    private struct UsageCache: Codable {
+        var accounts: [String: String] = [:]
+        var usage: CachedAccountUsage?
+        var balances: [String: [AccountBalance]] = [:]
+    }
+    private static let usageCacheKey = "chat.accountUsage"
+    private var usageAccounts: [String: String] = [:]
     private var cachedUsage: CachedAccountUsage?
     private var balances: [String: [AccountBalance]] = [:]
-    var accountUsage: AccountUsage? { cachedUsage?.current() }
-    var displayedAccountUsage: AccountUsage? { cachedUsage?.usage }
-    var accountUsageFetchedAt: Date? { cachedUsage?.fetchedAt }
+    var accountUsage: AccountUsage? { displayedAccountUsage == nil ? nil : cachedUsage?.current() }
+    var displayedAccountUsage: AccountUsage? { matchesUsageAccount("openai") ? cachedUsage?.usage : nil }
+    var accountUsageFetchedAt: Date? { displayedAccountUsage == nil ? nil : cachedUsage?.fetchedAt }
     var descriptiveShellTitles: Bool { preferences.bool(forKey: ToolDisplayPreferences.descriptiveShellTitlesKey) }
     var systemPrompt = "" { didSet { guard !restoringDefaults else { return }; saveDefaults(); for item in openConversations { item.systemPrompt = systemPrompt; item.scheduleSave() } } }
     var defaultModel = "" { didSet { if defaultModel != oldValue { defaultEffort = nil }; saveDefaults() } }
@@ -64,6 +71,12 @@ import Observation
            let cached = try? JSONDecoder().decode([ChatModel].self, from: data) {
             models = cached
             current.installModels(cached)
+        }
+        if let data = preferences.data(forKey: Self.usageCacheKey),
+           let cached = try? JSONDecoder().decode(UsageCache.self, from: data) {
+            usageAccounts = cached.accounts
+            cachedUsage = cached.usage
+            balances = cached.balances
         }
         observe(current)
         openConversations = [current]
@@ -248,7 +261,8 @@ import Observation
             try? await provider.refreshConnections()
             models = models.filter { provider.isModelAvailable($0.id) }
             cacheModels()
-            balances = [:]; cachedUsage = nil
+            balances = [:]; cachedUsage = nil; usageAccounts = [:]
+            preferences.removeObject(forKey: Self.usageCacheKey)
             for item in conversations { applyModels(to: item) }
         }
     }
@@ -285,32 +299,49 @@ import Observation
         if needsDefault { conversation.selectedModel = defaultSessionModel?.id ?? defaultModel; conversation.selectedEffort = effectiveDefaultEffort }
         if conversation.currentSessionID == nil, conversation.workspace != nil { conversation.scheduleSave() }
     }
-    func accountBalance(for providerID: String) -> [AccountBalance] { balances[providerID] ?? [] }
+    private func matchesUsageAccount(_ providerID: String) -> Bool {
+        guard let account = connectedProviders.first(where: { $0.id == providerID })?.account else { return false }
+        return usageAccounts[providerID] == account
+    }
+    private func cacheAccountReports() {
+        let cache = UsageCache(accounts: usageAccounts, usage: cachedUsage, balances: balances)
+        if let data = try? JSONEncoder().encode(cache) { preferences.set(data, forKey: Self.usageCacheKey) }
+    }
+    func accountBalance(for providerID: String) -> [AccountBalance] {
+        matchesUsageAccount(providerID) ? balances[providerID] ?? [] : []
+    }
     func refreshAccountBalance(for providerID: String) async {
-        guard !authenticating, connectedProviders.contains(where: { $0.id == providerID }) else { return }
+        guard !authenticating, let account = connectedProviders.first(where: { $0.id == providerID })?.account else { return }
         let generation = accountGeneration
         do {
             let values = try await provider.api.get("/v1/providers/\(providerID)/balance")
-            guard generation == accountGeneration, !authenticating else { return }
+            guard generation == accountGeneration, !authenticating,
+                  connectedProviders.first(where: { $0.id == providerID })?.account == account else { return }
             balances[providerID] = values.array.compactMap { value in
                 guard let amount = value["amount"].string.flatMap({ Decimal(string: $0, locale: Locale(identifier: "en_US_POSIX")) }),
                       let currency = value["currency"].string else { return nil }
                 return AccountBalance(amount: amount, currency: currency)
             }
+            usageAccounts[providerID] = account
+            cacheAccountReports()
         } catch { /* Keep the last report; account observations must not fail a chat. */ }
     }
     func refreshAccountUsage() {
-        guard !authenticating, usageConnection != nil else { return }
+        guard !authenticating, let account = usageConnection?.account else { return }
         let generation = accountGeneration
         Task {
             guard let value = try? await provider.api.get("/v1/providers/openai/usage") else { return }
-            guard generation == accountGeneration, !authenticating else { return }
+            guard generation == accountGeneration, !authenticating, usageConnection?.account == account else { return }
             let windows = value["windows"].array.compactMap { item -> AccountUsage.Window? in
                 guard let duration = item["durationSeconds"].number, let used = item["usedPercent"].number,
                       let resets = item["resetsAt"].number else { return nil }
                 return .init(durationSeconds: Int(duration), usedPercent: used, resetsAt: Date(timeIntervalSince1970: resets))
             }
-            if !windows.isEmpty { cachedUsage = CachedAccountUsage(usage: AccountUsage(windows: windows), fetchedAt: Date(timeIntervalSince1970: (value["fetchedAt"].number ?? 0) / 1000)) }
+            if !windows.isEmpty {
+                cachedUsage = CachedAccountUsage(usage: AccountUsage(windows: windows), fetchedAt: Date(timeIntervalSince1970: (value["fetchedAt"].number ?? 0) / 1000))
+                usageAccounts["openai"] = account
+                cacheAccountReports()
+            }
         }
     }
     /// Window ownership never creates a second runner or restores a resident provider.
