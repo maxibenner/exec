@@ -16,6 +16,7 @@ import Observation
     private var savedSummaries: [SessionSummary] = []
     private var sidebarOrder: [UUID] = []
     private var pendingSidebarOrder: [UUID]?
+    var isReorderingSessions: Bool { pendingSidebarOrder != nil }
     private var sidebarSelectionBeforeCreation: UUID?
     private var catalogRequest = 0
     private(set) var openConversations: [ChatStore] = []

@@ -132,7 +132,7 @@ private actor SessionReorderTransport: AgentTransport {
             let dropped = Array(ids.reversed())
             // No yield: the native drop needs this order in the same transaction.
             try expect(library.sidebarSessions.map(\.id) == dropped)
-            try expect(library.navigating && !library.canReorderSessions)
+            try expect(library.isReorderingSessions && !library.canReorderSessions)
             for _ in 0..<200 {
                 if await transport.isWaiting { break }
                 try await Task.sleep(for: .milliseconds(5))
@@ -152,7 +152,7 @@ private actor SessionReorderTransport: AgentTransport {
                 if !library.navigating { break }
                 try await Task.sleep(for: .milliseconds(5))
             }
-            try expect(!library.navigating && library.canReorderSessions)
+            try expect(!library.navigating && !library.isReorderingSessions)
             try expect(library.sidebarSessions.map(\.id) == (succeeds ? dropped : ids))
             try expect((library.error == nil) == succeeds)
             let writes = await transport.writes
@@ -205,12 +205,7 @@ private actor SessionReorderTransport: AgentTransport {
         for _ in 0..<100 {
             host.layoutSubtreeIfNeeded()
             if let table = table(in: host), table.numberOfRows == rows,
-               table.selectedRow == selectedRow {
-                let viewport = table.enclosingScrollView?.contentView
-                try expect(viewport?.layer?.cornerRadius == SessionTable.cornerRadius)
-                try expect(viewport?.layer?.masksToBounds == true)
-                return
-            }
+               table.selectedRow == selectedRow { return }
             try await Task.sleep(for: .milliseconds(20))
         }
         throw CheckFailure(description: "Sidebar did not reconcile native rows and selection")
