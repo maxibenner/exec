@@ -94,7 +94,13 @@ struct AgentConfiguration: Decodable, Sendable {
     let instructionsFrozen: Bool
     let workspaceInstructions: String?
 }
+struct AgentSessionParent: Decodable, Equatable, Sendable {
+    let sessionId: UUID
+    let operationId: UUID
+    let toolCallId: String
+}
 struct AgentMetadata: Decodable, Sendable {
+    let parent: AgentSessionParent?
     let title: String?
     let manuallyNamed: Bool
     let activityAt: Double

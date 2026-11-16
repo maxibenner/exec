@@ -74,7 +74,14 @@ impl AgentManager {
                     record.model.clone(),
                     record.workspace.clone(),
                 );
-                options.tools = tools;
+                options.tools = if record.metadata.parent.is_none() {
+                    manager.delegation_tools(options.provider.clone(), tools)
+                } else {
+                    tools
+                        .into_iter()
+                        .filter(|tool| tool.definition().name != "delegate")
+                        .collect()
+                };
                 options.checkpoint = Some(store.clone());
                 let active = record.operation.as_ref().is_some_and(|o| o.state.active());
                 let conversation = Conversation::new(options, Some(record))?;
@@ -413,8 +420,108 @@ impl AgentManager {
         c.library = library.clone();
         Ok(library)
     }
-    pub async fn create_session(
+    fn delegation_tools(
+        self: &Arc<Self>,
+        provider: Arc<dyn ChatProvider>,
+        mut tools: Vec<Arc<dyn Tool>>,
+    ) -> Vec<Arc<dyn Tool>> {
+        tools.retain(|tool| tool.definition().name != "delegate");
+        tools.push(crate::tools::create_delegate_tool(
+            self,
+            provider,
+            tools.clone(),
+        ));
+        tools
+    }
+
+    /// Only the executing parent tool can create a child. Persist its provenance
+    /// before starting inference; never resume or recreate it after interruption.
+    pub(crate) async fn create_child(
         &self,
+        context: &ToolContext,
+        task: &str,
+        provider: Arc<dyn ChatProvider>,
+        tools: Vec<Arc<dyn Tool>>,
+    ) -> Result<(Arc<Conversation>, Option<String>)> {
+        crate::check_cancel(&context.cancel)?;
+        let parent = {
+            let catalog = self.catalog.lock().unwrap();
+            if catalog.closed
+                || catalog.account_busy
+                || catalog.mutating.contains(&context.conversation_id)
+            {
+                return Err(Error::Busy);
+            }
+            let parent = catalog
+                .conversations
+                .get(&context.conversation_id)
+                .ok_or(Error::Invalid("Parent conversation not found."))?
+                .snapshot();
+            if parent.metadata.parent.is_some() {
+                return Err(Error::Tool("Sub-agents cannot delegate.".into()));
+            }
+            if parent.operation.as_ref().is_none_or(|op| {
+                op.id != context.operation_id || op.state != OperationState::Running
+            }) || parent.active_tool_call_id.as_deref() != Some(&context.call_id)
+            {
+                return Err(Error::Invalid(
+                    "Delegation requires an executing parent tool.",
+                ));
+            }
+            let children: Vec<_> = catalog
+                .conversations
+                .values()
+                .filter_map(|c| c.parent())
+                .filter(|p| p.session_id == context.conversation_id)
+                .collect();
+            if children.iter().any(|p| p.tool_call_id == context.call_id) {
+                return Err(Error::Tool(
+                    "This delegation already has a child session; it was not restarted.".into(),
+                ));
+            }
+            if children
+                .iter()
+                .filter(|p| p.operation_id == context.operation_id)
+                .count()
+                >= 8
+            {
+                return Err(Error::Tool(
+                    "The limit of eight sub-agents per turn was reached.".into(),
+                ));
+            }
+            parent
+        };
+        let mut options = ConversationOptions::new(provider, parent.model, parent.workspace);
+        options.tools = tools
+            .into_iter()
+            .filter(|tool| tool.definition().name != "delegate")
+            .collect();
+        options.settings = parent.configuration.settings;
+        options.max_steps = 16;
+        let title: String = task
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(80)
+            .collect();
+        options.metadata.title = Some(if title.is_empty() {
+            "Sub-agent".into()
+        } else {
+            title
+        });
+        options.metadata.parent = Some(SessionParent {
+            session_id: context.conversation_id.clone(),
+            operation_id: context.operation_id.clone(),
+            tool_call_id: context.call_id.clone(),
+        });
+        let child = self.create(options).await?;
+        Ok((child, parent.configuration.workspace_instructions))
+    }
+
+    pub async fn create_session(
+        self: &Arc<Self>,
         provider: Arc<dyn ChatProvider>,
         tools: Vec<Arc<dyn Tool>>,
         model: Option<String>,
@@ -432,7 +539,7 @@ impl AgentManager {
         settings.validate()?;
         let workspace = canonical_workspace(workspace).await?;
         let mut options = ConversationOptions::new(provider, model, workspace);
-        options.tools = tools;
+        options.tools = self.delegation_tools(options.provider.clone(), tools);
         options.settings = settings;
         self.create(options).await
     }
@@ -483,7 +590,7 @@ impl AgentManager {
             .await
     }
     pub async fn fork(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         provider: Arc<dyn ChatProvider>,
         tools: Vec<Arc<dyn Tool>>,
@@ -503,7 +610,7 @@ impl AgentManager {
         };
         let mut options =
             ConversationOptions::new(provider, record.model.clone(), record.workspace.clone());
-        options.tools = tools;
+        options.tools = self.delegation_tools(options.provider.clone(), tools);
         options.images = self
             .catalog
             .lock()
@@ -548,6 +655,7 @@ impl AgentManager {
         if conversation.busy() {
             return Err(Error::Busy);
         }
+        self.check_delegation_owner(&conversation)?;
         let snapshot = conversation.snapshot();
         let instructions = if snapshot.configuration.instructions_frozen {
             None
@@ -567,7 +675,28 @@ impl AgentManager {
             Some(&snapshot.workspace),
         )
     }
+    fn check_delegation_owner(&self, conversation: &Conversation) -> Result<()> {
+        let catalog = self.catalog.lock().unwrap();
+        if Self::delegation_owned(&catalog, conversation) {
+            return Err(Error::Busy);
+        }
+        Ok(())
+    }
+    fn delegation_owned(catalog: &Catalog, conversation: &Conversation) -> bool {
+        conversation.parent().is_some_and(|parent| {
+            catalog
+                .conversations
+                .get(&parent.session_id)
+                .is_some_and(|owner| {
+                    owner
+                        .snapshot()
+                        .operation
+                        .is_some_and(|op| op.id == parent.operation_id && op.state.active())
+                })
+        })
+    }
     pub fn compact(&self, id: &str) -> Result<Submission> {
+        self.check_delegation_owner(self.get(id)?.as_ref())?;
         let catalog = self.catalog.lock().unwrap();
         if catalog.closed || catalog.account_busy {
             return Err(Error::Busy);
@@ -844,7 +973,19 @@ impl AgentManager {
             if catalog.closed || catalog.mutating.contains(id) || catalog.forking > 0 {
                 return Err(Error::Busy);
             }
+            if catalog
+                .conversations
+                .values()
+                .any(|c| c.parent().is_some_and(|p| p.session_id == id))
+            {
+                return Err(Error::Invalid(
+                    "Delete this session's sub-agents before deleting their parent.",
+                ));
+            }
             let resources = if let Some(conversation) = catalog.conversations.get(id) {
+                if Self::delegation_owned(&catalog, conversation) {
+                    return Err(Error::Busy);
+                }
                 conversation.dispose()?;
                 conversation.resources()
             } else if catalog.unreadable.contains(id) {

@@ -22,6 +22,7 @@ pub struct ConversationOptions {
     pub workspace: String,
     pub tools: Vec<Arc<dyn Tool>>,
     pub max_steps: usize,
+    pub metadata: SessionMetadata,
     pub settings: SessionSettings,
     pub checkpoint: Option<Arc<dyn Checkpoint>>,
     pub images: Option<Arc<dyn ImageReader>>,
@@ -38,6 +39,7 @@ impl ConversationOptions {
             workspace: workspace.into(),
             tools: vec![],
             max_steps: 64,
+            metadata: SessionMetadata::default(),
             settings: SessionSettings::default(),
             checkpoint: None,
             images: None,
@@ -126,13 +128,13 @@ impl Conversation {
             record
         } else {
             ConversationRecord {
-                version: 8,
+                version: 9,
                 resources: vec![],
                 provider_state: None,
                 usage: None,
                 metadata: SessionMetadata {
                     activity_at: SessionMetadata::activity(),
-                    ..SessionMetadata::default()
+                    ..options.metadata
                 },
                 configuration: Some(ConversationConfiguration::new(options.settings)),
                 id: new_id(),
@@ -185,6 +187,9 @@ impl Conversation {
     }
     pub(crate) fn attach_images(&self, images: Arc<dyn ImageReader>) {
         *self.images.lock().unwrap() = Some(images);
+    }
+    pub fn parent(&self) -> Option<SessionParent> {
+        self.state().record.metadata.parent.clone()
     }
     pub fn resources(&self) -> Vec<ResourceRef> {
         self.state().record.resources.clone()
@@ -377,6 +382,8 @@ impl Conversation {
             record.usage = None;
         }
         record.id = new_id();
+        // An explicit user fork is independent, not another execution of the parent's call.
+        record.metadata.parent = None;
         record.metadata.activity_at = SessionMetadata::activity();
         record.metadata.title = Some(format!(
             "{} (fork)",

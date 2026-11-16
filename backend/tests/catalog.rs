@@ -240,7 +240,7 @@ async fn fork_during_approval_does_not_copy_or_resolve_the_live_action() {
         panic!("must not execute")
     })];
     let p = FakeProvider::new(vec![response(vec![call("pending"), ProviderEvent::Done])]);
-    let manager = AgentManager::default();
+    let manager = Arc::new(AgentManager::default());
     let c = manager
         .create(options(p.clone(), tools.clone()))
         .await

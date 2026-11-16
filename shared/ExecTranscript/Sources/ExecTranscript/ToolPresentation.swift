@@ -24,10 +24,15 @@ public struct ToolPresentation: Sendable {
             var command: String?
             var url: String?
             var prompt: String?
+            var task: String?
         }
         let arguments = rawArguments.utf8.count <= 32_768 ? try? JSONDecoder().decode(Arguments.self, from: Data(rawArguments.utf8)) : nil
         output = result?.text ?? ""
         switch name {
+        case "delegate":
+            title = "Sub-agent"; icon = "person.crop.square.on.square"
+            summary = arguments?.task
+            if let task = arguments?.task { inputs = [Field(title: "Task", text: task)] }
         case "shell":
             title = "Shell"; icon = "terminal"
             if let command = arguments?.command {

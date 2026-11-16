@@ -125,7 +125,21 @@ import Observation
             }
         }
     }
-    var sidebarSessions: [SessionSummary] { sessionList.filter { !detachedSessionIDs.contains($0.id) } }
+    var sidebarSessions: [SessionSummary] {
+        let all = sessionList
+        let ids = Set(all.map(\.id))
+        return all.filter { session in
+            guard !detachedSessionIDs.contains(session.id) else { return false }
+            // Children are reached through delegation cards. Keep the selected
+            // child (and any orphan from an externally changed profile) accessible.
+            guard let parent = session.parent else { return true }
+            return session.id == sidebarSelectionID || !ids.contains(parent.sessionId)
+        }
+    }
+    func childSessions(of id: UUID?) -> [SessionSummary] {
+        guard let id else { return [] }
+        return sessionList.filter { $0.parent?.sessionId == id }
+    }
     func hasConversation(_ conversation: ChatStore) -> Bool { conversation.workspace != nil || !conversation.messages.isEmpty || conversation.currentSessionID != nil }
     var sessionList: [SessionSummary] {
         var summaries = Dictionary(uniqueKeysWithValues: savedSummaries.map { ($0.id, $0) })
@@ -189,9 +203,12 @@ import Observation
         return result
     }
     private func conversation(_ id: UUID) -> ChatStore? { openConversations.first { $0.currentSessionID == id } }
-    func isSessionRunning(_ id: UUID) -> Bool { conversation(id)?.busy == true }
+    func isSessionRunning(_ id: UUID) -> Bool { conversation(id)?.busy ?? (savedSummaries.first { $0.id == id }?.isRunning == true) }
     func isSessionResponding(_ id: UUID) -> Bool { conversation(id).map { $0.isSending || $0.isCompacting } == true }
-    func needsApproval(_ id: UUID) -> Bool { conversation(id)?.tools.pendingApproval != nil }
+    func needsApproval(_ id: UUID) -> Bool {
+        if let resident = conversation(id) { return resident.tools.pendingApproval != nil }
+        return savedSummaries.first { $0.id == id }?.awaitingApproval == true
+    }
     func needsAttention(_ id: UUID) -> Bool { conversation(id).map { $0.error != nil || $0.hasUnsavedChanges } == true }
     func send(in destination: ChatStore? = nil) {
         guard canModify else { return }

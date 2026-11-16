@@ -38,8 +38,13 @@ import Observation
     }
 
     func openSession(_ id: UUID) {
+        if let controller = controllers[id] {
+            controller.window?.makeKeyAndOrderFront(nil)
+            return
+        }
         library.openSession(id) { [weak self] in
             self?.composerFocusRequest += 1
+            self?.showMainWindow()
         }
     }
 
@@ -144,7 +149,7 @@ private struct DetachedConversationView: View {
 
     var body: some View {
         ConversationView(library: windows.library, conversation: conversation, presentation: presentation,
-                         focused: $composerFocused)
+                         focused: $composerFocused, openRelatedSession: { [weak windows] id in windows?.openSession(id) })
             .modifier(SessionCommandScope(windows: windows, conversation: conversation))
             .onAppear { composerFocused = true }
             .onChange(of: windows.library.detachedSessionIDs) { _, _ in windows.closeInvalidWindows() }

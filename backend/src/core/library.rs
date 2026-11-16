@@ -2,15 +2,35 @@ use super::{SessionSettings, valid_id};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+/// Immutable provenance of a delegated session, including its owning tool call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionParent {
+    pub session_id: String,
+    pub operation_id: String,
+    pub tool_call_id: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<SessionParent>,
     pub title: Option<String>,
     pub manually_named: bool,
     pub activity_at: u64,
 }
 impl SessionMetadata {
     pub fn validate(&self) -> Result<()> {
+        if self.parent.as_ref().is_some_and(|parent| {
+            !valid_id(&parent.session_id)
+                || !valid_id(&parent.operation_id)
+                || parent.tool_call_id.trim().is_empty()
+                || parent.tool_call_id.len() > 512
+                || parent.tool_call_id.chars().any(char::is_control)
+        }) {
+            return Err(Error::Invalid("Invalid parent session."));
+        }
         if self.title.as_ref().is_some_and(|s| {
             s.trim().is_empty() || s.len() > 512 || s.chars().any(char::is_control)
         }) {

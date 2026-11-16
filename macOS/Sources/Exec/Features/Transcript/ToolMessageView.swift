@@ -26,8 +26,21 @@ struct ToolMessageView: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            card
+            if call.name == "delegate", let child = state.delegatedSessions.first(where: { $0.parent?.toolCallId == call.id }) {
+                Button { state.openRelatedSession?(child.id) } label: {
+                    Label(child.awaitingApproval ? "Review sub-agent approval" : "Open sub-agent", systemImage: "arrow.up.right.square")
+                }
+                .buttonStyle(.link)
+                .padding(.horizontal, 12)
+            }
+        }
+    }
+
+    private var card: some View {
         let presentation = ToolPresentation(call: call, result: result, descriptiveShellTitles: descriptiveShellTitles)
-        ToolCard(presentation: presentation, isExpanded: Binding(get: { expanded ?? (result?.edit != nil || result?.generatedImage != nil) }, set: { value in
+        return ToolCard(presentation: presentation, isExpanded: Binding(get: { expanded ?? (result?.edit != nil || result?.generatedImage != nil) }, set: { value in
             state.followsLatest = false
             state.expanded[messageID] = value
             expanded = value

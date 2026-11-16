@@ -252,6 +252,43 @@ but never starts inference itself; the next explicit turn incorporates it before
 Cancellation or step-limit failure can retain pending input for that next explicit turn.
 Version-3 checkpoints retain pending input; older versions are read conservatively.
 
+## Sub-agent delegation
+
+Top-level sessions created through the session API, restored sessions, and explicit forks
+expose `delegate({"task":"..."})`. This is a blocking tool, not a second agent runtime:
+
+- The manager persists a normal child conversation before inference. Its optional
+  `metadata.parent` is `{sessionId, operationId, toolCallId}`, identifying the managing
+  session and the exact delegation call. Top-level sessions omit `parent`; clients must
+  tolerate its absence. The task supplies the child's initial title and first user message.
+- Children inherit the parent's model, workspace, settings and frozen workspace
+  instructions. They do **not** copy its transcript, opaque provider state, attachments,
+  or transient native screen-access grants. Put necessary context in `task` (nonempty,
+  at most 16 KiB). Workspace files are shared, not sandboxed or worktree-isolated.
+- The child uses ordinary tools and the inherited approval policy. Approvals remain on
+  the child's session and are resolved through its existing approval endpoint. The parent
+  waits without requiring a frontend to remain attached. Child sessions do not expose
+  `delegate`; limits are eight children per parent operation and 16 model steps per child.
+- A successful tool result contains the child ID and up to 32 KiB of its final response,
+  with an explicit truncation marker when necessary. Failure or independent child
+  cancellation produces a failed parent tool result, not a successful summary. No work
+  is retried automatically.
+- Parent cancellation cancels the child's operation and waits for its cleanup. Restart
+  retains the relationship, marks unfinished operations interrupted and resumes neither.
+  New turns/compaction/deletion on the child are blocked while its managing operation is
+  active; ordinary approval, steering and cancellation still use the child's own IDs.
+- Delete children before their parent. Deleting a parent never silently deletes child
+  history. Explicitly forking a child creates an independent top-level session, not another
+  execution of the original delegation.
+
+Children appear in ordinary catalog/snapshot endpoints. macOS links delegation cards to
+child transcripts, exposes pending child approvals from the parent view, and provides a
+Sub-agents menu so history remains accessible independently of tool-card visibility.
+Children stay out of the main sidebar unless selected or their parent is absent.
+Version-9 records persist this relationship; versions 1–8 remain readable. Low-level
+embedders using `AgentManager::create` retain control over their explicit tool list;
+`create_session` and `fork` require an `Arc<AgentManager>` to install delegation safely.
+
 ## Session library
 
 `metadata` contains `title` (nullable before first input), `manuallyNamed` and `activityAt`
@@ -357,7 +394,7 @@ Opaque per-conversation provider state is stored in version-4 checkpoints, never
 snapshots or user/model transcript text. DeepSeek retains reasoning only as needed to echo
 completed assistant tool calls in later requests. Reasoning streams are bounded at 4 MiB;
 combined opaque state is bounded at 8 MiB. Partial/failed streams cannot commit staged
-provider state or measurements. Version 1–3 records remain readable; writes use version 8.
+provider state or measurements. Version 1–8 records remain readable; writes use version 9.
 Thinking and non-thinking responses still require supported completion and `[DONE]`; no
 inference or rotating-token retries are introduced. Mock transport tests do not verify
 live model effort availability or service compatibility.

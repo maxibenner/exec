@@ -900,6 +900,7 @@ async fn handle(
                 title: Some(input.title.clone()),
                 manually_named: true,
                 activity_at: 0,
+                ..SessionMetadata::default()
             };
             metadata
                 .validate()

@@ -49,7 +49,12 @@ impl ConversationRecord {
             return Err(Error::Invalid("Invalid provider state."));
         }
         let bad = Error::Invalid("Invalid or unsupported conversation record.");
-        if !matches!(self.version, 1..=8)
+        if !matches!(self.version, 1..=9)
+            || self
+                .metadata
+                .parent
+                .as_ref()
+                .is_some_and(|p| self.version < 9 || p.session_id == self.id)
             || (self.version >= 2 && self.configuration.is_none())
             || (self.version == 1 && self.configuration.is_some())
             || !valid_id(&self.id)
@@ -236,7 +241,7 @@ impl ConversationRecord {
             self.version = 2;
             self.configuration = Some(ConversationConfiguration::legacy());
         }
-        self.version = 8;
+        self.version = 9;
         if let Some(op) = &mut self.operation
             && op.state.active()
         {

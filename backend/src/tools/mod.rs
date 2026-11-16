@@ -1,3 +1,5 @@
+mod delegation;
+pub(crate) use delegation::create_delegate_tool;
 mod edit_diff;
 mod fetch;
 mod files;
