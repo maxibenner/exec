@@ -49,7 +49,9 @@ async fn children_overlap_return_ordered_results_and_are_deleted() {
         }))
     });
     let mut scripts = vec![response(vec![
-        batch(serde_json::json!(["first", "second"])),
+        batch(
+            serde_json::json!([{"task":"first", "title":"First review"}, {"task":"second", "title":"Second review"}]),
+        ),
         ProviderEvent::Done,
     ])];
     scripts.extend(children);
@@ -82,7 +84,9 @@ async fn cancellation_waits_for_every_child_executor_cleanup() {
     let cleanup = CancellationToken::new();
     let provider = FakeProvider::new(vec![
         response(vec![
-            batch(serde_json::json!(["first", "second"])),
+            batch(
+                serde_json::json!([{"task":"first", "title":"First review"}, {"task":"second", "title":"Second review"}]),
+            ),
             ProviderEvent::Done,
         ]),
         response(vec![call("effect-one"), ProviderEvent::Done]),
@@ -107,6 +111,15 @@ async fn cancellation_waits_for_every_child_executor_cleanup() {
     tokio::time::timeout(Duration::from_secs(5), entered.wait())
         .await
         .unwrap();
+    let mut titles: Vec<_> = manager
+        .list()
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.metadata.parent.is_some())
+        .map(|s| s.metadata.title.unwrap())
+        .collect();
+    titles.sort();
+    assert_eq!(titles, ["First review", "Second review"]);
     assert!(parent.cancel(&run.operation_id));
     assert!(
         tokio::time::timeout(Duration::from_millis(50), &mut run.completion)
@@ -133,16 +146,59 @@ async fn cancellation_waits_for_every_child_executor_cleanup() {
     assert_eq!(provider.count(), 3);
 }
 #[tokio::test]
-async fn invalid_batches_never_create_children() {
-    for tasks in [
-        serde_json::json!([]),
-        serde_json::json!([" "]),
-        serde_json::json!([42]),
-        serde_json::json!(["a", "b", "c", "d", "e", "f", "g", "h", "i"]),
+async fn invalid_delegations_never_create_children() {
+    let mut invalid = vec![
+        serde_json::json!({}),
+        serde_json::json!({"task": "work"}),
+        serde_json::json!({"title": "Review"}),
+        serde_json::json!({"task": "work", "title": "Review", "tasks": [{"task":"other", "title":"Other"}]}),
+        serde_json::json!({"tasks": [{"task":"work", "title":"Review"}], "title":"Unexpected"}),
+        serde_json::json!({"tasks": []}),
+        serde_json::json!({"tasks": ["legacy task"]}),
+        serde_json::json!({"tasks": [42]}),
+        serde_json::json!({"tasks": vec![serde_json::json!({"task":"work", "title":"Review"}); 9]}),
+        serde_json::json!({"tasks": [{"task":"work"}]}),
+        serde_json::json!({"tasks": [{"title":"Review"}]}),
+        serde_json::json!({"tasks": [{"task":"work", "title":"Review", "extra":true}]}),
+    ];
+    for title in [
+        serde_json::Value::Null,
+        serde_json::json!(42),
+        serde_json::json!(""),
+        serde_json::json!("   "),
+        serde_json::json!("x".repeat(61)),
+        serde_json::json!("é".repeat(61)),
+        serde_json::json!("two\nlines"),
+        serde_json::json!("two\rlines"),
+        serde_json::json!("tab\ttitle"),
+        serde_json::json!("nul\0title"),
+        serde_json::json!("line\u{2028}separator"),
+        serde_json::json!("paragraph\u{2029}separator"),
     ] {
+        invalid.push(serde_json::json!({"task":"work", "title":title}));
+        // A valid first entry must not be created if any later entry is invalid.
+        invalid.push(serde_json::json!({"tasks":[{"task":"valid", "title":"Valid"}, {"task":"work", "title":title}]}));
+    }
+    for task in [
+        "".to_owned(),
+        "  ".to_owned(),
+        "nul\0task".to_owned(),
+        "x".repeat(16 * 1024 + 1),
+    ] {
+        invalid.push(serde_json::json!({"task":task, "title":"Review"}));
+        invalid.push(serde_json::json!({"tasks":[{"task":"valid", "title":"Valid"}, {"task":task, "title":"Review"}]}));
+    }
+    for arguments in invalid {
         let workspace = directory();
         let provider = FakeProvider::new(vec![
-            response(vec![batch(tasks), ProviderEvent::Done]),
+            response(vec![
+                ProviderEvent::ToolCall(ToolCall {
+                    id: "invalid".into(),
+                    name: "delegate".into(),
+                    arguments: arguments.as_object().unwrap().clone(),
+                }),
+                ProviderEvent::Done,
+            ]),
             answer(),
         ]);
         let (manager, parent) = setup(provider.clone(), vec![], workspace.path()).await;
@@ -162,7 +218,9 @@ async fn failed_child_does_not_drop_siblings_and_returned_sessions_are_deleted()
     let workspace = directory();
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let mut scripts = vec![response(vec![
-        batch(serde_json::json!(["fail", "succeed"])),
+        batch(
+            serde_json::json!([{"task":"fail", "title":"Failure check"}, {"task":"succeed", "title":"Success check"}]),
+        ),
         ProviderEvent::Done,
     ])];
     for _ in 0..2 {
@@ -201,7 +259,7 @@ async fn steering_a_child_withdraws_approval_and_reaches_its_context() {
     let workspace = directory();
     let provider = FakeProvider::new(vec![
         response(vec![
-            batch(serde_json::json!(["original task"])),
+            batch(serde_json::json!([{"task":"original task", "title":"Original review"}])),
             ProviderEvent::Done,
         ]),
         response(vec![call("effect"), ProviderEvent::Done]),

@@ -18,6 +18,23 @@ public struct ToolPresentation: Sendable {
     public var output: String
 
     public init(name: String, arguments rawArguments: String, result: ToolDisplayResult? = nil, descriptiveShellTitles: Bool = false) {
+        struct DelegatedTask: Decodable {
+            let task: String
+            let title: String?
+
+            init(from decoder: Decoder) throws {
+                let value = try decoder.singleValueContainer()
+                if let legacyTask = try? value.decode(String.self) {
+                    task = legacyTask
+                    title = nil
+                } else {
+                    struct TitledTask: Decodable { let task: String; let title: String }
+                    let entry = try value.decode(TitledTask.self)
+                    task = entry.task
+                    title = entry.title
+                }
+            }
+        }
         struct Arguments: Decodable {
             var path: String?
             var query: String?
@@ -25,17 +42,18 @@ public struct ToolPresentation: Sendable {
             var url: String?
             var prompt: String?
             var task: String?
-            var tasks: [String]?
+            var title: String?
+            var tasks: [DelegatedTask]?
         }
         let arguments = rawArguments.utf8.count <= 32_768 ? try? JSONDecoder().decode(Arguments.self, from: Data(rawArguments.utf8)) : nil
         output = result?.text ?? ""
         switch name {
         case "delegate":
             title = arguments?.tasks == nil ? "Sub-agent" : "Sub-agents"
-            icon = "person.crop.square.on.square"
-            summary = arguments?.task ?? arguments?.tasks?.joined(separator: " · ")
+            icon = "person.2"
+            summary = arguments?.title ?? arguments?.task ?? arguments?.tasks?.map { $0.title ?? $0.task }.joined(separator: " · ")
             if let tasks = arguments?.tasks {
-                inputs = tasks.enumerated().map { Field(title: "Task \($0.offset + 1)", text: $0.element) }
+                inputs = tasks.enumerated().map { Field(title: "Task \($0.offset + 1)", text: $0.element.task) }
             } else if let task = arguments?.task {
                 inputs = [Field(title: "Task", text: task)]
             }

@@ -70,7 +70,7 @@ impl AgentManager {
             manager.catalog.lock().unwrap().library = library;
             let catalog = store.load_catalog().await?;
             manager.catalog.lock().unwrap().unreadable = catalog.unreadable.into_iter().collect();
-            for record in catalog.records {
+            for mut record in catalog.records {
                 let (provider, tools) = configure(&record);
                 let mut options = ConversationOptions::new(
                     provider,
@@ -86,9 +86,12 @@ impl AgentManager {
                         .collect()
                 };
                 options.checkpoint = Some(store.clone());
+                // Apply the current session budget to restored sessions as well.
+                let budget_changed = record.max_steps != options.max_steps;
+                record.max_steps = options.max_steps;
                 let active = record.operation.as_ref().is_some_and(|o| o.state.active());
                 let conversation = Conversation::new(options, Some(record))?;
-                if active {
+                if active || budget_changed {
                     store.save(conversation.record()).await?;
                 }
                 manager
@@ -442,12 +445,12 @@ impl AgentManager {
     pub(crate) async fn create_children(
         &self,
         context: &ToolContext,
-        tasks: &[String],
+        titles: &[String],
         provider: Arc<dyn ChatProvider>,
         tools: Vec<Arc<dyn Tool>>,
     ) -> Result<Vec<(Arc<Conversation>, Option<String>)>> {
         crate::check_cancel(&context.cancel)?;
-        if tasks.is_empty() || tasks.len() > 8 {
+        if titles.is_empty() || titles.len() > 8 {
             return Err(Error::Tool(
                 "Delegation requires one to eight tasks.".into(),
             ));
@@ -488,17 +491,17 @@ impl AgentManager {
                     "This delegation already ran; it was not restarted.".into(),
                 ));
             }
-            if turn.2 + tasks.len() > 8 {
+            if turn.2 + titles.len() > 8 {
                 return Err(Error::Tool(
                     "The limit of eight sub-agents per turn was reached.".into(),
                 ));
             }
             turn.1.insert(context.call_id.clone());
-            turn.2 += tasks.len();
+            turn.2 += titles.len();
             parent
         };
-        let mut children = Vec::with_capacity(tasks.len());
-        for task in tasks {
+        let mut children = Vec::with_capacity(titles.len());
+        for title in titles {
             crate::check_cancel(&context.cancel)?;
             let mut options = ConversationOptions::new(
                 provider.clone(),
@@ -511,20 +514,7 @@ impl AgentManager {
                 .cloned()
                 .collect();
             options.settings = parent.configuration.settings.clone();
-            options.max_steps = 16;
-            let title: String = task
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(80)
-                .collect();
-            options.metadata.title = Some(if title.is_empty() {
-                "Sub-agent".into()
-            } else {
-                title
-            });
+            options.metadata.title = Some(title.clone());
             options.metadata.parent = Some(SessionParent {
                 session_id: context.conversation_id.clone(),
                 operation_id: context.operation_id.clone(),

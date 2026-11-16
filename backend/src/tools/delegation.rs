@@ -84,10 +84,26 @@ pub(crate) fn create_delegate_tool(
 #[async_trait]
 impl Tool for Delegate {
     fn definition(&self) -> ToolDefinition {
+        let parameters = schema(
+            serde_json::json!({
+            "task": {"type": "string"},
+            "title": title_schema(),
+            "tasks": {
+                "type": "array", "minItems": 1, "maxItems": 8,
+                "items": {
+                    "type": "object",
+                    "properties": {"task": {"type": "string"}, "title": title_schema()},
+                    "required": ["task", "title"],
+                    "additionalProperties": false
+                }
+            }
+            }),
+            &[],
+        );
         ToolDefinition {
             name: "delegate".into(),
-            description: "Delegate tasks to sub-agent sessions and wait for their final responses. Supply one task, or a tasks array to run up to eight independent tasks concurrently in one call. Each child inherits this session's model, workspace, instructions and approval policy, but not its transcript. Supply all necessary context in each task. Child tools use normal approvals. Sessions share files; this is not filesystem isolation: avoid conflicting edits. Sub-agents cannot delegate, have at most 16 model steps, and at most eight may be created per parent turn. Cancellation stops all children and waits for cleanup. Results are bounded and returned in task order. Child sessions are deleted after their results, including failures and user cancellations, are saved in this session. A failed child does not retry or cancel siblings. Do not retry failed or interrupted delegation without a new user request.".into(),
-            parameters: schema(serde_json::json!({"task":{"type":"string"},"tasks":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8}}), &[]),
+            description: "Delegate tasks to sub-agent sessions and wait for their final responses. Supply one task with a required concise title, or a tasks array of {task, title} objects to run up to eight independent tasks concurrently in one call. Use a super concise title (2–5 words, at most 60 characters) describing what each child will do. Titles must be nonempty and single-line. Each child inherits this session's model, workspace, instructions and approval policy, but not its transcript. Supply all necessary context in each task. Child tools use normal approvals. Sessions share files; this is not filesystem isolation: avoid conflicting edits. Sub-agents cannot delegate. Each session has its own independent model-step budget (128 steps per turn); child steps do not consume the parent or sibling budgets. At most eight sub-agents may be created per parent turn. Cancellation stops all children and waits for cleanup. Results are bounded and returned in task order. Child sessions are deleted after their results, including failures and user cancellations, are saved in this session. A failed child does not retry or cancel siblings. Do not retry failed or interrupted delegation without a new user request.".into(),
+            parameters,
         }
     }
     async fn result_saved(&self, conversation_id: &str, call_id: &str) -> Result<()> {
@@ -113,10 +129,10 @@ impl Tool for Delegate {
         args: Arguments,
         context: ToolContext,
     ) -> Result<Box<dyn PreparedTool>> {
-        fields(&args, &["task", "tasks"])?;
+        fields(&args, &["task", "title", "tasks"])?;
         let tasks = match (args.get("task"), args.get("tasks")) {
-            (Some(_), None) => vec![string(&args, "task", 16 * 1024)?],
-            (None, Some(value)) => {
+            (Some(_), None) => vec![parse_task(&args)?],
+            (None, Some(value)) if !args.contains_key("title") => {
                 let values = value
                     .as_array()
                     .ok_or_else(|| failure("tasks must be an array."))?;
@@ -126,23 +142,17 @@ impl Tool for Delegate {
                 values
                     .iter()
                     .map(|value| {
-                        value
-                            .as_str()
-                            .map(str::to_owned)
-                            .ok_or_else(|| failure("Each task must be a string."))
+                        let task = value.as_object().ok_or_else(|| {
+                            failure("Each task must be an object with task and title.")
+                        })?;
+                        fields(task, &["task", "title"])?;
+                        parse_task(task)
                     })
                     .collect::<Result<Vec<_>>>()?
             }
             _ => return Err(failure("Supply exactly one of task or tasks.")),
         };
-        if tasks
-            .iter()
-            .any(|task| task.trim().is_empty() || task.contains('\0') || task.len() > 16 * 1024)
-        {
-            return Err(failure(
-                "Each task must be nonempty, contain no NUL bytes, and be at most 16 KiB.",
-            ));
-        }
+        let (tasks, titles): (Vec<_>, Vec<_>) = tasks.into_iter().unzip();
         let manager = self.manager.upgrade().ok_or(Error::Internal)?;
         if manager.get(&context.conversation_id)?.parent().is_some() {
             return Err(failure("Sub-agents cannot delegate."));
@@ -156,7 +166,7 @@ impl Tool for Delegate {
             execute: Box::new(move || {
                 Box::pin(async move {
                     let children = manager
-                        .create_children(&context, &tasks, provider, tools)
+                        .create_children(&context, &titles, provider, tools)
                         .await?;
                     let limit = 32 * 1024 / children.len();
                     // join_all retains every executor through cancellation and cleanup;
@@ -183,5 +193,49 @@ impl Tool for Delegate {
                 })
             }),
         }))
+    }
+}
+
+fn title_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "string", "minLength": 1, "maxLength": 60,
+        "description": "Super concise title describing the sub-agent task: use 2–5 words, at most 60 characters, on one line without control characters."
+    })
+}
+
+fn parse_task(args: &Arguments) -> Result<(String, String)> {
+    let task = string(args, "task", 16 * 1024)?;
+    if task.trim().is_empty() {
+        return Err(failure("Each task must be nonempty."));
+    }
+    let title = args
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| failure("Each task requires a string title."))?;
+    if title.trim().is_empty()
+        || title.chars().count() > 60
+        || title
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    {
+        return Err(failure(
+            "Each title must be nonempty, single-line, contain no control characters, and be at most 60 characters.",
+        ));
+    }
+    Ok((task, title.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn titles_preserve_explicit_text_and_count_characters_not_bytes() {
+        for title in ["X".to_owned(), "é".repeat(60)] {
+            let args = serde_json::json!({"task": "A longer task, not the title", "title": title});
+            let (task, saved_title) = parse_task(args.as_object().unwrap()).unwrap();
+            assert_eq!(task, "A longer task, not the title");
+            assert_eq!(saved_title, title);
+        }
     }
 }

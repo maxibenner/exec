@@ -261,8 +261,8 @@ async fn provider_errors_are_safe_and_not_retried() {
     assert_eq!(p.count(), 1);
 }
 #[tokio::test]
-async fn default_step_limit_allows_64_steps_but_not_a_65th_request() {
-    for tool_steps in [63, 64] {
+async fn default_step_limit_allows_128_steps_but_not_a_129th_request() {
+    for tool_steps in [127, 128] {
         let mut scripts = (0..tool_steps)
             .map(|i| response(vec![call(&format!("call-{i}")), ProviderEvent::Done]))
             .collect::<Vec<_>>();
@@ -270,9 +270,9 @@ async fn default_step_limit_allows_64_steps_but_not_a_65th_request() {
         let p = FakeProvider::new(scripts);
         let c = conversation(p.clone(), vec![tool(None, |_| async { Ok("done".into()) })]);
         let op = complete(c.submit("Run tools".into()).unwrap()).await;
-        assert_eq!(p.count(), 64);
+        assert_eq!(p.count(), 128);
         assert_eq!(outcomes(&c).len(), tool_steps);
-        if tool_steps == 63 {
+        if tool_steps == 127 {
             assert_eq!(op.state, OperationState::Completed);
         } else {
             assert_eq!(op.state, OperationState::Failed);

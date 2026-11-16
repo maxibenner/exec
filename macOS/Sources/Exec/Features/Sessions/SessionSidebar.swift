@@ -14,7 +14,7 @@ struct SessionSidebar: View {
     @State private var renaming = false
     @State private var renameID: UUID?
     @State private var renameTitle = ""
-    private let horizontalPadding: CGFloat = 8
+    private let horizontalPadding: CGFloat = 12
 
     // A presentation snapshot gives asynchronous catalog changes an explicit
     // transaction before List reconciles its native rows. No timers or delays.
@@ -60,27 +60,26 @@ struct SessionSidebar: View {
                         .accessibilityAction { activate(session.id) }
                         .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
                     ForEach(group.children) { child in
-                        Button { activate(child.id) } label: {
-                            HStack(spacing: 6) {
-                                Text(verbatim: child.title).lineLimit(1).truncationMode(.tail)
-                                Spacer(minLength: 0)
-                                if store.needsApproval(child.id) {
-                                    Image(systemName: "hand.raised").foregroundStyle(.orange)
-                                        .accessibilityLabel("Approval required")
+                        HStack(spacing: 6) {
+                            Text(verbatim: child.title).lineLimit(1).truncationMode(.tail)
+                            Spacer(minLength: 0)
+                            if store.needsApproval(child.id) {
+                                Image(systemName: "hand.raised").foregroundStyle(.orange)
+                                    .accessibilityLabel("Approval required")
 
-                                } else if store.needsAttention(child.id) {
-                                    Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
-                                }
+                            } else if store.needsAttention(child.id) {
+                                Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
                             }
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 3)
-                            .padding(.horizontal, horizontalPadding)
-                            .contentShape(Rectangle())
-                            .background(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear,
-                                        in: RoundedRectangle(cornerRadius: 4))
                         }
-                        .buttonStyle(.plain)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 3)
+                        .padding(.horizontal, horizontalPadding)
+                        .contentShape(Rectangle())
+                        .background(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 4))
+                        .onTapGesture { activate(child.id) }
+                        .accessibilityAction { activate(child.id) }
                         .accessibilityAddTraits(store.sidebarSelectionID == child.id ? [.isSelected] : [])
                         .contextMenu {
                             Button("Delete Sub-agent", role: .destructive) { delete(child) }
