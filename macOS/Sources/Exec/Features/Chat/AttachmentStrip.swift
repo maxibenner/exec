@@ -11,15 +11,7 @@ struct AttachmentStrip: View {
                     AttachmentThumbnail(attachment: image)
                         .overlay(alignment: .topTrailing) {
                             if let remove {
-                                Button { remove(image.id) } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .symbolRenderingMode(.palette)
-                                        .foregroundStyle(.white, .black.opacity(0.8))
-                                        .font(.system(size: 18))
-                                }
-                                .buttonStyle(.plain).padding(3)
-                                .help("Remove \(image.name)")
-                                .accessibilityLabel("Remove \(image.name)")
+                                AttachmentRemoveButton(name: image.name) { remove(image.id) }
                             }
                         }
                 }
