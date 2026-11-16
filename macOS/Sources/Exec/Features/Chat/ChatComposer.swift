@@ -132,19 +132,23 @@ struct ChatComposer: View {
                 }
                 .padding(.vertical, 8)
             HStack(spacing: 6) {
-                if let reason = store.modelUnavailableReason {
-                    Text(reason).foregroundStyle(AppColors.unavailableRed)
-                } else {
-                    Text(modelName).accessibilityLabel("Model: \(modelName)")
-                    Text(effortName).accessibilityLabel("Reasoning: \(effortName)")
+                HStack(spacing: 6) {
+                    if let reason = store.modelUnavailableReason {
+                        Text(reason).foregroundStyle(AppColors.unavailableRed)
+                    } else {
+                        Text(modelName).accessibilityLabel("Model: \(modelName)")
+                        Text(effortName).accessibilityLabel("Reasoning: \(effortName)")
+                    }
+                    Text(store.autoApproveTools ? "Auto on" : "Auto off")
+                        .foregroundStyle(store.autoApproveTools ? Color.accentColor : Color.secondary)
+                        .layoutPriority(1)
                 }
+                .allowsHitTesting(false)
                 Spacer(minLength: 8)
-                Text(store.autoApproveTools ? "Auto on" : "Auto off")
-                    .foregroundStyle(store.autoApproveTools ? Color.accentColor : Color.secondary)
-                    .layoutPriority(1)
+                contextUsage
             }
             .font(.caption).foregroundStyle(.secondary)
-            .lineLimit(1).allowsHitTesting(false)
+            .lineLimit(1)
         }
         .padding(12)
         .background {
@@ -177,18 +181,19 @@ struct ChatComposer: View {
     }
 
     private var information: some View {
-        HStack(spacing: 0) {
-            workingControl
-            Spacer(minLength: 0)
-            let usage = store.current.contextUsage
-            Text(usage.map { "Context \($0.percent)%" } ?? "Context 0%")
-                .monospacedDigit().fixedSize()
-                .help(usage.map { "Last reported context: \($0.tokens.formatted()) / \($0.limit.formatted()) tokens. Excludes unsent drafts and unfinished responses." } ?? "Context usage has not been reported yet.")
-                .accessibilityLabel(usage.map { "Context usage, \($0.percent) percent" } ?? "Context usage, 0 percent; not yet reported")
-        }
-        .font(.caption).foregroundStyle(.secondary)
-        .lineLimit(1)
-        .frame(height: 20)
+        workingControl
+            .font(.caption).foregroundStyle(.secondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 20)
+    }
+
+    private var contextUsage: some View {
+        let usage = store.current.contextUsage
+        return Text(usage.map { "Context \($0.percent)%" } ?? "Context 0%")
+            .monospacedDigit().fixedSize()
+            .help(usage.map { "Last reported context: \($0.tokens.formatted()) / \($0.limit.formatted()) tokens. Excludes unsent drafts and unfinished responses." } ?? "Context usage has not been reported yet.")
+            .accessibilityLabel(usage.map { "Context usage, \($0.percent) percent" } ?? "Context usage, 0 percent; not yet reported")
     }
 
     @ViewBuilder private var workingControl: some View {
