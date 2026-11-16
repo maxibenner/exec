@@ -6,11 +6,17 @@ struct AttachmentRemoveButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "xmark.circle.fill")
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(.white, .black.opacity(0.8))
-                .font(.system(size: 13))
+            Circle()
+                .fill(.black.opacity(0.8))
                 .frame(width: 13, height: 13)
+                .overlay {
+                    Image(systemName: "xmark")
+                        .resizable()
+                        .scaledToFit()
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.white)
+                        .frame(width: 6, height: 6)
+                }
                 .padding(3)
                 .contentShape(Rectangle())
         }
