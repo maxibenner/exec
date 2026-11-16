@@ -6,6 +6,7 @@ struct GeneratedImageView: View {
     var body: some View {
         if let image = NSImage(data: attachment.data) {
             Image(nsImage: image).resizable().scaledToFit()
+                .clipShape(RoundedRectangle(cornerRadius: 8))
                 .frame(maxHeight: 480)
                 .accessibilityLabel("Generated image")
         }
