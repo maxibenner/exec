@@ -21,17 +21,17 @@ struct SessionSidebar: View {
         _displayedSessions = State(initialValue: store.sidebarSessions)
     }
 
-    private var selection: Binding<UUID?> {
-        Binding(get: { store.sidebarSelectionID }, set: { id in
-            guard store.canNavigate, let id, id != store.sidebarSelectionID else { return }
-            open(id)
-        })
+    private func activate(_ id: UUID) {
+        guard store.canNavigate else { return }
+        open(id)
     }
 
     var body: some View {
         let sessions = store.sidebarSessions
         let shortcutIDs = displayedSessions.prefix(9).map(\.id)
-        List(selection: selection) {
+        // The library owns the active session; do not give the native table a
+        // selection binding (its active selection can turn blue on mouse-down).
+        List {
             ForEach(displayedSessions) { session in
                 SessionRow(session: session, store: store,
                            shortcut: shortcutIDs.firstIndex(of: session.id).map { $0 + 1 },
@@ -39,7 +39,15 @@ struct SessionSidebar: View {
                                guard store.canNavigate, !store.isSessionRunning(session.id) else { return }
                                renameID = session.id; renameTitle = session.title; renaming = true
                            }, delete: { delete(session) })
-                    .tag(session.id)
+                    // A row-wide Button interferes with native drag reordering.
+                    .onTapGesture { activate(session.id) }
+                    .accessibilityAction { activate(session.id) }
+                    .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
+                    .listRowBackground(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(store.sidebarSelectionID == session.id
+                                  ? Color.primary.opacity(0.08) : Color.clear)
+                    )
                     .moveDisabled(!store.canReorderSessions)
             }
             .onMove { offsets, destination in
