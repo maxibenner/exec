@@ -321,7 +321,7 @@ import Foundation
         try expect(writes.count == 1 && !ran)
     }
 
-    func desktopRequiresExplicitGrantAndDiscardsCancelledCapture() async throws {
+    func desktopRequestsOSPermissionOnUseAndDiscardsCancelledCapture() async throws {
         let transport = ControlledAgentTransport()
         let api = AgentAPI(transport: transport)
         let frontend = "11111111-2222-4333-8444-555555555555"
@@ -339,7 +339,7 @@ import Foundation
         try await desktop.start()
         try expect(permissionRequests == 0 && desktop.enabled.isEmpty)
         try await desktop.setEnabled(true, for: conversation)
-        try expect(permissionRequests == 1 && desktop.enabled.contains(conversation))
+        try expect(permissionRequests == 0 && desktop.enabled.contains(conversation))
         let request = AgentJSON.object([
             "id": .string("capture-one"), "frontendID": .string(frontend),
             "conversationID": .string(conversation.uuidString.lowercased()),
@@ -347,6 +347,7 @@ import Foundation
             "action": .object(["target": .string("list_windows"), "windowID": .null])])
         try transport.emit(.object(["type": .string("request"), "request": request]))
         try await wait { finish != nil }
+        try expect(permissionRequests == 1)
         try transport.emit(.object(["type": .string("cancelled"), "request": request]))
         for _ in 0..<20 { await Task.yield() }
         finish?.resume(returning: .init(text: "Private title", windows: [.init(id: 1, title: "Private title")]))
@@ -356,11 +357,12 @@ import Foundation
         try expect(captureCount == 1 && replies.isEmpty)
         permission = false
         try transport.emit(.object(["type": .string("ping")]))
-        try await wait { desktop.enabled.isEmpty }
+        for _ in 0..<20 { await Task.yield() }
+        try expect(desktop.enabled.contains(conversation))
         permission = true
         try transport.emit(.object(["type": .string("ping")]))
         for _ in 0..<20 { await Task.yield() }
-        try expect(desktop.enabled.isEmpty) // OS restoration is not a renewed session grant.
+        try expect(desktop.enabled.contains(conversation)) // Adapter binding is not screen consent.
         transport.channel.continuation.finish(throwing: ExecError("Disconnected"))
         try await wait { desktop.frontendID == nil }
     }

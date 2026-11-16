@@ -46,8 +46,7 @@ struct ChatComposer: View {
                      Choice(id: "fork", title: "fork", enabled: store.library.canRequestFork(store.current)),
                      Choice(id: "workspace", title: "workspace", detail: "Change workspace…", enabled: store.canChooseWorkspace),
                      Choice(id: "finder", title: "finder", detail: "Open workspace in Finder", enabled: store.workspace != nil),
-                     Choice(id: "terminal", title: "terminal", detail: "Open workspace in Terminal", enabled: store.workspace != nil),
-                     Choice(id: "screenshots", title: "screenshots", detail: store.current.screenshotsEnabled ? "Disable screen access" : "Share this Mac's screen for this conversation…", enabled: store.workspace != nil && store.current.desktop.frontendID != nil && !store.current.changingScreenshots)]
+                     Choice(id: "terminal", title: "terminal", detail: "Open workspace in Terminal", enabled: store.workspace != nil)]
         case .model:
             items = store.models.map {
                 Choice(id: $0.id, title: $0.name, detail: store.library.modelGroups.count > 1 ? store.library.providerName(for: $0.id) : "",
@@ -58,7 +57,7 @@ struct ChatComposer: View {
             items = [Choice(id: "", title: "Default", selected: store.current.selectedEffort == nil, enabled: available)] + (store.current.model?.efforts ?? []).map {
                 Choice(id: $0.id, title: $0.name, selected: store.current.selectedEffort == $0.id, enabled: available)
             }
-        case .approve, .compact, .fork, .workspace, .finder, .terminal, .screenshots:
+        case .approve, .compact, .fork, .workspace, .finder, .terminal:
             items = [] // Actions stay in the root command list.
 
         }
@@ -300,10 +299,6 @@ struct ChatComposer: View {
                 store.draft = ""
                 close()
                 store.openWorkspaceInTerminal()
-            case .screenshots:
-                store.draft = ""
-                close()
-                store.current.toggleScreenshots()
             case .model, .effort:
                 store.draft = "/\(destination.commandName) "
                 highlighted = 0
@@ -314,7 +309,7 @@ struct ChatComposer: View {
         switch page {
         case .model: store.selectedModel = choice.id
         case .effort: store.selectedEffort = choice.id.isEmpty ? nil : choice.id
-        case .approve, .compact, .fork, .workspace, .finder, .terminal, .screenshots: return
+        case .approve, .compact, .fork, .workspace, .finder, .terminal: return
         }
         store.draft = ""
         close(); focused = true

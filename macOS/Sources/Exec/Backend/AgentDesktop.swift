@@ -1,7 +1,7 @@
 import AppKit
 import Observation
 
-/// Independently authorized HTTP native channel. No reconnect, capture retry, or implicit grant.
+/// Independently authorized HTTP native channel. No reconnect or capture retry. Conversation consent is enforced by the tool runner.
 @MainActor @Observable final class AgentDesktop {
     private let api: AgentAPI
     private let preflight: () -> Bool
@@ -79,7 +79,6 @@ import Observation
         let granted = preflight()
         guard granted != reportedPermission, let frontendID else { return }
         if !granted {
-            enabled.removeAll()
             cancelCaptures()
         }
         _ = try await api.request("PUT", "/v1/native/permission", .object([
@@ -91,23 +90,15 @@ import Observation
         guard changing.insert(conversation).inserted else { return }
         defer { changing.remove(conversation) }
         guard let frontendID else { throw ExecError(error ?? "Screenshot access is unavailable. Restart Exec to establish its trusted channel.") }
-        if grant {
-            // Only this explicit user action may request macOS Screen Recording access.
-            guard preflight() || requestPermission() else {
-                throw ExecError("Allow Exec in System Settings → Privacy & Security → Screen Recording, then enable screenshots again. You may need to restart Exec.")
-            }
-            try await reportPermission()
-            guard reportedPermission else { throw ExecError("Screen Recording permission is not available yet. Restart Exec after granting it in System Settings.") }
-        } else {
+        if !grant {
             enabled.remove(conversation)
-            cancelCaptures() // Conservative: never share an in-flight capture after revocation.
+            cancelCaptures()
         }
         _ = try await api.request("PUT", AgentAPI.path(conversation, "/desktop"), .object([
             "frontendID": grant ? .string(frontendID) : .null, "enabled": .bool(grant)]))
         try Task.checkCancellation()
         guard self.frontendID == frontendID else { throw ExecError("Screenshot access disconnected while permission was changing. Restart Exec before enabling it again.") }
         if grant {
-            guard preflight() else { throw ExecError("Screen Recording permission was revoked.") }
             enabled.insert(conversation)
         }
     }
@@ -121,13 +112,22 @@ import Observation
             do {
                 guard request["frontendID"].string == frontendID,
                       let conversation = request["conversationID"].string.flatMap(UUID.init(uuidString:)),
-                      enabled.contains(conversation), preflight(),
+                      enabled.contains(conversation),
                       let target = request["action"]["target"].string.flatMap(ScreenshotTool.Target.init(rawValue:)) else {
                     throw ExecError("Screenshot request is no longer authorized.")
                 }
                 let number = request["action"]["windowID"].number ?? 0
                 guard number >= 0, number <= Double(UInt32.max), number.rounded() == number,
                       (target == .window) == (number > 0) else { throw ExecError("Invalid screenshot target.") }
+                // Requests arrive only after the backend's manual/Auto approval policy.
+                guard preflight() || requestPermission() else {
+                    throw ExecError("Screen Recording permission was denied.")
+                }
+                try Task.checkCancellation()
+                try await reportPermission()
+                guard preflight(), enabled.contains(conversation), request["frontendID"].string == frontendID else {
+                    throw ExecError("Screenshot permission was revoked.")
+                }
                 let output = try await capture(.init(target: target, window_id: UInt32(number)))
                 try Task.checkCancellation()
                 guard preflight(), enabled.contains(conversation), request["frontendID"].string == frontendID else {

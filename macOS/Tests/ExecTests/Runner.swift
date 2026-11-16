@@ -77,7 +77,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Account usage refreshes only on opening settings", { try await BackendFollowupTests().usageRefreshesOnlyOnSettingsRequest() }),
             ("Mid-turn commands apply once after idle", { try await BackendFollowupTests().commandsWaitForIdleAndPreserveApprovals() }),
             ("Compaction queues and uncertain settings stop queued effects", { try await BackendFollowupTests().compactQueuesOnceAndConfigurationFailureStopsActions() }),
-            ("Desktop grants and cancellation never share late captures", { try await BackendFollowupTests().desktopRequiresExplicitGrantAndDiscardsCancelledCapture() }),
+            ("Desktop requests OS access on use and never shares late captures", { try await BackendFollowupTests().desktopRequestsOSPermissionOnUseAndDiscardsCancelledCapture() }),
             ("Desktop replies preserve correlation without retry", { try await BackendFollowupTests().desktopRepliesExactlyOnceWithoutRetry() }),
             ("Mac transcript sync pages large history and merges only its suffix", { try await AgentTranscriptSyncTests().pagesHistoryAndMergesOnlyTheChangedSuffix() }),
             ("Mac transcript sync backfills tool calls before publishing results", { try await AgentTranscriptSyncTests().backfillsToolCallsBeforePublishingResults() }),

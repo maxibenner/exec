@@ -359,6 +359,10 @@ pub trait PreparedTool: Send {
         vec![]
     }
     fn approval(&self) -> Option<&str>;
+    /// Remember explicit manual consent only after the runner accepts approval.
+    fn approval_granted(&self) -> Result<()> {
+        Ok(())
+    }
     /// Ownership is consumed so a prepared side effect cannot accidentally run twice.
     async fn execute(self: Box<Self>) -> Result<String>;
 }

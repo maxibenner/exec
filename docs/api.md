@@ -592,8 +592,7 @@ hosting. The native header is sent only for native operations.
 TCP does **not** provide process attestation or same-host guarantees. The native secret
 explicitly trusts its holders to register adapters, report OS permission, enable/disable
 sessions and return correlated captures. It is not per-frontend/multi-tenant isolation.
-The adapter enforces actual OS permission and explicit user consent; a live channel and
-separate per-conversation grant are still required. Fully trusted API administrators can
+The adapter enforces actual OS permission; the tool runner enforces conversation consent. A live, explicitly bound channel is required. Fully trusted API administrators can
 execute host tools: these credentials are not an OS sandbox against same-user code.
 
 | Method | Path | Contract |
@@ -602,7 +601,7 @@ execute host tools: these credentials are not an OS sandbox against same-user co
 | PUT | `/v1/native/permission` | `{frontendID,granted}`; update the registered frontend’s reported OS permission |
 | POST | `/v1/native/results` | `{request:NativeRequest,result:NativePayload}`; exact, live, single-use correlation required |
 | GET | `/v1/conversations/:id/desktop` | `{frontendID,enabled}`; initially disabled |
-| PUT | `/v1/conversations/:id/desktop` | Explicitly bind/enable one frontend or disable; independent of auto approval |
+| PUT | `/v1/conversations/:id/desktop` | Bind one frontend or disable; binding alone grants neither tool consent nor OS permission |
 
 The registration event supplies `frontendID`. `NativeRequest` is
 `{id,frontendID,conversationID,operationID,callID,action:{target,windowID}}`.
@@ -614,8 +613,7 @@ Window results have typed `details:{type:"windows",windows}`. Titles/screens rem
 untrusted evidence, not instructions. Failed native results expose no arbitrary frontend
 error string.
 
-Capture preparation binds the exact frontend/action without requesting OS access. The
-runner then enforces its approval policy and checkpoints intent before sending the request.
+Capture preparation binds the exact frontend/action without requesting OS access. Manual mode asks once per conversation for screen access; Auto mode permits requests without storing manual consent. The runner checkpoints intent before sending the request. The adapter requests OS permission on first authorized use if needed.
 Results must match every correlation field and the live registered frontend; stale, wrong-target,
 duplicate or post-cancellation results return 409. A 60-second deadline, disabled/rebound
 session permission, revoked OS permission, disconnect or cancellation invalidates the
@@ -625,11 +623,11 @@ The native adapter must cancel its own capture work when notified or disconnecte
 
 OS permission reports are claims from explicitly authorized adapters; the backend cannot
 verify macOS TCC on behalf of Swift and never grants it. Reporting OS permission restored
-does not re-enable session access. Native permissions/channels are transient, never restored
+does not restore manual conversation consent. Native permissions/channels are transient, never restored
 or forked. General observer disconnects still only detach; disconnecting the bound native
 capability channel specifically revokes that capability and invalidates its pending calls.
 The macOS app
-implements the local adapter and explicit `/screenshots` session grant; see
+implements the local adapter and on-demand screenshot permission flow; see
 [architecture.md](architecture.md) for its permission flow and verification limits. There is no
 headless capture substitute.
 
