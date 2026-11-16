@@ -7,27 +7,24 @@ struct ConversationView: View {
     @State private var panel: ChatPanel
     let presentation: TranscriptState
     let showsNavigationError: Bool
-    let openRelatedSession: ((UUID) -> Void)?
     @FocusState.Binding var composerFocused: Bool
     @State private var errorHeight: CGFloat = 20
     @State private var composerHeight: CGFloat = 140
 
     init(library: ChatLibrary, conversation: ChatStore, presentation: TranscriptState,
-         focused: FocusState<Bool>.Binding, showsNavigationError: Bool = false, openRelatedSession: ((UUID) -> Void)? = nil) {
+         focused: FocusState<Bool>.Binding, showsNavigationError: Bool = false) {
         self.init(panel: ChatPanel(library: library, conversation: conversation), presentation: presentation,
-                  focused: focused, showsNavigationError: showsNavigationError, openRelatedSession: openRelatedSession)
+                  focused: focused, showsNavigationError: showsNavigationError)
     }
 
     init(panel: ChatPanel, presentation: TranscriptState, focused: FocusState<Bool>.Binding,
-         showsNavigationError: Bool = false, openRelatedSession: ((UUID) -> Void)? = nil) {
+         showsNavigationError: Bool = false) {
         _panel = State(initialValue: panel)
         _composerFocused = focused
         self.presentation = presentation
         self.showsNavigationError = showsNavigationError
-        self.openRelatedSession = openRelatedSession
     }
 
-    private var children: [SessionSummary] { panel.library.childSessions(of: panel.current.currentSessionID) }
     private var error: String? { showsNavigationError ? panel.library.error : panel.current.error }
 
     var body: some View {
@@ -45,17 +42,6 @@ struct ConversationView: View {
             }
         }
         .frame(minWidth: 400, minHeight: 480)
-        .onChange(of: children, initial: true) { _, sessions in
-            presentation.delegatedSessions = sessions
-        }
-        .onAppear {
-            let library = panel.library
-            let open = openRelatedSession
-            presentation.openRelatedSession = { [weak library] id in
-                if let open { open(id) } else { library?.openSession(id) }
-            }
-        }
-        .onDisappear { presentation.openRelatedSession = nil }
         .onExitCommand { if panel.isWorking { panel.stop() } }
         .background(WindowReference { panel.window = $0 })
         .background(ChatWindowTitle(title: panel.title))

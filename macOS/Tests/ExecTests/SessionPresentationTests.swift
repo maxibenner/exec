@@ -240,6 +240,71 @@ private actor SessionReorderTransport: AgentTransport {
         }
     }
 
+    func subagentsResizeTheirNativeParentRowWithoutReplacingIt() async throws {
+        let suite = "exec-sidebar-children-\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let transport = FakeAgentTransport()
+        let parent = try AgentIntegrationTests.fixture(state: "completed", result: true)
+        let neighbor = try newSnapshot()
+        let parentID = AgentIntegrationTests.conversationID
+        var configuration = AgentLibraryConfiguration()
+        configuration.order = [parentID, try neighbor.decoded(AgentSnapshot.self).id]
+        try await transport.reply("/v1/library", try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(configuration)))
+        try await transport.reply("/v1/conversations", .array([parent, neighbor]))
+        let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
+        defer { library.closePresentations() }
+        try library.current.apply(parent.decoded(AgentSnapshot.self))
+        try await library.refreshSharedState()
+        let host = NSHostingView(rootView: SessionSidebar(store: library, open: { library.openSession($0) }, delete: { _ in }))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 260, height: 500),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await expectSidebar(host, rows: 2, selectedRow: -1)
+        func findTable(_ view: NSView) -> NSTableView? {
+            if let table = view as? NSTableView { return table }
+            return view.subviews.lazy.compactMap { findTable($0) }.first
+        }
+        guard let table = findTable(host) else { throw CheckFailure(description: "Missing sidebar table") }
+        let initialHeight = table.rect(ofRow: 0).height
+        let initialNeighborY = table.rect(ofRow: 1).minY
+        let parentRow = table.rowView(atRow: 0, makeIfNecessary: true)
+        let children = try (0..<2).map { index -> AgentJSON in
+            guard case .object(var fields) = try AgentIntegrationTests.fixture(state: "running"),
+                  case .object(var metadata) = fields["metadata"] else { throw CheckFailure(description: "Invalid fixture") }
+            fields["id"] = .string(UUID().uuidString)
+            metadata["title"] = .string("Sub-agent \(index + 1)")
+            metadata["parent"] = .object([
+                "sessionId": .string(parentID.uuidString),
+                "operationId": .string(AgentIntegrationTests.operationID.uuidString),
+                "toolCallId": .string("delegate")])
+            fields["metadata"] = .object(metadata)
+            return .object(fields)
+        }
+        for count in [2, 1, 0] {
+            try await transport.reply("/v1/conversations", .array([parent, neighbor] + Array(children.prefix(count))))
+            try await library.refreshSharedState()
+            var resized = false
+            for _ in 0..<100 {
+                host.layoutSubtreeIfNeeded()
+                let delta = table.rect(ofRow: 0).height - initialHeight
+                if count == 0 ? abs(delta) < 1 : delta >= CGFloat(count * 15) && delta < CGFloat(count * 30) {
+                    resized = true
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            try expect(resized)
+            try expect(table.numberOfRows == 2 && table.selectedRow == -1)
+            try expect(table.rowView(atRow: 0, makeIfNecessary: true) === parentRow)
+            let heightDelta = table.rect(ofRow: 0).height - initialHeight
+            try expect(abs(table.rect(ofRow: 1).minY - initialNeighborY - heightDelta) < 1)
+            try expect(library.sidebarSelectionID == parentID)
+        }
+    }
+
     func deletionIgnoresStreamClosureAndResumesOnFailure() async throws {
         let transport = SessionReadTransport()
         let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)))

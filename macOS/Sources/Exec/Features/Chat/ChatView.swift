@@ -16,7 +16,7 @@ struct ChatView: View {
     var body: some View {
         ConversationView(library: store, conversation: store.current,
                          presentation: windows.presentation(for: store.current),
-                         focused: $composerFocused, showsNavigationError: true, openRelatedSession: { [weak windows] id in windows?.openSession(id) })
+                         focused: $composerFocused, showsNavigationError: true)
             .task(id: ComposerFocusTarget(conversation: ObjectIdentifier(store.current),
                                           request: windows.composerFocusRequest,
                                           navigating: store.navigating,

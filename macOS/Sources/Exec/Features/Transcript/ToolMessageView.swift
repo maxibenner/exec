@@ -37,20 +37,6 @@ struct ToolMessageView: View {
             expanded = value
         }), isRunning: result == nil && !isAwaitingApproval) {
             VStack(alignment: .leading, spacing: 12) {
-                if call.name == "delegate" {
-                    ForEach(state.delegatedSessions.filter { $0.parent?.toolCallId == call.id }) { child in
-                        Button { state.openRelatedSession?(child.id) } label: {
-                            HStack {
-                                Text(verbatim: child.title).lineLimit(1)
-                                if child.awaitingApproval {
-                                    Image(systemName: "hand.raised").foregroundStyle(.orange)
-                                        .accessibilityLabel("Approval required")
-                                }
-                            }
-                        }
-                        .buttonStyle(.link).font(.caption)
-                    }
-                }
                 if let generated = result?.generatedImage {
                     GeneratedImageView(attachment: generated)
                 } else if let screenshot = result?.screenshot, let image = NSImage(data: screenshot.data) {

@@ -297,13 +297,16 @@ task order; ordinary tool calls remain sequential. This reuses the existing agen
   and unreadable records conservatively block asset cleanup. Explicitly forking a
   child creates an independent top-level session, outside the deletion cascade.
 
-Children appear in ordinary catalog/snapshot endpoints while retained. macOS represents
-them within the delegation tool card and as compact, single-line, undated child rows
-attached beneath the parent title without arrow icons, followed by the parent's shortcut,
-workspace and date line. Clicking a child opens its transcript and
+Children appear in ordinary catalog/snapshot endpoints while retained. Delegation tool
+cards show task inputs and results, not links to child sessions. macOS provides compact,
+single-line, undated child rows beneath the parent title, followed by its shortcut,
+workspace and date line. Child rows span the group width, share the parent's horizontal
+padding, and use the footer's font size. Native row height grows and shrinks with the
+children without replacing the parent row. Clicking a child opens its transcript and
 composer; steering uses the child's active operation, including while awaiting approval,
-and never starts a competing turn. Child rows show approval/attention indicators and
-are not standalone sessions or keyboard-shortcut entries. There is no Sub-agents menu
+and never starts a competing turn. Child rows show approval/attention indicators but
+no spinners or arrows, and are not standalone sessions or keyboard-shortcut entries.
+There is no Sub-agents menu
 or parent-navigation button. Children disappear after their results are saved; the
 parent's saved tool result remains. Explicit child deletion returns selection to its
 parent without disabling/dimming the sidebar. Local unsent drafts are preserved if

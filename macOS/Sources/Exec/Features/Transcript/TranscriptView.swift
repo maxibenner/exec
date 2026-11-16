@@ -4,8 +4,6 @@ import Observation
 
 /// Only data survives a conversation switch. No hidden scroll views or row hosts.
 @MainActor @Observable final class TranscriptState {
-    var delegatedSessions: [SessionSummary] = []
-    @ObservationIgnored var openRelatedSession: ((UUID) -> Void)?
     var followsLatest = true
     var jumpRequest = 0
     var trailingInset: CGFloat = 0

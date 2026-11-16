@@ -149,7 +149,7 @@ private struct DetachedConversationView: View {
 
     var body: some View {
         ConversationView(library: windows.library, conversation: conversation, presentation: presentation,
-                         focused: $composerFocused, openRelatedSession: { [weak windows] id in windows?.openSession(id) })
+                         focused: $composerFocused)
             .modifier(SessionCommandScope(windows: windows, conversation: conversation))
             .onAppear { composerFocused = true }
             .onChange(of: windows.library.detachedSessionIDs) { _, _ in windows.closeInvalidWindows() }
