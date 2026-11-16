@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 private actor SessionReadTransport: AgentTransport {
     nonisolated let responses = FakeAgentTransport()
@@ -89,6 +90,13 @@ private actor SessionCreationTransport: AgentTransport {
         let library = try await makeLibrary(transport, preferences: preferences)
         defer { library.closePresentations(); Task { await transport.failCreation() } }
         let first = library.current
+        let host = NSHostingView(rootView: SessionSidebar(store: library, open: { library.openSession($0) }, delete: { _ in }))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 260, height: 500),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await expectSidebar(host, rows: 1, selectedRow: 0)
         library.newConversation()
         let creating = library.current
         try expect(creating !== first && creating.currentSessionID == nil)
@@ -104,6 +112,23 @@ private actor SessionCreationTransport: AgentTransport {
         try expect(creating.error == nil)
         try expect(library.sidebarSessions.map(\.id) == [nextID, first.currentSessionID!])
         try expect(library.sidebarSelectionID == nextID)
+        try await expectSidebar(host, rows: 2, selectedRow: 0)
+    }
+
+    // Exercise the actual native List, not just the catalog backing it.
+    // This verifies reconciliation and selection, not animation appearance.
+    private func expectSidebar(_ host: NSView, rows: Int, selectedRow: Int) async throws {
+        func table(in view: NSView) -> NSTableView? {
+            if let table = view as? NSTableView { return table }
+            return view.subviews.lazy.compactMap { table(in: $0) }.first
+        }
+        for _ in 0..<100 {
+            host.layoutSubtreeIfNeeded()
+            if let table = table(in: host), table.numberOfRows == rows,
+               table.selectedRow == selectedRow { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw CheckFailure(description: "Sidebar did not reconcile native rows and selection")
     }
 
     func creationSelectionClearsOnFailureAndDoesNotStealNavigation() async throws {

@@ -9,45 +9,53 @@ struct SessionSidebar: View {
     @State private var renameID: UUID?
     @State private var renameTitle = ""
 
+    // A presentation snapshot gives asynchronous catalog changes an explicit
+    // transaction before List reconciles its native rows. No timers or delays.
+    @State private var displayedSessions: [SessionSummary]
+
+    init(store: ChatLibrary, open: @escaping (UUID) -> Void,
+         delete: @escaping (SessionSummary) -> Void) {
+        self.store = store
+        self.open = open
+        self.delete = delete
+        _displayedSessions = State(initialValue: store.sidebarSessions)
+    }
+
+    private var selection: Binding<UUID?> {
+        Binding(get: { store.sidebarSelectionID }, set: { id in
+            guard store.canNavigate, let id, id != store.sidebarSelectionID else { return }
+            open(id)
+        })
+    }
+
     var body: some View {
-        let shortcuts = store.sessionShortcuts
-        List {
-            Section {
-                ForEach(store.sidebarSessions) { session in
-                    SessionRow(session: session, store: store,
-                               shortcut: shortcuts.first { $0.session.id == session.id }?.number,
-                               rename: {
-                                   guard store.canNavigate, !store.isSessionRunning(session.id) else { return }
-                                   renameID = session.id; renameTitle = session.title; renaming = true
-                               }, delete: { delete(session) })
-                        // A row-wide Button consumes the mouse tracking needed by onMove.
-                        .onTapGesture { open(session.id) }
-                        .accessibilityAction { open(session.id) }
-                        .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
-                        .listRowBackground(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(store.sidebarSelectionID == session.id
-                                      ? Color.primary.opacity(0.08) : Color.clear)
-                        )
-                        .moveDisabled(!store.canReorderSessions)
-                }
-                .onMove { offsets, destination in
-                    store.moveSidebarSessions(from: offsets, to: destination)
-                }
-                // Attach the transaction to the row collection: macOS List can
-                // reconcile insertions before an outer animation reaches its rows.
-                // Only animate structural changes, not streaming status or titles.
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
-                           value: store.sidebarSessions.map(\.id))
+        let sessions = store.sidebarSessions
+        let shortcutIDs = displayedSessions.prefix(9).map(\.id)
+        List(selection: selection) {
+            ForEach(displayedSessions) { session in
+                SessionRow(session: session, store: store,
+                           shortcut: shortcutIDs.firstIndex(of: session.id).map { $0 + 1 },
+                           rename: {
+                               guard store.canNavigate, !store.isSessionRunning(session.id) else { return }
+                               renameID = session.id; renameTitle = session.title; renaming = true
+                           }, delete: { delete(session) })
+                    .tag(session.id)
+                    .moveDisabled(!store.canReorderSessions)
+            }
+            .onMove { offsets, destination in
+                // Offsets must still refer to the current catalog when a drag ends.
+                guard displayedSessions.map(\.id) == store.sidebarSessions.map(\.id) else { return }
+                store.moveSidebarSessions(from: offsets, to: destination)
             }
         }
         .listStyle(.sidebar)
-        .padding(.horizontal, 10)
-        // Selection is drawn above, not by the native list, so responder changes
-        // cannot flash an accent-colored selection. Shortcuts still navigate sessions.
-        .focusable(false)
-        .disabled(store.authenticating)
-        .allowsHitTesting(store.canNavigate)
+        .onChange(of: sessions) { _, updated in
+            let structuralChange = displayedSessions.map(\.id) != updated.map(\.id)
+            withAnimation(structuralChange && !reduceMotion ? .default : nil) {
+                displayedSessions = updated
+            }
+        }
+        .disabled(!store.canNavigate)
         .alert("Rename Conversation", isPresented: $renaming) {
             TextField("Name", text: $renameTitle)
             Button("Rename") {

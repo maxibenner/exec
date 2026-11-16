@@ -1,6 +1,6 @@
 import Foundation
 
-struct SessionSummary: Identifiable, Sendable {
+struct SessionSummary: Identifiable, Equatable, Sendable {
     let id: UUID
     var title: String
     var customTitle: String?
