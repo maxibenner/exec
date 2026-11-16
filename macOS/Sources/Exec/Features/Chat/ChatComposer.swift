@@ -147,7 +147,7 @@ struct ChatComposer: View {
                 Spacer(minLength: 8)
                 contextUsage
             }
-            .padding(.horizontal, 4)
+            .padding(.bottom, 4)
             .font(.caption).foregroundStyle(.secondary)
             .lineLimit(1)
         }
