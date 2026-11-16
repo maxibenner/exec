@@ -885,12 +885,6 @@ async fn handle(
             if host.stop.is_cancelled() {
                 return Err(ApiError(503, "Service is stopping."));
             }
-            if conversation.busy() {
-                return Err(ApiError(
-                    409,
-                    "Cancel and await the active operation before deleting.",
-                ));
-            }
             options.manager.delete(parts[0]).await?;
             Ok(json_response(200, json!({"deleted":true})))
         }

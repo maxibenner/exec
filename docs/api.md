@@ -279,27 +279,35 @@ task order; ordinary tool calls remain sequential. This reuses the existing agen
   equally among children, with explicit truncation markers. Single-child failure retains
   a failed tool outcome. Batches report each child's success or failure separately and
   keep waiting for siblings; a failed child never retries or cancels another child.
-- After the parent's tool result is durably saved, successfully completed child sessions
-  are automatically deleted. Failed/interrupted children remain inspectable. If the parent
-  is interrupted before saving results, children are retained rather than losing answers.
-  No work is retried automatically.
+- After the parent's tool result is durably saved, child sessions are automatically
+  deleted, including failures and user cancellations. If the parent is interrupted
+  before saving results, children are retained rather than losing answers, unless
+  the user explicitly deletes the family. No work is retried automatically.
 - Parent cancellation cancels the child's operation and waits for its cleanup. Restart
   retains the relationship, marks unfinished operations interrupted and resumes neither.
-  New turns/compaction/deletion on the child are blocked while its managing operation is
+  New turns/compaction on the child are blocked while its managing operation is
   active; ordinary approval, steering and cancellation still use the child's own IDs.
-- Delete children before their parent. Deleting a parent never silently deletes child
-  history. Explicitly forking a child creates an independent top-level session, not another
-  execution of the original delegation.
+- Deleting a running child cancels its operation and waits for executor cleanup; its
+  parent receives a `cancelled by user` tool result and continues without retrying.
+  Deleting a parent cancels the entire family and deletes its sub-agents in the same
+  request, children first. Deletion remains pending until tool cleanup has settled.
+  Storage failures stop the cascade without retrying, retaining
+  the parent for inspection. Managed files, images and shell logs use the existing
+  reference checks: assets referenced by independent sessions/forks are preserved,
+  and unreadable records conservatively block asset cleanup. Explicitly forking a
+  child creates an independent top-level session, outside the deletion cascade.
 
 Children appear in ordinary catalog/snapshot endpoints while retained. macOS represents
 them within the delegation tool card and as compact, single-line, undated child rows
-attached beneath the parent sidebar row. Clicking a child opens its transcript and
+attached beneath the parent title without arrow icons, followed by the parent's shortcut,
+workspace and date line. Clicking a child opens its transcript and
 composer; steering uses the child's active operation, including while awaiting approval,
 and never starts a competing turn. Child rows show approval/attention indicators and
 are not standalone sessions or keyboard-shortcut entries. There is no Sub-agents menu
-or parent-navigation button. Successful children disappear after result cleanup; the
-parent's saved tool result remains. Local unsent drafts are preserved if cleanup occurs
-while the user is composing.
+or parent-navigation button. Children disappear after their results are saved; the
+parent's saved tool result remains. Explicit child deletion returns selection to its
+parent without disabling/dimming the sidebar. Local unsent drafts are preserved if
+automatic cleanup occurs while the user is composing.
 Version-9 records persist this relationship; versions 1–8 remain readable. Low-level
 embedders using `AgentManager::create` retain control over their explicit tool list;
 `create_session` and `fork` require an `Arc<AgentManager>` to install delegation safely.

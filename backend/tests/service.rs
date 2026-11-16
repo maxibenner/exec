@@ -506,7 +506,6 @@ async fn same_conversation_exclusion_cross_conversation_concurrency_explicit_can
             .unwrap_err(),
         Error::Api(409)
     );
-    assert_eq!(f.client.delete(&a.id).await.unwrap_err(), Error::Api(409));
     assert_eq!(
         f.client.submit(&a.id, "duplicate").await.unwrap_err(),
         Error::Api(409)

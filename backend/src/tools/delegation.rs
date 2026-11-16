@@ -24,10 +24,10 @@ async fn run_child(
     check_cancel(&cancel)?;
     if operation.state != OperationState::Completed {
         return Err(failure(format!(
-            "Sub-agent session {} {}. It may have had effects; inspect its transcript.",
+            "Sub-agent session {} {}. It may have had effects. Its session is removed after this result is saved.",
             child.id,
             if operation.state == OperationState::Interrupted {
-                "was interrupted"
+                "was cancelled by user"
             } else {
                 "failed"
             }
@@ -86,7 +86,7 @@ impl Tool for Delegate {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "delegate".into(),
-            description: "Delegate tasks to sub-agent sessions and wait for their final responses. Supply one task, or a tasks array to run up to eight independent tasks concurrently in one call. Each child inherits this session's model, workspace, instructions and approval policy, but not its transcript. Supply all necessary context in each task. Child tools use normal approvals. Sessions share files; this is not filesystem isolation: avoid conflicting edits. Sub-agents cannot delegate, have at most 16 model steps, and at most eight may be created per parent turn. Cancellation stops all children and waits for cleanup. Results are bounded and returned in task order. Successfully completed children are deleted after their results are saved in this session; failed or interrupted children remain available for inspection. A failed child does not retry or cancel siblings. Do not retry failed or interrupted delegation without a new user request.".into(),
+            description: "Delegate tasks to sub-agent sessions and wait for their final responses. Supply one task, or a tasks array to run up to eight independent tasks concurrently in one call. Each child inherits this session's model, workspace, instructions and approval policy, but not its transcript. Supply all necessary context in each task. Child tools use normal approvals. Sessions share files; this is not filesystem isolation: avoid conflicting edits. Sub-agents cannot delegate, have at most 16 model steps, and at most eight may be created per parent turn. Cancellation stops all children and waits for cleanup. Results are bounded and returned in task order. Child sessions are deleted after their results, including failures and user cancellations, are saved in this session. A failed child does not retry or cancel siblings. Do not retry failed or interrupted delegation without a new user request.".into(),
             parameters: schema(serde_json::json!({"task":{"type":"string"},"tasks":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8}}), &[]),
         }
     }
@@ -99,10 +99,10 @@ impl Tool for Delegate {
             }) && child
                 .operation
                 .as_ref()
-                .is_some_and(|op| op.state == OperationState::Completed)
+                .is_some_and(|op| !op.state.active())
             {
                 manager
-                    .delete_completed_child(&child.id, conversation_id, call_id)
+                    .delete_returned_child(&child.id, conversation_id, call_id)
                     .await?;
             }
         }

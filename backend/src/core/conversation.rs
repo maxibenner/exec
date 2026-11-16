@@ -1327,7 +1327,7 @@ impl Conversation {
                 self.changed(&s, s.record.messages.len() - 1);
             }
             self.checkpoint(None).await?;
-            if outcome == ToolOutcome::Completed
+            if matches!(outcome, ToolOutcome::Completed | ToolOutcome::Failed)
                 && let Some(tool) = self.tools.get(&call.name)
             {
                 tool.result_saved(&self.id, &call.id).await?;

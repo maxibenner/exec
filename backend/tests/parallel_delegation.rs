@@ -158,7 +158,7 @@ async fn invalid_batches_never_create_children() {
     }
 }
 #[tokio::test]
-async fn failed_child_does_not_drop_siblings_and_only_successes_are_deleted() {
+async fn failed_child_does_not_drop_siblings_and_returned_sessions_are_deleted() {
     let workspace = directory();
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let mut scripts = vec![response(vec![
@@ -191,12 +191,8 @@ async fn failed_child_does_not_drop_siblings_and_only_successes_are_deleted() {
         .into_iter()
         .filter(|s| s.metadata.parent.is_some())
         .collect();
-    assert_eq!(children.len(), 1);
-    assert_eq!(
-        children[0].operation.as_ref().unwrap().state,
-        OperationState::Failed
-    );
-    assert!(parent.snapshot().messages.iter().any(|m| matches!(m, Message::Tool { text, .. } if text.contains("failed") && text.contains("Sibling completed") && text.contains(&children[0].id))));
+    assert!(children.is_empty());
+    assert!(parent.snapshot().messages.iter().any(|m| matches!(m, Message::Tool { text, .. } if text.contains("failed") && text.contains("Sibling completed"))));
     assert_eq!(provider.count(), 4);
 }
 

@@ -364,8 +364,7 @@ async fn manager_conversations_have_independent_cancellation_and_context() {
             .count(),
         2
     );
-    assert!(manager.delete(&first.id).await.is_err());
-    first.cancel(&run_a.operation_id);
+    manager.delete(&first.id).await.unwrap();
     assert_eq!(complete(run_a).await.state, OperationState::Interrupted);
     assert!(second.busy());
     release.cancel();
@@ -377,7 +376,7 @@ async fn manager_conversations_have_independent_cancellation_and_context() {
         }]
     );
     assert_eq!(a.count(), 1);
-    manager.delete(&first.id).await.unwrap();
+    assert!(manager.get(&first.id).is_err());
     assert_eq!(manager.list().unwrap().len(), 1);
     manager.close().await.unwrap();
 }

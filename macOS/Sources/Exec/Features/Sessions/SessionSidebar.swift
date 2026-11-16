@@ -35,7 +35,6 @@ struct SessionSidebar: View {
             ForEach(displayedSessions) { session in
                 VStack(alignment: .leading, spacing: 2) {
                     SessionRow(session: session, store: store,
-                               shortcut: shortcutIDs.firstIndex(of: session.id).map { $0 + 1 },
                                rename: {
                                    guard store.canNavigate, !store.isSessionRunning(session.id) else { return }
                                    renameID = session.id; renameTitle = session.title; renaming = true
@@ -47,7 +46,6 @@ struct SessionSidebar: View {
                     ForEach(store.childSessions(of: session.id)) { child in
                         Button { activate(child.id) } label: {
                             HStack(spacing: 6) {
-                                Image(systemName: "arrow.turn.down.right").foregroundStyle(.tertiary)
                                 Text(verbatim: child.title).lineLimit(1).truncationMode(.tail)
                                 Spacer(minLength: 0)
                                 if store.needsApproval(child.id) {
@@ -70,9 +68,14 @@ struct SessionSidebar: View {
                         .accessibilityAddTraits(store.sidebarSelectionID == child.id ? [.isSelected] : [])
                         .contextMenu {
                             Button("Delete Sub-agent", role: .destructive) { delete(child) }
-                                .disabled(!store.canDeleteSession(child.id) || store.isSessionRunning(session.id))
+                                .disabled(!store.canDeleteSession(child.id))
                         }
                     }
+                    SessionRowMetadata(session: session, shortcut: shortcutIDs.firstIndex(of: session.id).map { $0 + 1 })
+                        .padding(.top, 3).padding(.bottom, 5)
+                        .contentShape(Rectangle())
+                        .onTapGesture { activate(session.id) }
+                        .accessibilityAction { activate(session.id) }
                 }
                 .listRowBackground(
                     RoundedRectangle(cornerRadius: 6)
@@ -102,9 +105,9 @@ struct SessionSidebar: View {
                 displayedSessions = updated
             }
         }
-        // Do not disable the native table mid-drop. Action guards still prevent
-        // navigation and additional mutations while the order is being persisted.
-        .disabled(!store.canNavigate && !store.isReorderingSessions)
+        // Keep native row appearance stable during deletion and reordering.
+        // Activation/mutation guards block conflicting actions without dimming
+        // and re-enabling the entire list (which flashes all child rows).
         .alert("Rename Conversation", isPresented: $renaming) {
             TextField("Name", text: $renameTitle)
             Button("Rename") {
@@ -117,10 +120,33 @@ struct SessionSidebar: View {
     }
 }
 
+private struct SessionRowMetadata: View {
+    let session: SessionSummary
+    let shortcut: Int?
+
+    var body: some View {
+        HStack {
+            if let shortcut {
+                Text("⌘\(shortcut)").monospacedDigit().fixedSize()
+                    .help("Switch to session (⌘\(shortcut))")
+                    .accessibilityLabel("Keyboard shortcut: Command \(shortcut)")
+            }
+            if let workspace = session.workspace {
+                Text(URL(fileURLWithPath: workspace).lastPathComponent).lineLimit(1).help(workspace)
+            }
+            Spacer(minLength: 4)
+            if !session.unreadable {
+                Text(session.updatedAt, format: .dateTime.month(.abbreviated).day()).fixedSize()
+                    .help(session.updatedAt.formatted(date: .long, time: .shortened))
+            }
+        }
+        .font(.caption2).foregroundStyle(.secondary)
+    }
+}
+
 struct SessionRow: View {
     let session: SessionSummary
     let store: ChatLibrary
-    let shortcut: Int?
     private var running: Bool { store.isSessionRunning(session.id) }
     private var needsApproval: Bool { store.needsApproval(session.id) }
     private var needsAttention: Bool { store.needsAttention(session.id) }
@@ -129,25 +155,8 @@ struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(verbatim: session.title).font(.body.weight(.regular)).lineLimit(2)
-                HStack {
-                    if let shortcut {
-                        Text("⌘\(shortcut)").monospacedDigit().fixedSize()
-                            .help("Switch to session (⌘\(shortcut))")
-                            .accessibilityLabel("Keyboard shortcut: Command \(shortcut)")
-                    }
-                    if let workspace = session.workspace {
-                        Text(URL(fileURLWithPath: workspace).lastPathComponent).lineLimit(1).help(workspace)
-                    }
-                    Spacer(minLength: 4)
-                    if !session.unreadable {
-                        Text(session.updatedAt, format: .dateTime.month(.abbreviated).day()).fixedSize()
-                            .help(session.updatedAt.formatted(date: .long, time: .shortened))
-                    }
-                }
-                .font(.caption2).foregroundStyle(.secondary)
-            }
+            Text(verbatim: session.title).font(.body.weight(.regular)).lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Group {
                 if needsApproval {
                     Image(systemName: "hand.raised").foregroundStyle(.orange)
@@ -168,9 +177,9 @@ struct SessionRow: View {
         .contextMenu {
             Button("Rename…", action: rename).disabled(session.unreadable || store.navigating || running)
             Divider()
-            Button("Delete Conversation", role: .destructive, action: delete).disabled(running)
+            Button("Delete Conversation", role: .destructive, action: delete).disabled(!store.canDeleteSession(session.id))
         }
         .accessibilityAction(named: "Rename Conversation") { if !session.unreadable { rename() } }
-        .accessibilityAction(named: "Delete Conversation") { if !running { delete() } }
+        .accessibilityAction(named: "Delete Conversation") { if store.canDeleteSession(session.id) { delete() } }
     }
 }

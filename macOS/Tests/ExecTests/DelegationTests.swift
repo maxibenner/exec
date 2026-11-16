@@ -62,6 +62,56 @@ import Foundation
         try expect(library.currentSessionID == parentID)
     }
 
+    func parentDeletionRemovesResidentChildrenWithoutWaitingForSync() async throws {
+        for (deleteChild, partialFailure) in [(false, false), (false, true), (true, false)] {
+            let root = try AgentIntegrationTests.fixture(state: "completed", result: true)
+            guard case .object(var fields) = root,
+                  case .object(var metadata) = fields["metadata"] else { throw CheckFailure(description: "Invalid fixture") }
+            let parentID = AgentIntegrationTests.conversationID
+            let childID = UUID()
+            fields["id"] = .string(childID.uuidString)
+            metadata["parent"] = .object([
+                "sessionId": .string(parentID.uuidString),
+                "operationId": .string(AgentIntegrationTests.operationID.uuidString),
+                "toolCallId": .string("delegate")])
+            fields["metadata"] = .object(metadata)
+            if deleteChild {
+                fields["operation"] = .object(["id": .string(AgentIntegrationTests.operationID.uuidString), "state": .string("running")])
+            }
+            let child = AgentJSON.object(fields)
+            let transport = FakeAgentTransport()
+            let config = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(AgentLibraryConfiguration()))
+            try await transport.reply("/v1/library", config)
+            try await transport.reply("/v1/conversations", .array([root, child]))
+            try await transport.reply(AgentAPI.path(childID), child)
+            try await transport.reply(AgentAPI.path(parentID), root)
+            let suite = "exec-cascade-\(UUID())"
+            let preferences = UserDefaults(suiteName: suite)!
+            defer { preferences.removePersistentDomain(forName: suite) }
+            let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
+            defer { library.closePresentations() }
+            try library.current.apply(root.decoded(AgentSnapshot.self))
+            try await library.refreshSharedState()
+            library.openSession(childID)
+            await library.waitForNavigation()
+            try expect(library.currentSessionID == childID)
+            let retainsParent = deleteChild || partialFailure
+            let deletingID = deleteChild ? childID : parentID
+            try await transport.reply("/v1/conversations", .array(retainsParent ? [root] : []))
+            if partialFailure { await transport.fail(AgentAPI.path(parentID)) }
+            library.deleteSession(deletingID)
+            await library.waitForNavigation()
+            try expect(library.currentSessionID != childID)
+            try expect(library.childSessions(of: parentID).isEmpty)
+            try expect(!library.openConversations.contains { $0.currentSessionID == childID })
+            try expect(library.sidebarSessions.map(\.id) == (retainsParent ? [parentID] : []))
+            if retainsParent { try expect(library.currentSessionID == parentID) }
+            let deletions = await transport.requests.filter { $0.method == "DELETE" }
+            try expect(deletions.count == 1 && deletions[0].path == AgentAPI.path(deletingID))
+            try expect((library.error != nil) == partialFailure)
+        }
+    }
+
     func childSteeringUsesExistingOperation() async throws {
         for initiallyIdle in [false, true] {
             let transport = FakeAgentTransport()

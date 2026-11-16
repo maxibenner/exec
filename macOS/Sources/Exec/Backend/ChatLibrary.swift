@@ -568,42 +568,50 @@ import Observation
     }
 
     func canDeleteSession(_ id: UUID) -> Bool {
-        canModify && !isSessionRunning(id) && sessionList.contains { $0.id == id }
+        canModify && sessionList.contains { $0.id == id }
     }
 
     func deleteSession(_ id: UUID) {
         guard canDeleteSession(id) else { return }
         let wasDetached = detachedSessionIDs.contains(id)
         let rows = sidebarSessions.map(\.id)
-        // Deleting a detached conversation must not change the main selection.
-        // Otherwise use visible sidebar order, not activity or resident-cache order.
-        let nextID: UUID? = rows.firstIndex(of: id).flatMap { index in
+        // Child deletion returns to its parent. Top-level deletion uses visible
+        // sidebar order; detached deletions leave the main selection alone.
+        let parentID = sessionList.first { $0.id == id }?.parent?.sessionId
+        let nextID: UUID? = parentID ?? rows.firstIndex(of: id).flatMap { index in
             index + 1 < rows.count ? rows[index + 1] : (index > 0 ? rows[index - 1] : nil)
         }
+        let family = Set([id] + childSessions(of: id).map(\.id))
         navigate(reportingTo: wasDetached ? conversation(id) : nil) {
-            let deleting = self.conversation(id)
-            await deleting?.waitForPendingSave()
+            let deleting = self.openConversations.filter { $0.currentSessionID.map(family.contains) == true }
+            for conversation in deleting { await conversation.waitForPendingSave() }
             try Task.checkCancellation()
-            // The service closes a deleted session's stream before the catalog
-            // request returns. That expected closure is not a transcript failure.
-            deleting?.beginDeletion()
+            // Cascading deletion closes every family member's stream. Pause all
+            // resident presentations, then reconcile against the confirmed catalog.
+            for conversation in deleting { conversation.beginDeletion() }
             defer {
-                if let deleting, self.openConversations.contains(where: { $0 === deleting }) {
-                    deleting.resumeAfterFailedDeletion()
+                for conversation in deleting where self.openConversations.contains(where: { $0 === conversation }) {
+                    conversation.resumeAfterFailedDeletion()
                 }
             }
             var failure: Error?
             do { try await self.sessions.delete(id: id) }
             catch { failure = error }
             self.savedSummaries = try await self.sessions.list()
-            if !self.savedSummaries.contains(where: { $0.id == id }) {
-                // Close the detached window only after deletion is confirmed by
-                // the store. Failed deletion leaves its conversation available.
-                self.detachedSessionIDs.remove(id)
-                self.conversation(id)?.closePresentation()
-                self.openConversations.removeAll { $0.currentSessionID == id }
+            let removed = family.subtracting(self.savedSummaries.map(\.id))
+            let currentRemoved = self.currentSessionID.map(removed.contains) == true
+            self.detachedSessionIDs.subtract(removed)
+            for conversation in deleting where conversation.currentSessionID.map(removed.contains) == true {
+                conversation.closePresentation()
+            }
+            self.openConversations.removeAll { $0.currentSessionID.map(removed.contains) == true }
+            self.sidebarOrder.removeAll { removed.contains($0) }
+            if removed.contains(id) || currentRemoved {
+                // A partial cascade can remove the selected child but retain its
+                // parent. Keep that parent selected so the failure stays inspectable.
+                let destinationID = removed.contains(id) ? nextID : id
                 do {
-                    if !wasDetached, let nextID {
+                    if !wasDetached || parentID != nil, let nextID = destinationID {
                         if let resident = self.conversation(nextID) {
                             self.activate(resident)
                         } else {
@@ -613,13 +621,13 @@ import Observation
                             try Task.checkCancellation()
                             self.activate(next)
                         }
-                    } else if self.currentSessionID == id {
+                    } else if currentRemoved {
                         self.activate(try self.makeConversation())
                     }
                 } catch {
                     // Never leave a deleted conversation active if its neighbor
                     // cannot be restored, or a cold load is cancelled.
-                    if self.currentSessionID == id { self.activate(try self.makeConversation()) }
+                    if self.currentSessionID.map(removed.contains) == true { self.activate(try self.makeConversation()) }
                     throw error
                 }
             }

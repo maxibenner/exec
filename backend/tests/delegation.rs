@@ -133,7 +133,6 @@ async fn delegation_reuses_sessions_without_sharing_context_and_survives_restore
     assert_eq!(saved.model, parent.snapshot().model);
     assert_eq!(saved.workspace, parent.snapshot().workspace);
     assert_eq!(child.record().max_steps, 16);
-    assert!(manager.delete(&parent.id).await.is_err());
     release.cancel();
     assert_eq!(finish(submission).await.state, OperationState::Completed);
     assert!(manager.get(&child.id).is_err());
@@ -204,7 +203,6 @@ async fn parent_cancellation_interrupts_a_child_approval_without_executing_it() 
     let child = child(&manager).await;
     let pending = approval(&child).await;
     assert_eq!(pending.workspace, parent.snapshot().workspace);
-    assert!(matches!(manager.delete(&child.id).await, Err(Error::Busy)));
     assert!(
         manager
             .submit(&child.id, "Another turn".into())
@@ -270,6 +268,89 @@ async fn parent_keeps_ownership_until_child_tool_cleanup_finishes() {
 }
 
 #[tokio::test]
+async fn user_deletion_waits_for_cleanup_and_reports_child_cancellation_to_parent() {
+    for delete_parent in [false, true] {
+        let workspace = directory();
+        let entered = CancellationToken::new();
+        let cancelled = CancellationToken::new();
+        let cleanup = CancellationToken::new();
+        let effect = tool(None, {
+            let entered = entered.clone();
+            let cancelled = cancelled.clone();
+            let cleanup = cleanup.clone();
+            move |context| {
+                let entered = entered.clone();
+                let cancelled = cancelled.clone();
+                let cleanup = cleanup.clone();
+                async move {
+                    entered.cancel();
+                    context.cancel.cancelled().await;
+                    cancelled.cancel();
+                    cleanup.cancelled().await;
+                    Err(Error::Cancelled)
+                }
+            }
+        });
+        let mut scripts = vec![
+            response(vec![delegate("d", "Work"), ProviderEvent::Done]),
+            response(vec![call("effect"), ProviderEvent::Done]),
+        ];
+        if !delete_parent {
+            scripts.push(answer());
+        }
+        let provider = FakeProvider::new(scripts);
+        let manager = Arc::new(AgentManager::default());
+        let parent = root(&manager, provider.clone(), vec![effect], workspace.path()).await;
+        let run = manager.submit(&parent.id, "Delegate".into()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), entered.cancelled())
+            .await
+            .unwrap();
+        let child = child(&manager).await;
+        let deletion = tokio::spawn({
+            let manager = manager.clone();
+            let id = if delete_parent {
+                parent.id.clone()
+            } else {
+                child.id.clone()
+            };
+            async move { manager.delete(&id).await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), cancelled.cancelled())
+            .await
+            .unwrap();
+        assert!(!deletion.is_finished());
+        assert!(child.busy());
+        cleanup.cancel();
+        tokio::time::timeout(Duration::from_secs(5), deletion)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            finish(run).await.state,
+            if delete_parent {
+                OperationState::Interrupted
+            } else {
+                OperationState::Completed
+            }
+        );
+        assert!(!child.busy());
+        assert!(manager.get(&child.id).is_err());
+        assert_eq!(
+            manager.list().unwrap().len(),
+            if delete_parent { 0 } else { 1 }
+        );
+        if !delete_parent {
+            assert!(parent.snapshot().messages.iter().any(
+                |m| matches!(m, Message::Tool { text, .. } if text.contains("cancelled by user"))
+            ));
+            assert!(provider.requests.lock().unwrap()[2].messages.iter().any(|m| matches!(m, ContextMessage::Tool { text, .. } if text.contains("cancelled by user"))));
+        }
+        assert_eq!(provider.count(), if delete_parent { 2 } else { 3 });
+    }
+}
+
+#[tokio::test]
 async fn child_failure_returns_a_failed_tool_result_without_retrying() {
     let workspace = directory();
     let provider = FakeProvider::new(vec![
@@ -285,12 +366,8 @@ async fn child_failure_returns_a_failed_tool_result_without_retrying() {
             .state,
         OperationState::Completed
     );
-    let child = child(&manager).await;
-    assert_eq!(
-        child.snapshot().operation.unwrap().state,
-        OperationState::Failed
-    );
-    assert!(parent.snapshot().messages.iter().any(|m| matches!(m, Message::Tool { text, outcome: ToolOutcome::Failed, .. } if text.contains(&child.id) && text.contains("Do not retry"))));
+    assert_eq!(manager.list().unwrap().len(), 1);
+    assert!(parent.snapshot().messages.iter().any(|m| matches!(m, Message::Tool { text, outcome: ToolOutcome::Failed, .. } if text.contains("Sub-agent session") && text.contains("failed") && text.contains("Do not retry"))));
     assert_eq!(provider.count(), 3);
 }
 

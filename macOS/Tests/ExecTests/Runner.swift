@@ -19,6 +19,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
         let checks: [(String, @MainActor () async throws -> Void)] = [
             ("Child-session navigation preserves approvals without replaying work", { try await DelegationTests().childNavigationPreservesApprovalAndDoesNotReplayWork() }),
             ("Child steering targets the owned operation, including initial snapshot races", { try await DelegationTests().childSteeringUsesExistingOperation() }),
+            ("Deletion reconciles child sessions and returns focus to retained parents", { try await DelegationTests().parentDeletionRemovesResidentChildrenWithoutWaitingForSync() }),
             ("Delegation cards preserve tasks and failures", { try DelegationTests().delegationPresentationPreservesTaskAndFailure() }),
             ("File drops copy bytes and preserve atomic mixed imports", { try await FileAttachmentTests().copiesFilesAndKeepsMixedImportsAtomic() }),
             ("Queued files retain their operation, restore cards and never replay", { try await FileAttachmentTests().queuesFilesWithoutReplayingOrChangingOperation() }),
