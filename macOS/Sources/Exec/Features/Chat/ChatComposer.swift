@@ -89,7 +89,7 @@ struct ChatComposer: View {
             information
                 .padding(.horizontal, 12)
                 .frame(maxWidth: 820)
-                .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12)
+                .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 20)
                 .frame(maxWidth: .infinity)
                 .background { footerBackground }
         }
@@ -147,7 +147,6 @@ struct ChatComposer: View {
                 Spacer(minLength: 8)
                 contextUsage
             }
-            .padding(.bottom, 4)
             .font(.caption).foregroundStyle(.secondary)
             .lineLimit(1)
         }
