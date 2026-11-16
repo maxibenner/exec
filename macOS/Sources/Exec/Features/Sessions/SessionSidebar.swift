@@ -34,12 +34,14 @@ struct SessionSidebar: View {
                 .onMove { offsets, destination in
                     store.moveSidebarSessions(from: offsets, to: destination)
                 }
+                // Attach the transaction to the row collection: macOS List can
+                // reconcile insertions before an outer animation reaches its rows.
+                // Only animate structural changes, not streaming status or titles.
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
+                           value: store.sidebarSessions.map(\.id))
             }
         }
         .listStyle(.sidebar)
-        // Animate structural changes, not streaming status or title updates.
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
-                   value: store.sidebarSessions.map(\.id))
         .padding(.horizontal, 10)
         // Selection is drawn above, not by the native list, so responder changes
         // cannot flash an accent-colored selection. Shortcuts still navigate sessions.
