@@ -10,6 +10,8 @@ import Observation
     var overlayScrollerInset: CGFloat = 0
     @ObservationIgnored weak var scrollView: TranscriptScrollView?
     @ObservationIgnored var anchor: TranscriptLayout.Anchor?
+    // Reserve a viewport for a newly sent turn, including across view remounts.
+    @ObservationIgnored var sentMessageID: UUID?
     @ObservationIgnored var layout = TranscriptLayout()
     @ObservationIgnored var expanded: [UUID: Bool] = [:]
     @ObservationIgnored let markdown = MarkdownCache()
@@ -60,7 +62,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var detached = false
     private var lastSize = CGSize.zero
     private var jumpRequest = 0
-    private var lastMessageID: UUID?
+    private var hasReceivedMessages = false
     private var navigationAnchor: TranscriptLayout.Anchor?
     // Keep the original character across every frame of a width animation;
     // recapturing the start of each newly wrapped line would accumulate drift.
@@ -81,6 +83,7 @@ private struct VirtualTranscript: NSViewRepresentable {
 
     init(state: TranscriptState) {
         self.state = state
+        jumpRequest = state.jumpRequest
         super.init(frame: .zero)
         state.scrollView = self
         drawsBackground = false
@@ -109,11 +112,19 @@ private struct VirtualTranscript: NSViewRepresentable {
         let filtered = messages.filter {
             $0.compaction != nil || $0.role != .assistant || !$0.text.isEmpty || $0.status == .failed
         }
-        if initialized, let last = filtered.last, last.id != lastMessageID, last.role == .user {
-            state.followsLatest = true
+        // Look for the latest user row, not the last visible row: the first
+        // response chunk may arrive in the same SwiftUI update as the send.
+        if hasReceivedMessages, let sent = filtered.last(where: { $0.role == .user }),
+           !self.messages.contains(where: { $0.id == sent.id }) {
+            state.sentMessageID = sent.id
+            state.followsLatest = false
+            navigationAnchor = TranscriptLayout.Anchor(id: sent.id, offset: -Self.navigationPadding)
             requestedScroll = true
         }
-        lastMessageID = filtered.last?.id
+        hasReceivedMessages = true
+        if let id = state.sentMessageID, !filtered.contains(where: { $0.id == id }) {
+            state.sentMessageID = nil
+        }
         if self.messages != filtered {
             readingAnchor = nil
             if state.followsLatest { pendingContentFollow = true }
@@ -121,6 +132,7 @@ private struct VirtualTranscript: NSViewRepresentable {
             self.messages = filtered
         }
         if jumpRequest != self.jumpRequest {
+            state.sentMessageID = nil
             state.followsLatest = true
             self.jumpRequest = jumpRequest
             requestedScroll = true
@@ -175,6 +187,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         }
         navigationAnchor = target.map { TranscriptLayout.Anchor(id: messages[$0].id, offset: -Self.navigationPadding) }
         state.followsLatest = target == nil
+        if target == nil { state.sentMessageID = nil }
         requestedScroll = true
         refresh()
     }
@@ -199,7 +212,9 @@ private struct VirtualTranscript: NSViewRepresentable {
             readingAnchor = nil
             let maximum = max(0, content.bounds.height - contentView.bounds.height)
             let position = min(maximum, max(0, contentView.bounds.minY))
-            let nearBottom = maximum - position <= 40
+            // Reaching the reserved blank space must not opt back into chasing
+            // a streaming answer. Following resumes only on an explicit jump.
+            let nearBottom = state.sentMessageID == nil && maximum - position <= 40
             if state.followsLatest != nearBottom { state.followsLatest = nearBottom }
         }
         rememberAnchor()
@@ -335,9 +350,10 @@ private struct VirtualTranscript: NSViewRepresentable {
             }
             if !changed { break }
         }
-        // Navigation never extends the document. Resume following at the natural
-        // bottom after visible rows have been measured, including in short chats.
-        if navigationAnchor != nil, contentView.bounds.maxY >= content.bounds.height - 1 {
+        // Ordinary navigation clamps to the natural bottom. A newly sent turn
+        // keeps its padded top anchor even while the response area is empty.
+        if state.sentMessageID == nil, navigationAnchor != nil,
+           contentView.bounds.maxY >= content.bounds.height - 1 {
             navigationAnchor = nil
             state.followsLatest = true
         }
@@ -345,8 +361,14 @@ private struct VirtualTranscript: NSViewRepresentable {
         if changed { scheduleRefresh() }
     }
     private func setDocumentSize() {
+        let turnTop = state.sentMessageID.flatMap {
+            state.layout.position(of: TranscriptLayout.Anchor(id: $0, offset: -Self.navigationPadding))
+        } ?? 0
+        // This is a minimum height, not a fixed footer: answers consume the blank
+        // space, then extend naturally below the fold without moving the reader.
         let size = CGSize(width: contentSize.width,
-                          height: max(contentSize.height, state.layout.totalHeight + bottomInset + topInset))
+                          height: max(contentSize.height + turnTop,
+                                      state.layout.totalHeight + bottomInset + topInset))
         if content.frame.size != size { content.setFrameSize(size) }
     }
     private func restore(_ anchor: TranscriptLayout.Anchor?, pinBottom: Bool) {

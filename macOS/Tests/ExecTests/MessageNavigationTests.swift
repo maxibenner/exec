@@ -122,7 +122,9 @@ import AppKit
         b.update(messages: messages, jumpRequest: 0)
         a.navigateSentMessage(.previous)
         try aligned(0, in: a)
-        try expect(first.followsLatest && second.followsLatest)
+        // A receives a new send; B mounts existing history and retains normal
+        // bottom following. New turns do not follow even in a short transcript.
+        try expect(!first.followsLatest && second.followsLatest)
         for direction in [MessageNavigationDirection.previous, .next, .previous] {
             a.navigateSentMessage(direction)
             try expect(a.contentView.bounds.minY == 0)
