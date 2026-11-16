@@ -57,6 +57,7 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .padding(.horizontal, 10)
         // Select conversations without making the sidebar a keyboard-focus target.
         // Conversation shortcuts remain available through SessionCommands.
         .focusable(false)
