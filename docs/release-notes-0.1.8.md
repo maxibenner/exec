@@ -1,0 +1,3 @@
+- Obligatory Rust rewrite and architecture change: cross-platform agent runner and manager in Rust, with a macOS frontend in Swift.
+- Updated and improved remote access using a dedicated relay.
+- Various usability improvements to the macOS frontend.
