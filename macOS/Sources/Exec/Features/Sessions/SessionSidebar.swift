@@ -40,9 +40,6 @@ struct SessionSidebar: View {
                                renameID = session.id; renameTitle = session.title; renaming = true
                            }, delete: { delete(session) })
                     .tag(session.id)
-                    // Keep native selection neutral, including while a mouse click
-                    // briefly gives the sidebar focus before opening the conversation.
-                    .listItemTint(.monochrome)
                     .moveDisabled(!store.canReorderSessions)
             }
             .onMove { offsets, destination in
@@ -52,6 +49,9 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        // Select conversations without making the sidebar a keyboard-focus target.
+        // Conversation shortcuts remain available through SessionCommands.
+        .focusable(false)
         .onChange(of: sessions) { _, updated in
             let structuralChange = displayedSessions.map(\.id) != updated.map(\.id)
             withAnimation(structuralChange && !reduceMotion ? .default : nil) {
