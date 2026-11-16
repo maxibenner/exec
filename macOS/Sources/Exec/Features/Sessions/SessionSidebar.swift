@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SessionSidebar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var store: ChatLibrary
     let open: (UUID) -> Void
     let delete: (SessionSummary) -> Void
@@ -36,6 +37,9 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        // Animate structural changes, not streaming status or title updates.
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
+                   value: store.sidebarSessions.map(\.id))
         .padding(.horizontal, 10)
         // Selection is drawn above, not by the native list, so responder changes
         // cannot flash an accent-colored selection. Shortcuts still navigate sessions.
