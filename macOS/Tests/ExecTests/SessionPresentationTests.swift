@@ -96,7 +96,7 @@ private actor SessionCreationTransport: AgentTransport {
         window.contentView = host
         window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
-        try await expectSidebar(host, rows: 1, selectedRow: 0)
+        try await expectSidebar(host, rows: 1, selectedRow: -1)
         library.newConversation()
         let creating = library.current
         try expect(creating !== first && creating.currentSessionID == nil)
@@ -112,11 +112,13 @@ private actor SessionCreationTransport: AgentTransport {
         try expect(creating.error == nil)
         try expect(library.sidebarSessions.map(\.id) == [nextID, first.currentSessionID!])
         try expect(library.sidebarSelectionID == nextID)
-        try await expectSidebar(host, rows: 2, selectedRow: 0)
+        // The active session changes, but AppKit must have no selected row to
+        // paint with an accent color when the sidebar becomes first responder.
+        try await expectSidebar(host, rows: 2, selectedRow: -1)
     }
 
     // Exercise the actual native List, not just the catalog backing it.
-    // This verifies reconciliation and selection, not animation appearance.
+    // This verifies reconciliation and absence of native selection, not animation appearance.
     private func expectSidebar(_ host: NSView, rows: Int, selectedRow: Int) async throws {
         func table(in view: NSView) -> NSTableView? {
             if let table = view as? NSTableView { return table }
