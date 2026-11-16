@@ -67,6 +67,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Markdown blocks and streaming code", { try MarkdownTests().preservesBlocksAndStreamingCode() }),
             ("Markdown link and image safety", { try MarkdownTests().stripsActiveContentAndUnsafeLinks() }),
             ("Diff column alignment and literal content", { try DiffTests().pairsReplacementsWithoutLosingMarkersOrPlusSigns() }),
+            ("Native sidebar snapshots reuse cells and reject stale or disabled drops", { try await SidebarTableTests().snapshotsReuseCellsAndValidateDrops() }),
             ("Sidebar drops publish immediately and reconcile persistence without retry", { try await SessionPresentationTests().reorderPublishesBeforePersistenceAndReconciles() }),
             ("New session rows and selection arrive together at the top", { try await SessionPresentationTests().newSessionStartsAtTop() }),
             ("Session creation failures and navigation clear temporary selection", { try await SessionPresentationTests().creationSelectionClearsOnFailureAndDoesNotStealNavigation() }),
