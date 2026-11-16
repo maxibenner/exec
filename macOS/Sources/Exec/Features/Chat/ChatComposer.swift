@@ -81,10 +81,6 @@ struct ChatComposer: View {
                 .frame(maxWidth: 820)
                 .padding(.horizontal, 20).padding(.top, 12)
                 .frame(maxWidth: .infinity)
-                .background(alignment: .bottom) {
-                    // Join the footer background behind the input's rounded bottom corners.
-                    footerBackground.frame(height: 12)
-                }
                 .zIndex(1)
             if store.isWorking {
                 information
@@ -156,7 +152,7 @@ struct ChatComposer: View {
         }
         .padding(12)
         .background {
-            RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor))
+            composerBackground
                 .contentShape(Rectangle()).onTapGesture {
                     guard store.canEditDraft else { return }
                     focused = true
@@ -181,6 +177,14 @@ struct ChatComposer: View {
                     return destination.importImages { try await ImageDrop.load(providers) } != nil
                 }
                 .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder private var composerBackground: some View {
+        if #available(macOS 26.0, *) {
+            Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
+        } else {
+            RoundedRectangle(cornerRadius: 12).fill(.regularMaterial)
         }
     }
 
