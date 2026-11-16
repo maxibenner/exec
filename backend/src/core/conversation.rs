@@ -586,12 +586,15 @@ impl Conversation {
             }
             let mut end = s.record.messages.len();
             if automatic {
-                while end > 0 && matches!(&s.record.messages[end - 1], Message::User { .. }) {
+                while end > 0
+                    && (matches!(&s.record.messages[end - 1], Message::User { .. })
+                        || s.record.messages[end - 1].is_compaction())
+                {
                     end -= 1;
                 }
             }
             let history = &s.record.messages[..end];
-            if history.is_empty() {
+            if !history.iter().any(Message::in_context) {
                 return if automatic {
                     Ok(())
                 } else {
@@ -599,7 +602,11 @@ impl Conversation {
                 };
             }
             let messages = context(history);
-            let message_ids=history.iter().filter(|m|!matches!(m,Message::Assistant{status,..} if *status!=MessageStatus::Completed)).map(|m|m.id().to_owned()).collect();
+            let message_ids = history
+                .iter()
+                .filter(|m| m.in_context())
+                .map(|m| m.id().to_owned())
+                .collect();
             ProviderRequest {
                 images: Default::default(),
                 model: s.record.model.clone(),
@@ -617,29 +624,85 @@ impl Conversation {
                 cancel: cancel.clone(),
             }
         };
-        self.checkpoint(None).await?;
-        let history = self.state().record.messages.clone();
-        self.resolve_images(&mut request, &history).await?;
-        let mut compaction = Box::pin(self.provider.compact(request));
-        let state = loop {
-            tokio::select! {biased;
-                _=self.input_arrived.notified()=>{if self.checkpoint(None).await.is_err(){cancel.cancel();}}
-                result=&mut compaction=>break result,
+        let call_id = format!("compaction:{}", new_id());
+        let index = {
+            let mut s = self.state();
+            let index = s.record.messages.len();
+            s.record.messages.push(Message::Assistant {
+                id: new_id(),
+                text: String::new(),
+                calls: vec![ToolCall {
+                    id: call_id.clone(),
+                    name: "compact".into(),
+                    arguments: Default::default(),
+                }],
+                status: MessageStatus::Streaming,
+            });
+            s.record.executing_tool_id = Some(call_id.clone());
+            s.active_tool = Some(call_id.clone());
+            self.changed(&s, index);
+            self.emit(
+                &s,
+                EventKind::ToolStarted {
+                    call_id: call_id.clone(),
+                },
+            );
+            index
+        };
+        let result = AssertUnwindSafe(async {
+            // Persist the activity before starting effectful provider work.
+            self.checkpoint(None).await?;
+            let history = self.state().record.messages.clone();
+            self.resolve_images(&mut request, &history).await?;
+            let mut compaction = Box::pin(self.provider.compact(request));
+            let state = loop {
+                tokio::select! {biased;
+                    _=self.input_arrived.notified()=>{if self.checkpoint(None).await.is_err(){cancel.cancel();}}
+                    result=&mut compaction=>break result,
+                }
+            }?;
+            if self.state().storage_error.is_some() {
+                return Err(Error::Storage);
             }
-        }?;
-        if self.state().storage_error.is_some() {
-            return Err(Error::Storage);
-        }
-        check_cancel(cancel)?;
-        if !valid_json_depth(&state, 0) || serde_json::to_vec(&state)?.len() > 8 * 1024 * 1024 {
-            return Err(Error::Internal);
-        }
+            check_cancel(cancel)?;
+            if !valid_json_depth(&state, 0) || serde_json::to_vec(&state)?.len() > 8 * 1024 * 1024 {
+                return Err(Error::Internal);
+            }
+            {
+                let mut s = self.state();
+                s.record.provider_state = Some(state);
+                s.record.usage = None;
+            }
+            // Do not publish successful compaction before its checkpoint succeeds.
+            self.checkpoint(None).await
+        }).catch_unwind().await.unwrap_or(Err(Error::Internal));
         {
             let mut s = self.state();
-            s.record.provider_state = Some(state);
-            s.record.usage = None;
+            let Message::Assistant { status, .. } = &mut s.record.messages[index] else {
+                unreachable!()
+            };
+            // The call was issued even when its execution failed or was interrupted.
+            *status = MessageStatus::Completed;
+            let (outcome, text) = match &result {
+                Ok(()) => (ToolOutcome::Completed, "Conversation history compacted."),
+                Err(_) if cancel.is_cancelled() => {
+                    (ToolOutcome::Interrupted, "Compaction interrupted.")
+                }
+                Err(_) => (ToolOutcome::Failed, "Compaction failed."),
+            };
+            s.record.messages.push(Message::Tool {
+                id: new_id(),
+                call_id,
+                text: text.into(),
+                outcome,
+                details: None,
+            });
+            s.record.executing_tool_id = None;
+            s.active_tool = None;
+            self.changed(&s, index);
+            self.changed(&s, s.record.messages.len() - 1);
         }
-        self.checkpoint(None).await
+        result
     }
     /// In-memory acceptance, like submit. The runner checkpoints pending input;
     /// no client-side queue or competing execution loop is involved.
@@ -977,8 +1040,12 @@ impl Conversation {
             self.changed(&s, index);
             (
                 ProviderRequest {
-                    images:Default::default(),
-                    message_ids: s.record.messages[..index].iter().filter(|m|!matches!(m, Message::Assistant{status,..} if *status!=MessageStatus::Completed)).map(|m|m.id().to_owned()).collect(),
+                    images: Default::default(),
+                    message_ids: s.record.messages[..index]
+                        .iter()
+                        .filter(|m| m.in_context())
+                        .map(|m| m.id().to_owned())
+                        .collect(),
                     model: s.record.model.clone(),
                     effort: s
                         .record
@@ -996,7 +1063,33 @@ impl Conversation {
                         .unwrap()
                         .instructions(&s.record.workspace, !self.definitions.is_empty()),
                     messages,
-                    tools: {let context=ToolContext{conversation_id:self.id.clone(),operation_id:s.record.operation.as_ref().unwrap().id.clone(),call_id:String::new(),model:s.record.model.clone(),search_model:s.record.configuration.as_ref().unwrap().settings.search_model.clone(),workspace:s.record.workspace.clone(),cancel:cancel.clone()};self.definitions.iter().filter(|d|self.tools.get(&d.name).is_some_and(|t|t.available(&context))).cloned().collect()},
+                    tools: {
+                        let context = ToolContext {
+                            conversation_id: self.id.clone(),
+                            operation_id: s.record.operation.as_ref().unwrap().id.clone(),
+                            call_id: String::new(),
+                            model: s.record.model.clone(),
+                            search_model: s
+                                .record
+                                .configuration
+                                .as_ref()
+                                .unwrap()
+                                .settings
+                                .search_model
+                                .clone(),
+                            workspace: s.record.workspace.clone(),
+                            cancel: cancel.clone(),
+                        };
+                        self.definitions
+                            .iter()
+                            .filter(|d| {
+                                self.tools
+                                    .get(&d.name)
+                                    .is_some_and(|t| t.available(&context))
+                            })
+                            .cloned()
+                            .collect()
+                    },
                     cancel: cancel.clone(),
                 },
                 index,
@@ -1049,6 +1142,7 @@ impl Conversation {
                     }
                     ProviderEvent::ToolCall(call) => {
                         if call.id.is_empty()
+                            || call.id.starts_with("compaction:")
                             || call.name.is_empty()
                             || !known.insert(call.id.clone())
                             || calls.len() >= 64

@@ -72,6 +72,23 @@ async fn automatic_compaction_uses_completed_prefix_keeps_new_input_and_visible_
             .collect::<Vec<_>>()
     );
     assert_eq!(&c.snapshot().messages[..original.len()], &original);
+    assert!(matches!(
+        &c.snapshot().messages[original.len() + 1],
+        Message::Assistant { status: MessageStatus::Completed, calls, .. } if calls[0].name == "compact"
+    ));
+    let requests = p.requests.lock().unwrap();
+    let request = &requests[1];
+    let history = c.snapshot().messages;
+    assert_eq!(request.message_ids.len(), request.messages.len());
+    assert_eq!(
+        request.message_ids,
+        history[..history.len() - 1]
+            .iter()
+            .filter(|m| m.in_context())
+            .map(|m| m.id().to_owned())
+            .collect::<Vec<_>>()
+    );
+    drop(requests);
     assert!(
         matches!(p.requests.lock().unwrap()[1].messages.last(),Some(ContextMessage::User{text}) if text=="second")
     );
@@ -95,6 +112,39 @@ async fn manual_compaction_is_exclusive_cancellable_and_keeps_original_on_failur
     let run = c.compact().unwrap();
     p.entered.cancelled().await;
     assert!(c.submit("overlap".into()).is_err());
+    assert!(matches!(
+        c.snapshot().messages.last(),
+        Some(Message::Assistant { status: MessageStatus::Streaming, calls, .. }) if calls[0].name == "compact"
+    ));
+    let pending = c.snapshot();
+    let Message::Assistant { calls, .. } = pending.messages.last().unwrap() else {
+        panic!("missing call")
+    };
+    assert_eq!(
+        pending.active_tool_call_id.as_deref(),
+        Some(calls[0].id.as_str())
+    );
+    let wire = serde_json::to_value(&pending).unwrap();
+    assert_eq!(
+        wire["messages"].as_array().unwrap().last().unwrap()["role"],
+        "assistant"
+    );
+    assert_eq!(
+        wire["activeToolCallID"],
+        wire["messages"].as_array().unwrap().last().unwrap()["calls"][0]["id"]
+    );
+    let pending_call = pending.messages.last().unwrap().clone();
+    let recovered = c.record().recover().unwrap();
+    recovered.validate().unwrap();
+    assert!(matches!(
+        recovered.messages.last(),
+        Some(Message::Tool {
+            outcome: ToolOutcome::Interrupted,
+            ..
+        })
+    ));
+    assert_eq!(recovered.provider_state, original);
+    assert_eq!(recovered.messages[history.len()].id(), pending_call.id());
     assert!(
         c.steer(
             &run.operation_id,
@@ -108,7 +158,14 @@ async fn manual_compaction_is_exclusive_cancellable_and_keeps_original_on_failur
         OperationState::Interrupted
     );
     assert_eq!(c.record().provider_state, original);
-    assert_eq!(c.snapshot().messages, history);
+    assert_eq!(&c.snapshot().messages[..history.len()], &history);
+    assert!(matches!(
+        c.snapshot().messages.last(),
+        Some(Message::Tool {
+            outcome: ToolOutcome::Interrupted,
+            ..
+        })
+    ));
     p.hold.store(false, Ordering::SeqCst);
     p.fail.store(true, Ordering::SeqCst);
     assert_eq!(
@@ -116,6 +173,13 @@ async fn manual_compaction_is_exclusive_cancellable_and_keeps_original_on_failur
         OperationState::Failed
     );
     assert_eq!(c.record().provider_state, original);
+    assert!(matches!(
+        c.snapshot().messages.last(),
+        Some(Message::Tool {
+            outcome: ToolOutcome::Failed,
+            ..
+        })
+    ));
     assert_eq!(p.requests.lock().unwrap().len(), 1);
 }
 #[tokio::test]
@@ -249,7 +313,15 @@ async fn manual_compaction_api_receipt_and_opaque_checkpoint_survive_restart() {
         compacted.operation.unwrap().state,
         OperationState::Completed
     );
-    assert_eq!(compacted.messages, history);
+    assert_eq!(&compacted.messages[..history.len()], &history);
+    assert!(matches!(
+        compacted.messages.last(),
+        Some(Message::Tool {
+            outcome: ToolOutcome::Completed,
+            ..
+        })
+    ));
+    let history = compacted.messages;
     assert!(compacted.context_usage.is_none());
     service.close().await.unwrap();
     let service = start_persistent_service(
@@ -276,4 +348,66 @@ async fn manual_compaction_api_receipt_and_opaque_checkpoint_survive_restart() {
     .unwrap();
     assert!(disk["providerState"].get("compacted").is_some());
     service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn repeated_compaction_excludes_activity_and_serializes_its_schema() {
+    let p = Arc::new(Provider::default());
+    let c = support::conversation(p.clone(), vec![]);
+    support::complete(c.submit("first".into()).unwrap()).await;
+    support::complete(c.compact().unwrap()).await;
+    let snapshot = c.snapshot();
+    let call = &snapshot.messages[snapshot.messages.len() - 2];
+    let row = snapshot.messages.last().unwrap().clone();
+    let json = serde_json::to_value(&row).unwrap();
+    let call_json = serde_json::to_value(call).unwrap();
+    assert_eq!(call_json["role"], "assistant");
+    assert_eq!(call_json["calls"][0]["name"], "compact");
+    assert_eq!(call_json["calls"][0]["arguments"], json!({}));
+    assert_eq!(json["role"], "tool");
+    assert_eq!(json["callID"], call_json["calls"][0]["id"]);
+    assert_eq!(json["outcome"], "completed");
+    assert_eq!(serde_json::from_value::<Message>(json).unwrap(), row);
+    support::complete(c.compact().unwrap()).await;
+    support::complete(c.submit("next".into()).unwrap()).await;
+    let compactions = p.compactions.lock().unwrap();
+    assert_eq!(compactions[0].message_ids, compactions[1].message_ids);
+    assert_eq!(compactions[0].messages, compactions[1].messages);
+    for request in p.requests.lock().unwrap().iter().chain(compactions.iter()) {
+        assert_eq!(request.messages.len(), request.message_ids.len());
+        assert!(!request.message_ids.contains(&row.id().to_owned()));
+    }
+}
+
+#[tokio::test]
+async fn automatic_failure_and_cancellation_publish_terminal_activity() {
+    for interrupted in [false, true] {
+        let p = Arc::new(Provider::default());
+        let c = support::conversation(p.clone(), vec![]);
+        support::complete(c.submit("first".into()).unwrap()).await;
+        let original = c.record().provider_state;
+        p.hold.store(interrupted, Ordering::SeqCst);
+        p.fail.store(!interrupted, Ordering::SeqCst);
+        let run = c.submit("next".into()).unwrap();
+        if interrupted {
+            p.entered.cancelled().await;
+            assert!(matches!(
+                c.snapshot().messages.last(),
+                Some(Message::Assistant { status: MessageStatus::Streaming, calls, .. }) if calls[0].name == "compact"
+            ));
+            assert!(c.cancel(&run.operation_id));
+        }
+        support::complete(run).await;
+        let expected = if interrupted {
+            ToolOutcome::Interrupted
+        } else {
+            ToolOutcome::Failed
+        };
+        assert!(
+            matches!(c.snapshot().messages.last(), Some(Message::Tool { outcome, .. }) if *outcome == expected)
+        );
+        assert_eq!(c.record().provider_state, original);
+        c.record().validate().unwrap();
+        assert_eq!(p.requests.lock().unwrap().len(), 1);
+    }
 }

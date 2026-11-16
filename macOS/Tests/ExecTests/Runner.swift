@@ -54,6 +54,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Near-bottom scrolling does not snap to the edge", { try TranscriptTests().preservesNearBottomScrolling() }),
             ("Virtual transcript geometry and scroll anchors", { try TranscriptTests().geometryPreservesAnchors() }),
             ("Virtual transcript mounts only viewport rows", { try await TranscriptTests().mountsBoundedRowsAndRestoresPosition() }),
+            ("Backend compaction snapshots preserve activity and status", { try AgentIntegrationTests().compactionSnapshotsPreserveActivity() }),
             ("Compaction rows remain visible without assistant text", { try TranscriptTests().compactionRowsRemainVisibleWithoutAssistantText() }),
             ("Read file headers show actual line ranges", { try ReadFileSummaryTests().showsActualReturnedLines() }),
             ("Account usage remaining allowance and expiry", { try AccountUsageLabelTests().remainingAllowanceAndExpiry() }),

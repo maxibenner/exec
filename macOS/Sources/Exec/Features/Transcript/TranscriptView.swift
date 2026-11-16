@@ -481,8 +481,8 @@ private struct MessageView: View, Equatable {
     }
 
     var body: some View {
-        if let trigger = message.compaction {
-            CompactionMessageView(trigger: trigger, status: message.status)
+        if message.compaction != nil {
+            CompactionMessageView(status: message.status)
         } else if let call = message.pendingTool?.call ?? message.toolResult?.call {
             ToolMessageView(call: call, result: message.toolResult,
                             isAwaitingApproval: message.pendingTool?.isAwaitingApproval == true,

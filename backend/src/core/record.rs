@@ -119,7 +119,9 @@ impl ConversationRecord {
                     if index == 0
                         || !pending.is_empty()
                         || batch.len() > 64
-                        || (*status != MessageStatus::Completed && !batch.is_empty())
+                        || (*status != MessageStatus::Completed
+                            && !batch.is_empty()
+                            && !(message.is_compaction() && *status == MessageStatus::Streaming))
                     {
                         return Err(bad);
                     }
@@ -246,10 +248,15 @@ impl ConversationRecord {
             && op.state.active()
         {
             for message in &mut self.messages {
+                let compaction = message.is_compaction();
                 if let Message::Assistant { status, .. } = message
                     && *status == MessageStatus::Streaming
                 {
-                    *status = MessageStatus::Interrupted;
+                    *status = if compaction {
+                        MessageStatus::Completed
+                    } else {
+                        MessageStatus::Interrupted
+                    };
                 }
             }
             finish_missing_results(&mut self.messages, self.executing_tool_id.as_deref());

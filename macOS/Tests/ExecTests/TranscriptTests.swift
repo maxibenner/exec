@@ -37,10 +37,10 @@ import SwiftUI
             return host.fittingSize
         }
         for width: CGFloat in [320, 700] {
-            for trigger in [Message.Compaction.manual, .automatic] {
-                let resting = size(CompactionMessageView(trigger: trigger, status: .complete), width: width)
+            do {
+                let resting = size(CompactionMessageView(status: .complete), width: width)
                 for status in [Message.Status.streaming, .interrupted, .failed] {
-                    try expect(size(CompactionMessageView(trigger: trigger, status: status), width: width) == resting)
+                    try expect(size(CompactionMessageView(status: status), width: width) == resting)
                 }
             }
             // Every tool uses the same card, including specialized output views.

@@ -86,6 +86,32 @@ pub enum Message {
     },
 }
 impl Message {
+    /// Runtime-owned call IDs reserve this namespace for transcript-only activity.
+    /// Both halves use ordinary wire roles so existing clients can render them.
+    pub fn is_compaction(&self) -> bool {
+        match self {
+            Self::Assistant { calls, .. } => {
+                calls.len() == 1
+                    && calls[0].name == "compact"
+                    && calls[0].id.starts_with("compaction:")
+            }
+            Self::Tool { call_id, .. } => call_id.starts_with("compaction:"),
+            _ => false,
+        }
+    }
+    /// Keep transcript-only activity out of both provider messages and parallel IDs.
+    pub fn in_context(&self) -> bool {
+        !self.is_compaction()
+            && matches!(
+                self,
+                Self::User { .. }
+                    | Self::Tool { .. }
+                    | Self::Assistant {
+                        status: MessageStatus::Completed,
+                        ..
+                    }
+            )
+    }
     pub fn id(&self) -> &str {
         match self {
             Self::User { id, .. } | Self::Assistant { id, .. } | Self::Tool { id, .. } => id,
@@ -119,6 +145,7 @@ pub enum ContextMessage {
 pub fn context(messages: &[Message]) -> Vec<ContextMessage> {
     messages
         .iter()
+        .filter(|m| m.in_context())
         .filter_map(|m| match m {
             Message::User { text, files, .. } => Some(ContextMessage::User {
                 text: super::file_context(text, files),

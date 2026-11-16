@@ -26,7 +26,11 @@ struct ToolMessageView: View {
     }
 
     var body: some View {
-        card
+        if call.name == "compact", call.id.hasPrefix("compaction:") {
+            CompactionMessageView(status: result == nil ? .streaming : .complete)
+        } else {
+            card
+        }
     }
 
     private var card: some View {

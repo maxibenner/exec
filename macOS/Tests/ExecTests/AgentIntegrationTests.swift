@@ -49,6 +49,34 @@ actor FakeAgentTransport: AgentTransport {
     }
     static let apiToken = String(repeating: "1", count: 64)
     static let nativeToken = String(repeating: "2", count: 64)
+    func compactionSnapshotsPreserveActivity() throws {
+        let assistantID = UUID(), resultID = UUID()
+        let callID = "compaction:\(UUID().uuidString)"
+        var pendingIDs: [String: UUID] = [:]
+        for outcome in [nil, "completed", "failed", "interrupted"] as [String?] {
+            var messages: [AgentJSON] = [.object([
+                "id": .string(assistantID.uuidString), "role": .string("assistant"),
+                "text": .string(""), "status": .string(outcome == nil ? "streaming" : "completed"),
+                "calls": .array([.object(["id": .string(callID), "name": .string("compact"), "arguments": .object([:])])])
+            ])]
+            if let outcome {
+                messages.append(.object(["id": .string(resultID.uuidString), "role": .string("tool"),
+                    "callID": .string(callID), "text": .string(""), "outcome": .string(outcome)]))
+            }
+            guard case .object(var fixture) = try Self.fixture(state: "completed", result: true) else {
+                throw CheckFailure(description: "Expected a snapshot fixture")
+            }
+            fixture["messages"] = .array(messages)
+            fixture["activeToolCallID"] = outcome == nil ? .string(callID) : .null
+            let snapshot = try AgentJSON.object(fixture).decoded(AgentSnapshot.self)
+            let rows = try snapshot.transcript(images: [:], pendingIDs: &pendingIDs)
+            try expect(rows.count == 2 && rows[0].id == assistantID)
+            try expect(rows[1].id == pendingIDs[callID])
+            try expect((rows[1].pendingTool != nil) == (outcome == nil))
+            try expect(rows[1].toolResult?.outcome == outcome)
+        }
+    }
+
     func httpConfiguration() throws {
         let configuration = try AgentHTTPConfiguration()
         let another = try AgentHTTPConfiguration()
