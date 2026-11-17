@@ -22,21 +22,37 @@ struct ToolApprovalView: View {
                 Button("Deny") {
                     if canResolve() { executor.resolveApproval(id: approval.id, approved: false) }
                 }
+                .buttonStyle(ApprovalButtonStyle())
                 Button("Approve Once") {
                     if canResolve() { executor.resolveApproval(id: approval.id, approved: true) }
                 }
-                    .buttonStyle(.borderedProminent)
+                .buttonStyle(ApprovalButtonStyle(prominent: true))
                 // Deliberately not the default Return action: approval must be explicit.
             }
         }
         .padding(12)
         .background(Color.white, in: RoundedRectangle(cornerRadius: 10))
         .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.12)) }
-        .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
         .environment(\.colorScheme, .light)
         .frame(maxWidth: 820)
         .padding(.horizontal, 20).padding(.top, 8)
         .frame(maxWidth: .infinity)
+    }
+
+    private struct ApprovalButtonStyle: ButtonStyle {
+        var prominent = false
+        @Environment(\.isEnabled) private var isEnabled
+
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .foregroundStyle(prominent ? Color.white : Color.primary)
+                .background(prominent ? Color.accentColor : Color.primary.opacity(0.06),
+                            in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(RoundedRectangle(cornerRadius: 6))
+                .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
+        }
     }
 
     private var previewHeight: CGFloat {
