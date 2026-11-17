@@ -38,6 +38,7 @@ async fn setup(
             Some("fake".into()),
             workspace.to_string_lossy().into_owned(),
             None,
+            vec![],
         )
         .await
         .unwrap();

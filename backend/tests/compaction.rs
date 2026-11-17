@@ -473,3 +473,22 @@ async fn automatic_failure_and_cancellation_publish_terminal_activity() {
         assert_eq!(p.requests.lock().unwrap().len(), 1);
     }
 }
+
+#[tokio::test]
+async fn compaction_does_not_advertise_disabled_tools() {
+    let provider = Arc::new(Provider::default());
+    let mut options = support::options(
+        provider.clone(),
+        vec![support::tool(None, |_| async {
+            panic!("disabled tool executed")
+        })],
+    );
+    options.metadata.disabled_tools = vec!["change".into()];
+    let c = Conversation::new(options, None).unwrap();
+    support::complete(c.submit("first".into()).unwrap()).await;
+    assert_eq!(
+        support::complete(c.compact().unwrap()).await.state,
+        OperationState::Completed
+    );
+    assert!(provider.compactions.lock().unwrap()[0].tools.is_empty());
+}

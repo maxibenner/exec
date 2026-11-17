@@ -100,6 +100,7 @@ struct AgentSessionParent: Decodable, Equatable, Sendable {
     let toolCallId: String
 }
 struct AgentMetadata: Decodable, Sendable {
+    let disabledTools: [String]?
     let parent: AgentSessionParent?
     let title: String?
     let manuallyNamed: Bool

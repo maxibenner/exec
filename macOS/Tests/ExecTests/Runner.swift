@@ -17,6 +17,11 @@ func expectFailure(_ operation: () throws -> Void) throws {
 @main struct TestRunner {
     @MainActor static func main() async {
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Session tools default enabled and accept all ten selections", { try await SessionToolSelectionTests().defaultsAndAllToolNames() }),
+            ("Session tool snapshots replace selection and support legacy metadata", { try SessionToolSelectionTests().snapshotsReplaceSelectionAndSupportLegacyMetadata() }),
+            ("Session tool creation and re-enabling persist through normal saves", { try await SessionToolSelectionTests().creationAndReenablePersistThroughNormalSave() }),
+            ("Busy sessions and sub-agents cannot change tool selection", { try await SessionToolSelectionTests().busySessionsAndChildrenCannotToggle() }),
+            ("New conversations copy tool selection without sharing later changes", { try await SessionToolSelectionTests().newConversationsCopySelectionWithoutSharingChanges() }),
             ("Incremental delegation keeps one active result card", { try DelegationProgressTests().projectsIncrementalResultsInOneActiveCard() }),
             ("Delegation preserves results through cleanup and disclosure changes", { try DelegationProgressTests().preservesResultsThroughCleanupFailureAndDisclosureChanges() }),
             ("Delegation sync replaces results without replaying work", { try await DelegationProgressTests().syncReplacesPartialAndFinalResultsWithoutReplayingWork() }),

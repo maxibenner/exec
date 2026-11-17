@@ -329,6 +329,36 @@ impl Conversation {
         })
         .await
     }
+    /// Tool policy uses the same idle-only, durable boundary as session settings.
+    pub async fn update_disabled_tools(
+        self: &Arc<Self>,
+        disabled_tools: Vec<String>,
+    ) -> Result<ConversationSnapshot> {
+        self.mutate_record(move |record| {
+            if record.metadata.parent.is_some() {
+                return Err(Error::Invalid(
+                    "Sub-agents inherit their parent's tool selection.",
+                ));
+            }
+            if disabled_tools
+                .iter()
+                .any(|name| !self.tools.contains_key(name))
+            {
+                return Err(Error::Invalid("Unknown disabled tool."));
+            }
+            record.metadata.disabled_tools = disabled_tools;
+            Ok(())
+        })
+        .await
+    }
+    fn enabled_definitions<'a>(
+        &'a self,
+        record: &'a ConversationRecord,
+    ) -> impl Iterator<Item = &'a ToolDefinition> {
+        self.definitions
+            .iter()
+            .filter(|d| record.metadata.tool_enabled(&d.name))
+    }
     pub(crate) async fn mutate_record(
         self: &Arc<Self>,
         mutate: impl FnOnce(&mut ConversationRecord) -> Result<()>,
@@ -732,15 +762,13 @@ impl Conversation {
                     .map(|m| m.id().to_owned())
                     .collect(),
                 messages,
-                instructions: s
-                    .record
-                    .configuration
-                    .as_ref()
-                    .unwrap()
-                    .instructions(&s.record.workspace, !self.definitions.is_empty()),
+                instructions: s.record.configuration.as_ref().unwrap().instructions(
+                    &s.record.workspace,
+                    self.enabled_definitions(&s.record).next().is_some(),
+                ),
                 effort: None,
                 provider_state: s.record.provider_state.clone(),
-                tools: self.definitions.clone(),
+                tools: self.enabled_definitions(&s.record).cloned().collect(),
                 cancel: cancel.clone(),
             }
         };
@@ -1199,12 +1227,10 @@ impl Conversation {
                         .effort
                         .clone(),
                     provider_state: s.record.provider_state.clone(),
-                    instructions: s
-                        .record
-                        .configuration
-                        .as_ref()
-                        .unwrap()
-                        .instructions(&s.record.workspace, !self.definitions.is_empty()),
+                    instructions: s.record.configuration.as_ref().unwrap().instructions(
+                        &s.record.workspace,
+                        self.enabled_definitions(&s.record).next().is_some(),
+                    ),
                     messages,
                     tools: {
                         let context = ToolContext {
@@ -1223,8 +1249,7 @@ impl Conversation {
                             workspace: s.record.workspace.clone(),
                             cancel: cancel.clone(),
                         };
-                        self.definitions
-                            .iter()
+                        self.enabled_definitions(&s.record)
                             .filter(|d| {
                                 self.tools
                                     .get(&d.name)
@@ -1467,7 +1492,10 @@ impl Conversation {
             // Finish calls from the current response before injecting steering.
             // Input must not invalidate preparation, approval or execution in flight.
             if !cancel.is_cancelled() {
-                if let Some(tool) = self.tools.get(&call.name) {
+                if !self.state().record.metadata.tool_enabled(&call.name) {
+                    outcome = ToolOutcome::NotExecuted;
+                    text = "Tool is disabled for this session. Nothing was executed. Do not retry without a new user request.".into();
+                } else if let Some(tool) = self.tools.get(&call.name) {
                     let mut started = false;
                     let action = AssertUnwindSafe(async {
                         let workspace = self.state().record.workspace.clone();
