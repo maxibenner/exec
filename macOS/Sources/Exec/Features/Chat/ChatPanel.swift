@@ -84,13 +84,28 @@ import Observation
                                 configuration: NSWorkspace.OpenConfiguration())
     }
 
+    private var initialWorkspaceConversation: ChatStore {
+        current === library.current ? library.pendingNewConversation ?? current : current
+    }
+
     var shouldChooseInitialWorkspace: Bool {
-        current.needsInitialWorkspaceSelection && workspace == nil && canChooseWorkspace && window != nil
+        let conversation = initialWorkspaceConversation
+        return conversation.needsInitialWorkspaceSelection && conversation.workspace == nil &&
+            conversation.canSelectWorkspace && canNavigate && !isChoosingWorkspace && window != nil
     }
 
     func chooseInitialWorkspaceIfNeeded() {
         guard shouldChooseInitialWorkspace else { return }
-        chooseWorkspace()
+        if initialWorkspaceConversation === current {
+            chooseWorkspace()
+        } else {
+            // Attach the pending session's picker to the existing window without
+            // replacing its transcript or composer with an empty conversation.
+            let panel = ChatPanel(library: library, conversation: initialWorkspaceConversation,
+                                  presentWorkspacePicker: presentWorkspacePicker)
+            panel.window = window
+            panel.chooseWorkspace()
+        }
     }
 
     func chooseWorkspace() {
@@ -101,7 +116,11 @@ import Observation
         isChoosingWorkspace = true
         presentWorkspacePicker(window, workspace?.root) { [self] url in
             isChoosingWorkspace = false
-            guard let url, canSelectWorkspace else { return }
+            guard let url else {
+                library.cancelNewConversation(current)
+                return
+            }
+            guard canSelectWorkspace else { return }
             selectWorkspace(url)
         }
     }

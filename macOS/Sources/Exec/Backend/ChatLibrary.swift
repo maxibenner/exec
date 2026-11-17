@@ -17,7 +17,7 @@ import Observation
     private var sidebarOrder: [UUID] = []
     private var pendingSidebarOrder: [UUID]?
     var isReorderingSessions: Bool { pendingSidebarOrder != nil }
-    private var sidebarSelectionBeforeCreation: UUID?
+    private(set) var pendingNewConversation: ChatStore?
     private var catalogRequest = 0
     private(set) var openConversations: [ChatStore] = []
     private(set) var detachedSessionIDs: Set<UUID> = []
@@ -171,13 +171,7 @@ import Observation
     func searchModels(for providerID: String) -> [ChatModel] { searchModels.filter { provider.providerID(for: $0.id) == providerID } }
     func providerName(for model: String) -> String { connections.first { $0.id == provider.providerID(for: model) }?.name ?? "" }
     var currentSessionID: UUID? { current.currentSessionID }
-    var sidebarSelectionID: UUID? {
-        if let id = openingSessionID ?? currentSessionID { return id }
-        guard current.error == nil, !current.hasUnsavedChanges else { return nil }
-        // Keep the old highlight until the create snapshot supplies both the new
-        // row and its selection. Do not show a frame with neither row selected.
-        return sidebarSelectionBeforeCreation
-    }
+    var sidebarSelectionID: UUID? { openingSessionID ?? currentSessionID }
     var canNavigate: Bool { !authenticating && (!navigating || openingSessionID != nil) }
     private var canModify: Bool { !navigating && !authenticating }
     var canReorderSessions: Bool { canModify }
@@ -189,8 +183,16 @@ import Observation
             savedSummaries.contains { conversation($0.id) == nil && $0.isRunning }
     }
     var error: String? {
-        get { navigationError ?? current.error ?? modelRefreshError }
-        set { navigationError = nil; modelRefreshError = nil; current.error = newValue }
+        get { navigationError ?? pendingNewConversation?.error ?? current.error ?? modelRefreshError }
+        set {
+            navigationError = nil
+            modelRefreshError = nil
+            if let pendingNewConversation, pendingNewConversation.error != nil {
+                pendingNewConversation.error = nil
+                cancelNewConversation(pendingNewConversation)
+            }
+            current.error = newValue
+        }
     }
     private var conversations: [ChatStore] {
         var result = openConversations
@@ -402,6 +404,7 @@ import Observation
 
     func openSession(_ id: UUID, onOpened: @escaping @MainActor () -> Void = {}) {
         guard canNavigate, !detachedSessionIDs.contains(id) else { return }
+        if let pendingNewConversation { cancelNewConversation(pendingNewConversation) }
         cancelOpening()
         navigationError = nil
         if let existing = conversation(id) {
@@ -452,24 +455,42 @@ import Observation
 
     func newConversation(onCreated: @escaping @MainActor () -> Void = {}) {
         guard canNavigate else { return }
+        if let pendingNewConversation,
+           !pendingNewConversation.needsInitialWorkspaceSelection, pendingNewConversation.error == nil { return }
         cancelOpening()
         navigationError = nil
+        if let pendingNewConversation { cancelNewConversation(pendingNewConversation) }
         do {
             let next = try makeConversation()
             let checkpoint = next.didCheckpoint
-            next.didCheckpoint = { [weak next] in
-                guard let next else { return }
+            next.didCheckpoint = { [weak self, weak next] in
+                guard let self, let next else { return }
                 // A blank may wait for workspace/model selection. Only its first
                 // confirmed save is creation, not activation or a catalog refresh.
                 if next.currentSessionID != nil {
                     next.didCheckpoint = checkpoint
+                    // Only a confirmed creation may replace the visible conversation.
+                    // Explicit navigation while it was pending takes precedence.
+                    if self.pendingNewConversation === next { self.activate(next) }
                     onCreated()
                 }
                 try await checkpoint?()
             }
             next.requestInitialWorkspaceSelection()
-            activate(next, preserveSidebarSelection: true)
+            pendingNewConversation = next
+            remember(next)
         } catch { navigationError = error.localizedDescription }
+    }
+
+    func cancelNewConversation(_ conversation: ChatStore) {
+        guard pendingNewConversation === conversation else { return }
+        pendingNewConversation = nil
+        // Never discard a request in flight or an uncertain save.
+        if conversation.currentSessionID == nil, conversation.workspace == nil,
+           !conversation.isSaving, !conversation.hasUnsentDraft {
+            conversation.closePresentation()
+            openConversations.removeAll { $0 === conversation }
+        }
     }
 
     /// Evict least recently visited idle sessions; runners and unsaved input never
@@ -477,7 +498,7 @@ import Observation
     private func trimConversations() {
         for conversation in openConversations {
             guard openConversations.count > residentLimit else { break }
-            guard conversation !== current,
+            guard conversation !== current, conversation !== pendingNewConversation,
                   conversation.currentSessionID.map(detachedSessionIDs.contains) != true,
                   !conversation.busy, !conversation.isSaving,
                   !conversation.hasUnsentDraft, !conversation.hasUnsavedChanges else { continue }
@@ -487,8 +508,9 @@ import Observation
     }
 
     func selectWorkspace(_ url: URL, in destination: ChatStore? = nil) {
-        let destination = destination ?? current
-        guard canModify, destination.canSelectWorkspace else { return }
+        let destination = destination ?? pendingNewConversation ?? current
+        guard canModify, destination.canSelectWorkspace,
+              openConversations.contains(where: { $0 === destination }) else { return }
         navigate(reportingTo: destination) {
             let loading = Task.detached(priority: .userInitiated) { try Workspace.load(url) }
             let workspace = try await withTaskCancellationHandler {
@@ -683,9 +705,9 @@ import Observation
         }
     }
 
-    private func activate(_ conversation: ChatStore, preserveSidebarSelection: Bool = false) {
+    private func activate(_ conversation: ChatStore) {
         let previous = current
-        sidebarSelectionBeforeCreation = preserveSidebarSelection ? sidebarSelectionID : nil
+        if let pendingNewConversation { cancelNewConversation(pendingNewConversation) }
         if previous !== conversation, previous.currentSessionID == nil, previous.hasUnsentDraft {
             previous.scheduleSave(force: true)
             Task {

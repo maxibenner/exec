@@ -176,21 +176,22 @@ private actor SessionReorderTransport: AgentTransport {
         defer { window.orderOut(nil); window.contentView = nil }
         try await expectSidebar(host, rows: 1, selectedRow: -1)
         library.newConversation()
-        let creating = library.current
-        try expect(creating !== first && creating.currentSessionID == nil)
+        let creating = library.pendingNewConversation!
+        try expect(library.current === first && creating !== first && creating.currentSessionID == nil)
         try expect(creating.workspace == nil && creating.needsInitialWorkspaceSelection)
         try expect(library.sidebarSessions.map(\.id) == [first.currentSessionID!])
         try expect(library.sidebarSelectionID == first.currentSessionID)
         try creating.setInitialWorkspace(Workspace(root: first.workspace!.root))
         creating.scheduleSave()
         try await waitForCreation(transport)
-        // Keep selection stable for the entire request, not just the initial frame.
+        // Keep both the transcript and selection stable for the entire request.
+        try expect(library.current === first && library.hasConversation(first))
         try expect(library.sidebarSelectionID == first.currentSessionID)
         let next = try newSnapshot()
         let nextID = try next.decoded(AgentSnapshot.self).id
         try await transport.finishCreation(next)
         await creating.waitForPendingSave()
-        try expect(creating.error == nil)
+        try expect(creating.error == nil && library.current === creating && library.pendingNewConversation == nil)
         try expect(library.sidebarSessions.map(\.id) == [nextID, first.currentSessionID!])
         try expect(library.sidebarSelectionID == nextID)
         // The active session changes, but AppKit must have no selected row to
@@ -214,7 +215,7 @@ private actor SessionReorderTransport: AgentTransport {
         throw CheckFailure(description: "Sidebar did not reconcile native rows and selection")
     }
 
-    func creationSelectionClearsOnFailureAndDoesNotStealNavigation() async throws {
+    func creationKeepsCurrentOnFailureAndDoesNotStealNavigation() async throws {
         for navigateAway in [false, true] {
             let suite = "exec-sidebar-handoff-\(UUID())"
             let preferences = UserDefaults(suiteName: suite)!
@@ -224,7 +225,7 @@ private actor SessionReorderTransport: AgentTransport {
             defer { library.closePresentations(); Task { await transport.failCreation() } }
             let first = library.current
             library.newConversation()
-            let creating = library.current
+            let creating = library.pendingNewConversation!
             try creating.setInitialWorkspace(Workspace(root: first.workspace!.root))
             creating.scheduleSave()
             try await waitForCreation(transport)
@@ -239,7 +240,8 @@ private actor SessionReorderTransport: AgentTransport {
             if navigateAway {
                 try expect(library.current === first && library.sidebarSelectionID == first.currentSessionID)
             } else {
-                try expect(creating.hasUnsavedChanges && library.sidebarSelectionID == nil)
+                try expect(creating.hasUnsavedChanges && library.error != nil)
+                try expect(library.current === first && library.sidebarSelectionID == first.currentSessionID)
                 try expect(library.sidebarSessions.map(\.id) == [first.currentSessionID!])
             }
         }

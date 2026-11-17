@@ -303,7 +303,8 @@ private struct LifecycleFocusHost: View {
         let library = fixture.library
         // A blank resident acquires its backend ID while a catalog read is held.
         library.newConversation()
-        let blank = library.current
+        let original = library.current
+        let blank = library.pendingNewConversation!
         await fixture.transport.holdCatalogReads(true)
         let read = Task { try await library.refreshSharedState() }
         try await Self.wait("pre-creation catalog") { await fixture.transport.pendingCatalogs == 1 }
@@ -311,7 +312,7 @@ private struct LifecycleFocusHost: View {
         await fixture.transport.holdCatalogReads(false)
         try await fixture.transport.finishCatalog(.array([fixture.root, fixture.other]))
         try await read.value
-        try expect(!blank.deletedRemotely && library.current === blank)
+        try expect(!blank.deletedRemotely && library.current === original)
 
         // The first checkpoint registers its sidebar order. A concurrent catalog
         // read must not delete it while that write is still in flight.

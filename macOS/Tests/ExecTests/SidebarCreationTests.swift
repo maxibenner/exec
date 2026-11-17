@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Holds only explicit creation requests; all other traffic stays in the fake transport.
@@ -108,13 +109,62 @@ private actor SidebarCreationTransport: AgentTransport {
 }
 
 @MainActor struct SidebarCreationTests {
+    func pickerKeepsCurrentUntilCreationCompletes() async throws {
+        for succeeds in [true, false] {
+            let fixture = try await SidebarCreationFixture()
+            defer { fixture.close() }
+            let library = fixture.library, windows = fixture.windows
+            let original = library.current
+            original.draft = "Keep my draft"
+            let window = NSWindow()
+            var completion: (@MainActor (URL?) -> Void)?
+            var pickerCount = 0
+            var pickerOwner: NSWindow?
+            let panel = ChatPanel(library: library, conversation: original) { owner, _, callback in
+                pickerOwner = owner
+                pickerCount += 1
+                completion = callback
+            }
+            panel.window = window
+            windows.newConversation()
+            let pending = library.pendingNewConversation!
+            panel.chooseInitialWorkspaceIfNeeded()
+            windows.newConversation()
+            panel.chooseInitialWorkspaceIfNeeded()
+            try expect(pickerCount == 1 && pickerOwner === window && library.pendingNewConversation === pending)
+            try expect(library.current === original && library.hasConversation(original))
+            try expect(library.sidebarSelectionID == original.currentSessionID)
+            completion?(fixture.workspace)
+            try await fixture.waitForCreation()
+            try expect(library.current === original && original.draft == "Keep my draft")
+            try expect(library.sidebarSelectionID == original.currentSessionID && windows.sidebarRevealRequest == 0)
+            if succeeds { try await fixture.finishCreation() }
+            else { await fixture.transport.failCreation() }
+            await library.waitForNavigation()
+            try expect(original.draft == "Keep my draft")
+            if succeeds {
+                try expect(library.current === pending && pending.currentSessionID != nil)
+                try expect(library.sidebarSelectionID == pending.currentSessionID && windows.sidebarRevealRequest == 1)
+            } else {
+                try expect(library.current === original && library.error != nil)
+                try expect(library.sidebarSelectionID == original.currentSessionID && windows.sidebarRevealRequest == 0)
+                library.error = nil
+                windows.newConversation()
+                try expect(library.current === original && library.pendingNewConversation !== pending)
+                try expect(library.pendingNewConversation?.needsInitialWorkspaceSelection == true)
+            }
+            let requests = await fixture.transport.creationRequests
+            try expect(requests == 1)
+        }
+    }
+
     func onlySecondTopLevelCreationRevealsAfterSuccess() async throws {
         for count in 0...2 {
             let fixture = try await SidebarCreationFixture(topLevelCount: count)
             defer { fixture.close() }
             let library = fixture.library, windows = fixture.windows
             windows.newConversation()
-            let creating = library.current
+            let creating = library.pendingNewConversation ?? library.current
             try expect(windows.sidebarRevealRequest == 0 && creating.currentSessionID == nil)
             try expect(creating.workspace == nil && creating.needsInitialWorkspaceSelection)
             try creating.setInitialWorkspace(Workspace(root: fixture.workspace))
@@ -137,7 +187,7 @@ private actor SidebarCreationTransport: AgentTransport {
         defer { fixture.close() }
         let library = fixture.library, windows = fixture.windows
         windows.newConversation()
-        let blank = library.current
+        let blank = library.pendingNewConversation!
         await blank.waitForPendingSave()
         try expect(blank.workspace == nil && blank.needsInitialWorkspaceSelection)
         try expect(windows.sidebarRevealRequest == 0)
@@ -162,7 +212,7 @@ private actor SidebarCreationTransport: AgentTransport {
             let source = library.current
             if fork { windows.forkConversation(source) }
             else { windows.newConversation() }
-            let creating = library.current
+            let creating = library.pendingNewConversation ?? library.current
             if !fork {
                 try creating.setInitialWorkspace(Workspace(root: fixture.workspace))
                 creating.scheduleSave()
@@ -233,7 +283,7 @@ private actor SidebarCreationTransport: AgentTransport {
             defer { fixture.close() }
             let library = fixture.library, windows = fixture.windows
             windows.newConversation()
-            let creating = library.current
+            let creating = library.pendingNewConversation ?? library.current
             try creating.setInitialWorkspace(Workspace(root: fixture.workspace))
             creating.scheduleSave()
             try await fixture.waitForCreation()

@@ -29,7 +29,6 @@ import Foundation
             defer { preferences.removePersistentDomain(forName: suite) }
             let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
             defer { library.closePresentations() }
-            library.newConversation()
             let source = library.current
             await source.waitForPendingSave()
             try source.setInitialWorkspace(Workspace(root: URL(fileURLWithPath: "/tmp")))
@@ -39,10 +38,17 @@ import Foundation
             try await transport.reply("/v1/library", config)
             try await transport.reply("/v1/conversations", snapshotJSON("completed"))
             if fail { await transport.fail("/v1/conversations") }
-            library.newConversation()
+            let destinationID = UUID()
+            guard case .object(var destinationFields) = try snapshotJSON("completed") else {
+                throw CheckFailure(description: "Expected destination snapshot")
+            }
+            destinationFields["id"] = .string(destinationID.uuidString)
+            try await transport.reply(AgentAPI.path(destinationID), .object(destinationFields))
+            library.openSession(destinationID)
             if fail {
                 try await wait { library.current === source && source.hasUnsavedChanges }
-                library.newConversation()
+                library.openSession(destinationID)
+                await library.waitForNavigation()
                 try await wait { library.current === source }
             } else {
                 try await wait { source.currentSessionID != nil && !source.isSaving }
@@ -124,9 +130,9 @@ import Foundation
         for _ in 0..<2 {
             let previous = library.current
             library.newConversation()
-            let fresh = library.current
+            let fresh = library.pendingNewConversation!
             await fresh.waitForPendingSave()
-            try expect(fresh !== previous && fresh !== source)
+            try expect(library.current === previous && fresh !== source)
             try expect(fresh.currentSessionID == nil && fresh.workspace == nil)
             try expect(fresh.needsInitialWorkspaceSelection && fresh.canSelectWorkspace)
             try expect(fresh.selectedModel == config.defaultModel && fresh.selectedEffort == config.settings.effort)
@@ -137,7 +143,7 @@ import Foundation
             let window = NSWindow()
             var pickerWindows: [NSWindow] = []
             var pickerDirectories: [URL?] = []
-            let panel = ChatPanel(library: library, conversation: fresh) { owner, directory, completion in
+            let panel = ChatPanel(library: library, conversation: source) { owner, directory, completion in
                 pickerWindows.append(owner); pickerDirectories.append(directory)
                 completion(nil)
             }
@@ -147,6 +153,7 @@ import Foundation
             panel.chooseInitialWorkspaceIfNeeded()
             panel.chooseInitialWorkspaceIfNeeded()
             try expect(pickerWindows.count == 1 && pickerWindows[0] === window && pickerDirectories[0] == nil)
+            try expect(library.current === source && library.pendingNewConversation == nil)
             // Dismissing the picker, even followed by a forced save, must not create a session.
             try await fresh.saveIfIdle(force: true)
             try expect(!fresh.needsInitialWorkspaceSelection && fresh.currentSessionID == nil && fresh.workspace == nil)

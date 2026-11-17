@@ -284,16 +284,17 @@ private actor SessionToolTransport: AgentTransport {
         try source.apply(snapshot(disabled: ["shell", "delegate"]).decoded(AgentSnapshot.self))
         source.draft = "Keep this source draft"
         library.newConversation()
-        let next = library.current
+        let next = library.pendingNewConversation!
         await source.waitForPendingSave()
         await next.waitForPendingSave()
-        try expect(library.current === next && next !== source && next.disabledTools.isEmpty && next.canSelectTools)
+        try expect(library.current === source && next !== source && next.disabledTools.isEmpty && next.canSelectTools)
         next.setToolEnabled("read_file", false)
         await next.waitForPendingSave()
         try expect(next.disabledTools == ["read_file"] && source.disabledTools == ["shell", "delegate"])
         library.newConversation()
-        await library.current.waitForPendingSave()
-        try expect(library.current !== next && library.current.disabledTools.isEmpty)
+        let fresh = library.pendingNewConversation!
+        await fresh.waitForPendingSave()
+        try expect(library.current === source && fresh !== next && fresh.disabledTools.isEmpty)
         try expect(next.disabledTools == ["read_file"] && source.disabledTools == ["shell", "delegate"])
         try expect(source.workspace?.root.path == "/tmp" && source.currentSessionID == AgentIntegrationTests.conversationID)
         try expect(source.draft == "Keep this source draft" && source.error == nil && library.error == nil)
