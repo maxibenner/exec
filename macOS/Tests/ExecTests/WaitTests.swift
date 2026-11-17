@@ -27,9 +27,9 @@ import AppKit
         let call = ToolCall(id: "wait-call", name: "wait", arguments: arguments)
         let pending = ToolPresentation(call: call)
         try expect(pending.title == "Wait" && pending.icon == "stopwatch")
-        try expect(pending.summary == "Waiting for CI checks · 60s")
+        try expect(pending.summary == "Waiting for CI checks")
+        try expect(!pending.showsOutput)
         try expect(pending.inputs == [
-            .init(title: "Reason", text: "Waiting for CI checks"),
             .init(title: "Duration", text: "60s"),
             .init(title: "Wake prompt", text: "Check the existing run.\nWait again only if it is still pending.")])
         for (outcome, detail) in [("completed", nil), ("interrupted", "Interrupted"), ("failed", "Error"), ("not_executed", "Not run")] as [(String, String?)] {
@@ -37,9 +37,12 @@ import AppKit
             result.outcome = outcome
             let presentation = ToolPresentation(call: call, result: result)
             try expect(presentation.inputs == pending.inputs && presentation.detail == detail)
-            try expect(presentation.output == result.text)
+            try expect(!presentation.showsOutput)
+            try expect(presentation.summary == pending.summary)
+            try expect(presentation.output == result.text) // Model context remains intact.
         }
         let malformed = ToolPresentation(name: "wait", arguments: "{broken")
+        try expect(!malformed.showsOutput)
         try expect(malformed.inputs == [.init(title: "Arguments", text: "{broken")])
     }
 

@@ -68,7 +68,7 @@ struct ToolMessageView: View {
                             MarkdownView(source: presentation.output.isEmpty ? "No output" : presentation.output,
                                          cache: state.markdown)
                         }
-                    } else if result != nil {
+                    } else if result != nil, presentation.showsOutput {
                         ToolTextSection(title: presentation.outputTitle, text: presentation.output, emptyText: "No output")
                             // Match the inner code inset used by edit diffs.
                             .padding(call.name == "read_file" ? 10 : 0)

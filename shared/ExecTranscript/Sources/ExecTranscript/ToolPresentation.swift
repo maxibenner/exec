@@ -16,6 +16,7 @@ public struct ToolPresentation: Sendable {
     public var inputs: [Field] = []
     public var outputTitle: String? = "Result"
     public var output: String
+    public var showsOutput = true
     /// A result body can be published before the executor has settled.
     public let isRunning: Bool
 
@@ -62,6 +63,7 @@ public struct ToolPresentation: Sendable {
             }
         case "wait":
             title = "Wait"; icon = "stopwatch"
+            showsOutput = false
             struct WaitArguments: Decodable {
                 let duration_seconds: Int
                 let description: String
@@ -69,9 +71,8 @@ public struct ToolPresentation: Sendable {
             }
             if rawArguments.utf8.count <= 32_768,
                let wait = try? JSONDecoder().decode(WaitArguments.self, from: Data(rawArguments.utf8)) {
-                summary = "\(wait.description) · \(wait.duration_seconds)s"
-                inputs = [Field(title: "Reason", text: wait.description),
-                          Field(title: "Duration", text: "\(wait.duration_seconds)s"),
+                summary = wait.description
+                inputs = [Field(title: "Duration", text: "\(wait.duration_seconds)s"),
                           Field(title: "Wake prompt", text: wait.wake_prompt)]
             }
         case "shell":
