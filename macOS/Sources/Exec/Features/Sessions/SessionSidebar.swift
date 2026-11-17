@@ -109,6 +109,7 @@ struct SessionSidebar: View {
                         .onTapGesture { activate(session.id) }
                         .accessibilityAction { activate(session.id) }
                 }
+                .padding(.vertical, 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .modifier(SidebarAnimatedHeight(children: group.children.map(\.id), animation: rowAnimation))
