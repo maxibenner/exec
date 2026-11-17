@@ -1,6 +1,32 @@
 import AppKit
 
 @MainActor struct TranscriptScrollTests {
+    func followInterpolationRetargetsWithoutRestarting() throws {
+        let deadline = 0.48
+        let first = StreamFollowInterpolation.position(current: 0, target: 100,
+            previous: 0, now: 0.24, deadline: deadline)
+        try expect(abs(first - 87.5) < 0.001)
+        // An overlapping destination does not retroactively move the viewport.
+        let overlap = StreamFollowInterpolation.position(current: first, target: 200,
+            previous: 0.24, now: 0.24, deadline: deadline)
+        try expect(overlap == first)
+        var position = overlap
+        var previous = 0.24
+        for step in 25...47 {
+            let now = Double(step) / 100
+            let next = StreamFollowInterpolation.position(current: position, target: 200,
+                previous: previous, now: now, deadline: deadline)
+            try expect(next >= position && next < 200)
+            position = next
+            previous = now
+        }
+        try expect(StreamFollowInterpolation.position(current: position, target: 300,
+            previous: previous, now: deadline, deadline: deadline) == 300)
+        let direct = StreamFollowInterpolation.position(current: first, target: 200,
+            previous: 0.24, now: 0.47, deadline: deadline)
+        try expect(abs(direct - position) < 0.001)
+    }
+
     func headerUnderlapPreservesGeometryAndAnchors() throws {
         _ = NSApplication.shared
         let state = TranscriptState()

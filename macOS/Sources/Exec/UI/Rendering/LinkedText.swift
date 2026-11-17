@@ -264,52 +264,63 @@ extension EnvironmentValues {
 /// Draw only newly appended glyphs with a brief, partial-opacity entrance. The
 /// storage, selection, accessibility and geometry always contain the full text.
 private final class StreamedTextLayoutManager: NSLayoutManager {
-    private var entrance: (range: NSRange, started: TimeInterval)?
+    private var entrances: [(range: NSRange, started: TimeInterval)] = []
     private var timer: Timer?
 
     func prepareAppend(_ range: NSRange?) {
         guard let range, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-            entrance = nil
+            entrances.removeAll()
             timer?.invalidate()
             timer = nil
             return
         }
-        if let current = entrance {
-            // Coalesce without restarting the clock on every token.
-            entrance = (NSUnionRange(current.range, range), current.started)
-            return
+        let now = ProcessInfo.processInfo.systemUptime
+        entrances.removeAll { now - $0.started >= 0.36 }
+        // Quantized slots bound both the pending delay (at most 120 ms) and the number
+        // of live ranges, even when many tokens arrive in one run-loop turn.
+        let slot = ceil(now / 0.03) * 0.03
+        let started = min(max(slot, (entrances.last?.started ?? (slot - 0.03)) + 0.03), slot + 0.09)
+        if let last = entrances.last, abs(last.started - started) < 0.001 {
+            entrances[entrances.count - 1].range = NSUnionRange(last.range, range)
+        } else {
+            entrances.append((range, started))
         }
-        entrance = (range, ProcessInfo.processInfo.systemUptime)
+        guard timer == nil else { return }
         timer = Timer.scheduledTimer(timeInterval: 1.0 / 60, target: self,
                                      selector: #selector(advanceEntrance), userInfo: nil, repeats: true)
     }
 
     @MainActor @objc private func advanceEntrance() {
-        guard let current = entrance else { timer?.invalidate(); timer = nil; return }
-        let finished = ProcessInfo.processInfo.systemUptime - current.started >= 0.18 ||
-            NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if finished { entrance = nil }
+        let now = ProcessInfo.processInfo.systemUptime
+        entrances.removeAll { now - $0.started >= 0.36 }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { entrances.removeAll() }
         textContainers.forEach { $0.textView?.needsDisplay = true }
-        if finished { timer?.invalidate(); timer = nil }
+        if entrances.isEmpty { timer?.invalidate(); timer = nil }
     }
 
     override func drawGlyphs(forGlyphRange range: NSRange, at origin: NSPoint) {
-        guard let entrance, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+        guard !entrances.isEmpty, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             super.drawGlyphs(forGlyphRange: range, at: origin)
             return
         }
-        let fresh = NSIntersectionRange(range, glyphRange(forCharacterRange: entrance.range, actualCharacterRange: nil))
-        guard fresh.length > 0 else { super.drawGlyphs(forGlyphRange: range, at: origin); return }
-        if fresh.location > range.location {
-            super.drawGlyphs(forGlyphRange: NSRange(location: range.location, length: fresh.location - range.location), at: origin)
+        var cursor = range.location
+        let now = ProcessInfo.processInfo.systemUptime
+        for entrance in entrances {
+            let fresh = NSIntersectionRange(NSRange(location: cursor, length: NSMaxRange(range) - cursor),
+                glyphRange(forCharacterRange: entrance.range, actualCharacterRange: nil))
+            guard fresh.length > 0 else { continue }
+            if fresh.location > cursor {
+                super.drawGlyphs(forGlyphRange: NSRange(location: cursor, length: fresh.location - cursor), at: origin)
+            }
+            NSGraphicsContext.saveGraphicsState()
+            let progress = min(1, max(0, (now - entrance.started) / 0.36))
+            NSGraphicsContext.current?.cgContext.setAlpha(0.55 + 0.45 * progress)
+            super.drawGlyphs(forGlyphRange: fresh, at: origin)
+            NSGraphicsContext.restoreGraphicsState()
+            cursor = NSMaxRange(fresh)
         }
-        NSGraphicsContext.saveGraphicsState()
-        let progress = min(1, (ProcessInfo.processInfo.systemUptime - entrance.started) / 0.18)
-        NSGraphicsContext.current?.cgContext.setAlpha(0.55 + 0.45 * progress)
-        super.drawGlyphs(forGlyphRange: fresh, at: origin)
-        NSGraphicsContext.restoreGraphicsState()
-        if NSMaxRange(fresh) < NSMaxRange(range) {
-            super.drawGlyphs(forGlyphRange: NSRange(location: NSMaxRange(fresh), length: NSMaxRange(range) - NSMaxRange(fresh)), at: origin)
+        if cursor < NSMaxRange(range) {
+            super.drawGlyphs(forGlyphRange: NSRange(location: cursor, length: NSMaxRange(range) - cursor), at: origin)
         }
     }
 }

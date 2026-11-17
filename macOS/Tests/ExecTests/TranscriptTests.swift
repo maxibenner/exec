@@ -250,6 +250,12 @@ import SwiftUI
         guard text.selectedRange() == selection && state.layout.heights.last! > narrowHeight else {
             throw CheckFailure(description: "Streaming selection=\(text.selectedRange()), height=\(state.layout.heights.last!), previous=\(narrowHeight), measurements=\(view.rowMeasurementCount)")
         }
+        // Content/layout are immediate, but follow-down now takes 480 ms.
+        // Bound the wait rather than relying on the short layout-settling helper.
+        for _ in 0..<40 {
+            if abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 1 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
         try expect(abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 1)
         let settledCount = view.rowMeasurementCount
         try await settle(view)

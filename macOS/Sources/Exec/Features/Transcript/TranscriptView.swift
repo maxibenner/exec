@@ -69,7 +69,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var readingAnchor: (id: UUID, position: LinkedText.TextView.ReadingPosition)?
     private static let navigationPadding: CGFloat = 20
     private var requestedScroll = false
-    private var scrollAnimation: (origin: CGFloat, started: TimeInterval, duration: TimeInterval, followsBottom: Bool)?
+    private var scrollAnimation: (origin: CGFloat, started: TimeInterval, duration: TimeInterval, followsBottom: Bool, lastSample: TimeInterval)?
     private var scrollAnimationTask: Task<Void, Never>?
     private var pendingContentFollow = false
     private var bottomInset: CGFloat = 0
@@ -271,7 +271,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         guard initialized, window != nil,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         scrollAnimation = (contentView.bounds.minY, ProcessInfo.processInfo.systemUptime,
-                           followsBottom ? 0.24 : 0.2, followsBottom)
+                           followsBottom ? 0.48 : 0.2, followsBottom, ProcessInfo.processInfo.systemUptime)
         scrollAnimationTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .milliseconds(16)) }
@@ -428,14 +428,16 @@ private struct VirtualTranscript: NSViewRepresentable {
             state.followsLatest = true
         }
         // Only newly delivered cards, never virtualized history or status updates.
-        for id in arrivingToolIDs {
+        for (index, id) in messages.filter({ arrivingToolIDs.contains($0.id) }).map(\.id).enumerated() {
             guard let row = rows[id], window != nil,
                   row.frame.intersects(contentView.bounds),
                   !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { continue }
             let animation = CABasicAnimation(keyPath: "opacity")
             animation.fromValue = 0.55
             animation.toValue = 1
-            animation.duration = 0.18
+            animation.duration = 0.36
+            animation.beginTime = CACurrentMediaTime() + min(Double(index) * 0.03, 0.09)
+            animation.fillMode = .backwards
             row.layer?.add(animation, forKey: "streamEntrance")
         }
         arrivingToolIDs.removeAll()
@@ -464,10 +466,23 @@ private struct VirtualTranscript: NSViewRepresentable {
            state.sentMessageID == nil, target > contentView.bounds.minY + 1 {
             beginScrollAnimation(followsBottom: true)
         }
-        if let scroll = scrollAnimation, target > scroll.origin {
-            let progress = min(1, max(0, (ProcessInfo.processInfo.systemUptime - scroll.started) / scroll.duration))
-            let eased = 1 - pow(1 - progress, 3)
-            target = scroll.origin + (target - scroll.origin) * eased
+        if var scroll = scrollAnimation {
+            let now = ProcessInfo.processInfo.systemUptime
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                cancelScrollAnimation()
+            } else if scroll.followsBottom {
+                // Apply only this frame's share of the remaining distance from
+                // the displayed position. Retargeting cannot move an already
+                // elapsed portion of the curve or extend the original deadline.
+                target = StreamFollowInterpolation.position(current: contentView.bounds.minY,
+                    target: target, previous: scroll.lastSample, now: now,
+                    deadline: scroll.started + scroll.duration)
+                scroll.lastSample = now
+                scrollAnimation = scroll
+            } else if target > scroll.origin {
+                let progress = min(1, max(0, (now - scroll.started) / scroll.duration))
+                target = scroll.origin + (target - scroll.origin) * (1 - pow(1 - progress, 3))
+            }
         }
         let origin = NSPoint(x: 0, y: target)
         if contentView.bounds.origin != origin {
@@ -622,5 +637,17 @@ private struct MessageView: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityLabel("Assistant reply")
         }
+    }
+}
+
+// Incremental cubic ease-out with a fixed deadline, independent of update rate.
+enum StreamFollowInterpolation {
+    static func position(current: CGFloat, target: CGFloat, previous: TimeInterval,
+                         now: TimeInterval, deadline: TimeInterval) -> CGFloat {
+        guard now < deadline else { return target }
+        let remaining = max(0, deadline - previous)
+        guard remaining > 0 else { return target }
+        let fraction = 1 - pow(min(1, max(0, (deadline - now) / remaining)), 3)
+        return current + (target - current) * fraction
     }
 }
