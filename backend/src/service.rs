@@ -870,17 +870,46 @@ async fn handle(
             "Conversation is unreadable. Its file is preserved; inspect it before explicit deletion.",
         ));
     }
+    let action = parts.get(1).copied();
+    if method == "GET" && matches!(action, None | Some("sync") | Some("events")) {
+        let (snapshot, mut receiver) = options
+            .manager
+            .observe(parts[0])
+            .map_err(|_| ApiError(404, "Conversation not found."))?;
+        if action != Some("events") {
+            return if action == Some("sync") {
+                Ok(json_response(
+                    200,
+                    sync_page(snapshot, request.uri().query())?,
+                ))
+            } else {
+                Ok(json_response(200, snapshot))
+            };
+        }
+        let stop = host.stop.clone();
+        let frames = async_stream::stream! {
+            yield Ok::<_,std::io::Error>(format!("{}\n",serde_json::to_string(&ServiceEvent::Snapshot{snapshot}).unwrap()));
+            loop {
+                let frame=tokio::select!{biased;_=stop.cancelled()=>break,value=receiver.recv()=>value};
+                match frame {
+                    Ok(frame)=>yield Ok(format!("{}\n",serde_json::to_string(frame.as_ref()).unwrap())),
+                    Err(_)=>{yield Err(std::io::Error::other("Observer disconnected; reconnect for a snapshot."));break;}
+                }
+            }
+        };
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/x-ndjson")
+            .header("Cache-Control", "no-store")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(Body::from_stream(frames))
+            .unwrap());
+    }
     let conversation = options
         .manager
         .get(parts[0])
         .map_err(|_| ApiError(404, "Conversation not found."))?;
-    let action = parts.get(1).copied();
     match (method.as_str(), action) {
-        ("GET", None) => Ok(json_response(200, conversation.snapshot())),
-        ("GET", Some("sync")) => Ok(json_response(
-            200,
-            sync_page(conversation.snapshot(), request.uri().query())?,
-        )),
         ("DELETE", None) => {
             if host.stop.is_cancelled() {
                 return Err(ApiError(503, "Service is stopping."));
@@ -949,27 +978,6 @@ async fn handle(
                 200,
                 options.manager.update_settings(parts[0], settings).await?,
             ))
-        }
-        ("GET", Some("events")) => {
-            let (snapshot, mut receiver) = conversation.subscribe();
-            let stop = host.stop.clone();
-            let frames = async_stream::stream! {
-                yield Ok::<_,std::io::Error>(format!("{}\n",serde_json::to_string(&ServiceEvent::Snapshot{snapshot}).unwrap()));
-                loop{
-                    let frame=tokio::select!{biased;_=stop.cancelled()=>break,value=receiver.recv()=>value};
-                    match frame{
-                        Ok(frame)=>yield Ok(format!("{}\n",serde_json::to_string(frame.as_ref()).unwrap())),
-                        Err(_)=>{yield Err(std::io::Error::other("Observer disconnected; reconnect for a snapshot."));break;}
-                    }
-                }
-            };
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", "application/x-ndjson")
-                .header("Cache-Control", "no-store")
-                .header("X-Content-Type-Options", "nosniff")
-                .body(Body::from_stream(frames))
-                .unwrap())
         }
         ("POST", Some("turns")) => {
             let submit: Submit = body(request).await?;

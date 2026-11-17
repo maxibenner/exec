@@ -48,21 +48,23 @@ async fn run_child(
             _ => None,
         })
         .unwrap_or("");
-    let mut end = answer.len().min(limit);
-    while !answer.is_char_boundary(end) {
-        end -= 1;
-    }
-    let truncated = if end < answer.len() {
-        "\n[Response truncated to the delegation output limit.]"
-    } else {
-        ""
-    };
-    Ok(format!(
-        "Child session: {}\n\n{}{}",
-        child.id,
-        &answer[..end],
-        truncated
+    Ok(bounded_result(
+        format!("Child session: {}\n\n{answer}", child.id),
+        limit,
     ))
+}
+
+fn bounded_result(mut text: String, limit: usize) -> String {
+    const MARKER: &str = "\n[Response truncated to the delegation output limit.]";
+    if text.len() > limit {
+        let mut end = limit - MARKER.len();
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str(MARKER);
+    }
+    text
 }
 
 struct Delegate {
@@ -106,24 +108,6 @@ impl Tool for Delegate {
             parameters,
         }
     }
-    async fn result_saved(&self, conversation_id: &str, call_id: &str) -> Result<()> {
-        let manager = self.manager.upgrade().ok_or(Error::Internal)?;
-        let children = manager.list()?;
-        for child in children {
-            if child.metadata.parent.as_ref().is_some_and(|parent| {
-                parent.session_id == conversation_id && parent.tool_call_id == call_id
-            }) && child
-                .operation
-                .as_ref()
-                .is_some_and(|op| !op.state.active())
-            {
-                manager
-                    .delete_returned_child(&child.id, conversation_id, call_id)
-                    .await?;
-            }
-        }
-        Ok(())
-    }
     async fn prepare(
         &self,
         args: Arguments,
@@ -154,7 +138,8 @@ impl Tool for Delegate {
         };
         let (tasks, titles): (Vec<_>, Vec<_>) = tasks.into_iter().unzip();
         let manager = self.manager.upgrade().ok_or(Error::Internal)?;
-        if manager.get(&context.conversation_id)?.parent().is_some() {
+        let parent = manager.get(&context.conversation_id)?;
+        if parent.parent().is_some() {
             return Err(failure("Sub-agents cannot delegate."));
         }
         let provider = self.provider.clone();
@@ -168,28 +153,87 @@ impl Tool for Delegate {
                     let children = manager
                         .create_children(&context, &titles, provider, tools)
                         .await?;
-                    let limit = 32 * 1024 / children.len();
-                    // join_all retains every executor through cancellation and cleanup;
-                    // never fail fast and abandon a sibling that may have had effects.
-                    let executions =
-                        children
-                            .into_iter()
-                            .zip(tasks)
-                            .map(|((child, instructions), task)| {
-                                run_child(child, task, instructions, context.cancel.clone(), limit)
-                            });
-                    let results = futures_util::future::join_all(executions).await;
+                    let total = children.len();
+                    let limit = (DELEGATION_RESULT_BYTES - 2 * (total - 1)) / total;
+                    // Each future owns execution, checkpoint and cleanup. join_all polls
+                    // them concurrently but retains every sibling even if one fails.
+                    let executions = children.into_iter().zip(tasks).enumerate().map(
+                        |(index, ((child, instructions), task))| {
+                            let manager = &manager;
+                            let parent = &parent;
+                            let context = &context;
+                            async move {
+                                let heading = if total == 1 {
+                                    String::new()
+                                } else {
+                                    format!("Task {}\n", index + 1)
+                                };
+                                let result = run_child(
+                                    child.clone(),
+                                    task,
+                                    instructions,
+                                    context.cancel.clone(),
+                                    limit - heading.len(),
+                                ).await;
+                                // Parent cancellation retains unfinished children for inspection.
+                                // Already published children remain safely deleted.
+                                if matches!(result, Err(Error::Cancelled)) {
+                                    return Ok(result);
+                                }
+                                let outcome = if result.is_ok() {
+                                    ToolOutcome::Completed
+                                } else if child.snapshot().operation.is_some_and(|op| {
+                                    op.state == OperationState::Interrupted
+                                }) {
+                                    ToolOutcome::Interrupted
+                                } else {
+                                    ToolOutcome::Failed
+                                };
+                                let text = match &result {
+                                    Ok(text) => text.clone(),
+                                    Err(Error::Tool(message)) => {
+                                        format!("{message}\nDo not retry without a new user request.")
+                                    }
+                                    Err(_) => format!(
+                                        "Sub-agent session {} failed or was interrupted; it may have had effects. Do not retry without a new user request.",
+                                        child.id
+                                    ),
+                                };
+                                let text = bounded_result(format!("{heading}{text}"), limit);
+                                parent.publish_delegation_result(
+                                    context,
+                                    total,
+                                    DelegationResult {
+                                        task_index: index,
+                                        session_id: child.id.clone(),
+                                        outcome,
+                                        text: text.clone(),
+                                    },
+                                ).await?;
+                                manager.delete_returned_child(
+                                    &child.id, &context.conversation_id, &context.call_id,
+                                ).await?;
+                                // Preserve single-child failure as a failed tool outcome.
+                                Ok(if total == 1 && result.is_err() {
+                                    result
+                                } else {
+                                    Ok(text)
+                                })
+                            }
+                        },
+                    );
+                    let settled = futures_util::future::join_all(executions).await;
+                    // Never short circuit execution on child/checkpoint/deletion failure.
+                    let results: Vec<Result<String>> =
+                        settled.into_iter().collect::<Result<_>>()?;
                     check_cancel(&context.cancel)?;
-                    if results.len() == 1 {
+                    if total == 1 {
                         return results.into_iter().next().ok_or(Error::Internal)?;
                     }
-                    Ok(results.into_iter().enumerate().map(|(index, result)| {
-                        let text = result.unwrap_or_else(|error| match error {
-                            Error::Tool(message) => format!("{message}\nDo not retry without a new user request."),
-                            _ => "Sub-agent failed or was interrupted; it may have had effects. Inspect child sessions. Do not retry without a new user request.".into(),
-                        });
-                        format!("Task {}\n{text}", index + 1)
-                    }).collect::<Vec<_>>().join("\n\n"))
+                    Ok(results
+                        .into_iter()
+                        .collect::<Result<Vec<_>>>()?
+                        .join("\n\n"))
                 })
             }),
         }))

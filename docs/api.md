@@ -216,7 +216,7 @@ Runtime events always contain `conversationID` and `operationID`:
 
 `activeToolCallID` identifies live executor ownership, including cancellation cleanup. It is null while preparing, awaiting approval, saving intent, and after settlement. Resolve a non-null ID against finalized assistant calls. Null does not imply the whole operation is idle. This field is never restored from durable intent.
 
-`tool_started` means the executor was entered after approval and successful intent checkpoint, not that effects succeeded. Every finalized call receives one `tool_finished` result event, including denial, preparation failure, interruption, and non-execution. Outcomes are `completed`, `denied`, `failed`, `interrupted`, `not_executed`. Calls that never enter their executor have no start event. Message events still accompany tool results; reconcile by message ID. Abrupt exit can prevent delivery; reconnect/recovery uses snapshots, not replay.
+`tool_started` means the executor was entered after approval and successful intent checkpoint, not that effects succeeded. Every finalized call receives one `tool_finished` result event, including denial, preparation failure, interruption, and non-execution. Terminal outcomes are `completed`, `denied`, `failed`, `interrupted`, `not_executed`. Delegation may also persist a nonterminal `running` tool message (see [incremental delegation presentation](#incremental-delegation-presentation-contract)); it emits only `message` updates until settlement. Calls that never enter their executor have no start event. Message events still accompany tool results; reconcile by message ID. Abrupt exit can prevent delivery; reconnect/recovery uses snapshots, not replay.
 
 Tool events are not durable acknowledgments. A result may precede its checkpoint. A completed tool result remains completed if cancellation arrives after publication; cancellation at the executor/result handoff is conservatively interrupted with possible effects.
 
@@ -271,25 +271,36 @@ task order; ordinary tool calls remain sequential. This reuses the existing agen
 - The child uses ordinary tools and the inherited approval policy. Approvals remain on
   the child's session and are resolved through its existing approval endpoint. The parent
   waits without requiring a frontend to remain attached. Child sessions do not expose
-  `delegate`; limits are eight children per parent operation and 128 model steps per turn
-  independently for each session. Child steps do not consume the parent or sibling budgets.
+  `delegate`. Each session has an independent 128-model-step budget; child steps do not
+  consume the parent or sibling budgets.
 - Each task is nonempty and at most 16 KiB; batches contain one to eight task objects.
   Every task requires a nonempty, single-line `title` of at most 60 characters, with no
-  control characters. All tasks and titles are validated before any children are created. The
-  entire batch reserves its budget before any child starts. Deleting completed children
-  does not reset the per-operation limit. Avoid conflicting writes to shared files.
-- Results include child IDs and at most 32 KiB of final answer text in total, divided
-  equally among children, with explicit truncation markers. Single-child failure retains
-  a failed tool outcome. Batches report each child's success or failure separately and
-  keep waiting for siblings; a failed child never retries or cancels another child.
-- After the parent's tool result is durably saved, child sessions are automatically
-  deleted, including failures and user cancellations. If the parent is interrupted
-  before saving results, children are retained rather than losing answers, unless
-  the user explicitly deletes the family. No work is retried automatically.
-- Parent cancellation cancels the child's operation and waits for its cleanup. Restart
-  retains the relationship, marks unfinished operations interrupted and resumes neither.
-  New turns/compaction on the child are blocked while its managing operation is
-  active; ordinary approval, steering and cancellation still use the child's own IDs.
+  control characters. All tasks and titles are validated before any children are created.
+  The entire batch reserves against an eight-child **parent user-turn** limit before any
+  child starts. Cleanup and compaction do not refund reservations. Queued steering input
+  resets this budget only when consumed at the safe boundary after previous executors
+  settle, even though the operation ID stays unchanged. Coalesced inputs share one budget;
+  replay protection remains operation-wide. Avoid conflicting writes to shared files.
+- Each settled child's bounded result is checkpointed in the parent's running tool message,
+  then that child is deleted immediately, without waiting for its siblings. This includes
+  child failures and individual user cancellations. Failed checkpoints retain the child
+  and the in-memory result for inspection, block further saves/work on the parent, and
+  never trigger cleanup or retries. Failed deletion retains the saved result and any
+  session not actually removed; cleanup is not retried by the final-result hook. Automatic
+  cleanup also never retries a failed explicit deletion of the same child.
+- The tool continues owning all remaining executors and returns **one combined result to
+  the parent model only after all children and their checkpoint/cleanup attempts settle**.
+  Results stay in original task order. A failed child never retries or cancels siblings;
+  single-child failure retains a failed tool outcome. Batch results report each child
+  separately. Combined text is at most 32 KiB UTF-8, including task headings, child IDs,
+  truncation markers and terminal notices, divided fairly among children.
+- Parent cancellation cancels unfinished children and waits for executor cleanup. Already
+  published results remain saved; unfinished children are retained unless the user
+  explicitly deletes the family. Restart retains partial results, marks unfinished
+  operations interrupted and resumes neither inference nor cleanup. Active forks omit
+  running partial tool messages and their unresolved calls, never turning them into
+  completed context. New turns/compaction on a child are blocked while its managing
+  operation is active; approval, steering and cancellation still use the child's own IDs.
 - Deleting a running child cancels its operation and waits for executor cleanup; its
   parent receives a `cancelled by user` tool result and continues without retrying.
   Deleting a parent cancels the entire family and deletes its sub-agents in the same
@@ -312,11 +323,69 @@ no spinners or arrows, and are not standalone sessions or keyboard-shortcut entr
 There is no Sub-agents menu
 or parent-navigation button. Children disappear after their results are saved; the
 parent's saved tool result remains. Explicit child deletion returns selection to its
-parent without disabling/dimming the sidebar. Local unsent drafts are preserved if
-automatic cleanup occurs while the user is composing.
-Version-9 records persist this relationship; versions 1–8 remain readable. Low-level
-embedders using `AgentManager::create` retain control over their explicit tool list;
-`create_session` and `fork` require an `Arc<AgentManager>` to install delegation safely.
+parent without disabling/dimming the sidebar. Explicit macOS deletion of a running
+session, or a parent with running children, requires native confirmation with Cancel
+as the default; idle deletion and automatic cleanup do not prompt. Local unsent drafts
+are preserved if automatic cleanup occurs while the user is composing.
+Version-9 records persist the parent relationship. Version-10 records add delegation
+progress; versions 1–9 remain readable. A record upgrades to version 10 on its first
+partial publication. Low-level embedders using `AgentManager::create` retain control over
+their explicit tool list; `create_session` and `fork` require an `Arc<AgentManager>` to
+install delegation safely.
+
+### Incremental delegation presentation contract
+
+Reuse the existing tool message, not an extra transcript row or provider message:
+
+```json
+{
+  "role": "tool",
+  "id": "stable-message-uuid",
+  "callID": "original-delegate-call-id",
+  "outcome": "running",
+  "text": "Task 2\nChild session: child-uuid\n\nBounded answer",
+  "details": {
+    "type": "delegation",
+    "total": 2,
+    "results": [{
+      "taskIndex": 1,
+      "sessionId": "child-uuid",
+      "outcome": "completed",
+      "text": "Task 2\nChild session: child-uuid\n\nBounded answer"
+    }]
+  }
+}
+```
+
+`taskIndex` is zero-based original input order. `results` contains only settled children,
+ordered by that index, with child outcomes `completed`, `failed` or `interrupted`.
+`text` is ready for the existing result body: ordered sections joined by blank lines.
+The first settled child creates this message; subsequent children and final settlement
+replace it using the same `id` and `callID`. There is no empty placeholder. The existing
+`message` event carries each checkpointed update; `activeToolCallID` stays on the delegate
+through execution/cleanup. **`running` is not a terminal tool outcome**: no
+`tool_finished` event or provider-visible tool result is produced for partial updates.
+At final settlement the message receives the ordinary terminal outcome and one
+`tool_finished` event; its details survive failure/cancellation/recovery.
+
+Snapshots and `/sync` include the same message. The sync cursor already includes the
+mutable tail message, so clients reconcile by ID rather than append another result.
+Intermediate reads can see an unacknowledged checkpoint; `storageError` marks a failed
+save, and no child is automatically deleted until its own result's save succeeds.
+The sum of child `text` fields plus separators fits the same output budget (not 32 KiB
+per child); envelope/structured metadata is additional bounded overhead.
+
+For `shared/ExecTranscript`, map the message's `text` and `outcome` to
+`ToolDisplayResult(text:outcome:)` for the original delegate call and retain the active
+execution state from `activeToolCallID`. `ToolPresentation` already shows delegate inputs
+and `result.text` in the result body. Decode the new `delegation` details and `running`
+outcome without treating result presence alone as completion; no card layout change is
+required. The backend does not synthesize progress hints or unfinished-child text.
+
+Read-only catalog access (`AgentManager::snapshot` / `observe`, HTTP snapshot, `/sync`,
+`/events`) remains available during child deletion reservations, until actual catalog
+removal. The mutation-capable `get` handle and all mutation reservations stay guarded.
+After removal, new reads return 404; a failed deletion leaves the session inspectable.
 
 ## Session library
 

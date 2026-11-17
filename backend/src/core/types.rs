@@ -45,6 +45,8 @@ pub struct ToolDefinition {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolOutcome {
+    /// Persisted delegation progress, never a provider-visible result.
+    Running,
     Completed,
     Denied,
     Failed,
@@ -102,6 +104,13 @@ impl Message {
     /// Keep transcript-only activity out of both provider messages and parallel IDs.
     pub fn in_context(&self) -> bool {
         !self.is_compaction()
+            && !matches!(
+                self,
+                Self::Tool {
+                    outcome: ToolOutcome::Running,
+                    ..
+                }
+            )
             && matches!(
                 self,
                 Self::User { .. }
@@ -347,6 +356,31 @@ pub struct ToolContext {
     pub workspace: String,
     pub cancel: CancellationToken,
 }
+pub const MAX_DELEGATION_OUTPUT_BYTES: usize = 32 * 1024;
+// Leave space for a terminal interruption/failure notice without discarding results.
+pub(crate) const DELEGATION_RESULT_BYTES: usize = MAX_DELEGATION_OUTPUT_BYTES - 256;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationResult {
+    /// Zero-based position in the original task list, not completion order.
+    pub task_index: usize,
+    pub session_id: String,
+    pub outcome: ToolOutcome,
+    pub text: String,
+}
+
+pub(crate) fn append_delegation_notice(text: &mut String, notice: &str) {
+    let notice = format!("\n\n{notice}");
+    let mut end = notice
+        .len()
+        .min(MAX_DELEGATION_OUTPUT_BYTES.saturating_sub(text.len()));
+    while !notice.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.push_str(&notice[..end]);
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "type",
@@ -354,6 +388,10 @@ pub struct ToolContext {
     rename_all_fields = "camelCase"
 )]
 pub enum ToolDetails {
+    Delegation {
+        total: usize,
+        results: Vec<DelegationResult>,
+    },
     Windows {
         windows: Vec<super::WindowInfo>,
     },

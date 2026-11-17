@@ -50,6 +50,10 @@ struct Active {
     cancel: CancellationToken,
     finishing: bool,
     compact_only: bool,
+    // Reservations survive child cleanup and compaction, but not consumed user input.
+    delegated_agents: usize,
+    // Keep replay protection for the entire operation, including steered turns.
+    delegation_calls: HashSet<String>,
 }
 struct Pending {
     approval: Approval,
@@ -191,6 +195,106 @@ impl Conversation {
     pub fn parent(&self) -> Option<SessionParent> {
         self.state().record.metadata.parent.clone()
     }
+    /// Reserve before creating children, at the same boundary as consumed user input.
+    /// Active operations never resume after restart; reservations need not be persisted.
+    pub(crate) fn reserve_delegation(
+        &self,
+        context: &ToolContext,
+        count: usize,
+    ) -> Result<ConversationSnapshot> {
+        check_cancel(&context.cancel)?;
+        if count == 0 || count > 8 {
+            return Err(Error::Tool(
+                "Delegation requires one to eight tasks.".into(),
+            ));
+        }
+        let mut s = self.state();
+        if s.record.metadata.parent.is_some() {
+            return Err(Error::Tool("Sub-agents cannot delegate.".into()));
+        }
+        if self.id != context.conversation_id
+            || s.record.operation.as_ref().is_none_or(|op| {
+                op.id != context.operation_id || op.state != OperationState::Running
+            })
+            || s.active_tool.as_deref() != Some(&context.call_id)
+            || s.active
+                .as_ref()
+                .is_none_or(|a| a.finishing || a.compact_only)
+        {
+            return Err(Error::Invalid(
+                "Delegation requires an executing parent tool.",
+            ));
+        }
+        let active = s.active.as_mut().unwrap();
+        if active.delegation_calls.contains(&context.call_id) {
+            return Err(Error::Tool(
+                "This delegation already ran; it was not restarted.".into(),
+            ));
+        }
+        if active.delegated_agents + count > 8 {
+            return Err(Error::Tool(
+                "The limit of eight sub-agents per turn was reached.".into(),
+            ));
+        }
+        active.delegation_calls.insert(context.call_id.clone());
+        active.delegated_agents += count;
+        Ok(s.snapshot(self.provider.as_ref()))
+    }
+    /// Checkpoint each settled child before its only remaining session can be deleted.
+    /// Keep failed writes inspectable in memory; the storage latch prevents cleanup/retry.
+    pub(crate) async fn publish_delegation_result(
+        &self,
+        context: &ToolContext,
+        total: usize,
+        result: DelegationResult,
+    ) -> Result<()> {
+        let index = {
+            let mut s = self.state();
+            if s.record
+                .operation
+                .as_ref()
+                .is_none_or(|op| op.id != context.operation_id)
+                || s.active_tool.as_deref() != Some(&context.call_id)
+            {
+                return Err(Error::Invalid("Delegation is no longer executing."));
+            }
+            let index = s.record.messages.iter().position(|m| matches!(m,
+                Message::Tool { call_id, outcome: ToolOutcome::Running, .. } if call_id == &context.call_id
+            )).unwrap_or_else(|| {
+                s.record.messages.push(Message::Tool {
+                    id: new_id(),
+                    call_id: context.call_id.clone(),
+                    text: String::new(),
+                    outcome: ToolOutcome::Running,
+                    details: Some(ToolDetails::Delegation { total, results: vec![] }),
+                });
+                s.record.messages.len() - 1
+            });
+            let Message::Tool {
+                text,
+                details: Some(ToolDetails::Delegation { results, .. }),
+                ..
+            } = &mut s.record.messages[index]
+            else {
+                return Err(Error::Internal);
+            };
+            if results.iter().any(|r| r.task_index == result.task_index) {
+                return Err(Error::Internal);
+            }
+            results.push(result);
+            results.sort_by_key(|r| r.task_index);
+            *text = results
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            s.record.version = 10;
+            index
+        };
+        let saved = self.checkpoint(None).await;
+        self.changed(&self.state(), index);
+        saved
+    }
     pub fn resources(&self) -> Vec<ResourceRef> {
         self.state().record.resources.clone()
     }
@@ -200,6 +304,9 @@ impl Conversation {
     pub fn busy(&self) -> bool {
         let state = self.state();
         state.active.is_some() || state.updating
+    }
+    pub(crate) fn disposed(&self) -> bool {
+        self.state().disposed
     }
     pub fn dispose(&self) -> Result<()> {
         let mut s = self.state();
@@ -316,6 +423,7 @@ impl Conversation {
             outcome,
             ..
         } = m
+            && *outcome != ToolOutcome::Running
         {
             self.emit(
                 s,
@@ -347,6 +455,9 @@ impl Conversation {
                     message,
                     Message::Assistant {
                         status: MessageStatus::Streaming,
+                        ..
+                    } | Message::Tool {
+                        outcome: ToolOutcome::Running,
                         ..
                     }
                 )
@@ -497,6 +608,8 @@ impl Conversation {
             cancel: cancel.clone(),
             finishing: false,
             compact_only: false,
+            delegated_agents: 0,
+            delegation_calls: HashSet::new(),
         });
         s.record.operation = Some(Operation {
             id: operation_id.clone(),
@@ -540,6 +653,8 @@ impl Conversation {
             cancel: cancel.clone(),
             finishing: false,
             compact_only: true,
+            delegated_agents: 0,
+            delegation_calls: HashSet::new(),
         });
         s.record.operation = Some(Operation {
             id: operation_id.clone(),
@@ -787,6 +902,11 @@ impl Conversation {
         let mut s = self.state();
         let pending = std::mem::take(&mut s.record.pending_input);
         let changed = !pending.is_empty();
+        if changed {
+            // Steering can start a new user turn without replacing the operation.
+            // Reset only when input is consumed, after the previous executors settle.
+            s.active.as_mut().unwrap().delegated_agents = 0;
+        }
         for message in pending {
             s.record.messages.push(message);
             self.changed(&s, s.record.messages.len() - 1);
@@ -963,12 +1083,31 @@ impl Conversation {
                 }
             }
             let previous = s.record.messages.len();
+            let progress: Vec<_> = s
+                .record
+                .messages
+                .iter()
+                .enumerate()
+                .filter_map(|(index, message)| {
+                    matches!(
+                        message,
+                        Message::Tool {
+                            outcome: ToolOutcome::Running,
+                            ..
+                        }
+                    )
+                    .then_some(index)
+                })
+                .collect();
             let intent = s.record.executing_tool_id.take();
             finish_missing_results(&mut s.record.messages, intent.as_deref());
             s.active_tool = None;
             s.pending = None;
             s.active.as_mut().unwrap().finishing = true;
-            for index in previous..s.record.messages.len() {
+            for index in progress
+                .into_iter()
+                .chain(previous..s.record.messages.len())
+            {
                 self.changed(&s, index);
             }
         }
@@ -1363,7 +1502,19 @@ impl Conversation {
                             Poll::Pending => loop {
                                 tokio::select! { biased;
                                     _ = self.input_arrived.notified() => {
-                                        if self.checkpoint(None).await.is_err() { cancel.cancel(); }
+                                        // Delegation may own the checkpoint lock. Keep polling
+                                        // its executor while saving steering, and never drop an
+                                        // in-flight save if execution settles first.
+                                        let save = self.checkpoint(None);
+                                        tokio::pin!(save);
+                                        let saved = tokio::select! {
+                                            saved = &mut save => saved,
+                                            result = &mut execution => {
+                                                if save.await.is_err() { cancel.cancel(); }
+                                                break result;
+                                            }
+                                        };
+                                        if saved.is_err() { cancel.cancel(); }
                                         // Never drop an executor to simulate cancellation: keep owning cleanup.
                                     }
                                     result = &mut execution => break result,
@@ -1410,15 +1561,30 @@ impl Conversation {
             }
             {
                 let mut s = self.state();
-                s.record.messages.push(Message::Tool {
-                    id: new_id(),
-                    call_id: call.id.clone(),
-                    text,
-                    outcome,
-                    details,
-                });
+                let index = if let Some(index) = s.record.messages.iter().position(|m| matches!(m,
+                    Message::Tool { call_id, outcome: ToolOutcome::Running, .. } if call_id == &call.id
+                )) {
+                    let Message::Tool { text: saved_text, outcome: saved_outcome, details: saved_details, .. } = &mut s.record.messages[index] else { unreachable!() };
+                    if outcome == ToolOutcome::Completed || *saved_text == text {
+                        *saved_text = text;
+                    } else {
+                        append_delegation_notice(saved_text, &text);
+                    }
+                    *saved_outcome = outcome;
+                    if details.is_some() { *saved_details = details; }
+                    index
+                } else {
+                    s.record.messages.push(Message::Tool {
+                        id: new_id(),
+                        call_id: call.id.clone(),
+                        text,
+                        outcome,
+                        details,
+                    });
+                    s.record.messages.len() - 1
+                };
                 s.record.executing_tool_id = None;
-                self.changed(&s, s.record.messages.len() - 1);
+                self.changed(&s, index);
             }
             self.checkpoint(None).await?;
             if matches!(outcome, ToolOutcome::Completed | ToolOutcome::Failed)

@@ -49,7 +49,7 @@ impl ConversationRecord {
             return Err(Error::Invalid("Invalid provider state."));
         }
         let bad = Error::Invalid("Invalid or unsupported conversation record.");
-        if !matches!(self.version, 1..=9)
+        if !matches!(self.version, 1..=10)
             || self
                 .metadata
                 .parent
@@ -176,10 +176,56 @@ impl ConversationRecord {
                             return Err(bad);
                         }
                     }
-                    if details.is_some() && *outcome != ToolOutcome::Completed {
+                    let delegation =
+                        if let Some(ToolDetails::Delegation { total, results }) = details {
+                            let mut children = HashSet::new();
+                            if self.version < 10
+                                || !(1..=8).contains(total)
+                                || results.is_empty()
+                                || results.len() > *total
+                                || message.text().len() > MAX_DELEGATION_OUTPUT_BYTES
+                                || results.iter().map(|r| r.text.len()).sum::<usize>()
+                                    + 2 * (results.len() - 1)
+                                    > DELEGATION_RESULT_BYTES
+                                || results
+                                    .windows(2)
+                                    .any(|pair| pair[0].task_index >= pair[1].task_index)
+                                || results.iter().any(|r| {
+                                    r.task_index >= *total
+                                        || !valid_id(&r.session_id)
+                                        || !children.insert(&r.session_id)
+                                        || !matches!(
+                                            r.outcome,
+                                            ToolOutcome::Completed
+                                                | ToolOutcome::Failed
+                                                | ToolOutcome::Interrupted
+                                        )
+                                })
+                                || (*outcome == ToolOutcome::Completed && results.len() != *total)
+                                || !self.messages.iter().any(|m| {
+                                    matches!(m, Message::Assistant { calls, .. }
+                                if calls.iter().any(|c| c.id == *call_id && c.name == "delegate"))
+                                })
+                            {
+                                return Err(bad);
+                            }
+                            true
+                        } else {
+                            false
+                        };
+                    if details.is_some() && *outcome != ToolOutcome::Completed && !delegation {
                         return Err(bad);
                     }
-                    if pending.pop_front() != Some(call_id.as_str()) {
+                    if *outcome == ToolOutcome::Running {
+                        if !delegation
+                            || !active
+                            || index + 1 != self.messages.len()
+                            || self.executing_tool_id.as_ref() != Some(call_id)
+                            || pending.front().copied() != Some(call_id.as_str())
+                        {
+                            return Err(bad);
+                        }
+                    } else if pending.pop_front() != Some(call_id.as_str()) {
                         return Err(bad);
                     }
                 }
@@ -243,7 +289,7 @@ impl ConversationRecord {
             self.version = 2;
             self.configuration = Some(ConversationConfiguration::legacy());
         }
-        self.version = 9;
+        self.version = self.version.max(9);
         if let Some(op) = &mut self.operation
             && op.state.active()
         {
@@ -278,6 +324,17 @@ pub fn valid_json_depth(value: &serde_json::Value, depth: usize) -> bool {
         }
 }
 pub fn finish_missing_results(messages: &mut Vec<Message>, intent: Option<&str>) {
+    for message in messages.iter_mut() {
+        if let Message::Tool { text, outcome, .. } = message
+            && *outcome == ToolOutcome::Running
+        {
+            *outcome = ToolOutcome::Interrupted;
+            append_delegation_notice(
+                text,
+                "Delegation interrupted before all results were returned. Do not retry without a new user request.",
+            );
+        }
+    }
     let results: HashSet<_> = messages
         .iter()
         .filter_map(|m| {

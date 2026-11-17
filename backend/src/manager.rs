@@ -24,9 +24,6 @@ struct Catalog {
     forking: usize,
     images: Option<Arc<crate::images::ImageStore>>,
     files: Option<Arc<crate::files::FileStore>>,
-    // Active turns never resume after restart. Keep reservations even when a
-    // successful child is deleted, so cleanup cannot reset the spawn budget.
-    delegation_turns: BTreeMap<String, (String, HashSet<String>, usize)>,
 }
 pub struct AgentManager {
     catalog: Mutex<Catalog>,
@@ -449,56 +446,19 @@ impl AgentManager {
         provider: Arc<dyn ChatProvider>,
         tools: Vec<Arc<dyn Tool>>,
     ) -> Result<Vec<(Arc<Conversation>, Option<String>)>> {
-        crate::check_cancel(&context.cancel)?;
-        if titles.is_empty() || titles.len() > 8 {
-            return Err(Error::Tool(
-                "Delegation requires one to eight tasks.".into(),
-            ));
-        }
         let parent = {
-            let mut catalog = self.catalog.lock().unwrap();
+            let catalog = self.catalog.lock().unwrap();
             if catalog.closed
                 || catalog.account_busy
                 || catalog.mutating.contains(&context.conversation_id)
             {
                 return Err(Error::Busy);
             }
-            let parent = catalog
+            catalog
                 .conversations
                 .get(&context.conversation_id)
                 .ok_or(Error::Invalid("Parent conversation not found."))?
-                .snapshot();
-            if parent.metadata.parent.is_some() {
-                return Err(Error::Tool("Sub-agents cannot delegate.".into()));
-            }
-            if parent.operation.as_ref().is_none_or(|op| {
-                op.id != context.operation_id || op.state != OperationState::Running
-            }) || parent.active_tool_call_id.as_deref() != Some(&context.call_id)
-            {
-                return Err(Error::Invalid(
-                    "Delegation requires an executing parent tool.",
-                ));
-            }
-            let turn = catalog
-                .delegation_turns
-                .entry(context.conversation_id.clone())
-                .or_insert_with(|| (context.operation_id.clone(), HashSet::new(), 0));
-            if turn.0 != context.operation_id {
-                *turn = (context.operation_id.clone(), HashSet::new(), 0);
-            }
-            if turn.1.contains(&context.call_id) {
-                return Err(Error::Tool(
-                    "This delegation already ran; it was not restarted.".into(),
-                ));
-            }
-            if turn.2 + titles.len() > 8 {
-                return Err(Error::Tool(
-                    "The limit of eight sub-agents per turn was reached.".into(),
-                ));
-            }
-            turn.1.insert(context.call_id.clone());
-            turn.2 += titles.len();
-            parent
+                .reserve_delegation(context, titles.len())?
         };
         let mut children = Vec::with_capacity(titles.len());
         for title in titles {
@@ -804,6 +764,30 @@ impl AgentManager {
     ) -> Result<ConversationSnapshot> {
         self.get(id)?.update_settings(settings).await
     }
+    /// Read-only observers keep access during catalog reservations, until actual removal.
+    /// Do not expose a Conversation handle here: get() remains mutation-guarded.
+    pub fn snapshot(&self, id: &str) -> Result<ConversationSnapshot> {
+        let catalog = self.catalog.lock().unwrap();
+        if catalog.closed {
+            return Err(Error::Invalid("Agent manager is closed."));
+        }
+        Ok(catalog
+            .conversations
+            .get(id)
+            .ok_or(Error::Invalid("Conversation not found."))?
+            .snapshot())
+    }
+    pub fn observe(&self, id: &str) -> Result<(ConversationSnapshot, EventReceiver)> {
+        let catalog = self.catalog.lock().unwrap();
+        if catalog.closed {
+            return Err(Error::Invalid("Agent manager is closed."));
+        }
+        Ok(catalog
+            .conversations
+            .get(id)
+            .ok_or(Error::Invalid("Conversation not found."))?
+            .subscribe())
+    }
     pub fn get(&self, id: &str) -> Result<Arc<Conversation>> {
         let c = self.catalog.lock().unwrap();
         if c.closed {
@@ -1079,6 +1063,11 @@ impl AgentManager {
                     return Err(Error::Busy);
                 }
                 if let Some(conversation) = catalog.conversations.get(session_id) {
+                    if returned_child.is_some() && conversation.disposed() {
+                        // A previous explicit deletion failed after disposing this child.
+                        // Its delegate must not turn cleanup into an automatic retry.
+                        return Err(Error::Storage);
+                    }
                     let cleanup_allowed =
                         returned_child.is_some_and(|(parent_id, call_id)| {
                             let snapshot = conversation.snapshot();
@@ -1128,7 +1117,6 @@ impl AgentManager {
         let cleanup = {
             let mut catalog = self.catalog.lock().unwrap();
             catalog.conversations.remove(id);
-            catalog.delegation_turns.remove(id);
             catalog.native.remove_session(id);
             catalog.unreadable.remove(id);
             let referenced: HashSet<_> = catalog
