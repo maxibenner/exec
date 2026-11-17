@@ -156,7 +156,7 @@ private actor SessionToolTransport: AgentTransport {
         }
     }
 
-    func newConversationsCopySelectionWithoutSharingChanges() async throws {
+    func newConversationsResetSelectionWithoutChangingSource() async throws {
         let transport = FakeAgentTransport()
         let suite = "exec-session-tools-\(UUID())"
         let preferences = UserDefaults(suiteName: suite)!
@@ -164,19 +164,23 @@ private actor SessionToolTransport: AgentTransport {
         let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
         defer { library.closePresentations() }
         let source = library.current
-        source.setToolEnabled("shell", false)
-        source.setToolEnabled("delegate", false)
-        await source.waitForPendingSave()
+        try source.apply(snapshot(disabled: ["shell", "delegate"]).decoded(AgentSnapshot.self))
+        source.draft = "Keep this source draft"
         library.newConversation()
         let next = library.current
+        await source.waitForPendingSave()
         await next.waitForPendingSave()
-        try expect(next !== source && next.disabledTools == ["shell", "delegate"])
-        next.setToolEnabled("shell", true)
+        try expect(library.current === next && next !== source && next.disabledTools.isEmpty && next.canSelectTools)
+        next.setToolEnabled("read_file", false)
         await next.waitForPendingSave()
-        try expect(next.disabledTools == ["delegate"] && source.disabledTools == ["shell", "delegate"])
+        try expect(next.disabledTools == ["read_file"] && source.disabledTools == ["shell", "delegate"])
         library.newConversation()
         await library.current.waitForPendingSave()
-        try expect(library.current !== next && library.current.disabledTools == ["delegate"])
+        try expect(library.current !== next && library.current.disabledTools.isEmpty)
+        try expect(next.disabledTools == ["read_file"] && source.disabledTools == ["shell", "delegate"])
+        try expect(source.workspace?.root.path == "/tmp" && source.currentSessionID == AgentIntegrationTests.conversationID)
+        try expect(source.draft == "Keep this source draft" && source.error == nil && library.error == nil)
+        try expect(library.openConversations.contains { $0 === source })
         let writes = await transport.requests.filter { $0.method != "GET" }
         try expect(writes.isEmpty)
     }

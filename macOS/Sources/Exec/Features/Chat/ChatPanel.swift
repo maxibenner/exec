@@ -45,6 +45,7 @@ import Observation
     var workspace: Workspace? { current.workspace }
     var autoApproveTools: Bool { current.autoApproveTools }
     var canCompact: Bool { canNavigate && current.canCompact }
+    var canClear: Bool { canNavigate && current.canClear }
     var canSelectWorkspace: Bool { canNavigate && current.canSelectWorkspace }
     var draft: String {
         get { current.draft }
@@ -174,6 +175,7 @@ import Observation
     }
     func selectWorkspace(_ url: URL) { library.selectWorkspace(url, in: current) }
     func compact() { if canCompact { current.compact() } }
+    func clear() { if canClear { current.clear() } }
     func setAutoApproveTools(_ enabled: Bool) { if canNavigate { current.setAutoApproveTools(enabled) } }
     func stop() {
         guard !navigating else { return }

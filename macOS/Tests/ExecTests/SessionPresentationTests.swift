@@ -178,8 +178,11 @@ private actor SessionReorderTransport: AgentTransport {
         library.newConversation()
         let creating = library.current
         try expect(creating !== first && creating.currentSessionID == nil)
+        try expect(creating.workspace == nil && creating.needsInitialWorkspaceSelection)
         try expect(library.sidebarSessions.map(\.id) == [first.currentSessionID!])
         try expect(library.sidebarSelectionID == first.currentSessionID)
+        try creating.setInitialWorkspace(Workspace(root: first.workspace!.root))
+        creating.scheduleSave()
         try await waitForCreation(transport)
         // Keep selection stable for the entire request, not just the initial frame.
         try expect(library.sidebarSelectionID == first.currentSessionID)
@@ -222,6 +225,8 @@ private actor SessionReorderTransport: AgentTransport {
             let first = library.current
             library.newConversation()
             let creating = library.current
+            try creating.setInitialWorkspace(Workspace(root: first.workspace!.root))
+            creating.scheduleSave()
             try await waitForCreation(transport)
             try expect(library.sidebarSelectionID == first.currentSessionID)
             if navigateAway {

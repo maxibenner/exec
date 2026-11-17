@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 @MainActor struct BackendFollowupTests {
@@ -28,10 +29,10 @@ import Foundation
             defer { preferences.removePersistentDomain(forName: suite) }
             let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
             defer { library.closePresentations() }
-            try library.current.setInitialWorkspace(Workspace(root: URL(fileURLWithPath: "/tmp")))
             library.newConversation()
             let source = library.current
             await source.waitForPendingSave()
+            try source.setInitialWorkspace(Workspace(root: URL(fileURLWithPath: "/tmp")))
             source.selectedModel = "openai/test"
             source.draft = "Keep this unsubmitted draft"
             let config = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(AgentLibraryConfiguration()))
@@ -83,49 +84,83 @@ import Foundation
         }
     }
 
-    func inheritedWorkspaceCanBeChosenExactlyOnce() async throws {
+    func freshSessionsUseSettingsDefaultsAndRequestWorkspace() async throws {
         let transport = FakeAgentTransport()
-        let provider = AgentAccounts(api: AgentAPI(transport: transport))
-        let suite = "exec-workspace-choice-\(UUID().uuidString)"
+        let suite = "exec-fresh-session-\(UUID().uuidString)"
         let preferences = UserDefaults(suiteName: suite)!
         defer { preferences.removePersistentDomain(forName: suite) }
-        let library = ChatLibrary(provider: provider, preferences: preferences)
+        let models = [
+            ChatModel(id: "openai/test", name: "Source", efforts: [ChatEffort(id: "low", name: "Low")]),
+            ChatModel(id: "openai/default", name: "Default", efforts: [ChatEffort(id: "high", name: "High")])
+        ]
+        preferences.set(try JSONEncoder().encode(models), forKey: "chat.modelCatalog")
+        var config = AgentLibraryConfiguration()
+        config.defaultModel = "openai/default"
+        config.settings = AgentSettings(systemPrompt: "Settings prompt", autoApprove: false,
+                                        effort: "high", searchModel: "openai/default-search")
+        try await transport.reply("/v1/library", try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(config)))
+        guard case .object(var fields) = try snapshotJSON("completed"),
+              case .object(var configuration) = fields["configuration"],
+              case .object(var metadata) = fields["metadata"] else {
+            throw CheckFailure(description: "Expected source snapshot")
+        }
+        configuration["settings"] = .object([
+            "systemPrompt": .string("Source prompt"), "autoApprove": .bool(true),
+            "effort": .string("low"), "searchModel": .string("openai/source-search")])
+        metadata["disabledTools"] = .array([.string("shell"), .string("delegate")])
+        fields["configuration"] = .object(configuration)
+        fields["metadata"] = .object(metadata)
+        let saved = AgentJSON.object(fields)
+        try await transport.reply("/v1/conversations", .array([saved]))
+        let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
         defer { library.closePresentations() }
-        try library.current.apply(snapshot("completed"))
-        let previous = library.current
-        library.newConversation()
-        let inherited = library.current
-        await inherited.waitForPendingSave()
-        try expect(inherited !== previous && inherited.workspace?.root == previous.workspace?.root)
-        inherited.selectedModel = "openai/test"
-        try await transport.reply("/v1/conversations", snapshotJSON("completed"))
-        let config = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(AgentLibraryConfiguration()))
-        try await transport.reply("/v1/library", config)
-        inherited.scheduleSave()
-        await inherited.waitForPendingSave()
-        try expect(!inherited.canSelectWorkspace && inherited.currentSessionID != nil)
-        try expect(library.sidebarSessions.contains { $0.id == inherited.currentSessionID })
-        try expect(inherited.draft.isEmpty)
-        try expectFailure { try inherited.setInitialWorkspace(Workspace(root: URL(fileURLWithPath: "/tmp/another"))) }
-        try expect(previous.workspace?.root.path == "/tmp")
+        try await library.refreshSharedState()
+        let source = library.current
+        try source.apply(saved.decoded(AgentSnapshot.self))
+        source.draft = "Keep this unsubmitted draft"
+        let messages = source.messages
+        let sourceID = source.currentSessionID
 
-        // Sending directly in the inherited folder starts the immutable backend session.
-        try await transport.reply("/v1/providers", .array([.object(["id": .string("openai"), "name": .string("OpenAI"), "connected": .bool(true)])]))
-        try await provider.refreshConnections()
-        let store = ChatStore(provider: provider, workspace: Workspace(root: URL(fileURLWithPath: "/tmp")), defaultAutoApproveTools: false)
-        defer { store.closePresentation() }
-        store.systemPrompt = "Keep this prompt"
-        store.installModels([ChatModel(id: "openai/test", name: "Test")])
-        let terminal = try snapshotJSON("completed")
-        try await transport.reply("/v1/conversations", terminal)
-        try await transport.reply(AgentAPI.path(AgentIntegrationTests.conversationID), terminal)
-        store.draft = "Test"
-        try expect(store.canSelectWorkspace)
-        store.send()
-        await store.waitUntilIdle()
-        try expect(store.currentSessionID != nil && !store.canSelectWorkspace)
-        let creates = await transport.requests.filter { $0.method == "POST" && $0.path == "/v1/conversations" }
-        try expect(creates.count == 2)
+        for _ in 0..<2 {
+            let previous = library.current
+            library.newConversation()
+            let fresh = library.current
+            await fresh.waitForPendingSave()
+            try expect(fresh !== previous && fresh !== source)
+            try expect(fresh.currentSessionID == nil && fresh.workspace == nil)
+            try expect(fresh.needsInitialWorkspaceSelection && fresh.canSelectWorkspace)
+            try expect(fresh.selectedModel == config.defaultModel && fresh.selectedEffort == config.settings.effort)
+            try expect(fresh.systemPrompt == config.settings.systemPrompt && fresh.searchModel == config.settings.searchModel)
+            try expect(!fresh.autoApproveTools && fresh.disabledTools.isEmpty)
+            try expect(fresh.messages.isEmpty && fresh.contextUsage == nil && !fresh.hasUnsentDraft)
+            // Each fresh session presents its own picker once, only in its owning window.
+            let window = NSWindow()
+            var pickerWindows: [NSWindow] = []
+            var pickerDirectories: [URL?] = []
+            let panel = ChatPanel(library: library, conversation: fresh) { owner, directory, completion in
+                pickerWindows.append(owner); pickerDirectories.append(directory)
+                completion(nil)
+            }
+            panel.chooseInitialWorkspaceIfNeeded()
+            try expect(pickerWindows.isEmpty && fresh.needsInitialWorkspaceSelection)
+            panel.window = window
+            panel.chooseInitialWorkspaceIfNeeded()
+            panel.chooseInitialWorkspaceIfNeeded()
+            try expect(pickerWindows.count == 1 && pickerWindows[0] === window && pickerDirectories[0] == nil)
+            // Dismissing the picker, even followed by a forced save, must not create a session.
+            try await fresh.saveIfIdle(force: true)
+            try expect(!fresh.needsInitialWorkspaceSelection && fresh.currentSessionID == nil && fresh.workspace == nil)
+            try expect(library.sidebarSessions.map(\.id) == [sourceID!])
+            try expect(library.openConversations.contains { $0 === source })
+            try expect(source.currentSessionID == sourceID && source.workspace?.root.path == "/tmp")
+            try expect(source.messages == messages && source.draft == "Keep this unsubmitted draft")
+            try expect(source.selectedModel == "openai/test" && source.selectedEffort == "low")
+            try expect(source.systemPrompt == "Source prompt" && source.searchModel == "openai/source-search")
+            try expect(source.autoApproveTools && source.disabledTools == ["shell", "delegate"])
+            try expect(source.error == nil && fresh.error == nil && library.error == nil)
+        }
+        let writes = await transport.requests.filter { $0.method != "GET" }
+        try expect(writes.isEmpty)
     }
 
     func modelCatalogSurvivesLaunchAndRefreshes() async throws {

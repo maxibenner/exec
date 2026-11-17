@@ -108,7 +108,11 @@ actor LifecycleTransport: AgentTransport {
                               residentLimit: residentLimit)
     }
     func start() async throws {
-        let config = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(AgentLibraryConfiguration()))
+        var configuration = AgentLibraryConfiguration()
+        // UUID sorting can put other immediately before parent, making the focus
+        // test's reorder a no-op instead of the held persistence it must exercise.
+        configuration.order = [parentID, childID, otherID]
+        let config = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(configuration))
         try await transport.responses.reply("/v1/library", config)
         try await transport.responses.reply("/v1/conversations", .array([root, child, other]))
         for snapshot in [root, child, other] {

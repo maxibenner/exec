@@ -41,7 +41,11 @@ The optional [relay](relay/README.md) and [minimal iOS client](iOS/README.md) le
 | Next sent message               | ⌘↓                  |
 | Interrupt turn                  | Esc              |
 
-Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/fork`, `/workspace`, `/finder`, `/terminal`.
+Slash commands: `/model`, `/reasoning`, `/auto-approve`, `/compact`, `/fork`, `/clear`, `/finder`, `/terminal`.
+
+⌘T starts a fresh conversation using Settings defaults and opens the workspace folder picker. `/fork` copies the current conversation's history, model context, workspace and session settings. `/clear` removes history and model context from an idle conversation while keeping its workspace, settings and tool selection; it does not undo tool effects or delete workspace files.
+
+The session tool selector stays open for multiple checkbox changes, with labeled icons grouped into Read, Write and Sensitive. Shell commands, screenshots and delegation are Sensitive; image generation is Write. These groups do not change approval policy.
 
 ![Exec screenshot](docs/assets/screenshot.png)
 

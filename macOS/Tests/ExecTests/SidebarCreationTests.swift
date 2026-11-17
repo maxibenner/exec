@@ -116,6 +116,9 @@ private actor SidebarCreationTransport: AgentTransport {
             windows.newConversation()
             let creating = library.current
             try expect(windows.sidebarRevealRequest == 0 && creating.currentSessionID == nil)
+            try expect(creating.workspace == nil && creating.needsInitialWorkspaceSelection)
+            try creating.setInitialWorkspace(Workspace(root: fixture.workspace))
+            creating.scheduleSave()
             try await fixture.waitForCreation()
             try expect(windows.sidebarRevealRequest == 0)
             try await fixture.finishCreation()
@@ -160,6 +163,10 @@ private actor SidebarCreationTransport: AgentTransport {
             if fork { windows.forkConversation(source) }
             else { windows.newConversation() }
             let creating = library.current
+            if !fork {
+                try creating.setInitialWorkspace(Workspace(root: fixture.workspace))
+                creating.scheduleSave()
+            }
             try await fixture.waitForCreation()
             try expect(windows.sidebarRevealRequest == 0)
             await fixture.transport.failCreation()
@@ -227,6 +234,8 @@ private actor SidebarCreationTransport: AgentTransport {
             let library = fixture.library, windows = fixture.windows
             windows.newConversation()
             let creating = library.current
+            try creating.setInitialWorkspace(Workspace(root: fixture.workspace))
+            creating.scheduleSave()
             try await fixture.waitForCreation()
             let other = SidebarCreationFixture.snapshot(workspace: fixture.workspace)
             try await fixture.transport.setCatalog(replaceOriginal ? [other] : fixture.roots + [fixture.child!, other])

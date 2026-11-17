@@ -30,7 +30,16 @@ struct ComposerCommandTests {
         try expect(ComposerCommand.Page.model.hasOptions && ComposerCommand.Page.effort.hasOptions)
         let approve = try unwrap(ComposerCommand("/approve off"))
         try expect(approve.page == .approve && approve.query == "off")
-        for draft in ["", "hello /model", " /model", "/Users/me/project", "/model/file", "/tmp", "/unknown", "/m prose", "/model\nhello", "/approve\roff"] {
+        for draft in ["/clear", "/CLEAR", "/clear   "] {
+            let clear = try unwrap(ComposerCommand(draft))
+            try expect(clear.page == .clear && clear.query.isEmpty)
+        }
+        let clearPrefix = try unwrap(ComposerCommand("/cl"))
+        try expect(clearPrefix.page == nil && clearPrefix.query == "cl" && ComposerCommand.Page.clear.matches(clearPrefix.query))
+        try expect(!ComposerCommand.Page.clear.hasOptions)
+        try expect(!ComposerCommand.Page.allCases.flatMap(\.names).contains("workspace"))
+        for draft in ["", "hello /model", " /model", "/Users/me/project", "/model/file", "/tmp", "/unknown", "/m prose", "/model\nhello", "/approve\roff",
+                      "/workspace", "/workspace /tmp", "/work", " /clear", "hello /clear", "/clear/file", "/clear\nhello", "/clear\rhello", "/cl prose"] {
             try expect(ComposerCommand(draft) == nil)
         }
     }

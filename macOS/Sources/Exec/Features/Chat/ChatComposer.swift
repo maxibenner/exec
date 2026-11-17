@@ -44,7 +44,7 @@ struct ChatComposer: View {
                      Choice(id: "approve", title: "auto-approve", detail: store.autoApproveTools ? "On" : "Off", enabled: canApprove),
                      Choice(id: "compact", title: "compact", enabled: store.canCompact),
                      Choice(id: "fork", title: "fork", enabled: store.library.canRequestFork(store.current)),
-                     Choice(id: "workspace", title: "workspace", detail: "Change workspace…", enabled: store.canChooseWorkspace),
+                     Choice(id: "clear", title: "clear", detail: "Clear history and context", enabled: store.canClear),
                      Choice(id: "finder", title: "finder", detail: "Open workspace in Finder", enabled: store.workspace != nil),
                      Choice(id: "terminal", title: "terminal", detail: "Open workspace in Terminal", enabled: store.workspace != nil)]
         case .model:
@@ -57,7 +57,7 @@ struct ChatComposer: View {
             items = [Choice(id: "", title: "Default", selected: store.current.selectedEffort == nil, enabled: available)] + (store.current.model?.efforts ?? []).map {
                 Choice(id: $0.id, title: $0.name, selected: store.current.selectedEffort == $0.id, enabled: available)
             }
-        case .approve, .compact, .fork, .workspace, .finder, .terminal:
+        case .approve, .compact, .fork, .clear, .finder, .terminal:
             items = [] // Actions stay in the root command list.
 
         }
@@ -280,11 +280,10 @@ struct ChatComposer: View {
                 if let windows { windows.forkConversation(store.current) }
                 else { store.library.forkConversation(store.current) }
                 close()
-            case .workspace:
-                guard store.canChooseWorkspace else { return }
-                store.draft = ""
+            case .clear:
+                guard store.canClear else { return }
+                store.clear()
                 close()
-                store.chooseWorkspace()
             case .finder:
                 guard store.workspace != nil else { return }
                 store.draft = ""
@@ -305,7 +304,7 @@ struct ChatComposer: View {
         switch page {
         case .model: store.selectedModel = choice.id
         case .effort: store.selectedEffort = choice.id.isEmpty ? nil : choice.id
-        case .approve, .compact, .fork, .workspace, .finder, .terminal: return
+        case .approve, .compact, .fork, .clear, .finder, .terminal: return
         }
         store.draft = ""
         close(); focused = true

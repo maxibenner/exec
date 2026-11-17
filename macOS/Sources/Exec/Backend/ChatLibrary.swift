@@ -300,8 +300,10 @@ import Observation
         guard !conversation.busy else { return }
         let needsDefault = conversation.selectedModel.isEmpty
         conversation.installModels(models)
-        conversation.systemPrompt = systemPrompt
-        conversation.searchModel = searchModel
+        if conversation.currentSessionID == nil {
+            conversation.systemPrompt = systemPrompt
+            conversation.searchModel = searchModel
+        }
         if needsDefault { conversation.selectedModel = defaultSessionModel?.id ?? defaultModel; conversation.selectedEffort = effectiveDefaultEffort }
         if conversation.currentSessionID == nil, conversation.workspace != nil { conversation.scheduleSave() }
     }
@@ -428,11 +430,12 @@ import Observation
         let commandDraft = source.draft
         navigate(reportingTo: source) {
             await source.waitForPendingSave()
+            try await source.saveIfIdle()
             try Task.checkCancellation()
             let next = try self.makeConversation()
             self.loading = next
             try await next.copyConversation(from: source)
-            try await next.saveIfIdle(force: true)
+            try await next.didCheckpoint?()
             try Task.checkCancellation()
             if source.draft == commandDraft, let command = ComposerCommand(commandDraft),
                command.page == .fork || (command.page == nil && ComposerCommand.Page.fork.matches(command.query)) {
@@ -448,7 +451,7 @@ import Observation
         cancelOpening()
         navigationError = nil
         do {
-            let next = try makeConversation(workspace: current.workspace, disabledTools: current.disabledTools)
+            let next = try makeConversation()
             let checkpoint = next.didCheckpoint
             next.didCheckpoint = { [weak next] in
                 guard let next else { return }
@@ -461,8 +464,7 @@ import Observation
                 try await checkpoint?()
             }
             next.requestInitialWorkspaceSelection()
-            activate(next, preserveSidebarSelection: next.workspace != nil && !next.selectedModel.isEmpty)
-            next.scheduleSave(force: next.workspace != nil)
+            activate(next, preserveSidebarSelection: true)
         } catch { navigationError = error.localizedDescription }
     }
 
@@ -628,9 +630,8 @@ import Observation
         }
     }
 
-    private func makeConversation(workspace: Workspace? = nil, disabledTools: Set<String> = []) throws -> ChatStore {
-        let conversation = ChatStore(provider: provider, workspace: workspace,
-                                     defaultAutoApproveTools: defaultAutoApproveTools, disabledTools: disabledTools)
+    private func makeConversation() throws -> ChatStore {
+        let conversation = ChatStore(provider: provider, defaultAutoApproveTools: defaultAutoApproveTools)
         conversation.installModels(models)
         conversation.selectedModel = defaultSessionModel?.id ?? defaultModel
         conversation.selectedEffort = effectiveDefaultEffort

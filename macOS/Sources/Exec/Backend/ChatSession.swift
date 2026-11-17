@@ -89,7 +89,10 @@ import CryptoKit
     }
     var isWorking: Bool { busy }
     var canEditDraft: Bool { !isRestoringSession && !isStopping }
-    var canSelectWorkspace: Bool { !busy && !isSaving && !workspaceChosen && currentSessionID == nil && messages.isEmpty }
+    var canSelectWorkspace: Bool {
+        canRequestCommands && !deletedRemotely && !busy && !isSaving && !hasUnsavedChanges &&
+            !workspaceChosen && currentSessionID == nil && messages.isEmpty
+    }
     private(set) var autoApproveTools: Bool
     private(set) var disabledTools: Set<String>
     var isSubagent: Bool { snapshot?.metadata.parent != nil }
@@ -216,8 +219,8 @@ import CryptoKit
         guard !deletedRemotely else { throw ExecError("This conversation was deleted on another device.") }
         guard !configurationUncertain else { throw ExecError("The previous configuration request could not be confirmed. Reopen the conversation before making further changes.") }
         guard let workspace, !selectedModel.isEmpty else { return }
-        // A newly inherited workspace is a suggestion, not an explicit choice. Do not
-        // create an immutable Rust session until selection, sending, or leaving a draft.
+        // An inherited workspace can be saved before sending; the backend keeps it
+        // editable until the first accepted input.
         guard currentSessionID != nil || workspaceChosen || commitInheritedWorkspace || allowInheritedWorkspace else { return }
         let desiredSettings = settings
         let desiredModel = selectedModel
@@ -391,6 +394,7 @@ import CryptoKit
             while let ref = self.snapshot?.imageReferences.first(where: { imageCache[$0.id] == nil && !failedImageIDs.contains($0.id) }) {
                 do {
                     let value = try await api.get("/v1/images/\(ref.id.uuidString.lowercased())")
+                    try Task.checkCancellation()
                     guard let base64 = value["base64"].string, let data = Data(base64Encoded: base64), data.count == ref.byteCount,
                           SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == ref.sha256 else {
                         throw ExecError("The backend returned an invalid image.")
@@ -404,7 +408,10 @@ import CryptoKit
                             return row
                         }
                     }
-                } catch { failedImageIDs.insert(ref.id); self.error = error.localizedDescription }
+                } catch {
+                    guard !Task.isCancelled else { break }
+                    failedImageIDs.insert(ref.id); self.error = error.localizedDescription
+                }
             }
         }
     }
@@ -511,6 +518,49 @@ import CryptoKit
             }
         }
     }
+    var canClear: Bool {
+        canRequestCommands && !deletedRemotely && !deletionPending && !busy && !isSaving &&
+            !hasUnsavedChanges && currentSessionID != nil
+    }
+    func clear() {
+        guard canClear, let id = currentSessionID else { return }
+        let originalDraft = draft
+        submitting = true
+        task = Task {
+            defer { submitting = false; task = nil; updateSleepActivity(); drainCommands() }
+            do {
+                await waitForPendingSave()
+                try await persistConfiguration()
+                try Task.checkCancellation()
+                pauseObservation()
+                transcriptReader = nil
+                defer { observe() }
+                do {
+                    let value = try await api.request("POST", AgentAPI.path(id, "/clear"), .object([:]))
+                    try apply(value.decoded(AgentSnapshot.self))
+                } catch {
+                    // The reset may have committed. Reconcile by reading, never repeat it.
+                    configurationUncertain = true
+                    hasUnsavedChanges = true
+                    pendingCommands.removeAll()
+                    throw error
+                }
+                acceptedOperationID = nil
+                pendingIDs.removeAll()
+                imageTask?.cancel()
+                imageCache.removeAll()
+                failedImageIDs.removeAll()
+                uploadedFiles.removeAll()
+                error = nil
+                if draft == originalDraft, let command = ComposerCommand(originalDraft),
+                   command.page == .clear || (command.page == nil && ComposerCommand.Page.clear.matches(command.query)) {
+                    draft = ""
+                }
+                try await didCheckpoint?()
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
     var canCompact: Bool { canRequestCommands && !messages.isEmpty && provider.providerID(for: selectedModel) == "openai" }
     func compact() {
         guard canCompact else { return }
