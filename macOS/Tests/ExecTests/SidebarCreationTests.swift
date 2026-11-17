@@ -1,0 +1,241 @@
+import Foundation
+
+/// Holds only explicit creation requests; all other traffic stays in the fake transport.
+private actor SidebarCreationTransport: AgentTransport {
+    nonisolated let responses = FakeAgentTransport()
+    private var catalog: [AgentJSON] = []
+    private var pending: CheckedContinuation<Data, Error>?
+    private(set) var creationRequests = 0
+    var creationPending: Bool { pending != nil }
+
+    func setCatalog(_ snapshots: [AgentJSON]) async throws {
+        catalog = snapshots
+        try await responses.reply("/v1/conversations", .array(snapshots))
+        for snapshot in snapshots {
+            try await responses.reply(AgentAPI.path(snapshot.decoded(AgentSnapshot.self).id), snapshot)
+        }
+    }
+    func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
+        if method == "POST", path == "/v1/conversations" || path.hasSuffix("/fork") {
+            creationRequests += 1
+            return try await withCheckedThrowingContinuation { pending = $0 }
+        }
+        if method == "DELETE" {
+            var remaining: [AgentJSON] = []
+            for snapshot in catalog {
+                let snapshotPath = try await AgentAPI.path(snapshot.decoded(AgentSnapshot.self).id)
+                if snapshotPath != path { remaining.append(snapshot) }
+            }
+            try await setCatalog(remaining)
+            return Data("{}".utf8)
+        }
+        return try await responses.request(method, path, body: body)
+    }
+    nonisolated func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
+        responses.events(method, path, body: body)
+    }
+    func finishCreation(_ snapshot: AgentJSON) async throws {
+        guard let pending else { throw CheckFailure(description: "No pending sidebar creation") }
+        let data = try JSONEncoder().encode(snapshot)
+        try await setCatalog(catalog + [snapshot])
+        self.pending = nil
+        pending.resume(returning: data)
+    }
+    func failCreation() {
+        pending?.resume(throwing: ExecError("Synthetic creation failure"))
+        pending = nil
+    }
+}
+
+@MainActor private final class SidebarCreationFixture {
+    let transport = SidebarCreationTransport()
+    let suite = "exec-sidebar-creation-\(UUID())"
+    let preferences: UserDefaults
+    let library: ChatLibrary
+    let windows: SessionWindows
+    let workspace: URL
+    let roots: [AgentJSON]
+    let child: AgentJSON?
+
+    init(topLevelCount: Int = 1, selected: Bool = true) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("exec-sidebar-\(UUID())")
+        workspace = directory
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        preferences = UserDefaults(suiteName: suite)!
+        preferences.set(try JSONEncoder().encode([ChatModel(id: "deepseek/test", name: "Test")]), forKey: "chat.modelCatalog")
+        let initial = (0..<topLevelCount).map { _ in Self.snapshot(workspace: directory) }
+        roots = initial
+        child = initial.first.map { Self.snapshot(workspace: directory, parent: $0["id"]) }
+        library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
+        windows = SessionWindows(library: library)
+        let config = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(AgentLibraryConfiguration()))
+        try await transport.responses.reply("/v1/library", config)
+        try await transport.setCatalog(roots + (child.map { [$0] } ?? []))
+        if selected {
+            if let first = roots.first { try library.current.apply(first.decoded(AgentSnapshot.self)) }
+            else { try library.current.setInitialWorkspace(Workspace(root: workspace)) }
+        }
+        try await library.refreshSharedState()
+    }
+    static func snapshot(workspace: URL, parent: AgentJSON = .null) -> AgentJSON {
+        var metadata: [String: AgentJSON] = ["title": .string("Test session"), "manuallyNamed": .bool(false), "activityAt": .number(1000)]
+        if parent.string != nil {
+            metadata["parent"] = .object(["sessionId": parent, "operationId": .string(UUID().uuidString), "toolCallId": .string("delegate")])
+        }
+        return .object([
+            "id": .string(UUID().uuidString), "model": .string("deepseek/test"), "workspace": .string(workspace.path),
+            "configuration": .object(["settings": .object(["systemPrompt": .string(""), "autoApprove": .bool(true)]),
+                "instructionsFrozen": .bool(true), "workspaceInstructions": .null]),
+            "metadata": .object(metadata), "messages": .array([]), "pendingInput": .array([]),
+            "operation": .null, "approval": .null, "activeToolCallID": .null, "storageError": .null])
+    }
+    func waitForCreation() async throws {
+        for _ in 0..<200 {
+            if await transport.creationPending { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw CheckFailure(description: "Timed out awaiting sidebar creation")
+    }
+    func finishCreation() async throws {
+        try await transport.finishCreation(Self.snapshot(workspace: workspace))
+    }
+    func close() {
+        library.closePresentations()
+        Task { await transport.failCreation() }
+        preferences.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: workspace)
+    }
+}
+
+@MainActor struct SidebarCreationTests {
+    func onlySecondTopLevelCreationRevealsAfterSuccess() async throws {
+        for count in 0...2 {
+            let fixture = try await SidebarCreationFixture(topLevelCount: count)
+            defer { fixture.close() }
+            let library = fixture.library, windows = fixture.windows
+            windows.newConversation()
+            let creating = library.current
+            try expect(windows.sidebarRevealRequest == 0 && creating.currentSessionID == nil)
+            try await fixture.waitForCreation()
+            try expect(windows.sidebarRevealRequest == 0)
+            try await fixture.finishCreation()
+            await creating.waitForPendingSave()
+            try expect(creating.error == nil && creating.currentSessionID != nil)
+            try expect(windows.sidebarRevealRequest == (count == 1 ? 1 : 0))
+            // Further saves/checkpoints must not repeat the one-shot event.
+            try await creating.saveIfIdle(force: true)
+            try await library.refreshSharedState()
+            try expect(windows.sidebarRevealRequest == (count == 1 ? 1 : 0))
+        }
+    }
+
+    func blankWorkspaceCreationRevealsOnlyAfterSelectionAndSave() async throws {
+        let fixture = try await SidebarCreationFixture(selected: false)
+        defer { fixture.close() }
+        let library = fixture.library, windows = fixture.windows
+        windows.newConversation()
+        let blank = library.current
+        await blank.waitForPendingSave()
+        try expect(blank.workspace == nil && blank.needsInitialWorkspaceSelection)
+        try expect(windows.sidebarRevealRequest == 0)
+        let requests = await fixture.transport.creationRequests
+        try expect(requests == 0)
+        library.selectWorkspace(fixture.workspace)
+        try await fixture.waitForCreation()
+        try expect(windows.sidebarRevealRequest == 0)
+        try await fixture.finishCreation()
+        await library.waitForNavigation()
+        try expect(library.error == nil && blank.currentSessionID != nil)
+        try expect(windows.sidebarRevealRequest == 1)
+        try await blank.didCheckpoint?()
+        try expect(windows.sidebarRevealRequest == 1)
+    }
+
+    func failedCreationAndForkNeverReveal() async throws {
+        for fork in [false, true] {
+            let fixture = try await SidebarCreationFixture()
+            defer { fixture.close() }
+            let library = fixture.library, windows = fixture.windows
+            let source = library.current
+            if fork { windows.forkConversation(source) }
+            else { windows.newConversation() }
+            let creating = library.current
+            try await fixture.waitForCreation()
+            try expect(windows.sidebarRevealRequest == 0)
+            await fixture.transport.failCreation()
+            await creating.waitForPendingSave()
+            await library.waitForNavigation()
+            try expect(library.error != nil && windows.sidebarRevealRequest == 0)
+            try await library.refreshSharedState()
+            try expect(windows.sidebarRevealRequest == 0)
+            let requests = await fixture.transport.creationRequests
+            try expect(requests == 1)
+        }
+    }
+
+    func forkRevealsOnlyForSecondTopLevelSession() async throws {
+        for count in 1...2 {
+            let fixture = try await SidebarCreationFixture(topLevelCount: count)
+            defer { fixture.close() }
+            let library = fixture.library, windows = fixture.windows
+            windows.forkConversation(library.current)
+            try await fixture.waitForCreation()
+            // Navigation is blocked during a fork; rejected commands are not creation.
+            windows.newConversation()
+            windows.forkConversation(library.current)
+            try expect(windows.sidebarRevealRequest == 0)
+            try await fixture.finishCreation()
+            await library.waitForNavigation()
+            try expect(library.error == nil && windows.composerFocusRequest == 1)
+            try expect(windows.sidebarRevealRequest == (count == 1 ? 1 : 0))
+            let requests = await fixture.transport.creationRequests
+            try expect(requests == 1)
+        }
+    }
+
+    func navigationDeletionAndCatalogChangesNeverReveal() async throws {
+        let fixture = try await SidebarCreationFixture()
+        defer { fixture.close() }
+        let library = fixture.library, windows = fixture.windows
+        let rootID = try fixture.roots[0].decoded(AgentSnapshot.self).id
+        let childID = try fixture.child!.decoded(AgentSnapshot.self).id
+        windows.openSession(childID)
+        await library.waitForNavigation()
+        try expect(library.currentSessionID == childID && windows.sidebarRevealRequest == 0)
+        let other = SidebarCreationFixture.snapshot(workspace: fixture.workspace)
+        let otherID = try other.decoded(AgentSnapshot.self).id
+        try await fixture.transport.setCatalog(fixture.roots + [fixture.child!, other])
+        try await library.refreshSharedState()
+        try expect(library.sessionList.filter { $0.parent == nil }.count == 2)
+        try expect(windows.sidebarRevealRequest == 0)
+        windows.openSession(otherID)
+        await library.waitForNavigation()
+        library.deleteSession(otherID)
+        await library.waitForNavigation()
+        try expect(!library.sessionList.contains { $0.id == otherID })
+        windows.openSession(rootID)
+        await library.waitForNavigation()
+        library.deleteSession(childID)
+        await library.waitForNavigation()
+        try expect(library.sessionList.count == 1 && windows.sidebarRevealRequest == 0)
+    }
+
+    func interveningCatalogChangesDoNotMasqueradeAsSecondCreation() async throws {
+        for replaceOriginal in [false, true] {
+            let fixture = try await SidebarCreationFixture()
+            defer { fixture.close() }
+            let library = fixture.library, windows = fixture.windows
+            windows.newConversation()
+            let creating = library.current
+            try await fixture.waitForCreation()
+            let other = SidebarCreationFixture.snapshot(workspace: fixture.workspace)
+            try await fixture.transport.setCatalog(replaceOriginal ? [other] : fixture.roots + [fixture.child!, other])
+            try await library.refreshSharedState()
+            try expect(windows.sidebarRevealRequest == 0)
+            try await fixture.finishCreation()
+            await creating.waitForPendingSave()
+            try expect(creating.error == nil && creating.currentSessionID != nil)
+            try expect(windows.sidebarRevealRequest == 0)
+        }
+    }
+}

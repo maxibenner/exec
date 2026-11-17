@@ -443,12 +443,23 @@ import Observation
         }
     }
 
-    func newConversation() {
+    func newConversation(onCreated: @escaping @MainActor () -> Void = {}) {
         guard canNavigate else { return }
         cancelOpening()
         navigationError = nil
         do {
             let next = try makeConversation(workspace: current.workspace)
+            let checkpoint = next.didCheckpoint
+            next.didCheckpoint = { [weak next] in
+                guard let next else { return }
+                // A blank may wait for workspace/model selection. Only its first
+                // confirmed save is creation, not activation or a catalog refresh.
+                if next.currentSessionID != nil {
+                    next.didCheckpoint = checkpoint
+                    onCreated()
+                }
+                try await checkpoint?()
+            }
             next.requestInitialWorkspaceSelection()
             activate(next, preserveSidebarSelection: next.workspace != nil && !next.selectedModel.isEmpty)
             next.scheduleSave(force: next.workspace != nil)

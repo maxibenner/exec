@@ -17,6 +17,17 @@ func expectFailure(_ operation: () throws -> Void) throws {
 @main struct TestRunner {
     @MainActor static func main() async {
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Startup counts zero, one and multiple sessions", { try StartupSessionCountTests().countsZeroOneAndMultipleSessions() }),
+            ("Startup ignores children and invalid files", { try StartupSessionCountTests().ignoresChildrenAndInvalidFiles() }),
+            ("Sidebar visibility is set before ordering the window front", { try await SidebarVisibilityTests().appliesInitialVisibilityBeforeOrderingWindowFront() }),
+            ("Sidebar toggles survive content, count and focus changes", { try await SidebarVisibilityTests().nativeToggleSurvivesContentCountAndFocusChanges() }),
+            ("Sidebar reveal requests respect subsequent manual close", { try await SidebarVisibilityTests().revealRequestsOpenOnceAndRespectSubsequentManualClose() }),
+            ("Only successful second top-level creation reveals the sidebar", { try await SidebarCreationTests().onlySecondTopLevelCreationRevealsAfterSuccess() }),
+            ("Blank creation waits for workspace selection before revealing", { try await SidebarCreationTests().blankWorkspaceCreationRevealsOnlyAfterSelectionAndSave() }),
+            ("Failed creation and fork never reveal the sidebar", { try await SidebarCreationTests().failedCreationAndForkNeverReveal() }),
+            ("Fork reveals only for the second top-level session", { try await SidebarCreationTests().forkRevealsOnlyForSecondTopLevelSession() }),
+            ("Navigation, deletion and catalogs never reveal the sidebar", { try await SidebarCreationTests().navigationDeletionAndCatalogChangesNeverReveal() }),
+            ("Intervening catalog changes cannot trigger a second-session reveal", { try await SidebarCreationTests().interveningCatalogChangesDoNotMasqueradeAsSecondCreation() }),
             ("Incremental delegation keeps one active result card", { try DelegationProgressTests().projectsIncrementalResultsInOneActiveCard() }),
             ("Delegation preserves results through cleanup and disclosure changes", { try DelegationProgressTests().preservesResultsThroughCleanupFailureAndDisclosureChanges() }),
             ("Delegation sync replaces results without replaying work", { try await DelegationProgressTests().syncReplacesPartialAndFinalResultsWithoutReplayingWork() }),

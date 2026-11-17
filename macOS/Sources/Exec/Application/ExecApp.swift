@@ -3,6 +3,7 @@ import SwiftUI
 @main struct ExecApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     private let initiallyHasSavedSessions = AgentService.hasSavedSessions
+    private let initiallySavedSessionCount = AgentService.savedSessionCount()
     @State private var startup = ChatStartup()
     @StateObject private var updater = SparkleUpdater()
     @State private var windowGeometry = MainWindowGeometry()
@@ -57,9 +58,18 @@ import SwiftUI
         }
     }
 
+    private var initiallyShowsSidebar: Bool {
+        // macOS 15 waits for restoration before creating the window. macOS 14
+        // needs the synchronous disk count; never correct visibility after launch.
+        if #available(macOS 15.0, *), let store = startup.store {
+            return store.sidebarSessions.filter { !$0.unreadable }.count >= 2
+        }
+        return initiallySavedSessionCount >= 2
+    }
+
     private var chatWindow: some Scene {
         Window("", id: "chat") {
-            ChatWindowLayout(initiallyShowsSidebar: initiallyHasSavedSessions,
+            ChatWindowLayout(initiallyShowsSidebar: initiallyShowsSidebar,
                              sidebarRevealRequest: startup.windows?.sidebarRevealRequest ?? 0) {
                 Group {
                     if let store = startup.store, let windows = startup.windows {

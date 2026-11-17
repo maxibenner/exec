@@ -13,6 +13,35 @@ import Darwin
             $0.hasSuffix(".json") && UUID(uuidString: String($0.dropLast(5))) != nil
         } == true
     }
+    /// Synchronous first-frame fallback when the backend catalog is not ready.
+    /// Read only the record header; full transcript validation belongs to Rust.
+    static func savedSessionCount(in profile: URL = AgentService.profile) -> Int {
+        let directory = profile.appendingPathComponent("conversations", isDirectory: true)
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return 0 }
+        let decoder = JSONDecoder()
+        return files.reduce(into: 0) { count, file in
+            guard file.pathExtension == "json",
+                  let id = UUID(uuidString: file.deletingPathExtension().lastPathComponent),
+                  let values = try? file.resourceValues(forKeys: keys),
+                  values.isRegularFile == true, values.isSymbolicLink != true,
+                  let size = values.fileSize, size <= 16 * 1024 * 1024,
+                  let data = try? Data(contentsOf: file),
+                  let header = try? decoder.decode(SavedSessionHeader.self, from: data),
+                  header.id == id, (1...10).contains(header.version),
+                  header.metadata?.parent == nil else { return }
+            count += 1
+        }
+    }
+    private struct SavedSessionHeader: Decodable {
+        let version: Int
+        let id: UUID
+        let metadata: Metadata?
+        struct Metadata: Decodable {
+            let parent: AgentJSON?
+        }
+    }
     private var process: Process?
     private(set) var api: AgentAPI?
 

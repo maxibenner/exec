@@ -22,23 +22,32 @@ import Observation
     init(library: ChatLibrary) { self.library = library }
 
     func newConversation() {
-        let previous = library.current
-        let hadOneSession = library.sessionList.count == 1
-        library.newConversation()
-        if hadOneSession, library.current !== previous {
-            sidebarRevealRequest += 1
+        let previousIDs = topLevelSessionIDs
+        library.newConversation { [weak self] in
+            self?.revealSidebarAfterCreation(previousIDs: previousIDs)
         }
         showMainWindow()
     }
 
     func forkConversation(_ source: ChatStore) {
-        let hadOneSession = library.sessionList.count == 1
+        let previousIDs = topLevelSessionIDs
         library.forkConversation(source) { [weak self] in
             guard let self else { return }
-            if hadOneSession { self.sidebarRevealRequest += 1 }
+            self.revealSidebarAfterCreation(previousIDs: previousIDs)
             self.composerFocusRequest += 1
             self.showMainWindow()
         }
+    }
+
+    private var topLevelSessionIDs: Set<UUID> {
+        Set(library.sessionList.filter { $0.parent == nil }.map(\.id))
+    }
+
+    private func revealSidebarAfterCreation(previousIDs: Set<UUID>) {
+        let currentIDs = topLevelSessionIDs
+        guard previousIDs.count == 1, currentIDs.count == 2,
+              previousIDs.isSubset(of: currentIDs) else { return }
+        sidebarRevealRequest += 1
     }
 
     func openSession(_ id: UUID) {
