@@ -2,6 +2,132 @@ import AppKit
 
 @MainActor
 struct LinkedTextTests {
+    func wordFadesOverlapWithoutQueuingOrChangingDuration() throws {
+        var fades = StreamedWordFades()
+        let burst = (0..<200).map { "word\($0)" }.joined(separator: " ")
+        fades.append(burst, after: 0, at: 10)
+        try expect(fades.entrances.count == 200)
+        try expect(fades.entrances[0].started == 10)
+        try expect(abs(fades.entrances[1].started - 10.025) < 0.000001)
+        try expect(fades.entrances.allSatisfy { $0.started <= 10.1 })
+        try expect(fades.entrances[100].started != fades.entrances[101].started)
+        let original = fades.entrances.map(\.started)
+        let next = burst + " next"
+        fades.append(next, after: (burst as NSString).length, at: 10.01)
+        try expect(Array(fades.entrances.dropLast().map(\.started)) == original)
+        // Even the previous burst's delayed words do not hold up this arrival.
+        try expect(fades.entrances.last?.started == 10.01)
+        for entrance in fades.entrances {
+            try expect(abs(entrance.opacity(at: entrance.started) - 0.55) < 0.000001)
+            try expect(abs(entrance.opacity(at: entrance.started + 0.18) - 0.775) < 0.000001)
+            try expect(entrance.opacity(at: entrance.started + 0.361) == 1)
+        }
+        fades.expire(at: 10.361)
+        try expect(!fades.entrances.isEmpty)
+        try expect(fades.entrances.contains { $0.started == 10.01 })
+        fades.expire(at: 10.461)
+        try expect(fades.entrances.isEmpty)
+        fades.append(next + " slow", after: (next as NSString).length, at: 20)
+        try expect(fades.entrances.count == 1)
+        try expect(abs(fades.entrances[0].opacity(at: 20.18) - 0.775) < 0.000001)
+    }
+
+    func wordFadesPreservePartialWordsAndUnicode() throws {
+        var fades = StreamedWordFades()
+        fades.append("hel", after: 0, at: 1)
+        fades.append("hello world", after: 3, at: 1.05)
+        try expect(fades.entrances.count == 2)
+        try expect(fades.entrances[0].range == NSRange(location: 0, length: 5))
+        try expect(fades.entrances[0].started == 1)
+        try expect(fades.entrances[1].started == 1.05)
+        fades.expire(at: 2)
+        fades.append("hello worlds", after: 11, at: 2)
+        try expect(fades.entrances.isEmpty) // Finished words never replay.
+
+        for (partial, complete) in [("cafe", "cafe\u{301}"), ("👩", "👩🏽‍💻"), ("🇺", "🇺🇳"), ("1", "1️⃣")] {
+            fades.reset()
+            fades.append(partial, after: 0, at: 3)
+            fades.append(complete, after: (partial as NSString).length, at: 3.1)
+            try expect(fades.entrances.count == 1)
+            try expect(fades.entrances[0].started == 3)
+            try expect(fades.entrances[0].range == NSRange(location: 0, length: (complete as NSString).length))
+        }
+        fades.reset()
+        let unicode = "cafe\u{301} 👨‍👩‍👧‍👦 🇺🇳 你好世界 नमस्ते — hello!"
+        fades.append(unicode, after: 0, at: 4)
+        let text = unicode as NSString
+        try expect(fades.entrances.count > 6)
+        var previousEnd = 0
+        for entrance in fades.entrances {
+            try expect(entrance.range.location >= previousEnd)
+            try expect(text.rangeOfComposedCharacterSequences(for: entrance.range) == entrance.range)
+            previousEnd = NSMaxRange(entrance.range)
+        }
+        fades.reset()
+        let combiningSpace = "old \u{301}new"
+        fades.append(combiningSpace, after: 4, at: 5)
+        for entrance in fades.entrances {
+            try expect((combiningSpace as NSString).rangeOfComposedCharacterSequences(for: entrance.range) == entrance.range)
+        }
+        fades.reset()
+        fades.append("history continued", after: 7, at: 5)
+        try expect(fades.entrances.count == 1)
+        try expect(fades.entrances[0].range.location == 8)
+    }
+
+    func nativeWordFadesPreserveLayoutAndStopOnDetach() throws {
+        let storage = NSTextStorage()
+        let layout = StreamedTextLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 240, height: 1000))
+        storage.addLayoutManager(layout)
+        layout.addTextContainer(container)
+        let view = LinkedText.TextView(frame: NSRect(x: 0, y: 0, width: 240, height: 1000), textContainer: container)
+        view.textContainerInset = .zero
+        container.lineFragmentPadding = 0
+        container.widthTracksTextView = true
+        container.heightTracksTextView = false
+        view.isVerticallyResizable = false
+        view.isHorizontallyResizable = false
+        let window = NSWindow(contentRect: view.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = view
+        view.animatesStreamedText = true
+        func text(_ source: String) -> NSAttributedString { LinkedText.attributed(AttributedString(source)) }
+        view.update(text("History")) // Initial mount, even already attached, is static.
+        try expect(layout.fades.entrances.isEmpty && !layout.hasAnimationClock)
+        view.setSelectedRange(NSRange(location: 0, length: 4))
+        let source = "History newly streamed words that wrap across several lines in the native text container."
+        view.update(text(source))
+        try expect(view.string == source && storage.length == (source as NSString).length)
+        try expect(view.selectedRange() == NSRange(location: 0, length: 4))
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            try expect(layout.fades.entrances.count > 5 && layout.hasAnimationClock)
+        } else {
+            try expect(layout.fades.entrances.isEmpty && !layout.hasAnimationClock)
+        }
+        let starts = layout.fades.entrances.map(\.started)
+        for width: CGFloat in [180, 360] {
+            view.setFrameSize(NSSize(width: width, height: 1000))
+            try expect(ceil(layout.usedRect(for: container).height) == LinkedText.measuredSize(of: text(source), width: width).height)
+            try expect(layout.fades.entrances.map(\.started) == starts)
+        }
+        let restyled = NSMutableAttributedString(attributedString: text(source))
+        restyled.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: NSRange(location: 0, length: restyled.length))
+        view.update(restyled)
+        try expect(layout.fades.entrances.map(\.started) == starts)
+        view.removeFromSuperview()
+        try expect(layout.fades.entrances.isEmpty && !layout.hasAnimationClock)
+        window.contentView = view
+        view.update(text(source + " caught up while detached"))
+        try expect(layout.fades.entrances.isEmpty && !layout.hasAnimationClock)
+        view.update(text(source + " caught up while detached more"))
+        view.animatesStreamedText = false
+        try expect(layout.fades.entrances.isEmpty && !layout.hasAnimationClock)
+        view.animatesStreamedText = true
+        view.update(text(source + " more again"))
+        view.update(text("Replacement history"))
+        try expect(layout.fades.entrances.isEmpty && !layout.hasAnimationClock)
+    }
+
     func measuresWrappingAcrossWidthsAndUpdates() throws {
         // Markdown must not reserve an extra empty line after ordinary replies.
         let source = "That confirms the fix is the latest commit. One more call below to check whether the placement stays consistent."

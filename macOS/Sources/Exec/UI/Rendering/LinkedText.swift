@@ -49,6 +49,10 @@ struct LinkedText: NSViewRepresentable {
         context.coordinator.measurement.update(text)
     }
 
+    static func dismantleNSView(_ view: TextView, coordinator: Coordinator) {
+        (view.layoutManager as? StreamedTextLayoutManager)?.cancelEntrances()
+    }
+
     static func attributed(_ source: AttributedString, fontSize: CGFloat = NSFont.systemFontSize,
                            weight: NSFont.Weight = .regular,
                            foregroundColor: NSColor = .labelColor) -> NSAttributedString {
@@ -81,7 +85,21 @@ struct LinkedText: NSViewRepresentable {
 
     final class TextView: NSTextView {
         private var changingLayout = false
-        var animatesStreamedText = false
+        private var hasReceivedText = false
+        var animatesStreamedText = false {
+            didSet {
+                if !animatesStreamedText { streamedLayout?.cancelEntrances() }
+            }
+        }
+        private var streamedLayout: StreamedTextLayoutManager? { layoutManager as? StreamedTextLayoutManager }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil {
+                streamedLayout?.cancelEntrances()
+                hasReceivedText = false
+            }
+        }
 
         override func setFrameSize(_ newSize: NSSize) {
             let wasChanging = changingLayout
@@ -160,6 +178,8 @@ struct LinkedText: NSViewRepresentable {
         }
 
         func update(_ text: NSAttributedString) {
+            let canAnimate = hasReceivedText && animatesStreamedText && window != nil
+            hasReceivedText = true
             guard attributedString() != text else { return }
             let wasChanging = changingLayout
             changingLayout = true
@@ -167,8 +187,11 @@ struct LinkedText: NSViewRepresentable {
             let selection = selectedRange()
             let old = string as NSString
             let appended = text.length > old.length && (text.string as NSString).substring(to: old.length) == old as String
-            (layoutManager as? StreamedTextLayoutManager)?.prepareAppend(
-                appended && animatesStreamedText && window != nil ? NSRange(location: old.length, length: text.length - old.length) : nil)
+            if appended && canAnimate {
+                streamedLayout?.prepareAppend(text.string, after: old.length)
+            } else if !canAnimate || old as String != text.string {
+                streamedLayout?.cancelEntrances()
+            }
             textStorage?.setAttributedString(text)
             completeLayout()
             // Streaming updates must not clear an in-progress selection.
@@ -261,51 +284,139 @@ extension EnvironmentValues {
     }
 }
 
-/// Draw only newly appended glyphs with a brief, partial-opacity entrance. The
-/// storage, selection, accessibility and geometry always contain the full text.
-private final class StreamedTextLayoutManager: NSLayoutManager {
-    private var entrances: [(range: NSRange, started: TimeInterval)] = []
-    private var timer: Timer?
+/// Timing is independent of model cadence: each arrival gets its own bounded
+/// stagger, never a place in a queue behind earlier words.
+struct StreamedWordFades {
+    static let duration: TimeInterval = 0.36
+    static let stagger: TimeInterval = 0.025
+    static let maximumDelay: TimeInterval = 0.1
 
-    func prepareAppend(_ range: NSRange?) {
-        guard let range, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-            entrances.removeAll()
-            timer?.invalidate()
-            timer = nil
+    struct Entrance {
+        var range: NSRange
+        let started: TimeInterval
+
+        func opacity(at now: TimeInterval) -> CGFloat {
+            let progress = min(1, max(0, (now - started) / StreamedWordFades.duration))
+            return 0.55 + 0.45 * progress
+        }
+    }
+
+    private(set) var entrances: [Entrance] = []
+
+    mutating func expire(at now: TimeInterval) {
+        entrances.removeAll { now - $0.started >= Self.duration }
+    }
+
+    mutating func reset() { entrances.removeAll(keepingCapacity: true) }
+
+    mutating func append(_ string: String, after oldLength: Int, at now: TimeInterval) {
+        expire(at: now)
+        let text = string as NSString
+        guard oldLength < text.length else { return }
+        // Re-tokenize only the trailing whitespace-delimited segment and the
+        // addition. It may complete a word, combining sequence or ZWJ emoji.
+        let separator = text.rangeOfCharacter(from: .whitespacesAndNewlines, options: .backwards,
+                                              range: NSRange(location: 0, length: oldLength))
+        // Even a space can acquire a combining mark; never start inside that
+        // composed sequence when scanning the new suffix.
+        let start = separator.location == NSNotFound ? 0
+            : NSMaxRange(text.rangeOfComposedCharacterSequences(for: separator))
+        let suffix = NSRange(location: start, length: text.length - start)
+        var slot = 0
+        for range in Self.wordRanges(in: text, range: suffix) {
+            guard NSMaxRange(range) > oldLength else { continue }
+            if range.location < oldLength {
+                // A partial word inherits its original start. If that entrance
+                // has finished (or was history), the continuation stays opaque.
+                if let index = entrances.lastIndex(where: { NSIntersectionRange($0.range, range).length > 0 }) {
+                    entrances[index].range.length = NSMaxRange(range) - entrances[index].range.location
+                }
+                continue
+            }
+            // Reuse five slots within this burst rather than making its tail
+            // one whole-chunk fade or building an arbitrarily long backlog.
+            let slotCount = Int(Self.maximumDelay / Self.stagger) + 1
+            let delay = Double(slot % slotCount) * Self.stagger
+            entrances.append(Entrance(range: range, started: now + delay))
+            slot += 1
+        }
+    }
+
+    private static func wordRanges(in text: NSString, range suffix: NSRange) -> [NSRange] {
+        var ranges: [NSRange] = []
+        func addSymbols(_ range: NSRange) {
+            text.enumerateSubstrings(in: range, options: .byComposedCharacterSequences) { substring, range, _, _ in
+                if let substring, !substring.allSatisfy(\.isWhitespace) { ranges.append(range) }
+            }
+        }
+        // Foundation word boundaries cover languages without spaces. Fill the
+        // gaps with whole graphemes so emoji/punctuation also enter safely.
+        var cursor = suffix.location
+        text.enumerateSubstrings(in: suffix, options: [.byWords, .substringNotRequired]) { _, range, _, _ in
+            addSymbols(NSRange(location: cursor, length: range.location - cursor))
+            ranges.append(range)
+            cursor = NSMaxRange(range)
+        }
+        addSymbols(NSRange(location: cursor, length: NSMaxRange(suffix) - cursor))
+        return ranges
+    }
+}
+
+/// Draw only new words with partial-opacity entrances. TextKit still owns the
+/// complete storage, selection, accessibility, glyph shaping and geometry.
+final class StreamedTextLayoutManager: NSLayoutManager {
+    private(set) var fades = StreamedWordFades()
+    private var timer: Timer?
+    var hasAnimationClock: Bool { timer != nil }
+
+    func prepareAppend(_ text: String, after oldLength: Int) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            cancelEntrances()
             return
         }
-        let now = ProcessInfo.processInfo.systemUptime
-        entrances.removeAll { now - $0.started >= 0.36 }
-        // Quantized slots bound both the pending delay (at most 120 ms) and the number
-        // of live ranges, even when many tokens arrive in one run-loop turn.
-        let slot = ceil(now / 0.03) * 0.03
-        let started = min(max(slot, (entrances.last?.started ?? (slot - 0.03)) + 0.03), slot + 0.09)
-        if let last = entrances.last, abs(last.started - started) < 0.001 {
-            entrances[entrances.count - 1].range = NSUnionRange(last.range, range)
-        } else {
-            entrances.append((range, started))
+        fades.append(text, after: oldLength, at: ProcessInfo.processInfo.systemUptime)
+        guard timer == nil, !fades.entrances.isEmpty else { return }
+        let clock = Timer(timeInterval: 1.0 / 60, target: self,
+                          selector: #selector(advanceEntrance), userInfo: nil, repeats: true)
+        timer = clock
+        RunLoop.main.add(clock, forMode: .common)
+    }
+
+    func cancelEntrances() {
+        invalidateEntrances()
+        fades.reset()
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func invalidateEntrances() {
+        // No attributed-string rebuilding or full-document allocation per tick.
+        // Include finishing ranges so their last frame is fully opaque.
+        for entrance in fades.entrances {
+            invalidateDisplay(forCharacterRange: entrance.range)
         }
-        guard timer == nil else { return }
-        timer = Timer.scheduledTimer(timeInterval: 1.0 / 60, target: self,
-                                     selector: #selector(advanceEntrance), userInfo: nil, repeats: true)
     }
 
     @MainActor @objc private func advanceEntrance() {
-        let now = ProcessInfo.processInfo.systemUptime
-        entrances.removeAll { now - $0.started >= 0.36 }
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { entrances.removeAll() }
-        textContainers.forEach { $0.textView?.needsDisplay = true }
-        if entrances.isEmpty { timer?.invalidate(); timer = nil }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            cancelEntrances()
+            return
+        }
+        invalidateEntrances()
+        fades.expire(at: ProcessInfo.processInfo.systemUptime)
+        if fades.entrances.isEmpty { timer?.invalidate(); timer = nil }
     }
 
+    deinit { timer?.invalidate() }
+
     override func drawGlyphs(forGlyphRange range: NSRange, at origin: NSPoint) {
-        guard !entrances.isEmpty, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+        guard !fades.entrances.isEmpty, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             super.drawGlyphs(forGlyphRange: range, at: origin)
             return
         }
         var cursor = range.location
         let now = ProcessInfo.processInfo.systemUptime
-        for entrance in entrances {
+        for entrance in fades.entrances {
             let fresh = NSIntersectionRange(NSRange(location: cursor, length: NSMaxRange(range) - cursor),
                 glyphRange(forCharacterRange: entrance.range, actualCharacterRange: nil))
             guard fresh.length > 0 else { continue }
@@ -313,8 +424,7 @@ private final class StreamedTextLayoutManager: NSLayoutManager {
                 super.drawGlyphs(forGlyphRange: NSRange(location: cursor, length: fresh.location - cursor), at: origin)
             }
             NSGraphicsContext.saveGraphicsState()
-            let progress = min(1, max(0, (now - entrance.started) / 0.36))
-            NSGraphicsContext.current?.cgContext.setAlpha(0.55 + 0.45 * progress)
+            NSGraphicsContext.current?.cgContext.setAlpha(entrance.opacity(at: now))
             super.drawGlyphs(forGlyphRange: fresh, at: origin)
             NSGraphicsContext.restoreGraphicsState()
             cursor = NSMaxRange(fresh)
