@@ -533,12 +533,11 @@ import SwiftUI
         view.update(messages: messages, jumpRequest: 0)
         view.layoutSubtreeIfNeeded(); view.refresh()
         let bottom = view.documentView!.bounds.height - view.contentView.bounds.height
-        // Being near the bottom should enable following future content without
-        // snapping the current gesture to the edge.
+        // Even a small upward move opts out; refresh must not undo that intent.
         view.contentView.setBoundsOrigin(NSPoint(x: 0, y: bottom - 15))
         view.refresh()
         let remaining = view.documentView!.bounds.height - view.contentView.bounds.maxY
-        try expect(state.followsLatest && abs(remaining - 15) < 1)
+        try expect(!state.followsLatest && abs(remaining - 15) < 1)
         // Explicit navigation must still reach the edge after a user scroll.
         state.jumpToLatest()
         view.update(messages: messages, jumpRequest: state.jumpRequest)

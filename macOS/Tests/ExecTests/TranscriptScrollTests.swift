@@ -1,70 +1,7 @@
 import AppKit
 
 @MainActor struct TranscriptScrollTests {
-    func springPreservesMomentumAcrossContinuousTargets() throws {
-        var spring = StreamFollowSpring(position: 0, now: 0)
-        spring.retarget(to: 100, at: 0)
-        spring.advance(to: 0.24)
-        let position = spring.position, velocity = spring.velocity
-        try expect(position > 0 && position < 100 && velocity > 0)
-        spring.retarget(to: 200, at: 0.24)
-        try expect(spring.position == position && spring.velocity == velocity)
-        // Simulate a long stream, crossing many of the former 480 ms deadlines.
-        for step in 25...240 {
-            let now = Double(step) / 100
-            let previous = spring.position
-            spring.advance(to: now)
-            let sampledPosition = spring.position, sampledVelocity = spring.velocity
-            spring.retarget(to: CGFloat(step * 8), at: now)
-            try expect(spring.position == sampledPosition && spring.velocity == sampledVelocity)
-            try expect(spring.position >= previous && spring.position < CGFloat(step * 8))
-        }
-        for step in 241...440 { spring.advance(to: Double(step) / 100) }
-        try expect(spring.isSettled && spring.position == 1920 && spring.velocity == 0)
-    }
-
-    func springIsIndependentOfTickCadence() throws {
-        func sample(steps: [Double]) -> StreamFollowSpring {
-            var spring = StreamFollowSpring(position: 0, now: 0)
-            spring.retarget(to: 100, at: 0)
-            var start = 0.0
-            for (end, target) in [(0.13, 250.0), (0.49, 600.0), (0.77, 1000.0)] {
-                for fraction in steps { spring.advance(to: start + (end - start) * fraction) }
-                spring.retarget(to: target, at: end)
-                start = end
-            }
-            spring.advance(to: 0.9)
-            return spring
-        }
-        let direct = sample(steps: [])
-        for steps in [(1...12).map { Double($0) / 12 },
-                      (1...48).map { Double($0) / 48 }, [0.01, 0.07, 0.65, 0.99]] {
-            let sampled = sample(steps: steps)
-            try expect(abs(sampled.position - direct.position) < 0.000001)
-            try expect(abs(sampled.velocity - direct.velocity) < 0.000001)
-        }
-    }
-
-    func springSettlesWithoutOvershootOrRunaway() throws {
-        var spring = StreamFollowSpring(position: 0, now: 0)
-        spring.retarget(to: 1000, at: 0)
-        spring.advance(to: 0.48)
-        try expect(spring.position > 990 && spring.position < 1000)
-        // A closer measured bottom must not allow retained velocity to overshoot.
-        spring.retarget(to: spring.position + 0.01, at: 0.48)
-        let target = spring.position + 0.01
-        spring.advance(to: 0.5)
-        try expect(spring.isSettled && spring.position == target)
-        spring.retarget(to: 500, at: 0.5)
-        try expect(spring.isSettled && spring.position == 500)
-        spring.retarget(to: 2000, at: 0.5)
-        spring.advance(to: 60) // Delayed/suspended frames use elapsed time, not tick count.
-        try expect(spring.isSettled && spring.position == 2000)
-        spring.advance(to: 60)
-        try expect(spring.position == 2000 && spring.velocity == 0)
-    }
-
-    func followSpringCancelsAndSettlesInNativeView() async throws {
+    func pinsEveryMeasuredPassAndRespectsManualOptOut() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
                               styleMask: [.borderless], backing: .buffered, defer: false)
@@ -74,68 +11,104 @@ import AppKit
         defer { view.detach(); window.contentView = nil }
         var messages = [Message(role: .assistant, text: String(repeating: "Answer paragraph.\n\n", count: 30),
                                 status: .streaming)]
-        func update() {
-            view.update(messages: messages, jumpRequest: state.jumpRequest)
-            view.layoutSubtreeIfNeeded()
-            view.refresh()
-        }
-        func grow() {
-            messages[0].text += String(repeating: "More answer.\n\n", count: 10)
-            update()
-        }
-        update()
-        grow()
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            try expect(!view.isAnimatingScroll)
+        func assertPinned() throws {
+            try expect(state.followsLatest && !view.isAnimatingScroll)
             try expect(view.contentView.bounds.maxY == view.documentView!.bounds.height)
-            return
+            for row in view.documentView!.subviews {
+                try expect(abs(row.frame.height - ceil(row.fittingSize.height)) < 1)
+            }
         }
-        try expect(view.isAnimatingScroll)
-        try await Task.sleep(for: .milliseconds(60))
-        // Native keyboard/scrollbar offset changes cancel even near the bottom.
+        func update(inset: CGFloat = 0) throws {
+            view.update(messages: messages, jumpRequest: state.jumpRequest, bottomInset: inset)
+            try assertPinned() // No timer, Task sleep, or additional refresh allowed.
+            view.layoutSubtreeIfNeeded()
+            try assertPinned()
+            view.viewWillDraw()
+            try assertPinned()
+        }
+        try update()
+        for count in [1, 10, 300] {
+            messages[0].text += String(repeating: "More answer.\n\n", count: count)
+            try update()
+        }
+        // A burst of initially estimated rows must be measured/mounted before
+        // returning to paint, not just pinned to an old document-height estimate.
+        messages += (0..<40).map { Message(role: .assistant, text: "Row \($0) with `code`", status: .streaming) }
+        try update()
+        for inset: CGFloat in [100, 20, 180, 0] { try update(inset: inset) }
+        view.updateHeaderInset(52)
+        try update(inset: 80)
+        for width: CGFloat in [430, 820, 700] {
+            view.frame.size.width = width
+            try update()
+        }
+        // A keyboard/scrollbar movement of only two pixels must not be swallowed
+        // by the old 40pt tolerance, even after no-op bounds notifications.
         view.contentView.scroll(to: NSPoint(x: 0, y: view.contentView.bounds.minY - 2))
-        try expect(!view.isAnimatingScroll && !state.followsLatest)
+        try expect(!state.followsLatest)
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: view.contentView)
         let readingY = view.contentView.bounds.minY
-        grow()
-        try await Task.sleep(for: .milliseconds(60))
-        try expect(view.contentView.bounds.minY == readingY && !view.isAnimatingScroll)
-
+        messages[0].text += String(repeating: "While reading.\n\n", count: 50)
+        view.update(messages: messages, jumpRequest: state.jumpRequest)
+        view.layoutSubtreeIfNeeded(); view.viewWillDraw()
+        try expect(view.contentView.bounds.minY == readingY && !state.followsLatest)
         state.jumpToLatest()
-        update()
-        grow()
+        try update()
         messages[0].status = .complete
-        update()
-        for _ in 0..<100 {
-            if !view.isAnimatingScroll { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        guard !view.isAnimatingScroll && state.followsLatest else {
-            throw CheckFailure(description: "Follow settle: animating=\(view.isAnimatingScroll), follows=\(state.followsLatest), gap=\(view.documentView!.bounds.height - view.contentView.bounds.maxY)")
-        }
-        try expect(view.contentView.bounds.maxY == view.documentView!.bounds.height)
-        grow()
-        try expect(view.isAnimatingScroll)
-        window.contentView = nil
-        try expect(!view.isAnimatingScroll)
-        window.contentView = view
-        // Wheel delivery can leave AppKit's own smooth-scroll animator active.
-        // Exercise it last, not while waiting for an unrelated follow to settle.
+        try update()
+        messages.append(Message(role: .user, text: "Next question"))
+        view.update(messages: messages, jumpRequest: state.jumpRequest)
+        try expect(!state.followsLatest)
+        try expect(view.isAnimatingScroll == !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         state.jumpToLatest()
-        update()
-        grow()
-        try expect(view.isAnimatingScroll)
-        // Pass a real local event to AppKit (do not post it to the system).
+        try update()
+        // Native wheel delivery is local, not posted to the system.
         let wheel = NSEvent(cgEvent: CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
                                             wheelCount: 1, wheel1: 1, wheel2: 0, wheel3: 0)!)!
         view.scrollWheel(with: wheel)
-        try expect(!view.isAnimatingScroll && !state.followsLatest)
+        try expect(!state.followsLatest && !view.isAnimatingScroll)
+    }
 
-        state.jumpToLatest()
-        update()
-        grow()
-        try expect(view.isAnimatingScroll)
+    func onlyNewLiveRowsRevealOnFirstMount() throws {
+        _ = NSApplication.shared
+        let state = TranscriptState()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        var view = TranscriptScrollView(state: state)
+        window.contentView = view
+        defer { view.detach(); window.contentView = nil }
+        func textViews(in root: NSView) -> [LinkedText.TextView] {
+            if let text = root as? LinkedText.TextView { return [text] }
+            return root.subviews.flatMap { textViews(in: $0) }
+        }
+        func update(_ messages: [Message]) {
+            view.update(messages: messages, jumpRequest: state.jumpRequest)
+            view.layoutSubtreeIfNeeded(); view.viewWillDraw()
+        }
+        let history = Message(role: .assistant, text: "Existing live history", status: .streaming)
+        update([history])
+        try expect(textViews(in: view).allSatisfy { ($0.layoutManager as? StreamedTextLayoutManager)?.fades.entrances.isEmpty == true })
+        var reply = Message(role: .assistant, text: "", status: .streaming)
+        update([history, reply]) // Filtered inference placeholder.
+        reply.text = "First live chunk"
+        update([history, reply])
+        let text = textViews(in: view).first { $0.string == reply.text }!
+        let layout = text.layoutManager as! StreamedTextLayoutManager
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            try expect(!layout.fades.entrances.isEmpty)
+            try expect(layout.fades.entrances.allSatisfy { $0.waitingForPaint })
+        }
+        reply.status = .complete
+        let count = layout.fades.entrances.count
+        update([history, reply])
+        try expect(layout.fades.entrances.count == count)
         view.detach()
-        try expect(!view.isAnimatingScroll)
+        try expect(layout.fades.entrances.isEmpty)
+        view = TranscriptScrollView(state: state)
+        window.contentView = view
+        reply.status = .streaming
+        update([history, reply])
+        try expect(textViews(in: view).allSatisfy { ($0.layoutManager as? StreamedTextLayoutManager)?.fades.entrances.isEmpty == true })
     }
 
     func headerUnderlapPreservesGeometryAndAnchors() throws {

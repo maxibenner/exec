@@ -5,6 +5,7 @@ import SwiftUI
 struct LinkedText: NSViewRepresentable {
     let text: NSAttributedString
     @Environment(\.animatesStreamedText) private var animatesStreamedText
+    @Environment(\.revealsInitialStreamedText) private var revealsInitialStreamedText
     @Environment(\.openURL) private var openURL
 
     init(source: AttributedString, fontSize: CGFloat = NSFont.systemFontSize, weight: NSFont.Weight = .regular,
@@ -45,6 +46,7 @@ struct LinkedText: NSViewRepresentable {
     func updateNSView(_ view: TextView, context: Context) {
         context.coordinator.open = { url in openURL(url) }
         view.animatesStreamedText = animatesStreamedText
+        view.revealsInitialStreamedText = revealsInitialStreamedText
         view.update(text)
         context.coordinator.measurement.update(text)
     }
@@ -86,11 +88,10 @@ struct LinkedText: NSViewRepresentable {
     final class TextView: NSTextView {
         private var changingLayout = false
         private var hasReceivedText = false
-        var animatesStreamedText = false {
-            didSet {
-                if !animatesStreamedText { streamedLayout?.cancelEntrances() }
-            }
-        }
+        var animatesStreamedText = false
+        var revealsInitialStreamedText = false
+        private var wasStreaming = false
+        private var wasDetached = false
         private var streamedLayout: StreamedTextLayoutManager? { layoutManager as? StreamedTextLayoutManager }
 
         override func viewDidMoveToWindow() {
@@ -98,6 +99,8 @@ struct LinkedText: NSViewRepresentable {
             if window == nil {
                 streamedLayout?.cancelEntrances()
                 hasReceivedText = false
+                wasStreaming = false
+                wasDetached = true
             }
         }
 
@@ -178,25 +181,26 @@ struct LinkedText: NSViewRepresentable {
         }
 
         func update(_ text: NSAttributedString) {
-            let canAnimate = hasReceivedText && animatesStreamedText && window != nil
+            // Only the transcript can distinguish a new live row from mounted
+            // history. Queue its first entrance before attachment/first drawing.
+            let canAnimate = hasReceivedText
+                ? (animatesStreamedText || wasStreaming) && window != nil
+                : animatesStreamedText && revealsInitialStreamedText && !wasDetached
             hasReceivedText = true
+            wasStreaming = animatesStreamedText
             guard attributedString() != text else { return }
             let wasChanging = changingLayout
             changingLayout = true
             defer { changingLayout = wasChanging }
             let selection = selectedRange()
-            let old = string as NSString
-            let appended = text.length > old.length && (text.string as NSString).substring(to: old.length) == old as String
-            if appended && canAnimate {
-                streamedLayout?.prepareAppend(text.string, after: old.length)
-            } else if !canAnimate || old as String != text.string {
-                streamedLayout?.cancelEntrances()
-            }
+            let edit = RenderedTextEdit(from: string, to: text.string)
+            streamedLayout?.prepareEdit(from: string, to: text.string, edit: edit, animatesNewText: canAnimate)
             textStorage?.setAttributedString(text)
             completeLayout()
             // Streaming updates must not clear an in-progress selection.
-            let start = min(selection.location, text.length)
-            setSelectedRange(NSRange(location: start, length: min(selection.length, text.length - start)))
+            let start = min(edit.map(selection.location, afterInsertion: selection.length > 0), text.length)
+            let end = min(edit.map(NSMaxRange(selection)), text.length)
+            setSelectedRange(NSRange(location: start, length: max(0, end - start)))
             invalidateIntrinsicContentSize()
         }
 
@@ -277,10 +281,57 @@ final class LinkedTextMeasurement {
 private struct AnimatesStreamedTextKey: EnvironmentKey {
     static let defaultValue = false
 }
+private struct RevealsInitialStreamedTextKey: EnvironmentKey {
+    static let defaultValue = false
+}
 extension EnvironmentValues {
+    var revealsInitialStreamedText: Bool {
+        get { self[RevealsInitialStreamedTextKey.self] }
+        set { self[RevealsInitialStreamedTextKey.self] = newValue }
+    }
     var animatesStreamedText: Bool {
         get { self[AnimatesStreamedTextKey.self] }
         set { self[AnimatesStreamedTextKey.self] = newValue }
+    }
+}
+
+/// One contiguous rendered edit, with unchanged prefix/suffix retained. This
+/// also recognizes insertion before a code cell's retained paragraph terminator.
+struct RenderedTextEdit {
+    let oldRange: NSRange
+    let newRange: NSRange
+    var delta: Int { newRange.length - oldRange.length }
+
+    init(from old: String, to new: String) {
+        let before = old as NSString, after = new as NSString
+        // Keep appends inside partial graphemes on the append path.
+        if after.length >= before.length, after.substring(to: before.length) == old {
+            oldRange = NSRange(location: before.length, length: 0)
+            newRange = NSRange(location: before.length, length: after.length - before.length)
+            return
+        }
+        var prefix = 0, suffix = 0
+        for (a, b) in zip(old, new) {
+            guard String(a).utf16.elementsEqual(String(b).utf16) else { break }
+            prefix += String(a).utf16.count
+        }
+        for (a, b) in zip(old.reversed(), new.reversed()) {
+            let length = String(a).utf16.count
+            guard String(a).utf16.elementsEqual(String(b).utf16),
+                  prefix + suffix + length <= min(before.length, after.length) else { break }
+            suffix += length
+        }
+        oldRange = NSRange(location: prefix, length: before.length - prefix - suffix)
+        newRange = NSRange(location: prefix, length: after.length - prefix - suffix)
+    }
+
+    func map(_ offset: Int, afterInsertion: Bool = false) -> Int {
+        // A nonempty selection starts after inserted delimiters, but its end
+        // stays before appended text. A caret keeps its existing affinity.
+        if afterInsertion, oldRange.length == 0, offset == oldRange.location { return NSMaxRange(newRange) }
+        if offset <= oldRange.location { return offset }
+        if offset >= NSMaxRange(oldRange) { return offset + delta }
+        return newRange.location + min(offset - oldRange.location, newRange.length)
     }
 }
 
@@ -293,23 +344,61 @@ struct StreamedWordFades {
 
     struct Entrance {
         var range: NSRange
-        let started: TimeInterval
+        var started: TimeInterval
+        var waitingForPaint = false
 
         func opacity(at now: TimeInterval) -> CGFloat {
-            let progress = min(1, max(0, (now - started) / StreamedWordFades.duration))
-            return 0.55 + 0.45 * progress
+            guard !waitingForPaint else { return 0 }
+            return min(1, max(0, (now - started) / StreamedWordFades.duration))
         }
     }
 
     private(set) var entrances: [Entrance] = []
 
     mutating func expire(at now: TimeInterval) {
-        entrances.removeAll { now - $0.started >= Self.duration }
+        entrances.removeAll { !$0.waitingForPaint && now - $0.started >= Self.duration }
     }
 
     mutating func reset() { entrances.removeAll(keepingCapacity: true) }
 
-    mutating func append(_ string: String, after oldLength: Int, at now: TimeInterval) {
+    mutating func beginDrawing(_ range: NSRange, at now: TimeInterval) {
+        for index in entrances.indices where entrances[index].waitingForPaint &&
+            NSIntersectionRange(entrances[index].range, range).length > 0 {
+            entrances[index].started += now // Pending starts contain only the stagger.
+            entrances[index].waitingForPaint = false
+        }
+    }
+
+    mutating func edit(from old: String, to new: String, edit: RenderedTextEdit,
+                       animatesNewText: Bool, at now: TimeInterval) {
+        let oldLength = (old as NSString).length
+        // Remap surviving glyphs rather than cancelling all fades when Markdown
+        // removes delimiters or changes a block. Never replay unchanged history.
+        if edit.oldRange.location != oldLength || edit.oldRange.length != 0 {
+            entrances = entrances.flatMap { entrance -> [Entrance] in
+                let prefix = NSIntersectionRange(entrance.range, NSRange(location: 0, length: edit.oldRange.location))
+                let suffix = NSIntersectionRange(entrance.range,
+                    NSRange(location: NSMaxRange(edit.oldRange), length: oldLength - NSMaxRange(edit.oldRange)))
+                var retained: [Entrance] = []
+                if prefix.length > 0 { var part = entrance; part.range = prefix; retained.append(part) }
+                if suffix.length > 0 {
+                    var part = entrance
+                    part.range = NSRange(location: suffix.location + edit.delta, length: suffix.length)
+                    retained.append(part)
+                }
+                return retained
+            }
+        }
+        if animatesNewText, edit.newRange.length > 0,
+           old.isEmpty || edit.newRange.location > 0 || NSMaxRange(edit.oldRange) < oldLength {
+            append((new as NSString).substring(to: NSMaxRange(edit.newRange)),
+                   after: edit.newRange.location, at: now, waitingForPaint: true)
+        }
+        entrances.sort { $0.range.location < $1.range.location }
+    }
+
+    mutating func append(_ string: String, after oldLength: Int, at now: TimeInterval,
+                         waitingForPaint: Bool = false) {
         expire(at: now)
         let text = string as NSString
         guard oldLength < text.length else { return }
@@ -326,18 +415,21 @@ struct StreamedWordFades {
         for range in Self.wordRanges(in: text, range: suffix) {
             guard NSMaxRange(range) > oldLength else { continue }
             if range.location < oldLength {
-                // A partial word inherits its original start. If that entrance
-                // has finished (or was history), the continuation stays opaque.
+                // An in-flight partial word keeps its original timing. After
+                // it finishes, only the newly arrived suffix gets a fresh fade.
                 if let index = entrances.lastIndex(where: { NSIntersectionRange($0.range, range).length > 0 }) {
                     entrances[index].range.length = NSMaxRange(range) - entrances[index].range.location
+                    continue
                 }
-                continue
             }
             // Reuse five slots within this burst rather than making its tail
             // one whole-chunk fade or building an arbitrarily long backlog.
             let slotCount = Int(Self.maximumDelay / Self.stagger) + 1
             let delay = Double(slot % slotCount) * Self.stagger
-            entrances.append(Entrance(range: range, started: now + delay))
+            let addition = text.rangeOfComposedCharacterSequences(for:
+                NSRange(location: max(oldLength, range.location), length: NSMaxRange(range) - max(oldLength, range.location)))
+            entrances.append(Entrance(range: addition, started: (waitingForPaint ? 0 : now) + delay,
+                                      waitingForPaint: waitingForPaint))
             slot += 1
         }
     }
@@ -369,13 +461,18 @@ final class StreamedTextLayoutManager: NSLayoutManager {
     private var timer: Timer?
     var hasAnimationClock: Bool { timer != nil }
 
-    func prepareAppend(_ text: String, after oldLength: Int) {
+    func prepareEdit(from old: String, to new: String, edit: RenderedTextEdit, animatesNewText: Bool) {
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             cancelEntrances()
             return
         }
-        fades.append(text, after: oldLength, at: ProcessInfo.processInfo.systemUptime)
-        guard timer == nil, !fades.entrances.isEmpty else { return }
+        invalidateEntrances()
+        fades.edit(from: old, to: new, edit: edit, animatesNewText: animatesNewText,
+                   at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    private func startClockIfNeeded() {
+        guard timer == nil, fades.entrances.contains(where: { !$0.waitingForPaint }) else { return }
         let clock = Timer(timeInterval: 1.0 / 60, target: self,
                           selector: #selector(advanceEntrance), userInfo: nil, repeats: true)
         timer = clock
@@ -404,18 +501,21 @@ final class StreamedTextLayoutManager: NSLayoutManager {
         }
         invalidateEntrances()
         fades.expire(at: ProcessInfo.processInfo.systemUptime)
-        if fades.entrances.isEmpty { timer?.invalidate(); timer = nil }
+        if !fades.entrances.contains(where: { !$0.waitingForPaint }) { timer?.invalidate(); timer = nil }
     }
 
     deinit { timer?.invalidate() }
 
     override func drawGlyphs(forGlyphRange range: NSRange, at origin: NSPoint) {
-        guard !fades.entrances.isEmpty, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { cancelEntrances() }
+        guard !fades.entrances.isEmpty else {
             super.drawGlyphs(forGlyphRange: range, at: origin)
             return
         }
         var cursor = range.location
         let now = ProcessInfo.processInfo.systemUptime
+        fades.beginDrawing(characterRange(forGlyphRange: range, actualGlyphRange: nil), at: now)
+        startClockIfNeeded()
         for entrance in fades.entrances {
             let fresh = NSIntersectionRange(NSRange(location: cursor, length: NSMaxRange(range) - cursor),
                 glyphRange(forCharacterRange: entrance.range, actualCharacterRange: nil))
