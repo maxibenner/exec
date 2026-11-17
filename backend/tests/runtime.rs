@@ -204,13 +204,13 @@ async fn incomplete_output_retains_failed_context_without_executing_or_retrying_
     assert!(outcomes(&restored).is_empty());
     let requests = p.requests.lock().unwrap();
     assert!(matches!(
-        &requests[1].messages[1],
+        &requests[1].messages[2],
         ContextMessage::Assistant { text, calls }
         if text.contains("failed before completion") && text.ends_with("Partial")
             && text.contains("No tool calls from this response were executed") && calls.is_empty()
     ));
     assert_eq!(requests[1].messages.len(), requests[1].message_ids.len());
-    assert_eq!(requests[1].message_ids[1], c.snapshot().messages[1].id());
+    assert_eq!(requests[1].message_ids[2], c.snapshot().messages[1].id());
 }
 #[tokio::test]
 async fn duplicate_call_ids_fail_before_execution() {

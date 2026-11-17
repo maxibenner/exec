@@ -66,6 +66,9 @@ async fn completed_conversations_round_trip_continue_and_delete_durably() {
             },
             ContextMessage::User {
                 text: "Continue explicitly".into()
+            },
+            ContextMessage::ToolAvailability {
+                enabled: vec!["delegate".into()]
             }
         ]
     );
@@ -234,7 +237,7 @@ async fn crash_restart(phase: &str) {
         let requests = p.requests.lock().unwrap();
         if phase == "partial" {
             assert!(matches!(
-                &requests[0].messages[1],
+                &requests[0].messages[2],
                 ContextMessage::Assistant { text, calls }
                 if text.contains("was interrupted before completion")
                     && text.ends_with("Saved partial response") && calls.is_empty()

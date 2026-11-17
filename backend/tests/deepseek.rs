@@ -475,10 +475,17 @@ async fn deepseek_shaped_responses_drive_approved_real_tools_and_durable_continu
         let body: serde_json::Value =
             serde_json::from_str(requests[1].body.as_ref().unwrap()).unwrap();
         assert_eq!(body["messages"][0]["role"], "system");
-        assert_eq!(body["messages"][2]["role"], "assistant");
-        assert_eq!(body["messages"][3]["tool_call_id"], "call-1");
+        assert_eq!(body["messages"][2]["role"], "system");
         assert!(
-            body["messages"][3]["content"]
+            body["messages"][2]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Runtime tool availability")
+        );
+        assert_eq!(body["messages"][3]["role"], "assistant");
+        assert_eq!(body["messages"][4]["tool_call_id"], "call-1");
+        assert!(
+            body["messages"][4]["content"]
                 .as_str()
                 .unwrap()
                 .contains("Edited")
@@ -509,7 +516,8 @@ async fn deepseek_shaped_responses_drive_approved_real_tools_and_durable_continu
         .as_array()
         .unwrap()
         .len();
-    assert_eq!(count, 6);
+    // Initial policy plus a new availability update when restore adds delegation.
+    assert_eq!(count, 8);
     restored.close().await.unwrap();
 }
 #[tokio::test]

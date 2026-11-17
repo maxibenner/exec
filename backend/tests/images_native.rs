@@ -61,8 +61,12 @@ impl ChatProvider for Provider {
     }
     fn stream(&self, r: ProviderRequest) -> BoxStream<'static, Result<ProviderEvent>> {
         self.requests.lock().unwrap().push(r.clone());
-        if matches!(r.messages.last(), Some(ContextMessage::User { text }) if text == "hold for queued image")
-        {
+        let last = r
+            .messages
+            .iter()
+            .rev()
+            .find(|m| !matches!(m, ContextMessage::ToolAvailability { .. }));
+        if matches!(last, Some(ContextMessage::User { text }) if text == "hold for queued image") {
             let entered = self.entered.clone();
             let release = self.release.clone();
             return Box::pin(async_stream::try_stream! {
@@ -71,7 +75,7 @@ impl ChatProvider for Provider {
                 yield ProviderEvent::Done;
             });
         }
-        let events = match r.messages.last() {
+        let events = match last {
             Some(ContextMessage::User { text }) if text == "generate" => vec![
                 ProviderEvent::ToolCall(ToolCall {
                     id: new_id(),

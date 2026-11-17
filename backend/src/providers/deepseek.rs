@@ -313,6 +313,7 @@ pub fn request_body(request: &ProviderRequest) -> Result<String> {
         }
     }
     let mut messages:Vec<_>=request.messages.iter().map(|message|match message{
+        ContextMessage::ToolAvailability{enabled}=>json!({"role":"system","content":tool_availability_instruction(enabled)}),
         ContextMessage::User{text}=>json!({"role":"user","content":text}),
         ContextMessage::Tool{call_id,text,outcome}=>json!({"role":"tool","tool_call_id":call_id,"content":if *outcome==ToolOutcome::Completed{text.clone()}else{format!("[Tool outcome: {}]\n{text}",serde_json::to_value(outcome).unwrap().as_str().unwrap())}}),
         ContextMessage::Assistant{text,calls}=>{let mut value=json!({"role":"assistant","content":text});if !calls.is_empty(){value["tool_calls"]=json!(calls.iter().map(|call|json!({"id":call.id,"type":"function","function":{"name":call.name,"arguments":serde_json::to_string(&call.arguments).unwrap()}})).collect::<Vec<_>>());}value},

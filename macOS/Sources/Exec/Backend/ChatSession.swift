@@ -97,7 +97,7 @@ import CryptoKit
     private(set) var disabledTools: Set<String>
     var isSubagent: Bool { snapshot?.metadata.parent != nil }
     var canSelectTools: Bool {
-        canRequestCommands && !isSubagent && !deletedRemotely && !busy && !isSaving && !hasUnsavedChanges
+        canRequestCommands && !isSubagent && !deletedRemotely && !deletionPending && !hasUnsavedChanges
     }
     private(set) var contextUsage: ContextUsage?
     private(set) var needsInitialWorkspaceSelection = false
@@ -190,6 +190,8 @@ import CryptoKit
     }
     func setToolEnabled(_ name: String, _ enabled: Bool) {
         guard canSelectTools, SessionTool.names.contains(name), disabledTools.contains(name) == enabled else { return }
+        // Keep the latest selection, not a queue of toggles. The existing configuration
+        // drain persists it after the active operation and before the next command/turn.
         if enabled { disabledTools.remove(name) }
         else { disabledTools.insert(name) }
         scheduleSave()

@@ -248,6 +248,12 @@ async fn fork_during_approval_does_not_copy_or_resolve_the_live_action() {
     let run = c.submit("work".into()).unwrap();
     let pending = approval(&c).await;
     let fork = manager.fork(&c.id, p, tools).await.unwrap();
+    assert_eq!(
+        fork.record().tool_availability,
+        c.record().tool_availability
+    );
+    assert_eq!(fork.record().tool_availability.len(), 1);
+    fork.record().validate().unwrap();
     let snapshot = fork.snapshot();
     assert!(snapshot.approval.is_none());
     assert!(matches!(&snapshot.messages[1], Message::Assistant { calls, .. } if calls.is_empty()));

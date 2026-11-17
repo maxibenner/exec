@@ -259,13 +259,47 @@ tools are disabled. This is session policy, not a shared library default or appr
   set, rather than adding/removing individual names. Send `[]` to re-enable all tools.
   Success returns the saved snapshot. Updates are idle-only; active operations or a
   blocked storage state return 409. Unknown names and duplicate entries return 400.
-- Disabled tools are excluded from model tool definitions and rejected before preparation
-  or execution if called anyway. Re-enabling affects subsequent work; it does not replay
-  denied, interrupted or failed calls. An uncertain write must not be retried automatically.
+- Model requests keep the complete registered tool catalog in stable name order, including
+  disabled and temporarily unavailable tools. Selection changes do not rewrite schemas or
+  the tool-safety instruction prefix, even when every tool is disabled. No provider-native
+  tool allowlists are used.
+- Trusted, provider-neutral runtime availability instructions specify the effective enabled
+  set (session selection intersected with runtime capabilities). Adapters encode these as
+  application instructions: OpenAI `developer`, DeepSeek `system`, never fake user messages
+  or unpaired tool results. They are absent from API transcripts, snapshots and UI events.
+- The runner checkpoints initial availability and subsequent net changes at model-request
+  boundaries, including compaction. Idle PATCH calls only save selection metadata; repeated
+  changes coalesce at the next request, and toggling back adds no history entry. Unchanged
+  requests reuse the same policy IDs and context prefix. A client may keep a desired set
+  locally during active work, then PATCH once idle before its next submission; the backend
+  does not queue active-turn selection mutations.
+- Disabled tools are rejected before preparation, approval or execution if called anyway;
+  runtime capability checks also run again before preparation. Re-enabling affects subsequent
+  work; it does not replay denied, interrupted or failed calls. An uncertain write must not
+  be retried automatically.
 - Sub-agents inherit their parent's selection and cannot change it (PATCH returns 400).
   Forks copy the selection but can change it independently. Both survive save/reload.
-  In the macOS app, a new conversation copies the current conversation's selection;
-  later edits do not change either session's siblings or parent.
+  New macOS conversations start with all tools selected; later edits affect only that session.
+
+The macOS selector stays editable during generation, approvals, cancellation and configuration
+saves. Checkboxes reflect the latest local choice immediately, with no pending badge or queue
+indicator. The existing configuration drain saves only the final desired set once the active
+operation settles, before the next command or turn. Streaming snapshots do not overwrite local
+choices; toggling back to the saved set requires no write. The current operation (including
+steered input and delegated work) keeps its original selection. Save failures remain visible
+and block further writes until reconciliation, rather than silently retrying.
+
+Availability history lives separately from the visible transcript in version-11 checkpoints;
+versions 1–10 remain readable. Each update has a stable ID and a validated transcript anchor
+outside tool-call/result batches. Restore preserves existing updates and records any changed
+capabilities at the next request; legacy sessions initialize there without rewriting prior
+history. Tool-free conversations with no previous availability need no policy entry.
+Children initialize from their inherited selection and their own catalog/capabilities.
+Forks copy availability history; clear removes it while retaining `disabledTools`, so the next
+request initializes fresh policy. OpenAI compaction explicitly replays the latest covered
+availability instruction alongside the opaque summary, then subsequent updates; policy is
+not delegated to summary text. These changes facilitate prefix caching but do not guarantee
+provider cache hits, particularly across catalog/model/configuration changes.
 
 The bundled app's ten tool names are `list_files`, `read_file`, `search_text`, `edit_file`,
 `shell`, `web_search`, `fetch_content`, `generate_image`, `take_screenshot`, and `delegate`.
@@ -277,8 +311,9 @@ shell file operations even if `edit_file` is disabled.
 
 ### Quick guide
 
-Choose tools while the session is idle, before sending the next message. To keep browsing
-available but disable shell commands and direct edits, create with
+In the macOS app, choose tools at any time; changes made during work apply to the next turn.
+Direct API clients update selection while idle. To keep browsing available but disable shell
+commands and direct edits, create with
 `{"model":"deepseek/test","workspace":"/absolute/workspace","disabledTools":["shell","edit_file"]}`
 (using an available model and existing workspace). Later PATCH that conversation with
 `{"disabledTools":["edit_file"]}` to restore shell, or `{"disabledTools":[]}` to restore all
@@ -436,8 +471,9 @@ session, or a parent with running children, requires native confirmation with Ca
 as the default; idle deletion and automatic cleanup do not prompt. Local unsent drafts
 are preserved if automatic cleanup occurs while the user is composing.
 Version-9 records persist the parent relationship. Version-10 records add delegation
-progress; versions 1–9 remain readable. A record upgrades to version 10 on its first
-partial publication. Low-level embedders using `AgentManager::create` retain control over
+progress; versions 1–9 remain readable. Partial publication requires at least version 10
+and never downgrades version-11 availability history. Low-level embedders using
+`AgentManager::create` retain control over
 their explicit tool list; `create_session` and `fork` require an `Arc<AgentManager>` to
 install delegation safely.
 
@@ -600,7 +636,8 @@ Opaque per-conversation provider state is stored in version-4 checkpoints, never
 snapshots or user/model transcript text. DeepSeek retains reasoning only as needed to echo
 completed assistant tool calls in later requests. Reasoning streams are bounded at 4 MiB;
 combined opaque state is bounded at 8 MiB. Partial/failed streams cannot commit staged
-provider state or measurements. Version 1–8 records remain readable; writes use version 9.
+provider state or measurements. Versions 1–11 remain readable; new records start at
+version 9 and upgrade for delegation progress (10) or runtime tool availability (11).
 Thinking and non-thinking responses still require supported completion and `[DONE]`; no
 inference or rotating-token retries are introduced. Mock transport tests do not verify
 live model effort availability or service compatibility.

@@ -141,6 +141,10 @@ impl Message {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum ContextMessage {
+    /// Trusted runtime policy, never sourced from transcript text or tool output.
+    ToolAvailability {
+        enabled: Vec<String>,
+    },
     User {
         text: String,
     },
@@ -154,6 +158,13 @@ pub enum ContextMessage {
         text: String,
         outcome: ToolOutcome,
     },
+}
+/// Adapters encode this application-owned policy using a trusted instruction role.
+pub fn tool_availability_instruction(enabled: &[String]) -> String {
+    format!(
+        "Runtime tool availability (replaces earlier availability): enabled tools = {}. Only these tools may be called; all other catalog tools are unavailable. An empty list means no tools may be called. Tool definitions describe capabilities, not permission to use them. This policy does not grant approval or change retry/cancellation rules.",
+        serde_json::to_string(enabled).expect("tool names serialize")
+    )
 }
 pub fn context(messages: &[Message]) -> Vec<ContextMessage> {
     messages

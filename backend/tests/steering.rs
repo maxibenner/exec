@@ -112,7 +112,17 @@ async fn steering_during_stream_is_saved_without_polluting_current_request() {
     .await
     .unwrap();
     assert_eq!(provider.count(), 1);
-    assert_eq!(provider.requests.lock().unwrap()[0].messages.len(), 1);
+    assert_eq!(
+        provider.requests.lock().unwrap()[0].messages,
+        vec![
+            ContextMessage::User {
+                text: "original".into()
+            },
+            ContextMessage::ToolAvailability {
+                enabled: vec!["change".into()]
+            },
+        ]
+    );
     release.cancel();
     assert_eq!(complete(run).await.state, OperationState::Completed);
     assert_eq!(provider.count(), 2);
@@ -167,12 +177,12 @@ async fn steering_keeps_live_executor_and_remaining_calls_in_the_batch() {
     );
     let requests = provider.requests.lock().unwrap();
     assert!(matches!(
-        &requests[1].messages[2],
+        &requests[1].messages[3],
         ContextMessage::Tool { call_id, text, outcome: ToolOutcome::Completed }
         if call_id == "a" && text == "a completed"
     ));
     assert!(matches!(
-        &requests[1].messages[3],
+        &requests[1].messages[4],
         ContextMessage::Tool { call_id, text, outcome: ToolOutcome::Completed }
         if call_id == "b" && text == "b completed"
     ));

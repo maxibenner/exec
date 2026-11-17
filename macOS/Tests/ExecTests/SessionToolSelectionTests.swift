@@ -5,13 +5,25 @@ import Foundation
 private actor SessionToolTransport: AgentTransport {
     nonisolated let responses = FakeAgentTransport()
     private var nextSnapshot: AgentJSON?
-    func saveNext(_ snapshot: AgentJSON) { nextSnapshot = snapshot }
+    private var pauseNextSave = false
+    private var heldSave: CheckedContinuation<Void, Never>?
+    var isSavePaused: Bool { heldSave != nil }
+    func saveNext(_ snapshot: AgentJSON, pause: Bool = false) {
+        nextSnapshot = snapshot
+        pauseNextSave = pause
+    }
+    func resumeSave() { heldSave?.resume(); heldSave = nil }
     func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
         if method == "POST" || method == "PATCH", let snapshot = nextSnapshot {
             nextSnapshot = nil
+            let pause = pauseNextSave
+            pauseNextSave = false
             try await responses.reply(path, snapshot)
             let id = try snapshot.decoded(AgentSnapshot.self).id
             try await responses.reply(AgentAPI.path(id), snapshot)
+            let data = try await responses.request(method, path, body: body)
+            if pause { await withCheckedContinuation { heldSave = $0 } }
+            return data
         }
         return try await responses.request(method, path, body: body)
     }
@@ -132,25 +144,129 @@ private actor SessionToolTransport: AgentTransport {
         try expect(writes.count == 3 && !store.autoApproveTools)
     }
 
-    func busySessionsAndChildrenCannotToggle() async throws {
-        for (state, child) in [("running", false), ("awaiting_approval", false), ("cancelling", false),
-                               ("completed", true), ("running", true)] {
+    private func waitForSave(_ store: ChatStore) async throws {
+        for _ in 0..<200 {
+            if !store.busy && !store.isSaving { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw CheckFailure(description: "Timed out saving tool selection")
+    }
+
+    func activeSelectionsReconcileAtIdle() async throws {
+        for (active, terminal) in [("running", "completed"), ("awaiting_approval", "interrupted"), ("cancelling", "failed")] {
+            let transport = SessionToolTransport()
+            let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)))
+            defer { store.closePresentation() }
+            let initial = try snapshot(disabled: ["shell"], state: active).decoded(AgentSnapshot.self)
+            try store.apply(initial)
+            let approval = store.tools.pendingApproval?.id
+            try expect(store.canSelectTools)
+            store.setToolEnabled("shell", true)
+            store.setToolEnabled("web_search", false)
+            store.setToolEnabled("shell", false) // Reconciles to disabled, not two queued mutations.
+            store.setToolEnabled("read_file", false)
+            store.setToolEnabled("read_file", true)
+            try expect(store.disabledTools == ["shell", "web_search"] && store.canSelectTools)
+            try expect(!store.hasUnsavedChanges && !store.isSaving && store.error == nil)
+            try store.apply(initial) // Streaming/approval snapshots must not overwrite the selection.
+            await store.waitForPendingSave()
+            let before = await transport.responses.requests
+            try expect(before.isEmpty && store.disabledTools == ["shell", "web_search"])
+            try expect(store.tools.pendingApproval?.id == approval)
+
+            let saved = try snapshot(disabled: ["shell", "web_search"], state: terminal)
+            await transport.saveNext(saved)
+            var commandSawSelection = false
+            store.whenIdle("after-selection") {
+                let writes = await transport.responses.requests.filter { $0.method == "PATCH" }
+                if writes.count == 1 {
+                    commandSawSelection = try self.disabledNames(in: writes[0]) == ["shell", "web_search"]
+                }
+            }
+            try store.apply(snapshot(disabled: ["shell"], state: terminal).decoded(AgentSnapshot.self))
+            try await waitForSave(store)
+            let writes = await transport.responses.requests.filter { $0.method != "GET" }
+            try expect(writes.count == 1 && commandSawSelection)
+            try expect(writes[0].method == "PATCH" && writes[0].path == AgentAPI.path(initial.id))
+            try expect(try disabledNames(in: writes[0]) == ["shell", "web_search"])
+            try expect(store.disabledTools == ["shell", "web_search"] && !store.hasUnsavedChanges && store.error == nil)
+        }
+    }
+
+    func netUnchangedSelectionDoesNotWrite() async throws {
+        let transport = FakeAgentTransport()
+        let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)))
+        defer { store.closePresentation() }
+        try store.apply(snapshot(disabled: ["shell"], state: "running").decoded(AgentSnapshot.self))
+        store.setToolEnabled("shell", true)
+        store.setToolEnabled("shell", false)
+        store.setToolEnabled("read_file", false)
+        store.setToolEnabled("read_file", true)
+        let terminal = try snapshot(disabled: ["shell"])
+        try await transport.reply(AgentAPI.path(AgentIntegrationTests.conversationID), terminal)
+        try store.apply(terminal.decoded(AgentSnapshot.self))
+        try await waitForSave(store)
+        let writes = await transport.requests.filter { $0.method != "GET" }
+        try expect(writes.isEmpty && store.disabledTools == ["shell"] && store.error == nil)
+    }
+
+    func selectionsDuringSaveKeepLatestChoice() async throws {
+        let transport = SessionToolTransport()
+        let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)))
+        defer { store.closePresentation() }
+        try store.apply(snapshot().decoded(AgentSnapshot.self))
+        await transport.saveNext(try snapshot(disabled: ["shell"]), pause: true)
+        store.setToolEnabled("shell", false)
+        for _ in 0..<200 {
+            if await transport.isSavePaused { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let paused = await transport.isSavePaused
+        let selectableWhileSaving = store.isSaving && store.canSelectTools
+        store.setToolEnabled("web_search", false)
+        store.setToolEnabled("shell", true)
+        store.setToolEnabled("read_file", false)
+        store.setToolEnabled("read_file", true)
+        await transport.saveNext(try snapshot(disabled: ["web_search"]))
+        await transport.resumeSave()
+        await store.waitForPendingSave()
+        try expect(paused && selectableWhileSaving)
+        let writes = await transport.responses.requests.filter { $0.method != "GET" }
+        try expect(writes.count == 2)
+        try expect(try disabledNames(in: writes[0]) == ["shell"])
+        try expect(try disabledNames(in: writes[1]) == ["web_search"])
+        try expect(store.disabledTools == ["web_search"] && store.error == nil && !store.hasUnsavedChanges)
+    }
+
+    func failedSelectionSaveIsNotRetried() async throws {
+        let transport = FakeAgentTransport()
+        let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)))
+        defer { store.closePresentation() }
+        try store.apply(snapshot(state: "running").decoded(AgentSnapshot.self))
+        store.setToolEnabled("shell", false)
+        await transport.fail(AgentAPI.path(AgentIntegrationTests.conversationID))
+        let terminal = try snapshot().decoded(AgentSnapshot.self)
+        try store.apply(terminal)
+        try await waitForSave(store)
+        try expect(store.hasUnsavedChanges && !store.canSelectTools && store.error != nil)
+        try store.apply(terminal)
+        store.setToolEnabled("read_file", false)
+        for _ in 0..<5 { await Task.yield() }
+        let writes = await transport.requests.filter { $0.method != "GET" }
+        try expect(writes.count == 1 && store.disabledTools == ["shell"])
+    }
+
+    func childrenCannotToggle() async throws {
+        for state in ["completed", "running"] {
             let transport = FakeAgentTransport()
             let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)))
             defer { store.closePresentation() }
-            try store.apply(snapshot(disabled: ["shell"], state: state, child: child).decoded(AgentSnapshot.self))
-            try expect(store.isSubagent == child && !store.canSelectTools)
+            try store.apply(snapshot(disabled: ["shell"], state: state, child: true).decoded(AgentSnapshot.self))
+            try expect(store.isSubagent && !store.canSelectTools)
             store.setToolEnabled("shell", true)
             store.setToolEnabled("web_search", false)
             await store.waitForPendingSave()
             try expect(store.disabledTools == ["shell"])
-            if !child {
-                try store.apply(snapshot(disabled: ["shell"]).decoded(AgentSnapshot.self))
-                try expect(store.canSelectTools)
-                await store.waitForPendingSave()
-                await Task.yield()
-                try expect(store.disabledTools == ["shell"]) // Rejected toggles must not queue until idle.
-            }
             let writes = await transport.requests.filter { $0.method != "GET" }
             try expect(writes.isEmpty)
         }

@@ -4,20 +4,27 @@ use async_trait::async_trait;
 use exec_agent::{Error, Result, core::*, manager::AgentManager, storage::JsonConversationStore};
 use serde_json::json;
 use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use support::*;
 use tokio_util::sync::CancellationToken;
 
 struct Probe {
+    name: &'static str,
+    available: AtomicBool,
     inner: Arc<dyn Tool>,
     preparations: AtomicUsize,
     saved: AtomicUsize,
 }
 impl Probe {
     fn new() -> Arc<Self> {
+        Self::named("change")
+    }
+    fn named(name: &'static str) -> Arc<Self> {
         Arc::new(Self {
+            name,
+            available: AtomicBool::new(true),
             inner: tool(Some("effect"), |_| async { Ok("done".into()) }),
             preparations: AtomicUsize::new(0),
             saved: AtomicUsize::new(0),
@@ -27,7 +34,13 @@ impl Probe {
 #[async_trait]
 impl Tool for Probe {
     fn definition(&self) -> ToolDefinition {
-        self.inner.definition()
+        ToolDefinition {
+            name: self.name.into(),
+            ..self.inner.definition()
+        }
+    }
+    fn available(&self, _: &ToolContext) -> bool {
+        self.available.load(Ordering::SeqCst)
     }
     async fn prepare(
         &self,
@@ -44,7 +57,7 @@ impl Tool for Probe {
 }
 
 #[tokio::test]
-async fn disabled_tools_are_not_advertised_prepared_or_executed_and_can_be_reenabled() {
+async fn disabled_tools_keep_stable_catalog_and_prefix_but_cannot_execute() {
     let provider = FakeProvider::new(vec![
         response(vec![call("disabled"), ProviderEvent::Done]),
         answer(),
@@ -66,9 +79,18 @@ async fn disabled_tools_are_not_advertised_prepared_or_executed_and_can_be_reena
     assert_eq!(probe.saved.load(Ordering::SeqCst), 0);
     assert!(c.snapshot().approval.is_none());
     for request in provider.requests.lock().unwrap().iter() {
-        assert!(request.tools.is_empty());
-        assert!(!request.instructions.contains("Use the provided tools"));
+        assert_eq!(request.tools, [probe.definition()]);
+        assert!(request.instructions.contains("Use the provided tools"));
+        assert!(
+            request
+                .messages
+                .contains(&ContextMessage::ToolAvailability { enabled: vec![] })
+        );
     }
+    assert_eq!(c.record().tool_availability.len(), 1);
+    let snapshot = serde_json::to_value(c.snapshot()).unwrap();
+    assert!(snapshot.get("toolAvailability").is_none());
+    assert_eq!(snapshot["messages"].as_array().unwrap().len(), 4);
     c.update_disabled_tools(vec![]).await.unwrap();
     assert_eq!(
         complete(c.submit("act again".into()).unwrap()).await.state,
@@ -80,7 +102,176 @@ async fn disabled_tools_are_not_advertised_prepared_or_executed_and_can_be_reena
     );
     assert_eq!(probe.preparations.load(Ordering::SeqCst), 1);
     assert_eq!(probe.saved.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.requests.lock().unwrap()[2].tools[0].name, "change");
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests[2].tools[0].name, "change");
+    for request in requests.iter() {
+        assert_eq!(request.tools, requests[0].tools);
+        assert_eq!(request.instructions, requests[0].instructions);
+    }
+    assert!(requests[2].messages.starts_with(&requests[1].messages));
+    assert!(
+        matches!(requests[2].messages.last(), Some(ContextMessage::ToolAvailability { enabled }) if enabled == &["change"])
+    );
+    assert_eq!(c.record().tool_availability.len(), 2);
+    c.record().validate().unwrap();
+}
+
+#[tokio::test]
+async fn only_net_changes_append_at_requests_and_restore_preserves_order_and_ids() {
+    let provider = FakeProvider::new(vec![answer(), answer(), answer(), answer(), answer()]);
+    let a = Probe::new();
+    let z = Probe::named("zeta");
+    let saved = Arc::new(Mutex::new(Vec::new()));
+    let mut opts = options(provider.clone(), vec![z.clone(), a.clone()]);
+    opts.checkpoint = Some(checkpoint({
+        let saved = saved.clone();
+        move |record| {
+            record.validate().unwrap();
+            saved.lock().unwrap().push(record);
+            async { Ok(()) }
+        }
+    }));
+    let c = Conversation::new(opts, None).unwrap();
+    c.update_disabled_tools(vec!["change".into()])
+        .await
+        .unwrap();
+    c.update_disabled_tools(vec![]).await.unwrap();
+    assert!(c.record().tool_availability.is_empty());
+    complete(c.submit("first".into()).unwrap()).await;
+    let initial = c.record().tool_availability;
+    assert_eq!(initial.len(), 1);
+    assert_eq!(initial[0].enabled, ["change", "zeta"]);
+    c.update_disabled_tools(vec!["zeta".into(), "change".into()])
+        .await
+        .unwrap();
+    c.update_disabled_tools(vec![]).await.unwrap();
+    complete(c.submit("back to the same set".into()).unwrap()).await;
+    assert_eq!(c.record().tool_availability, initial);
+    c.update_disabled_tools(vec!["change".into()])
+        .await
+        .unwrap();
+    c.update_disabled_tools(vec!["change".into(), "zeta".into()])
+        .await
+        .unwrap();
+    c.update_disabled_tools(vec!["zeta".into(), "change".into()])
+        .await
+        .unwrap();
+    assert_eq!(c.record().tool_availability, initial);
+    complete(c.submit("both disabled".into()).unwrap()).await;
+    let history = c.record().tool_availability;
+    assert_eq!(history.len(), 2);
+    assert!(history[1].enabled.is_empty());
+    // Restore from serialized data with the registry supplied in a different order.
+    let record = serde_json::from_slice(&serde_json::to_vec(&c.record()).unwrap()).unwrap();
+    let restored = Conversation::new(
+        options(provider.clone(), vec![a.clone(), z.clone()]),
+        Some(record),
+    )
+    .unwrap();
+    complete(restored.submit("restored".into()).unwrap()).await;
+    assert_eq!(restored.record().tool_availability, history);
+    {
+        let requests = provider.requests.lock().unwrap();
+        for request in requests.iter() {
+            assert_eq!(
+                request
+                    .tools
+                    .iter()
+                    .map(|d| d.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["change", "zeta"]
+            );
+            assert_eq!(request.tools, requests[0].tools);
+            assert_eq!(request.instructions, requests[0].instructions);
+            assert_eq!(request.messages.len(), request.message_ids.len());
+        }
+        for pair in requests.windows(2) {
+            assert!(pair[1].messages.starts_with(&pair[0].messages));
+            assert!(pair[1].message_ids.starts_with(&pair[0].message_ids));
+        }
+    }
+    assert!(saved.lock().unwrap().iter().any(|record| {
+        record.tool_availability == initial
+            && matches!(
+                record.messages.last(),
+                Some(Message::Assistant {
+                    status: MessageStatus::Streaming,
+                    ..
+                })
+            )
+    }));
+    // Legacy history acquires a current policy only at its next request, without
+    // inserting a synthetic instruction into already-sent history.
+    let mut legacy = restored.record();
+    legacy.version = 9;
+    legacy.tool_availability.clear();
+    let restored = Conversation::new(options(provider.clone(), vec![z, a]), Some(legacy)).unwrap();
+    assert!(restored.record().tool_availability.is_empty());
+    complete(restored.submit("legacy continuation".into()).unwrap()).await;
+    assert_eq!(restored.record().tool_availability.len(), 1);
+    let requests = provider.requests.lock().unwrap();
+    assert!(
+        matches!(requests[4].messages.last(), Some(ContextMessage::ToolAvailability { enabled }) if enabled.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn capability_changes_keep_schemas_and_are_checked_again_before_preparation() {
+    let probe = Probe::new();
+    let unavailable = probe.clone();
+    let provider = FakeProvider::new(vec![
+        script(move |_| {
+            unavailable.available.store(false, Ordering::SeqCst);
+            Box::pin(futures_util::stream::iter([
+                Ok(call("unavailable")),
+                Ok(ProviderEvent::Done),
+            ]))
+        }),
+        answer(),
+    ]);
+    let c = conversation(provider.clone(), vec![probe.clone()]);
+    complete(c.submit("act".into()).unwrap()).await;
+    assert_eq!(probe.preparations.load(Ordering::SeqCst), 0);
+    assert_eq!(outcomes(&c), [ToolOutcome::NotExecuted]);
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests[0].tools, requests[1].tools);
+    assert_eq!(requests[0].instructions, requests[1].instructions);
+    assert!(
+        matches!(requests[1].messages.last(), Some(ContextMessage::ToolAvailability { enabled }) if enabled.is_empty())
+    );
+    let mut invalid = c.record();
+    invalid.tool_availability[0].after_message_id = invalid.messages[1].id().into();
+    assert!(
+        invalid.validate().is_err(),
+        "policy must not split tool calls/results"
+    );
+    let mut invalid = c.record();
+    invalid.tool_availability[0].id = invalid.messages[0].id().into();
+    assert!(invalid.validate().is_err(), "context IDs must be unique");
+    let mut invalid = c.record();
+    invalid.tool_availability[0].after_message_id = new_id();
+    assert!(invalid.validate().is_err(), "policy anchors must exist");
+}
+
+#[tokio::test]
+async fn failed_availability_checkpoint_prevents_inference_without_retry() {
+    let provider = FakeProvider::new(vec![]);
+    let mut opts = options(provider.clone(), vec![Probe::new()]);
+    opts.checkpoint = Some(checkpoint(|record| async move {
+        if record.tool_availability.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Storage)
+        }
+    }));
+    let c = Conversation::new(opts, None).unwrap();
+    assert_eq!(
+        complete(c.submit("act".into()).unwrap()).await.state,
+        OperationState::Failed
+    );
+    assert_eq!(provider.count(), 0);
+    assert!(c.snapshot().storage_error.is_some());
+    assert!(matches!(c.submit("blocked".into()), Err(Error::Storage)));
 }
 
 #[tokio::test]
@@ -267,7 +458,9 @@ async fn delegated_children_inherit_enforcement_and_cannot_change_selection() {
             let release = release.clone();
             move |request| {
                 Box::pin(async_stream::try_stream! {
-                    assert!(request.tools.is_empty());
+                    assert_eq!(request.tools.len(), 1);
+                    assert_eq!(request.tools[0].name, "change");
+                    assert!(matches!(request.messages.last(), Some(ContextMessage::ToolAvailability { enabled }) if enabled.is_empty()));
                     entered.cancel();
                     release.cancelled().await;
                     yield call("forbidden");

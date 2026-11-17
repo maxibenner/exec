@@ -105,16 +105,28 @@ fn input(request: &ProviderRequest, state: &Context) -> Result<Vec<Value>> {
         .as_ref()
         .map(|p| p.output.clone())
         .unwrap_or_default();
+    // Compaction is opaque and must not be the authority for current tool policy.
+    // Replay only the latest covered availability as a trusted instruction, then
+    // any later append-only updates in their original positions.
+    let availability = request.messages[..start]
+        .iter()
+        .rposition(|m| matches!(m, ContextMessage::ToolAvailability { .. }));
     for (index, message) in request.messages.iter().enumerate() {
         let incomplete = request
             .incomplete_message_ids
             .contains(&request.message_ids[index]);
         if index < start
+            && Some(index) != availability
             && (!incomplete || state.prefix.as_ref().is_some_and(|p| p.includes_incomplete))
         {
             continue;
         }
         match message {
+            ContextMessage::ToolAvailability { enabled } => {
+                items.push(
+                    json!({"role":"developer","content":tool_availability_instruction(enabled)}),
+                );
+            }
             ContextMessage::User { text } => {
                 if let Some(images) = request.images.get(&index) {
                     let mut content = vec![json!({"type":"input_text","text":text})];
@@ -795,6 +807,88 @@ impl ChatProvider for OpenAIProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn availability_uses_trusted_roles_and_survives_opaque_replay_and_compaction() {
+        let messages = vec![
+            ContextMessage::User {
+                text: "first".into(),
+            },
+            ContextMessage::ToolAvailability {
+                enabled: vec!["shell".into()],
+            },
+            ContextMessage::Assistant {
+                text: "done".into(),
+                calls: vec![],
+            },
+            ContextMessage::User {
+                text: "second".into(),
+            },
+            ContextMessage::ToolAvailability { enabled: vec![] },
+            ContextMessage::Assistant {
+                text: "done again".into(),
+                calls: vec![],
+            },
+            ContextMessage::User {
+                text: "third".into(),
+            },
+            ContextMessage::ToolAvailability {
+                enabled: vec!["read_file".into()],
+            },
+        ];
+        let request = ProviderRequest {
+            message_ids: messages.iter().map(|_| new_id()).collect(),
+            messages,
+            incomplete_message_ids: Default::default(),
+            images: Default::default(),
+            model: "fake".into(),
+            instructions: "stable prefix".into(),
+            effort: None,
+            provider_state: None,
+            tools: vec![],
+            cancel: CancellationToken::new(),
+        };
+        let opaque = vec![
+            json!({"type":"reasoning", "encrypted_content":"opaque reasoning"}),
+            json!({"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":"done"}]}),
+        ];
+        let mut state = Context::default();
+        state
+            .outputs
+            .insert(request.message_ids[1].clone(), opaque.clone());
+        let items = input(&request, &state).unwrap();
+        assert_eq!(
+            items[1],
+            json!({"role":"developer", "content":tool_availability_instruction(&["shell".into()])})
+        );
+        assert_eq!(items[2..4], opaque);
+        assert_eq!(items[5]["role"], "developer");
+        let compacted = json!({"type":"compaction", "encrypted_content":"opaque summary"});
+        // A compaction can end on an availability update as well as a transcript row.
+        for boundary in [4, 5] {
+            state.prefix = Some(Prefix {
+                through: request.message_ids[boundary].clone(),
+                includes_incomplete: true,
+                output: vec![compacted.clone()],
+            });
+            let items = input(&request, &state).unwrap();
+            assert_eq!(items[0], compacted);
+            let policies: Vec<_> = items
+                .iter()
+                .filter(|item| item["role"] == "developer")
+                .collect();
+            assert_eq!(
+                policies,
+                vec![
+                    &json!({"role":"developer", "content":tool_availability_instruction(&[])}),
+                    &json!({"role":"developer", "content":tool_availability_instruction(&["read_file".into()])}),
+                ]
+            );
+            assert_eq!(items.last().unwrap(), policies[1]);
+            assert!(!items.iter().any(|item| item["content"] == "first"));
+        }
+    }
+
     #[test]
     fn only_terminal_success_releases_calls() {
         let mut d = Decoder::default();

@@ -164,6 +164,7 @@ impl Conversation {
                 workspace: options.workspace,
                 max_steps: options.max_steps,
                 messages: vec![],
+                tool_availability: vec![],
                 pending_input: vec![],
                 operation: None,
                 executing_tool_id: None,
@@ -179,6 +180,7 @@ impl Conversation {
             }
             definitions.push(definition);
         }
+        definitions.sort_by(|a, b| a.name.cmp(&b.name));
         let events = EventHub::default();
         Ok(Arc::new(Self {
             id: record.id.clone(),
@@ -306,7 +308,7 @@ impl Conversation {
                 .map(|r| r.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            s.record.version = 10;
+            s.record.version = s.record.version.max(10);
             index
         };
         let saved = self.checkpoint(None).await;
@@ -369,13 +371,41 @@ impl Conversation {
         })
         .await
     }
-    fn enabled_definitions<'a>(
-        &'a self,
-        record: &'a ConversationRecord,
-    ) -> impl Iterator<Item = &'a ToolDefinition> {
-        self.definitions
-            .iter()
-            .filter(|d| record.metadata.tool_enabled(&d.name))
+    fn request_context(
+        &self,
+        record: &mut ConversationRecord,
+        end: usize,
+        cancel: &CancellationToken,
+    ) -> (Vec<ContextMessage>, Vec<String>) {
+        // Tool-free conversations need no policy, unless replacing earlier availability
+        // after a restore with a different catalog.
+        if !self.definitions.is_empty() || !record.tool_availability.is_empty() {
+            let context = ToolContext {
+                conversation_id: self.id.clone(),
+                operation_id: record.operation.as_ref().unwrap().id.clone(),
+                call_id: String::new(),
+                model: record.model.clone(),
+                search_model: record
+                    .configuration
+                    .as_ref()
+                    .unwrap()
+                    .settings
+                    .search_model
+                    .clone(),
+                workspace: record.workspace.clone(),
+                cancel: cancel.clone(),
+            };
+            let enabled = self
+                .definitions
+                .iter()
+                .filter(|d| {
+                    record.metadata.tool_enabled(&d.name) && self.tools[&d.name].available(&context)
+                })
+                .map(|d| d.name.clone())
+                .collect();
+            record.update_tool_availability(end, enabled);
+        }
+        record.provider_context(end)
     }
     pub(crate) fn reserve_idle(self: &Arc<Self>) -> Result<IdleReservation> {
         let mut state = self.state();
@@ -394,6 +424,7 @@ impl Conversation {
         self.start_mutation(
             |record| {
                 record.messages.clear();
+                record.tool_availability.clear();
                 record.pending_input.clear();
                 record.operation = None;
                 record.executing_tool_id = None;
@@ -764,7 +795,7 @@ impl Conversation {
     async fn compact_history(&self, cancel: &CancellationToken, automatic: bool) -> Result<()> {
         check_cancel(cancel)?;
         let mut request = {
-            let s = self.state();
+            let mut s = self.state();
             if !self.provider.supports_compaction(&s.record.model) {
                 return if automatic {
                     Ok(())
@@ -790,7 +821,15 @@ impl Conversation {
             }
             let mut end = s.record.messages.len();
             if automatic {
+                // Never move behind a durable request boundary, even if a failed
+                // manual compaction covered an otherwise unanswered user message.
+                let last_boundary = s
+                    .record
+                    .tool_availability
+                    .last()
+                    .map(|a| a.after_message_id.as_str());
                 while end > 0
+                    && Some(s.record.messages[end - 1].id()) != last_boundary
                     && (matches!(&s.record.messages[end - 1], Message::User { .. })
                         || s.record.messages[end - 1].is_compaction())
                 {
@@ -805,12 +844,8 @@ impl Conversation {
                     Err(Error::Invalid("There is no completed history to compact."))
                 };
             }
-            let messages = context(history);
-            let message_ids = history
-                .iter()
-                .filter(|m| m.in_context())
-                .map(|m| m.id().to_owned())
-                .collect();
+            let (messages, message_ids) = self.request_context(&mut s.record, end, cancel);
+            let history = &s.record.messages[..end];
             ProviderRequest {
                 images: Default::default(),
                 model: s.record.model.clone(),
@@ -821,13 +856,15 @@ impl Conversation {
                     .map(|m| m.id().to_owned())
                     .collect(),
                 messages,
-                instructions: s.record.configuration.as_ref().unwrap().instructions(
-                    &s.record.workspace,
-                    self.enabled_definitions(&s.record).next().is_some(),
-                ),
+                instructions: s
+                    .record
+                    .configuration
+                    .as_ref()
+                    .unwrap()
+                    .instructions(&s.record.workspace, !self.definitions.is_empty()),
                 effort: None,
                 provider_state: s.record.provider_state.clone(),
-                tools: self.enabled_definitions(&s.record).cloned().collect(),
+                tools: self.definitions.clone(),
                 cancel: cancel.clone(),
             }
         };
@@ -1243,7 +1280,8 @@ impl Conversation {
             // Include input accepted during compaction too. This lock establishes
             // which instructions belong to the response that is about to start.
             self.inject_pending_input(&mut s);
-            let messages = context(&s.record.messages);
+            let end = s.record.messages.len();
+            let (messages, message_ids) = self.request_context(&mut s.record, end, cancel);
             let known: HashSet<String> = s
                 .record
                 .messages
@@ -1271,11 +1309,7 @@ impl Conversation {
                         .filter(|m| m.is_incomplete_reply())
                         .map(|m| m.id().to_owned())
                         .collect(),
-                    message_ids: s.record.messages[..index]
-                        .iter()
-                        .filter(|m| m.in_context())
-                        .map(|m| m.id().to_owned())
-                        .collect(),
+                    message_ids,
                     model: s.record.model.clone(),
                     effort: s
                         .record
@@ -1286,37 +1320,14 @@ impl Conversation {
                         .effort
                         .clone(),
                     provider_state: s.record.provider_state.clone(),
-                    instructions: s.record.configuration.as_ref().unwrap().instructions(
-                        &s.record.workspace,
-                        self.enabled_definitions(&s.record).next().is_some(),
-                    ),
+                    instructions: s
+                        .record
+                        .configuration
+                        .as_ref()
+                        .unwrap()
+                        .instructions(&s.record.workspace, !self.definitions.is_empty()),
                     messages,
-                    tools: {
-                        let context = ToolContext {
-                            conversation_id: self.id.clone(),
-                            operation_id: s.record.operation.as_ref().unwrap().id.clone(),
-                            call_id: String::new(),
-                            model: s.record.model.clone(),
-                            search_model: s
-                                .record
-                                .configuration
-                                .as_ref()
-                                .unwrap()
-                                .settings
-                                .search_model
-                                .clone(),
-                            workspace: s.record.workspace.clone(),
-                            cancel: cancel.clone(),
-                        };
-                        self.enabled_definitions(&s.record)
-                            .filter(|d| {
-                                self.tools
-                                    .get(&d.name)
-                                    .is_some_and(|t| t.available(&context))
-                            })
-                            .cloned()
-                            .collect()
-                    },
+                    tools: self.definitions.clone(),
                     cancel: cancel.clone(),
                 },
                 index,
@@ -1561,7 +1572,11 @@ impl Conversation {
                         let model = self.state().record.model.clone();
                         let search_model = self.state().record.configuration.as_ref().unwrap().settings.search_model.clone();
                         let operation_id=self.state().record.operation.as_ref().unwrap().id.clone();
-                        let prepared = tool.prepare(call.arguments.clone(),ToolContext{conversation_id:self.id.clone(),operation_id,search_model,call_id:call.id.clone(),model,workspace,cancel:cancel.clone()}).await?;
+                        let context = ToolContext{conversation_id:self.id.clone(),operation_id,search_model,call_id:call.id.clone(),model,workspace,cancel:cancel.clone()};
+                        if !tool.available(&context) {
+                            return Ok((ToolOutcome::NotExecuted, "Tool is currently unavailable. Nothing was executed. Do not retry without a new user request.".into()));
+                        }
+                        let prepared = tool.prepare(call.arguments.clone(), context).await?;
                         check_cancel(cancel)?;
                         let auto_approve = self.state().record.configuration.as_ref().unwrap().settings.auto_approve;
                         let asks_approval = !auto_approve && prepared.approval().is_some();

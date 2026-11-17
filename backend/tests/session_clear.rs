@@ -210,6 +210,14 @@ async fn clear_is_durable_and_fork_copies_context_settings_and_shared_assets_wit
     assert!(saved.provider_state.is_none());
     assert!(saved.executing_tool_id.is_none());
     assert!(saved.messages.is_empty() && saved.resources.is_empty());
+    assert!(saved.tool_availability.is_empty());
+    let fork_availability = &records
+        .iter()
+        .find(|r| r.id == fork.id)
+        .unwrap()
+        .tool_availability;
+    assert_eq!(fork_availability.len(), 1);
+    assert!(fork_availability[0].enabled.is_empty());
     assert_eq!(
         records
             .iter()
@@ -242,7 +250,12 @@ async fn clear_is_durable_and_fork_copies_context_settings_and_shared_assets_wit
     {
         let requests = fake.requests.lock().unwrap();
         let fresh = &requests[1];
-        assert_eq!(fresh.messages.len(), 1);
+        assert_eq!(fresh.messages.len(), 2);
+        assert_eq!(
+            fresh.messages[1],
+            ContextMessage::ToolAvailability { enabled: vec![] }
+        );
+        assert_ne!(fresh.message_ids[1], fork_availability[0].id);
         assert_eq!(
             fresh.messages[0],
             ContextMessage::User {

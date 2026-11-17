@@ -3,6 +3,16 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 
+/// Append-only runtime policy at a safe request boundary, not a UI message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolAvailability {
+    pub id: String,
+    pub after_message_id: String,
+    /// Sorted effective tool names, including both selection and capability checks.
+    pub enabled: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationRecord {
@@ -22,6 +32,8 @@ pub struct ConversationRecord {
     pub workspace: String,
     pub max_steps: usize,
     pub messages: Vec<Message>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_availability: Vec<ToolAvailability>,
     #[serde(default)]
     pub pending_input: Vec<Message>,
     #[serde(deserialize_with = "required_option")]
@@ -37,6 +49,58 @@ pub(super) fn required_option<'de, T: Deserialize<'de>, D: serde::Deserializer<'
     Option::deserialize(deserializer)
 }
 impl ConversationRecord {
+    /// Called only when preparing a model request, before its durable checkpoint.
+    pub(super) fn update_tool_availability(&mut self, end: usize, enabled: Vec<String>) {
+        if self
+            .tool_availability
+            .last()
+            .is_some_and(|last| last.enabled == enabled)
+        {
+            return;
+        }
+        let after_message_id = self.messages[..end]
+            .iter()
+            .rev()
+            .find(|m| m.in_context())
+            .expect("model requests have history")
+            .id()
+            .to_owned();
+        self.tool_availability.push(ToolAvailability {
+            id: new_id(),
+            after_message_id,
+            enabled,
+        });
+        self.version = self.version.max(11);
+    }
+
+    /// Merge invisible runtime policy with transcript context, keeping IDs and image
+    /// indices aligned. Anchors never split a tool-call/result batch.
+    pub(super) fn provider_context(&self, end: usize) -> (Vec<ContextMessage>, Vec<String>) {
+        let history = &self.messages[..end];
+        let mut updates = self.tool_availability.iter().peekable();
+        let mut messages = Vec::new();
+        let mut ids = Vec::new();
+        for (message, item) in history
+            .iter()
+            .filter(|m| m.in_context())
+            .zip(context(history))
+        {
+            messages.push(item);
+            ids.push(message.id().to_owned());
+            while updates
+                .peek()
+                .is_some_and(|update| update.after_message_id == message.id())
+            {
+                let update = updates.next().unwrap();
+                messages.push(ContextMessage::ToolAvailability {
+                    enabled: update.enabled.clone(),
+                });
+                ids.push(update.id.clone());
+            }
+        }
+        (messages, ids)
+    }
+
     /// Any accepted input or operation permanently binds its workspace, including
     /// failed/interrupted turns and legacy records with frozen instructions.
     pub(crate) fn workspace_locked(&self) -> bool {
@@ -60,7 +124,8 @@ impl ConversationRecord {
             return Err(Error::Invalid("Invalid provider state."));
         }
         let bad = Error::Invalid("Invalid or unsupported conversation record.");
-        if !matches!(self.version, 1..=10)
+        if !matches!(self.version, 1..=11)
+            || (self.version < 11 && !self.tool_availability.is_empty())
             || self
                 .metadata
                 .parent
@@ -89,6 +154,7 @@ impl ConversationRecord {
         let mut ids = HashSet::new();
         let mut calls = HashSet::new();
         let mut pending = VecDeque::new();
+        let mut availability = self.tool_availability.iter().peekable();
         for (index, message) in self.messages.iter().enumerate() {
             if !valid_id(message.id()) || !ids.insert(message.id()) {
                 return Err(bad);
@@ -241,6 +307,25 @@ impl ConversationRecord {
                     }
                 }
             }
+            while availability
+                .peek()
+                .is_some_and(|update| update.after_message_id == message.id())
+            {
+                let update = availability.next().unwrap();
+                if !message.in_context()
+                    || !pending.is_empty()
+                    || !valid_id(&update.id)
+                    || !ids.insert(&update.id)
+                    || update.enabled.iter().any(String::is_empty)
+                    || update.enabled.windows(2).any(|pair| pair[0] >= pair[1])
+                {
+                    return Err(bad);
+                }
+            }
+        }
+        // Also rejects dangling/out-of-order anchors after restore or fork.
+        if availability.next().is_some() {
+            return Err(bad);
         }
         if (self.version < 3 && !self.pending_input.is_empty()) || self.pending_input.len() > 32 {
             return Err(bad);
