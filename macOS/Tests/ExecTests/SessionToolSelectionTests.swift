@@ -33,8 +33,7 @@ private actor SessionToolTransport: AgentTransport {
 }
 
 @MainActor struct SessionToolSelectionTests {
-    private let names = ["list_files", "read_file", "search_text", "edit_file", "shell",
-                         "web_search", "fetch_content", "generate_image", "take_screenshot", "delegate"]
+    private let names = SessionTool.names
 
     private func snapshot(disabled: [String]? = nil, state: String = "completed", child: Bool = false) throws -> AgentJSON {
         guard case .object(var fields) = try AgentIntegrationTests.fixture(state: state, result: state != "awaiting_approval"),
@@ -131,6 +130,8 @@ private actor SessionToolTransport: AgentTransport {
             await transport.saveNext(saved)
             store.setToolEnabled(disabled.isEmpty ? "edit_file" : "shell", true)
             await store.waitForPendingSave()
+            // A snapshot reconciliation can hand the save to the idle command drain.
+            try await waitForSave(store)
             try expect(store.disabledTools == Set(disabled) && !store.hasUnsavedChanges && store.error == nil)
             writes = await transport.responses.requests.filter { $0.method != "GET" }
             guard let patch = writes.last else { throw CheckFailure(description: "Missing selection update") }

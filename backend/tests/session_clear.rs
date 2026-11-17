@@ -126,7 +126,7 @@ async fn clear_is_durable_and_fork_copies_context_settings_and_shared_assets_wit
         search_model: Some("search-model".into()),
         auto_approve: false,
     };
-    let initial = client.call("POST", "/v1/conversations", Some(json!({"model":"fake", "workspace":workspace.path(), "settings":settings, "disabledTools":["fetch_content", "delegate"]}))).await.unwrap();
+    let initial = client.call("POST", "/v1/conversations", Some(json!({"model":"fake", "workspace":workspace.path(), "settings":settings, "disabledTools":["fetch_content", "delegate", "wait"]}))).await.unwrap();
     let id = initial["id"].as_str().unwrap();
     let path = format!("/v1/conversations/{id}");
     client.rename(id, "Keep this title").await.unwrap();

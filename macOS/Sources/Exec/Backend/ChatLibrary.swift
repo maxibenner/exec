@@ -184,7 +184,10 @@ import Observation
     var accountBusy: Bool { authenticating || defaultsTask != nil || conversations.contains { $0.busy || $0.isSaving } }
     var hasUnsavedChanges: Bool { conversations.contains { $0.hasUnsavedChanges } }
     var hasUnsentDrafts: Bool { conversations.contains { $0.hasUnsentDraft } }
-    var hasRunningOperations: Bool { navigating || authenticating || defaultsTask != nil || conversations.contains { $0.busy || $0.isSaving } }
+    var hasRunningOperations: Bool {
+        navigating || authenticating || defaultsTask != nil || conversations.contains { $0.busy || $0.isSaving } ||
+            savedSummaries.contains { conversation($0.id) == nil && $0.isRunning }
+    }
     var error: String? {
         get { navigationError ?? current.error ?? modelRefreshError }
         set { navigationError = nil; modelRefreshError = nil; current.error = newValue }
@@ -196,6 +199,7 @@ import Observation
     }
     private func conversation(_ id: UUID) -> ChatStore? { openConversations.first { $0.currentSessionID == id } }
     func isSessionRunning(_ id: UUID) -> Bool { conversation(id)?.busy ?? (savedSummaries.first { $0.id == id }?.isRunning == true) }
+    func isSessionWaiting(_ id: UUID) -> Bool { conversation(id)?.isWaiting ?? (savedSummaries.first { $0.id == id }?.isWaiting == true) }
     func isSessionResponding(_ id: UUID) -> Bool { conversation(id).map { $0.isSending || $0.isCompacting } == true }
     func needsApproval(_ id: UUID) -> Bool {
         if let resident = conversation(id) { return resident.tools.pendingApproval != nil }

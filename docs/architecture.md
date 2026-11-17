@@ -54,6 +54,12 @@ The app profile is `~/Library/Application Support/Exec/Agent/`. Rust owns its pr
 
 Normal shutdown releases the listener and store lock. After a crash, verify that the old backend **and its tool processes** have stopped before removing only that profile's stale `conversations/.lock`. Never steal a lock by PID/age, promote orphan staging files or replay interrupted work. A crash may leave orphan tool processes; restart does not terminate them.
 
+### Waiting
+
+`wait` is a one-shot tool in `backend/src/tools/wait.rs`, not a scheduler. It accepts a bounded duration, a short display description, and a wake prompt. After the normal intent checkpoint, its executor awaits a cancellation-aware timer; expiry returns the prompt as ordinary tool output and the same operation continues. Periodic checks use successive wait/check calls within the existing step budget. A wait must be the only tool call in its response and requires a remaining model step; invalid batches fail before any tool executes.
+
+The existing single-operation and sequential-tool invariants guarantee at most one live wait per session. Snapshots derive `activeToolName` from live tool ownership, including in catalog summaries; there is no separate wait registry, persisted deadline, or frontend timer. The operation stays `running`. macOS retains the pending tool spinner and displays a green stopwatch in its session row. Waiting counts as active for Stop, deletion confirmation, and quit. Cancellation, deletion, and helper shutdown interrupt waits and await settlement; restart never re-arms them. Steering queues normally and does not wake a timer early. This is not an OS wake scheduler and cannot promise checks while the machine is forcibly asleep or Exec is closed.
+
 ### Screenshots
 
 Capture requires a separately authenticated live native channel and macOS Screen Recording permission. The macOS app binds its local adapter before sending a turn, without prompting for OS access. Manual mode asks for screen access on the first screenshot tool call per conversation; later calls reuse that consent. Auto mode allows requests without a chat prompt and does not create manual consent. An authorized request triggers the native OS permission dialog if needed. Window capture requires prior enumeration through the same session/channel. Swift echoes exact correlation fields; cancellation, revocation and disconnect invalidate late results. Grants are transient, are not inherited by forks, and are never restored automatically. The backend does not capture screens itself.

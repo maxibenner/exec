@@ -146,7 +146,7 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | PUT | `/v1/conversations/:id/workspace` | `{workspace}` → saved idle snapshot, only before the first accepted turn; otherwise 409 |
 | POST | `/v1/conversations/:id/clear` | `{}` → `200 ConversationSnapshot`, after durable idle-only context/transcript reset in the same session |
 | POST | `/v1/conversations/:id/fork` | `{}` → `201` independent saved snapshot of the transcript, including during an active turn |
-| DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after durable deletion; active work returns 409 |
+| DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after cancelling and settling active work, then durably deleting the session and descendants; conflicting mutations return 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
 | POST | `/v1/conversations/:id/turns` | `{text,images?,files?:[assetID]}` → `202 {operationID}` |
 | POST | `/v1/conversations/:id/steer` | `{operationID,text,images?,files?:[assetID]}` → `202 {operationID,messageID}` |
@@ -157,7 +157,7 @@ Images may be uploaded while a turn is active, then queued through `/steer` as c
 
 Missing conversations return 404; invalid requests 400; busy/storage-blocked submissions and stale approvals/cancellations 409. Approval decisions are single use, including races. Cancellation acceptance is not cleanup completion; the acknowledgement echoes the exact operation accepted for cancellation.
 
-A snapshot has `id`, `model`, `workspace`, `canChangeWorkspace`, `configuration`, `messages`, `pendingInput`, `metadata`, `usage`, `contextUsage`, `resources`, `operation`, `approval`, `activeToolCallID`, and `storageError`. Nullable fields are serialized explicitly as null. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in [`backend/src/core/types.rs`](../backend/src/core/types.rs); command validation is in [`backend/src/service.rs`](../backend/src/service.rs).
+A snapshot has `id`, `model`, `workspace`, `canChangeWorkspace`, `configuration`, `messages`, `pendingInput`, `metadata`, `usage`, `contextUsage`, `resources`, `operation`, `approval`, `activeToolCallID`, optional `activeToolName`, and `storageError`. Nullable fields are serialized explicitly as null, except `activeToolName`, which is omitted when no tool is executing. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in [`backend/src/core/types.rs`](../backend/src/core/types.rs); command validation is in [`backend/src/service.rs`](../backend/src/service.rs).
 
 **Turn acceptance is in-memory, not a durable receipt.** A 202 can precede the input checkpoint; a lost response can happen after effects. No idempotent replay mechanism is advertised. Terminal success is published only after its final checkpoint succeeds. Intermediate snapshots/events are not durability receipts.
 
@@ -301,8 +301,8 @@ availability instruction alongside the opaque summary, then subsequent updates; 
 not delegated to summary text. These changes facilitate prefix caching but do not guarantee
 provider cache hits, particularly across catalog/model/configuration changes.
 
-The bundled app's ten tool names are `list_files`, `read_file`, `search_text`, `edit_file`,
-`shell`, `web_search`, `fetch_content`, `generate_image`, `take_screenshot`, and `delegate`.
+The bundled app's tool names are `list_files`, `read_file`, `search_text`, `edit_file`,
+`shell`, `web_search`, `fetch_content`, `generate_image`, `take_screenshot`, `delegate`, and `wait`.
 Names are exact and case-sensitive; a custom backend accepts only its registered tools.
 Enabling a tool does not install it, connect a provider, bypass approval, or grant screen
 access. Screenshot use still requires a bound native adapter and OS permission. Tool
@@ -319,6 +319,20 @@ commands and direct edits, create with
 `{"disabledTools":["edit_file"]}` to restore shell, or `{"disabledTools":[]}` to restore all
 tools. Read `metadata.disabledTools` from the returned snapshot to display the saved choice.
 Auto/manual approval remains a separate setting.
+
+## Wait tool
+
+The service registers `wait` independently of `--workspace-tools`. Its required arguments are:
+
+```json
+{"duration_seconds":60,"description":"Waiting for CI checks","wake_prompt":"Check the existing CI run. If still pending, wait again."}
+```
+
+`duration_seconds` is an integer from 1 to 86,400. `description` is nonempty single-line display metadata, at most 160 UTF-8 bytes. `wake_prompt` is nonempty text, at most 4,096 UTF-8 bytes. Unknown fields and NUL bytes are rejected. The wait itself needs no approval; subsequent actions retain their usual validation and approval rules.
+
+The call pauses the current operation and must be the only tool call in its response, with a model step remaining for continuation. Mixed batches and last-step waits fail before execution. Expiry returns `{"elapsed_seconds":60,"wake_prompt":"..."}` as ordinary tool output; the runner continues in the same operation. Rechecking may lead to another one-shot wait, subject to the normal step limit, never an unbounded recurring schedule. The prompt does not grant authorization or permit automatic retries of failed/interrupted actions.
+
+While waiting, `operation.state` remains `running`, `activeToolCallID` identifies the call, and `activeToolName` is `wait`. The latter is derived metadata, also included in catalog summaries; older clients may ignore it. Stop, deletion, and shutdown cancel the timer and await settlement. Restart marks unfinished waits interrupted, without resuming timers or inference. New steering input queues for the next model decision rather than waking early. Disconnecting an observer or closing a session window does not cancel backend work.
 
 ## Approval without a connected client
 

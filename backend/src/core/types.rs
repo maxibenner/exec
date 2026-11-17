@@ -471,8 +471,19 @@ pub trait PreparedTool: Send {
     /// Ownership is consumed so a prepared side effect cannot accidentally run twice.
     async fn execute(self: Box<Self>) -> Result<String>;
 }
+/// Constraints checked for the whole response before any tool is prepared.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolExecutionPolicy {
+    #[default]
+    Standard,
+    /// Must be the only call in a response, with a model step left for its result.
+    StandaloneWithContinuation,
+}
 #[async_trait]
 pub trait Tool: Send + Sync {
+    fn execution_policy(&self) -> ToolExecutionPolicy {
+        ToolExecutionPolicy::Standard
+    }
     fn available(&self, _context: &ToolContext) -> bool {
         true
     }
@@ -542,6 +553,9 @@ pub struct ConversationSnapshot {
     pub approval: Option<Approval>,
     #[serde(rename = "activeToolCallID")]
     pub active_tool_call_id: Option<String>,
+    /// Derived from the executing call before catalog snapshots strip messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_tool_name: Option<String>,
     pub storage_error: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

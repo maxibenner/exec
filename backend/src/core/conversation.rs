@@ -101,6 +101,18 @@ impl State {
             operation: self.record.operation.clone(),
             approval: self.pending.as_ref().map(|p| p.approval.clone()),
             active_tool_call_id: self.active_tool.clone(),
+            active_tool_name: self.active_tool.as_ref().and_then(|id| {
+                self.record.messages.iter().rev().find_map(|message| {
+                    if let Message::Assistant { calls, .. } = message {
+                        calls
+                            .iter()
+                            .find(|call| &call.id == id)
+                            .map(|call| call.name.clone())
+                    } else {
+                        None
+                    }
+                })
+            }),
             storage_error: self.storage_error.clone(),
         }
     }
@@ -1254,11 +1266,13 @@ impl Conversation {
         let model = self.state().record.model.clone();
         self.provider.prepare_model(&model, cancel.clone()).await?;
         let max_steps = self.state().record.max_steps;
-        for _ in 0..max_steps {
+        for step in 0..max_steps {
             check_cancel(cancel)?;
             self.compact_history(cancel, true).await?;
             let calls = self.respond(cancel).await?;
             self.checkpoint(None).await?;
+            check_cancel(cancel)?;
+            self.validate_tool_batch(&calls, step + 1 < max_steps)?;
             self.execute_calls(&calls, cancel).await?;
             check_cancel(cancel)?;
             if calls.is_empty() {
@@ -1552,6 +1566,26 @@ impl Conversation {
         }
         Ok(decision)
     }
+    fn validate_tool_batch(&self, calls: &[ToolCall], has_continuation: bool) -> Result<()> {
+        let standalone = calls.iter().any(|call| {
+            self.tools.get(&call.name).is_some_and(|tool| {
+                tool.execution_policy() == ToolExecutionPolicy::StandaloneWithContinuation
+            })
+        });
+        if standalone {
+            if calls.len() != 1 {
+                return Err(Error::Invalid(
+                    "This tool requires a standalone response. No tools were executed.",
+                ));
+            }
+            if !has_continuation {
+                return Err(Error::Invalid(
+                    "Agent step limit reached. No further request was sent.",
+                ));
+            }
+        }
+        Ok(())
+    }
     async fn execute_calls(&self, calls: &[ToolCall], cancel: &CancellationToken) -> Result<()> {
         for call in calls {
             let mut outcome = ToolOutcome::NotExecuted;
@@ -1712,6 +1746,129 @@ mod tests {
         ) -> futures_util::stream::BoxStream<'static, Result<ProviderEvent>> {
             panic!("A stale workspace must not reach inference")
         }
+    }
+
+    struct PolicyTool {
+        name: &'static str,
+        policy: ToolExecutionPolicy,
+    }
+    #[async_trait]
+    impl Tool for PolicyTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.name.into(),
+                description: String::new(),
+                parameters: Arguments::new(),
+            }
+        }
+        fn execution_policy(&self) -> ToolExecutionPolicy {
+            self.policy
+        }
+        async fn prepare(&self, _: Arguments, _: ToolContext) -> Result<Box<dyn PreparedTool>> {
+            panic!("Policy validation must precede preparation")
+        }
+    }
+    fn policy_call(id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments: Arguments::new(),
+        }
+    }
+
+    #[test]
+    fn standalone_policy_requires_an_entire_response_and_a_continuation() {
+        let mut options = ConversationOptions::new(Arc::new(NoInference), "fake", "/test");
+        options.tools = vec![
+            Arc::new(PolicyTool {
+                name: "pause",
+                policy: ToolExecutionPolicy::StandaloneWithContinuation,
+            }),
+            Arc::new(PolicyTool {
+                name: "ordinary",
+                policy: ToolExecutionPolicy::Standard,
+            }),
+        ];
+        let c = Conversation::new(options, None).unwrap();
+        let pause = policy_call("pause-1", "pause");
+        let ordinary = policy_call("ordinary-1", "ordinary");
+        assert!(
+            c.validate_tool_batch(std::slice::from_ref(&pause), true)
+                .is_ok()
+        );
+        assert!(
+            c.validate_tool_batch(std::slice::from_ref(&pause), false)
+                .is_err()
+        );
+        assert!(
+            c.validate_tool_batch(&[pause.clone(), ordinary.clone()], true)
+                .is_err()
+        );
+        assert!(
+            c.validate_tool_batch(&[ordinary.clone(), pause.clone()], true)
+                .is_err()
+        );
+        assert!(
+            c.validate_tool_batch(&[pause, policy_call("pause-2", "pause")], true)
+                .is_err()
+        );
+        assert!(c.validate_tool_batch(&[ordinary], false).is_ok());
+        assert!(c.validate_tool_batch(&[], false).is_ok());
+    }
+
+    #[test]
+    fn active_tool_name_is_derived_only_from_the_live_call_and_survives_catalog_stripping() {
+        let c = Conversation::new(
+            ConversationOptions::new(Arc::new(NoInference), "fake", "/test"),
+            None,
+        )
+        .unwrap();
+        {
+            let mut s = c.state();
+            s.record.messages.push(Message::Assistant {
+                id: new_id(),
+                text: String::new(),
+                status: MessageStatus::Completed,
+                calls: vec![policy_call("first", "one"), policy_call("second", "two")],
+            });
+            s.record.executing_tool_id = Some("second".into());
+        }
+        // A persisted execution intent (including one awaiting checkpoint) is not live ownership.
+        assert!(c.snapshot().active_tool_name.is_none());
+        c.state().active_tool = Some("second".into());
+        let mut snapshot = c.snapshot();
+        assert_eq!(snapshot.active_tool_name.as_deref(), Some("two"));
+        snapshot.messages.clear();
+        let mut wire = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(wire["activeToolName"], "two");
+        assert_eq!(wire["activeToolCallID"], "second");
+        assert_eq!(
+            serde_json::from_value::<ConversationSnapshot>(wire.clone()).unwrap(),
+            snapshot
+        );
+        wire.as_object_mut().unwrap().remove("activeToolName");
+        assert!(
+            serde_json::from_value::<ConversationSnapshot>(wire)
+                .unwrap()
+                .active_tool_name
+                .is_none()
+        );
+        c.state().active_tool = Some("first".into());
+        assert_eq!(c.snapshot().active_tool_name.as_deref(), Some("one"));
+        c.state().active_tool = None;
+        assert!(c.snapshot().active_tool_name.is_none());
+        assert!(
+            serde_json::to_value(c.snapshot())
+                .unwrap()
+                .get("activeToolName")
+                .is_none()
+        );
+        assert!(
+            serde_json::to_value(c.record())
+                .unwrap()
+                .get("activeToolName")
+                .is_none()
+        );
     }
 
     #[test]

@@ -75,6 +75,9 @@ struct SessionSidebar: View {
 
                             } else if store.needsAttention(child.id) {
                                 Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+                            } else if store.isSessionWaiting(child.id) {
+                                Image(systemName: "stopwatch").foregroundStyle(.green)
+                                    .accessibilityLabel("Waiting")
                             }
                         }
                         .font(.caption2).foregroundStyle(.secondary)
@@ -202,11 +205,14 @@ struct SessionRow: View {
                 if needsApproval {
                     Image(systemName: "hand.raised").foregroundStyle(.orange)
                         .help("Approval required").accessibilityLabel("Approval required")
-                } else if store.isSessionResponding(session.id) {
-                    ProgressView().controlSize(.mini).accessibilityLabel("Running")
                 } else if needsAttention {
                     Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
                         .help("Conversation needs attention").accessibilityLabel("Conversation needs attention")
+                } else if store.isSessionWaiting(session.id) {
+                    Image(systemName: "stopwatch").foregroundStyle(.green)
+                        .accessibilityLabel("Waiting")
+                } else if store.isSessionResponding(session.id) {
+                    ProgressView().controlSize(.mini).accessibilityLabel("Running")
                 } else {
                     Color.clear
                 }

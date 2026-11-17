@@ -117,6 +117,7 @@ struct AgentSnapshot: Decodable, Sendable {
     let operation: AgentOperation?
     let approval: AgentApproval?
     let activeToolCallID: String?
+    let activeToolName: String?
     let storageError: String?
     let contextUsage: ContextUsage?
 }

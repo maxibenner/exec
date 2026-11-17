@@ -60,6 +60,20 @@ public struct ToolPresentation: Sendable {
             } else if let task = arguments?.task {
                 inputs = [Field(title: "Task", text: task)]
             }
+        case "wait":
+            title = "Wait"; icon = "stopwatch"
+            struct WaitArguments: Decodable {
+                let duration_seconds: Int
+                let description: String
+                let wake_prompt: String
+            }
+            if rawArguments.utf8.count <= 32_768,
+               let wait = try? JSONDecoder().decode(WaitArguments.self, from: Data(rawArguments.utf8)) {
+                summary = "\(wait.description) · \(wait.duration_seconds)s"
+                inputs = [Field(title: "Reason", text: wait.description),
+                          Field(title: "Duration", text: "\(wait.duration_seconds)s"),
+                          Field(title: "Wake prompt", text: wait.wake_prompt)]
+            }
         case "shell":
             title = "Shell"; icon = "terminal"
             if let command = arguments?.command {

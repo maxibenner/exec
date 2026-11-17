@@ -43,6 +43,7 @@ import CryptoKit
     private var operationActive: Bool { snapshot?.operation?.active == true }
     private var backendBusy: Bool { isRestoringSession || submitting || operationActive || isStopping }
     var busy: Bool { !deletedRemotely && (backendBusy || commandTask != nil) }
+    var isWaiting: Bool { !deletedRemotely && !isStopping && snapshot?.operation?.state == "running" && snapshot?.activeToolName == "wait" }
     private var commandTask: Task<Void, Never>?
     private var pendingCommands: [(key: String, action: @MainActor () async throws -> Void)] = []
     private var commandsClosed = false

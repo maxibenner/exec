@@ -6,6 +6,7 @@ mod files;
 pub use fetch::{create_fetch_tool, create_fetch_tool_with};
 mod provider_search;
 mod shell;
+mod wait;
 mod workspace;
 use crate::{Error, Result, core::*};
 use async_trait::async_trait;
@@ -14,6 +15,7 @@ use futures_util::future::BoxFuture;
 pub use provider_search::create_provider_tools;
 pub use shell::{create_logged_shell_tool, create_shell_tool};
 use std::sync::Arc;
+pub use wait::create_wait_tool;
 pub use workspace::revision;
 
 pub fn create_workspace_tools() -> Vec<Arc<dyn Tool>> {

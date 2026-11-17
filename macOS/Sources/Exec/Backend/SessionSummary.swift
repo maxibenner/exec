@@ -10,8 +10,10 @@ struct SessionSummary: Identifiable, Equatable, Sendable {
     var unreadable = false
     let parent: AgentSessionParent?
     let operationState: String?
+    let activeToolName: String?
     var awaitingApproval: Bool { operationState == "awaiting_approval" }
     var isRunning: Bool { ["running", "awaiting_approval", "cancelling"].contains(operationState ?? "") }
+    var isWaiting: Bool { operationState == "running" && activeToolName == "wait" }
 
     init(_ value: AgentJSON) throws {
         guard let raw = value["id"].string, let id = UUID(uuidString: raw) else { throw ExecError("The backend returned an invalid conversation ID.") }
@@ -20,6 +22,7 @@ struct SessionSummary: Identifiable, Equatable, Sendable {
         let metadata = value["metadata"]
         parent = metadata["parent"] == .null ? nil : try metadata["parent"].decoded(AgentSessionParent.self)
         operationState = value["operation"]["state"].string
+        activeToolName = value["activeToolName"].string
         title = unreadable ? "Unreadable conversation" : metadata["title"].string ?? "Untitled"
         customTitle = metadata["title"].string
         isTitleManuallySet = metadata["manuallyNamed"].bool
@@ -30,6 +33,7 @@ struct SessionSummary: Identifiable, Equatable, Sendable {
         id = snapshot.id
         parent = snapshot.metadata.parent
         operationState = snapshot.operation?.state
+        activeToolName = snapshot.activeToolName
         title = snapshot.metadata.title ?? "Untitled"
         customTitle = snapshot.metadata.title
         isTitleManuallySet = snapshot.metadata.manuallyNamed

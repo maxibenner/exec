@@ -111,6 +111,7 @@ pub async fn start_persistent_service_with_native(
     };
     tools.extend(crate::tools::create_provider_tools(provider.clone()));
     tools.push(crate::tools::create_fetch_tool());
+    tools.push(crate::tools::create_wait_tool());
     tools.extend(crate::tools::create_image_tools(
         provider.clone(),
         images.clone(),
@@ -591,7 +592,7 @@ async fn handle(
     if method == "GET" && route == "/v1/health" {
         return Ok(json_response(
             200,
-            json!({"version":1,"toolsEnabled":options.tools.iter().any(|tool| !["web_search", "fetch_content","generate_image","take_screenshot"].contains(&tool.definition().name.as_str()))}),
+            json!({"version":1,"toolsEnabled":options.tools.iter().any(|tool| !["web_search", "fetch_content","generate_image","take_screenshot","wait"].contains(&tool.definition().name.as_str()))}),
         ));
     }
     if method == "GET" && route == "/v1/metadata" {

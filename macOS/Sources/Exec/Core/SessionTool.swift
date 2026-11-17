@@ -25,7 +25,8 @@ struct SessionTool: Identifiable, Sendable {
         .init(name: "fetch_content", label: "Fetch web page", icon: "doc.text", group: .read),
         .init(name: "generate_image", label: "Generate image", icon: "photo", group: .write),
         .init(name: "take_screenshot", label: "Take screenshot", icon: "camera", group: .sensitive),
-        .init(name: "delegate", label: "Delegate to sub-agents", icon: "person.2", group: .sensitive)
+        .init(name: "delegate", label: "Delegate to sub-agents", icon: "person.2", group: .sensitive),
+        .init(name: "wait", label: "Wait", icon: "stopwatch", group: .read)
     ]
 
     static let names = all.map(\.name)
