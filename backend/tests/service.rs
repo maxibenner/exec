@@ -1242,3 +1242,99 @@ async fn api_tool_entry_reconnect_cancel_acceptance_and_settled_results() {
     drop(observer);
     f.service.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn session_tool_selection_create_patch_metadata_and_validation() {
+    let entered = CancellationToken::new();
+    let f = setup(FakeProvider::new(vec![waiting(entered.clone())]), vec![]).await;
+    let default = f
+        .client
+        .create("fake", f.root.path().to_str().unwrap())
+        .await
+        .unwrap();
+    assert!(default.metadata.disabled_tools.is_empty());
+    let created = f
+        .client
+        .call(
+            "POST",
+            "/v1/conversations",
+            Some(json!({
+                "model":"fake", "workspace":f.root.path(), "disabledTools":["delegate"]
+            })),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created["metadata"]["disabledTools"], json!(["delegate"]));
+    let id = created["id"].as_str().unwrap();
+    let path = format!("/v1/conversations/{id}");
+    for invalid in [
+        json!(["unknown"]),
+        json!(["delegate", "delegate"]),
+        json!([""]),
+        json!(null),
+        json!("delegate"),
+        json!([1]),
+    ] {
+        assert_eq!(
+            f.client
+                .call("PATCH", &path, Some(json!({"disabledTools":invalid})))
+                .await
+                .unwrap_err(),
+            Error::Api(400)
+        );
+        assert_eq!(
+            f.client
+                .call(
+                    "POST",
+                    "/v1/conversations",
+                    Some(json!({
+                        "model":"fake", "workspace":f.root.path(), "disabledTools":invalid
+                    })),
+                )
+                .await
+                .unwrap_err(),
+            Error::Api(400)
+        );
+    }
+    for invalid in [json!({}), json!({"disabledTools":[], "unexpected":true})] {
+        assert_eq!(
+            f.client
+                .call("PATCH", &path, Some(invalid))
+                .await
+                .unwrap_err(),
+            Error::Api(400)
+        );
+    }
+    assert_eq!(
+        f.client.call("GET", &path, None).await.unwrap()["metadata"]["disabledTools"],
+        json!(["delegate"])
+    );
+    let updated = f
+        .client
+        .call("PATCH", &path, Some(json!({"disabledTools":[]})))
+        .await
+        .unwrap();
+    assert_eq!(updated["metadata"]["disabledTools"], json!([]));
+    let listed = f
+        .client
+        .call("GET", "/v1/conversations", None)
+        .await
+        .unwrap();
+    let summary = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id)
+        .unwrap();
+    assert_eq!(summary["metadata"]["disabledTools"], json!([]));
+    f.client.submit(id, "hold").await.unwrap();
+    entered.cancelled().await;
+    assert_eq!(
+        f.client
+            .call("PATCH", &path, Some(json!({"disabledTools":["delegate"]})))
+            .await
+            .unwrap_err(),
+        Error::Api(409)
+    );
+    f.service.close().await.unwrap();
+}

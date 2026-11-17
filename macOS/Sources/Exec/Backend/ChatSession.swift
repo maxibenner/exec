@@ -91,6 +91,11 @@ import CryptoKit
     var canEditDraft: Bool { !isRestoringSession && !isStopping }
     var canSelectWorkspace: Bool { !busy && !isSaving && !workspaceChosen && currentSessionID == nil && messages.isEmpty }
     private(set) var autoApproveTools: Bool
+    private(set) var disabledTools: Set<String>
+    var isSubagent: Bool { snapshot?.metadata.parent != nil }
+    var canSelectTools: Bool {
+        canRequestCommands && !isSubagent && !deletedRemotely && !busy && !isSaving && !hasUnsavedChanges
+    }
     private(set) var contextUsage: ContextUsage?
     private(set) var needsInitialWorkspaceSelection = false
     let tools = ToolApprovalState()
@@ -145,11 +150,12 @@ import CryptoKit
     private let sleepPrevention: SessionSleepPrevention
     private var sleepActivity: NSObjectProtocol?
 
-    init(provider: any ChatProvider, workspace: Workspace? = nil, defaultAutoApproveTools: Bool = true,
+    init(provider: any ChatProvider, workspace: Workspace? = nil, defaultAutoApproveTools: Bool = true, disabledTools: Set<String> = [],
          sleepPrevention: SessionSleepPrevention = .system) {
         self.provider = provider
         self.workspace = workspace
         self.autoApproveTools = defaultAutoApproveTools
+        self.disabledTools = disabledTools
         self.sleepPrevention = sleepPrevention
         tools.resolve = { [weak self] operation, approval, approved in
             guard let self, let id = self.currentSessionID else { return }
@@ -178,6 +184,12 @@ import CryptoKit
     private var settings: AgentSettings {
         AgentSettings(systemPrompt: systemPrompt, autoApprove: autoApproveTools,
                       effort: selectedEffort, searchModel: !searchModel.isEmpty && provider.providerID(for: searchModel) == provider.providerID(for: selectedModel) ? searchModel : nil)
+    }
+    func setToolEnabled(_ name: String, _ enabled: Bool) {
+        guard canSelectTools, SessionTool.names.contains(name), disabledTools.contains(name) == enabled else { return }
+        if enabled { disabledTools.remove(name) }
+        else { disabledTools.insert(name) }
+        scheduleSave()
     }
     func setAutoApproveTools(_ enabled: Bool) {
         guard canRequestCommands else { return }
@@ -209,6 +221,7 @@ import CryptoKit
         guard currentSessionID != nil || workspaceChosen || commitInheritedWorkspace || allowInheritedWorkspace else { return }
         let desiredSettings = settings
         let desiredModel = selectedModel
+        let desiredDisabledTools = disabledTools
         pauseObservation()
         transcriptReader = nil
         defer { observe() }
@@ -222,12 +235,24 @@ import CryptoKit
                     let value = try await api.send("PUT", AgentAPI.path(id, "/settings"), body: desiredSettings)
                     try apply(value.decoded(AgentSnapshot.self), preserveSettings: true)
                 }
+                if Set(snapshot?.metadata.disabledTools ?? []) != desiredDisabledTools {
+                    let value = try await api.request("PATCH", AgentAPI.path(id), .object([
+                        "disabledTools": .array(desiredDisabledTools.sorted().map { .string($0) })]))
+                    try apply(value.decoded(AgentSnapshot.self), preserveSettings: true)
+                }
             } else {
-                struct Create: Encodable { let model: String; let workspace: String; let settings: AgentSettings }
-                let value = try await api.send("POST", "/v1/conversations", body: Create(model: desiredModel, workspace: workspace.root.path, settings: desiredSettings))
+                struct Create: Encodable {
+                    let model: String
+                    let workspace: String
+                    let settings: AgentSettings
+                    let disabledTools: [String]
+                }
+                let value = try await api.send("POST", "/v1/conversations", body: Create(
+                    model: desiredModel, workspace: workspace.root.path, settings: desiredSettings,
+                    disabledTools: desiredDisabledTools.sorted()))
                 try apply(value.decoded(AgentSnapshot.self), preserveSettings: true)
             }
-            settingsDirty = settings != desiredSettings || selectedModel != desiredModel
+            settingsDirty = settings != desiredSettings || selectedModel != desiredModel || disabledTools != desiredDisabledTools
             hasUnsavedChanges = false
             if settingsDirty { try await persistConfiguration() }
         } catch {
@@ -336,6 +361,7 @@ import CryptoKit
             systemPrompt = value.configuration.settings.systemPrompt
             searchModel = value.configuration.settings.searchModel ?? ""
             autoApproveTools = value.configuration.settings.autoApprove
+            disabledTools = Set(value.metadata.disabledTools ?? [])
         }
         contextUsage = value.contextUsage
         hasUnsavedChanges = configurationUncertain || value.storageError != nil

@@ -448,7 +448,7 @@ import Observation
         cancelOpening()
         navigationError = nil
         do {
-            let next = try makeConversation(workspace: current.workspace)
+            let next = try makeConversation(workspace: current.workspace, disabledTools: current.disabledTools)
             let checkpoint = next.didCheckpoint
             next.didCheckpoint = { [weak next] in
                 guard let next else { return }
@@ -628,8 +628,9 @@ import Observation
         }
     }
 
-    private func makeConversation(workspace: Workspace? = nil) throws -> ChatStore {
-        let conversation = ChatStore(provider: provider, workspace: workspace, defaultAutoApproveTools: defaultAutoApproveTools)
+    private func makeConversation(workspace: Workspace? = nil, disabledTools: Set<String> = []) throws -> ChatStore {
+        let conversation = ChatStore(provider: provider, workspace: workspace,
+                                     defaultAutoApproveTools: defaultAutoApproveTools, disabledTools: disabledTools)
         conversation.installModels(models)
         conversation.selectedModel = defaultSessionModel?.id ?? defaultModel
         conversation.selectedEffort = effectiveDefaultEffort

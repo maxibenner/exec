@@ -311,11 +311,18 @@ fn text(value: &str, max: usize) -> ApiResult<()> {
     }
 }
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Create {
     model: Option<String>,
     workspace: String,
     settings: Option<SessionSettings>,
+    #[serde(default)]
+    disabled_tools: Vec<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct PatchSession {
+    disabled_tools: Vec<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -802,6 +809,7 @@ async fn handle(
                     create.model,
                     create.workspace,
                     create.settings,
+                    create.disabled_tools,
                 )
                 .await
                 .map_err(|error| match error {
@@ -910,6 +918,18 @@ async fn handle(
         .get(parts[0])
         .map_err(|_| ApiError(404, "Conversation not found."))?;
     match (method.as_str(), action) {
+        ("PATCH", None) => {
+            let patch: PatchSession = body(request).await?;
+            if host.stop.is_cancelled() {
+                return Err(ApiError(503, "Service is stopping."));
+            }
+            Ok(json_response(
+                200,
+                conversation
+                    .update_disabled_tools(patch.disabled_tools)
+                    .await?,
+            ))
+        }
         ("DELETE", None) => {
             if host.stop.is_cancelled() {
                 return Err(ApiError(503, "Service is stopping."));

@@ -31,6 +31,7 @@ async fn workspace_changes_survive_reload_and_freeze_only_at_first_acceptance() 
             Some("fake".into()),
             old.path().to_string_lossy().into_owned(),
             None,
+            vec![],
         )
         .await
         .unwrap();

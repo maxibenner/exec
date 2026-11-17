@@ -474,6 +474,7 @@ impl AgentManager {
                 .cloned()
                 .collect();
             options.settings = parent.configuration.settings.clone();
+            options.metadata.disabled_tools = parent.metadata.disabled_tools.clone();
             options.metadata.title = Some(title.clone());
             options.metadata.parent = Some(SessionParent {
                 session_id: context.conversation_id.clone(),
@@ -493,6 +494,7 @@ impl AgentManager {
         model: Option<String>,
         workspace: String,
         settings: Option<SessionSettings>,
+        disabled_tools: Vec<String>,
     ) -> Result<Arc<Conversation>> {
         let defaults = self.library_configuration()?;
         let model = model.or(defaults.default_model).ok_or(Error::Invalid(
@@ -507,6 +509,15 @@ impl AgentManager {
         let mut options = ConversationOptions::new(provider, model, workspace);
         options.tools = self.delegation_tools(options.provider.clone(), tools);
         options.settings = settings;
+        if disabled_tools.iter().any(|name| {
+            !options
+                .tools
+                .iter()
+                .any(|tool| tool.definition().name == *name)
+        }) {
+            return Err(Error::Invalid("Unknown disabled tool."));
+        }
+        options.metadata.disabled_tools = disabled_tools;
         self.create(options).await
     }
     pub async fn rename(&self, id: &str, title: String) -> Result<ConversationSnapshot> {
