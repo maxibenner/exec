@@ -90,7 +90,8 @@ private extension Optional {
             try expect(presentation.inputs.map(\.text) == ["Review Parser", "Review Tests", "Review Docs"])
             try expect(presentation.output == indices.map { child($0)["text"].string! }.joined(separator: "\n\n"))
             try expect(presentation.detail == nil && presentation.isRunning)
-            try expect(try card(row, state: state).isRunning && card(row, state: state).isExpanded)
+            // Partial answers must not open the card without a user choice.
+            try expect(try card(row, state: state).isRunning && !card(row, state: state).isExpanded)
         }
         let final = try fixture([0, 1, 2], outcome: "completed", active: false).decoded(AgentSnapshot.self)
         let rows = try final.transcript(images: [:], pendingIDs: &pendingIDs)
@@ -98,13 +99,25 @@ private extension Optional {
         // The parent model can still be running after the delegate has settled.
         try expect(final.operation?.active == true && rows.count == 3 && row.id == rowID)
         try expect(row.status == .complete && row.toolResult?.outcome == "completed")
-        try expect(try !card(row, state: state).isRunning && card(row, state: state).isExpanded)
+        try expect(try !card(row, state: state).isRunning && !card(row, state: state).isExpanded)
+
+        // A user's choice survives incremental results, completion and row remounts.
+        for expanded in [true, false] {
+            state.expanded[rowID] = expanded
+            for source in [try fixture([1]), try fixture([0, 1, 2], outcome: "completed", active: false)] {
+                let updated = try source.decoded(AgentSnapshot.self).transcript(images: [:], pendingIDs: &pendingIDs)
+                try expect(try card(updated.last!, state: state).isExpanded == expanded)
+            }
+        }
 
         // Reopening mid-delegation needs no locally synthesized pending ID.
         var reopenedIDs: [String: UUID] = [:]
         let reopened = try fixture([1]).decoded(AgentSnapshot.self).transcript(images: [:], pendingIDs: &reopenedIDs)
         let reopenedFinal = try final.transcript(images: [:], pendingIDs: &reopenedIDs)
         try expect(reopened.last?.id == AgentIntegrationTests.toolID && reopenedFinal.last?.id == reopened.last?.id)
+        let reopenedState = TranscriptState()
+        try expect(try !card(reopened.last!, state: reopenedState).isExpanded)
+        try expect(try !card(reopenedFinal.last!, state: reopenedState).isExpanded)
     }
 
     func preservesResultsThroughCleanupFailureAndDisclosureChanges() throws {
@@ -122,6 +135,7 @@ private extension Optional {
             try expect(row.toolResult?.text == child(1)["text"].string && row.text == row.toolResult?.text)
             try expect((row.status == .streaming) == active && snapshot.storageError == storageError)
             try expect(try card(row, state: state).isRunning == active)
+            try expect(try !card(row, state: TranscriptState()).isExpanded)
             for expanded in [false, true] {
                 state.expanded[row.id] = expanded
                 try expect(try card(row, state: state).isExpanded == expanded)

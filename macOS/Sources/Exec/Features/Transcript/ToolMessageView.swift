@@ -27,10 +27,9 @@ struct ToolMessageView: View {
         _expanded = State(initialValue: state.expanded[messageID])
     }
 
-    // Reveal saved child answers in the existing body as they arrive, but never
-    // override the reader's explicit disclosure choice on subsequent updates.
+    // Only edits and generated images open by default; other results wait for a click.
     var isExpanded: Bool {
-        expanded ?? (result?.edit != nil || result?.generatedImage != nil || (call.name == "delegate" && result != nil))
+        expanded ?? (result?.edit != nil || result?.generatedImage != nil)
     }
 
     var body: some View {
@@ -64,6 +63,11 @@ struct ToolMessageView: View {
                     }
                     if let search = result?.webSearch {
                         WebSearchView(result: search)
+                    } else if call.name == "delegate", result != nil {
+                        ToolSection(title: presentation.outputTitle) {
+                            MarkdownView(source: presentation.output.isEmpty ? "No output" : presentation.output,
+                                         cache: state.markdown)
+                        }
                     } else if result != nil {
                         ToolTextSection(title: presentation.outputTitle, text: presentation.output, emptyText: "No output")
                             // Match the inner code inset used by edit diffs.

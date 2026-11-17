@@ -1,4 +1,5 @@
-import Foundation
+import AppKit
+import SwiftUI
 
 @MainActor struct DelegationTests {
     func childNavigationPreservesApprovalAndDoesNotReplayWork() async throws {
@@ -168,5 +169,55 @@ import Foundation
         try expect(titledBatchPresentation.title == "Sub-agents")
         try expect(titledBatchPresentation.summary == "Parser · Tests")
         try expect(titledBatchPresentation.inputs == batchPresentation.inputs)
+        try expandedOutputUsesMarkdown()
+    }
+
+    private func expandedOutputUsesMarkdown() throws {
+        _ = NSApplication.shared
+        let call = ToolCall(id: "markdown-delegate", name: "delegate", arguments: #"{"task":"Review **literal task**"}"#)
+        let source = """
+        ## Findings
+
+        - **Cancellation** is covered.
+        - See [the report](https://example.com/report).
+
+        ```swift
+        let done = true
+        ```
+        """
+        func textViews(in view: NSView) -> [LinkedText.TextView] {
+            if let text = view as? LinkedText.TextView { return [text] }
+            return view.subviews.flatMap { textViews(in: $0) }
+        }
+        for outcome in ["running", "completed", "failed", "interrupted"] {
+            var result = ToolResult(call: call, text: source)
+            result.outcome = outcome
+            let state = TranscriptState()
+            let messageID = UUID()
+            state.expanded[messageID] = true
+            let host = NSHostingView(rootView: ToolMessageView(
+                call: call, result: result, isAwaitingApproval: false,
+                state: state, messageID: messageID
+            ).frame(width: 500))
+            host.frame.size = host.fittingSize
+            host.layoutSubtreeIfNeeded()
+            let views = textViews(in: host)
+            // Inputs stay literal; only the child answer uses the shared Markdown renderer.
+            try expect(views.count == 2)
+            try expect(views.contains { $0.string == "Review **literal task**" })
+            guard let output = views.first(where: { $0.string.contains("Findings") }) else {
+                throw CheckFailure(description: "Missing expanded sub-agent output")
+            }
+            try expect(output.isSelectable && !output.isEditable)
+            let text = output.attributedString()
+            let plain = text.string as NSString
+            try expect(text.string == MarkdownText.render(MarkdownDocument.parse(source)).string)
+            let bold = text.attribute(.font, at: plain.range(of: "Cancellation").location, effectiveRange: nil) as! NSFont
+            try expect(NSFontManager.shared.traits(of: bold).contains(.boldFontMask))
+            try expect(text.attribute(.link, at: plain.range(of: "the report").location, effectiveRange: nil) as? URL
+                       == URL(string: "https://example.com/report"))
+            try expect(text.attribute(MarkdownText.codeSnippet, at: plain.range(of: "let done").location, effectiveRange: nil) as? String
+                       == "let done = true\n")
+        }
     }
 }
