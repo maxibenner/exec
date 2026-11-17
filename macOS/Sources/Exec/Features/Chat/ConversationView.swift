@@ -49,6 +49,14 @@ struct ConversationView: View {
         .background(WindowReference { panel.window = $0 })
         .background(ChatWindowTitle(title: panel.title))
         .navigationTitle(panel.title)
+        .toolbar {
+            if panel.hasConversation && !panel.current.isSubagent {
+                ToolbarItem(placement: .primaryAction) {
+                    SessionToolMenu(conversation: panel.current)
+                        .disabled(!panel.canNavigate)
+                }
+            }
+        }
         .task(id: panel.shouldChooseInitialWorkspace) {
             // Wait for the owning window and leave the SwiftUI update before
             // presenting a native sheet. A remount must not reopen a cancelled picker.

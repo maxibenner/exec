@@ -16,12 +16,26 @@ pub struct SessionParent {
 pub struct SessionMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<SessionParent>,
+    /// Empty means every available tool is enabled. Retain names across tool availability changes.
+    #[serde(default)]
+    pub disabled_tools: Vec<String>,
     pub title: Option<String>,
     pub manually_named: bool,
     pub activity_at: u64,
 }
 impl SessionMetadata {
     pub fn validate(&self) -> Result<()> {
+        let mut names = std::collections::HashSet::new();
+        if self.disabled_tools.len() > 256
+            || self.disabled_tools.iter().any(|name| {
+                name.is_empty()
+                    || name.len() > 128
+                    || name.chars().any(|c| c.is_control() || c.is_whitespace())
+                    || !names.insert(name)
+            })
+        {
+            return Err(Error::Invalid("Invalid disabled tools."));
+        }
         if self.parent.as_ref().is_some_and(|parent| {
             !valid_id(&parent.session_id)
                 || !valid_id(&parent.operation_id)
@@ -39,6 +53,9 @@ impl SessionMetadata {
             ));
         }
         Ok(())
+    }
+    pub fn tool_enabled(&self, name: &str) -> bool {
+        !self.disabled_tools.iter().any(|disabled| disabled == name)
     }
     pub fn activity() -> u64 {
         std::time::SystemTime::now()

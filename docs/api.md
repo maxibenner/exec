@@ -137,7 +137,8 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | PUT | `/v1/library` | `{defaultModel,settings,order}` → saved configuration |
 | GET | `/v1/models` | Neutral model array: `id`, `name`, optional `contextWindow`, `maxOutputTokens` |
 | GET | `/v1/conversations` | Summary array, omitting `messages` and `approval` |
-| POST | `/v1/conversations` | `{model,workspace,settings?}` → `201 ConversationSnapshot`, after durable creation |
+| POST | `/v1/conversations` | `{model,workspace,settings?,disabledTools?:[string]}` → `201 ConversationSnapshot`, after durable creation |
+| PATCH | `/v1/conversations/:id` | `{disabledTools:[string]}` → `200 ConversationSnapshot`, after durable idle-only replacement |
 | PUT | `/v1/conversations/:id/settings` | `{systemPrompt,autoApprove}` → `200 ConversationSnapshot`, after durable idle-only replacement |
 | GET | `/v1/conversations/:id` | `ConversationSnapshot` |
 | PUT | `/v1/conversations/:id/title` | `{title}` → saved idle snapshot |
@@ -189,6 +190,44 @@ snapshots on failed acknowledgements. A disconnected caller does not abort a set
 The API has no client authentication; prompts/project instructions are exposed to reachable HTTP
 clients and the selected provider. Auto mode does not sandbox tools or enable any future
 desktop capture capability/OS permission.
+
+## Per-session tool selection
+
+Snapshots and catalog metadata include `metadata.disabledTools:[string]`, defaulting to
+`[]`. Older saved sessions and clients' snapshots may omit the field; absence means no
+tools are disabled. This is session policy, not a shared library default or approval mode.
+
+- Creation accepts optional top-level `disabledTools`; omission or `[]` enables every
+  otherwise available tool. The selection is persisted with the new conversation.
+- `PATCH /v1/conversations/:id` requires `{disabledTools:[string]}` and replaces the whole
+  set, rather than adding/removing individual names. Send `[]` to re-enable all tools.
+  Success returns the saved snapshot. Updates are idle-only; active operations or a
+  blocked storage state return 409. Unknown names and duplicate entries return 400.
+- Disabled tools are excluded from model tool definitions and rejected before preparation
+  or execution if called anyway. Re-enabling affects subsequent work; it does not replay
+  denied, interrupted or failed calls. An uncertain write must not be retried automatically.
+- Sub-agents inherit their parent's selection and cannot change it (PATCH returns 400).
+  Forks copy the selection but can change it independently. Both survive save/reload.
+  In the macOS app, a new conversation copies the current conversation's selection;
+  later edits do not change either session's siblings or parent.
+
+The bundled app's ten tool names are `list_files`, `read_file`, `search_text`, `edit_file`,
+`shell`, `web_search`, `fetch_content`, `generate_image`, `take_screenshot`, and `delegate`.
+Names are exact and case-sensitive; a custom backend accepts only its registered tools.
+Enabling a tool does not install it, connect a provider, bypass approval, or grant screen
+access. Screenshot use still requires a bound native adapter and OS permission. Tool
+selection is not an OS sandbox: for example, leaving `shell` enabled still permits approved
+shell file operations even if `edit_file` is disabled.
+
+### Quick guide
+
+Choose tools while the session is idle, before sending the next message. To keep browsing
+available but disable shell commands and direct edits, create with
+`{"model":"deepseek/test","workspace":"/absolute/workspace","disabledTools":["shell","edit_file"]}`
+(using an available model and existing workspace). Later PATCH that conversation with
+`{"disabledTools":["edit_file"]}` to restore shell, or `{"disabledTools":[]}` to restore all
+tools. Read `metadata.disabledTools` from the returned snapshot to display the saved choice.
+Auto/manual approval remains a separate setting.
 
 ## Approval without a connected client
 
