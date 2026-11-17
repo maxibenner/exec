@@ -81,8 +81,9 @@ struct SessionSidebar: View {
                             }
                         }
                         .font(.caption2).foregroundStyle(.secondary)
+                        // Keep status symbols from changing the child row's height.
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 3)
+                        .frame(height: 22, alignment: .center)
                         .padding(.horizontal, horizontalPadding)
                         .contentShape(Rectangle())
                         .background(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear,
