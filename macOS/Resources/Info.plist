@@ -2,20 +2,35 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleExecutable</key><string>Exec</string>
-    <key>CFBundleIdentifier</key><string>local.swift-harness</string>
-    <key>CFBundleName</key><string>Exec</string>
-    <key>CFBundleIconFile</key><string>Glass_Icon</string>
-    <key>CFBundleIconName</key><string>Glass_Icon</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.8</string>
-    <key>CFBundleVersion</key><string>11</string>
-    <key>SUFeedURL</key><string>https://maxibenner.github.io/exec/appcast.xml</string>
-    <key>SUPublicEDKey</key><string>2BVvY5oGpDWary0HgMaMNArY/pYJ1+2DeVAksydZp3A=</string>
-    <key>SUEnableAutomaticChecks</key><false/>
-    <key>SUAllowsAutomaticUpdates</key><false/>
-    <key>LSMinimumSystemVersion</key><string>14.0</string>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>NSPrincipalClass</key><string>NSApplication</string>
+	<key>CFBundleExecutable</key>
+	<string>Exec</string>
+	<key>CFBundleIconFile</key>
+	<string>Glass_Icon</string>
+	<key>CFBundleIconName</key>
+	<string>Glass_Icon</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.swift-harness</string>
+	<key>CFBundleName</key>
+	<string>Exec</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.9</string>
+	<key>CFBundleVersion</key>
+	<string>12</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
+	<key>SUEnableAutomaticChecks</key>
+	<false/>
+	<key>SUFeedURL</key>
+	<string>https://maxibenner.github.io/exec/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>2BVvY5oGpDWary0HgMaMNArY/pYJ1+2DeVAksydZp3A=</string>
 </dict>
 </plist>

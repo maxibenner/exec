@@ -1,0 +1,6 @@
+- Added subagent tool
+- Added a wait tool
+- Added support for various file attachements
+- Added per session tool controlls
+- Added a /clear command to clear the current session's context and transcript
+- Various UI updates like a liquid glass composer and grouped tool-calls
