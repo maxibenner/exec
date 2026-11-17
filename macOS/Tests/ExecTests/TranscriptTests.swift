@@ -250,7 +250,7 @@ import SwiftUI
         guard text.selectedRange() == selection && state.layout.heights.last! > narrowHeight else {
             throw CheckFailure(description: "Streaming selection=\(text.selectedRange()), height=\(state.layout.heights.last!), previous=\(narrowHeight), measurements=\(view.rowMeasurementCount)")
         }
-        // Content/layout are immediate, but follow-down now takes 480 ms.
+        // Content/layout are immediate; follow-down eases toward the final bottom.
         // Bound the wait rather than relying on the short layout-settling helper.
         for _ in 0..<40 {
             if abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 1 { break }

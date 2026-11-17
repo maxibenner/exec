@@ -69,7 +69,17 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var readingAnchor: (id: UUID, position: LinkedText.TextView.ReadingPosition)?
     private static let navigationPadding: CGFloat = 20
     private var requestedScroll = false
-    private var scrollAnimation: (origin: CGFloat, started: TimeInterval, duration: TimeInterval, followsBottom: Bool, lastSample: TimeInterval)?
+    private enum ScrollAnimation {
+        case sent(origin: CGFloat, started: TimeInterval)
+        case follow(StreamFollowSpring)
+
+        var followsBottom: Bool {
+            if case .follow = self { return true }
+            return false
+        }
+    }
+    private var scrollAnimation: ScrollAnimation?
+    var isAnimatingScroll: Bool { scrollAnimation != nil }
     private var scrollAnimationTask: Task<Void, Never>?
     private var pendingContentFollow = false
     private var bottomInset: CGFloat = 0
@@ -270,18 +280,23 @@ private struct VirtualTranscript: NSViewRepresentable {
         // Initial mounting/reopening and offscreen geometry remain immediate.
         guard initialized, window != nil,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
-        scrollAnimation = (contentView.bounds.minY, ProcessInfo.processInfo.systemUptime,
-                           followsBottom ? 0.48 : 0.2, followsBottom, ProcessInfo.processInfo.systemUptime)
+        let now = ProcessInfo.processInfo.systemUptime
+        scrollAnimation = followsBottom ? .follow(StreamFollowSpring(position: contentView.bounds.minY, now: now)) :
+            .sent(origin: contentView.bounds.minY, started: now)
         scrollAnimationTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .milliseconds(16)) }
                 catch { return }
-                guard let self, let scroll = self.scrollAnimation else { return }
-                let finished = ProcessInfo.processInfo.systemUptime - scroll.started >= scroll.duration
+                guard let self, self.scrollAnimation != nil else { return }
+                guard !self.detached, self.window != nil,
+                      self.contentSize.width > 0, self.contentSize.height > 0 else {
+                    self.cancelScrollAnimation()
+                    return
+                }
                 // Use the normal virtualization/measurement pass at every frame;
                 // all our bounds changes stay under `updating`, not manual scrolls.
                 self.refresh()
-                if finished { self.cancelScrollAnimation(); return }
+                if self.scrollAnimation == nil { return }
             }
         }
     }
@@ -329,7 +344,10 @@ private struct VirtualTranscript: NSViewRepresentable {
         // changes until the clip view returns in bounds, unless explicitly jumping.
         let bounds = contentView.bounds
         if initialized, size == lastSize, topInset == renderedTopInset, !requestedScroll,
-           bounds.minY < 0 || bounds.maxY > content.bounds.height { return }
+           bounds.minY < 0 || bounds.maxY > content.bounds.height {
+            cancelScrollAnimation()
+            return
+        }
         updating = true
         refreshNeeded = false
         defer { updating = false }
@@ -459,29 +477,30 @@ private struct VirtualTranscript: NSViewRepresentable {
         let maximum = max(0, content.bounds.height - contentView.bounds.height)
         let y = pinBottom ? maximum : anchor.flatMap { state.layout.position(of: $0) } ?? contentView.bounds.minY
         var target = min(maximum, max(0, y))
-        // Coalesce streaming growth into a bounded window. New chunks update the
-        // destination, never the start time, so a busy stream cannot keep us behind.
+        // New chunks move the spring's target without resetting its momentum.
         // Do not animate initial restoration, resizing, or explicit bottom jumps.
         if scrollAnimation == nil, animateBottom, pinBottom,
            state.sentMessageID == nil, target > contentView.bounds.minY + 1 {
             beginScrollAnimation(followsBottom: true)
         }
-        if var scroll = scrollAnimation {
+        if let scroll = scrollAnimation {
             let now = ProcessInfo.processInfo.systemUptime
             if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 cancelScrollAnimation()
-            } else if scroll.followsBottom {
-                // Apply only this frame's share of the remaining distance from
-                // the displayed position. Retargeting cannot move an already
-                // elapsed portion of the curve or extend the original deadline.
-                target = StreamFollowInterpolation.position(current: contentView.bounds.minY,
-                    target: target, previous: scroll.lastSample, now: now,
-                    deadline: scroll.started + scroll.duration)
-                scroll.lastSample = now
-                scrollAnimation = scroll
-            } else if target > scroll.origin {
-                let progress = min(1, max(0, (now - scroll.started) / scroll.duration))
-                target = scroll.origin + (target - scroll.origin) * (1 - pow(1 - progress, 3))
+            } else {
+                switch scroll {
+                case .follow(var spring):
+                    spring.retarget(to: target, at: now)
+                    target = spring.position
+                    if spring.isSettled { cancelScrollAnimation() }
+                    else { scrollAnimation = .follow(spring) }
+                case .sent(let origin, let started):
+                    let progress = min(1, max(0, (now - started) / 0.2))
+                    if target > origin {
+                        target = origin + (target - origin) * (1 - pow(1 - progress, 3))
+                    }
+                    if progress == 1 { cancelScrollAnimation() }
+                }
             }
         }
         let origin = NSPoint(x: 0, y: target)
@@ -637,17 +656,5 @@ private struct MessageView: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityLabel("Assistant reply")
         }
-    }
-}
-
-// Incremental cubic ease-out with a fixed deadline, independent of update rate.
-enum StreamFollowInterpolation {
-    static func position(current: CGFloat, target: CGFloat, previous: TimeInterval,
-                         now: TimeInterval, deadline: TimeInterval) -> CGFloat {
-        guard now < deadline else { return target }
-        let remaining = max(0, deadline - previous)
-        guard remaining > 0 else { return target }
-        let fraction = 1 - pow(min(1, max(0, (deadline - now) / remaining)), 3)
-        return current + (target - current) * fraction
     }
 }

@@ -1,30 +1,141 @@
 import AppKit
 
 @MainActor struct TranscriptScrollTests {
-    func followInterpolationRetargetsWithoutRestarting() throws {
-        let deadline = 0.48
-        let first = StreamFollowInterpolation.position(current: 0, target: 100,
-            previous: 0, now: 0.24, deadline: deadline)
-        try expect(abs(first - 87.5) < 0.001)
-        // An overlapping destination does not retroactively move the viewport.
-        let overlap = StreamFollowInterpolation.position(current: first, target: 200,
-            previous: 0.24, now: 0.24, deadline: deadline)
-        try expect(overlap == first)
-        var position = overlap
-        var previous = 0.24
-        for step in 25...47 {
+    func springPreservesMomentumAcrossContinuousTargets() throws {
+        var spring = StreamFollowSpring(position: 0, now: 0)
+        spring.retarget(to: 100, at: 0)
+        spring.advance(to: 0.24)
+        let position = spring.position, velocity = spring.velocity
+        try expect(position > 0 && position < 100 && velocity > 0)
+        spring.retarget(to: 200, at: 0.24)
+        try expect(spring.position == position && spring.velocity == velocity)
+        // Simulate a long stream, crossing many of the former 480 ms deadlines.
+        for step in 25...240 {
             let now = Double(step) / 100
-            let next = StreamFollowInterpolation.position(current: position, target: 200,
-                previous: previous, now: now, deadline: deadline)
-            try expect(next >= position && next < 200)
-            position = next
-            previous = now
+            let previous = spring.position
+            spring.advance(to: now)
+            let sampledPosition = spring.position, sampledVelocity = spring.velocity
+            spring.retarget(to: CGFloat(step * 8), at: now)
+            try expect(spring.position == sampledPosition && spring.velocity == sampledVelocity)
+            try expect(spring.position >= previous && spring.position < CGFloat(step * 8))
         }
-        try expect(StreamFollowInterpolation.position(current: position, target: 300,
-            previous: previous, now: deadline, deadline: deadline) == 300)
-        let direct = StreamFollowInterpolation.position(current: first, target: 200,
-            previous: 0.24, now: 0.47, deadline: deadline)
-        try expect(abs(direct - position) < 0.001)
+        for step in 241...440 { spring.advance(to: Double(step) / 100) }
+        try expect(spring.isSettled && spring.position == 1920 && spring.velocity == 0)
+    }
+
+    func springIsIndependentOfTickCadence() throws {
+        func sample(steps: [Double]) -> StreamFollowSpring {
+            var spring = StreamFollowSpring(position: 0, now: 0)
+            spring.retarget(to: 100, at: 0)
+            var start = 0.0
+            for (end, target) in [(0.13, 250.0), (0.49, 600.0), (0.77, 1000.0)] {
+                for fraction in steps { spring.advance(to: start + (end - start) * fraction) }
+                spring.retarget(to: target, at: end)
+                start = end
+            }
+            spring.advance(to: 0.9)
+            return spring
+        }
+        let direct = sample(steps: [])
+        for steps in [(1...12).map { Double($0) / 12 },
+                      (1...48).map { Double($0) / 48 }, [0.01, 0.07, 0.65, 0.99]] {
+            let sampled = sample(steps: steps)
+            try expect(abs(sampled.position - direct.position) < 0.000001)
+            try expect(abs(sampled.velocity - direct.velocity) < 0.000001)
+        }
+    }
+
+    func springSettlesWithoutOvershootOrRunaway() throws {
+        var spring = StreamFollowSpring(position: 0, now: 0)
+        spring.retarget(to: 1000, at: 0)
+        spring.advance(to: 0.48)
+        try expect(spring.position > 990 && spring.position < 1000)
+        // A closer measured bottom must not allow retained velocity to overshoot.
+        spring.retarget(to: spring.position + 0.01, at: 0.48)
+        let target = spring.position + 0.01
+        spring.advance(to: 0.5)
+        try expect(spring.isSettled && spring.position == target)
+        spring.retarget(to: 500, at: 0.5)
+        try expect(spring.isSettled && spring.position == 500)
+        spring.retarget(to: 2000, at: 0.5)
+        spring.advance(to: 60) // Delayed/suspended frames use elapsed time, not tick count.
+        try expect(spring.isSettled && spring.position == 2000)
+        spring.advance(to: 60)
+        try expect(spring.position == 2000 && spring.velocity == 0)
+    }
+
+    func followSpringCancelsAndSettlesInNativeView() async throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        window.contentView = view
+        defer { view.detach(); window.contentView = nil }
+        var messages = [Message(role: .assistant, text: String(repeating: "Answer paragraph.\n\n", count: 30),
+                                status: .streaming)]
+        func update() {
+            view.update(messages: messages, jumpRequest: state.jumpRequest)
+            view.layoutSubtreeIfNeeded()
+            view.refresh()
+        }
+        func grow() {
+            messages[0].text += String(repeating: "More answer.\n\n", count: 10)
+            update()
+        }
+        update()
+        grow()
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            try expect(!view.isAnimatingScroll)
+            try expect(view.contentView.bounds.maxY == view.documentView!.bounds.height)
+            return
+        }
+        try expect(view.isAnimatingScroll)
+        try await Task.sleep(for: .milliseconds(60))
+        // Native keyboard/scrollbar offset changes cancel even near the bottom.
+        view.contentView.scroll(to: NSPoint(x: 0, y: view.contentView.bounds.minY - 2))
+        try expect(!view.isAnimatingScroll && !state.followsLatest)
+        let readingY = view.contentView.bounds.minY
+        grow()
+        try await Task.sleep(for: .milliseconds(60))
+        try expect(view.contentView.bounds.minY == readingY && !view.isAnimatingScroll)
+
+        state.jumpToLatest()
+        update()
+        grow()
+        messages[0].status = .complete
+        update()
+        for _ in 0..<100 {
+            if !view.isAnimatingScroll { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard !view.isAnimatingScroll && state.followsLatest else {
+            throw CheckFailure(description: "Follow settle: animating=\(view.isAnimatingScroll), follows=\(state.followsLatest), gap=\(view.documentView!.bounds.height - view.contentView.bounds.maxY)")
+        }
+        try expect(view.contentView.bounds.maxY == view.documentView!.bounds.height)
+        grow()
+        try expect(view.isAnimatingScroll)
+        window.contentView = nil
+        try expect(!view.isAnimatingScroll)
+        window.contentView = view
+        // Wheel delivery can leave AppKit's own smooth-scroll animator active.
+        // Exercise it last, not while waiting for an unrelated follow to settle.
+        state.jumpToLatest()
+        update()
+        grow()
+        try expect(view.isAnimatingScroll)
+        // Pass a real local event to AppKit (do not post it to the system).
+        let wheel = NSEvent(cgEvent: CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                            wheelCount: 1, wheel1: 1, wheel2: 0, wheel3: 0)!)!
+        view.scrollWheel(with: wheel)
+        try expect(!view.isAnimatingScroll && !state.followsLatest)
+
+        state.jumpToLatest()
+        update()
+        grow()
+        try expect(view.isAnimatingScroll)
+        view.detach()
+        try expect(!view.isAnimatingScroll)
     }
 
     func headerUnderlapPreservesGeometryAndAnchors() throws {
