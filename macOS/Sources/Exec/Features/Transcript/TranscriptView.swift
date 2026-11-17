@@ -319,8 +319,12 @@ private struct VirtualTranscript: NSViewRepresentable {
                     content.addSubview(row)
                     row.didInvalidateSize = { [weak self] in self?.scheduleRefresh() }
                 }
-                if row.rootView.message != message || row.rootView.width != width {
-                    row.rootView = TranscriptRow(message: message, state: state, width: width)
+                let roundsTop = !message.isToolCard || index == 0 || !messages[index - 1].isToolCard
+                let roundsBottom = !message.isToolCard || index + 1 == messages.count || !messages[index + 1].isToolCard
+                if row.rootView.message != message || row.rootView.width != width ||
+                    row.rootView.roundsTop != roundsTop || row.rootView.roundsBottom != roundsBottom {
+                    row.rootView = TranscriptRow(message: message, state: state, width: width,
+                                                 roundsTop: roundsTop, roundsBottom: roundsBottom)
                 }
                 if let height = row.measureHeightIfNeeded() {
                     rowMeasurementCount += 1
@@ -383,10 +387,12 @@ private struct TranscriptRow: View {
     let message: Message?
     let state: TranscriptState
     let width: CGFloat
+    var roundsTop = true
+    var roundsBottom = true
     var heightDidChange: ((CGFloat) -> Void)?
     var body: some View {
         Group {
-            if let message { MessageView(message: message, state: state).equatable().id(message.id) }
+            if let message { MessageView(message: message, state: state, roundsTop: roundsTop, roundsBottom: roundsBottom).equatable().id(message.id) }
         }
         .frame(width: width, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
@@ -473,11 +479,15 @@ private struct MessageView: View, Equatable {
     let message: Message
     let state: TranscriptState
 
+    var roundsTop = true
+    var roundsBottom = true
+
     // Width belongs to the row's layout, not its content. Reflow existing views
     // without rebuilding attributed text, tool presentations or decoded images.
     // Descendant SwiftUI state/environment updates still invalidate normally.
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.message == rhs.message && lhs.state === rhs.state
+        lhs.message == rhs.message && lhs.state === rhs.state &&
+            lhs.roundsTop == rhs.roundsTop && lhs.roundsBottom == rhs.roundsBottom
     }
 
     var body: some View {
@@ -487,7 +497,7 @@ private struct MessageView: View, Equatable {
             ToolMessageView(call: call, result: message.toolResult,
                             isAwaitingApproval: message.pendingTool?.isAwaitingApproval == true,
                             isActive: message.status == .streaming,
-                            state: state, messageID: message.id)
+                            state: state, messageID: message.id, roundsTop: roundsTop, roundsBottom: roundsBottom)
         } else if message.role == .user {
             HStack {
                 Spacer(minLength: 40)

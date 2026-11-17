@@ -13,17 +13,21 @@ struct ToolMessageView: View {
     let isRunning: Bool
     let state: TranscriptState
     let messageID: UUID
+    let roundsTop: Bool
+    let roundsBottom: Bool
     @AppStorage(ToolDisplayPreferences.descriptiveShellTitlesKey) private var descriptiveShellTitles = false
     @State private var expanded: Bool?
 
     init(call: ToolCall, result: ToolResult?, isAwaitingApproval: Bool, isActive: Bool = false,
-         state: TranscriptState, messageID: UUID) {
+         state: TranscriptState, messageID: UUID, roundsTop: Bool = true, roundsBottom: Bool = true) {
         self.call = call
         self.result = result
         self.isAwaitingApproval = isAwaitingApproval
         isRunning = isActive || result?.outcome == "running" || (result == nil && !isAwaitingApproval)
         self.state = state
         self.messageID = messageID
+        self.roundsTop = roundsTop
+        self.roundsBottom = roundsBottom
         _expanded = State(initialValue: state.expanded[messageID])
     }
 
@@ -46,7 +50,7 @@ struct ToolMessageView: View {
             state.followsLatest = false
             state.expanded[messageID] = value
             expanded = value
-        }), isRunning: isRunning) {
+        }), isRunning: isRunning, roundsTop: roundsTop, roundsBottom: roundsBottom) {
             VStack(alignment: .leading, spacing: 12) {
                 if let generated = result?.generatedImage {
                     GeneratedImageView(attachment: generated)
