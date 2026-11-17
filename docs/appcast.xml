@@ -6,6 +6,23 @@
         <description>Stable updates for Exec on macOS.</description>
         <language>en</language>
         <item>
+            <title>0.1.9</title>
+            <pubDate>Tue, 17 Nov 2026 14:02:06 -0500</pubDate>
+            <link>https://github.com/maxibenner/exec</link>
+            <sparkle:version>12</sparkle:version>
+            <sparkle:shortVersionString>0.1.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[- Added subagent tool
+- Added a wait tool
+- Added support for various file attachements
+- Added per session tool controlls
+- Added a /clear command to clear the current session's context and transcript
+- Various UI updates like a liquid glass composer and grouped tool-calls
+]]></description>
+            <enclosure url="https://github.com/maxibenner/exec/releases/download/v0.1.9/Exec-0.1.9-macOS-arm64.zip" length="12118294" type="application/octet-stream" sparkle:edSignature="nFfzFRtnrbx4y9LQtvI+xw0ykN7fdyoHcsZFT2uXDXTLMJ6glf+yPJ67Ht3MOpjeJY8VBGPJTME1a3azjQwlBQ=="/>
+        </item>
+        <item>
             <title>0.1.8</title>
             <pubDate>Mon, 16 Nov 2026 11:15:38 -0500</pubDate>
             <link>https://github.com/maxibenner/exec</link>
