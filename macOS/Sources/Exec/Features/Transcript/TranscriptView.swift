@@ -68,6 +68,8 @@ private struct VirtualTranscript: NSViewRepresentable {
     private var readingAnchor: (id: UUID, position: LinkedText.TextView.ReadingPosition)?
     private static let navigationPadding: CGFloat = 20
     private var requestedScroll = false
+    private var scrollAnimation: (origin: CGFloat, started: TimeInterval, duration: TimeInterval, followsBottom: Bool)?
+    private var scrollAnimationTask: Task<Void, Never>?
     private var pendingContentFollow = false
     private var bottomInset: CGFloat = 0
     private var renderedBottomInset: CGFloat = 0
@@ -115,6 +117,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         // response chunk may arrive in the same SwiftUI update as the send.
         if hasReceivedMessages, let sent = filtered.last(where: { $0.role == .user }),
            !self.messages.contains(where: { $0.id == sent.id }) {
+            beginScrollAnimation(followsBottom: false)
             state.sentMessageID = sent.id
             state.followsLatest = false
             navigationAnchor = TranscriptLayout.Anchor(id: sent.id, offset: -Self.navigationPadding)
@@ -131,6 +134,7 @@ private struct VirtualTranscript: NSViewRepresentable {
             self.messages = filtered
         }
         if jumpRequest != self.jumpRequest {
+            cancelScrollAnimation()
             state.sentMessageID = nil
             state.followsLatest = true
             self.jumpRequest = jumpRequest
@@ -151,6 +155,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if window == nil { cancelScrollAnimation() }
         selectionClearing?.stop()
         selectionClearing = nil
         if window != nil, !detached {
@@ -162,6 +167,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     /// for repeated commands. Native clip-view scrolling is intentionally immediate.
     func navigateSentMessage(_ direction: MessageNavigationDirection) {
         guard !detached, !updating, contentSize.width > 0, contentSize.height > 0 else { return }
+        cancelScrollAnimation()
         // Settle even during rubber-banding so message indices and geometry agree.
         requestedScroll = true
         refresh()
@@ -192,6 +198,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
 
     func detach() {
+        cancelScrollAnimation()
         detached = true
         if state.scrollView === self { state.scrollView = nil }
         selectionClearing?.stop()
@@ -204,6 +211,8 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
     @objc private func scrolled() {
         guard !updating else { return }
+        let wasFollowingAnimation = scrollAnimation?.followsBottom == true
+        cancelScrollAnimation()
         // Our own geometry corrections run under `updating`. Other offset changes
         // include keyboard, wheel and scrollbar navigation; resizing isn't a scroll.
         if initialized, contentSize == lastSize {
@@ -218,14 +227,60 @@ private struct VirtualTranscript: NSViewRepresentable {
             // the bottom. Streaming/measurement corrections run under `updating`,
             // and merely filling the reserved space leaves the reader in place.
             // Preserve the usual near-bottom tolerance after following resumes.
-            let nearBottom = state.sentMessageID == nil ? distanceFromBottom <= 40 :
-                scrolledDown && distanceFromBottom < 1
+            let interruptedUpward = wasFollowingAnimation && position < previousPosition
+            let nearBottom = !interruptedUpward && (state.sentMessageID == nil ? distanceFromBottom <= 40 :
+                scrolledDown && distanceFromBottom < 1)
             if nearBottom { state.sentMessageID = nil }
             if state.followsLatest != nearBottom { state.followsLatest = nearBottom }
         }
         rememberAnchor()
         scheduleRefresh()
     }
+    override func scrollWheel(with event: NSEvent) {
+        // Stop before AppKit moves the clip view, including at a scroll boundary.
+        if scrollAnimation != nil {
+            cancelScrollAnimation()
+            navigationAnchor = nil
+            readingAnchor = nil
+        }
+        super.scrollWheel(with: event)
+        if event.scrollingDeltaY > 0 {
+            // Upward intent opts out even inside the usual near-bottom tolerance.
+            state.followsLatest = false
+            pendingContentFollow = false
+            navigationAnchor = nil
+            readingAnchor = nil
+            rememberAnchor()
+        }
+    }
+
+    private func cancelScrollAnimation() {
+        scrollAnimationTask?.cancel()
+        scrollAnimationTask = nil
+        scrollAnimation = nil
+    }
+
+    private func beginScrollAnimation(followsBottom: Bool) {
+        cancelScrollAnimation()
+        // Initial mounting/reopening and offscreen geometry remain immediate.
+        guard initialized, window != nil,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        scrollAnimation = (contentView.bounds.minY, ProcessInfo.processInfo.systemUptime,
+                           followsBottom ? 0.12 : 0.2, followsBottom)
+        scrollAnimationTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(16)) }
+                catch { return }
+                guard let self, let scroll = self.scrollAnimation else { return }
+                let finished = ProcessInfo.processInfo.systemUptime - scroll.started >= scroll.duration
+                // Use the normal virtualization/measurement pass at every frame;
+                // all our bounds changes stay under `updating`, not manual scrolls.
+                self.refresh()
+                if finished { self.cancelScrollAnimation(); return }
+            }
+        }
+    }
+
     private func rememberAnchor() {
         guard initialized else { return }
         state.anchor = state.layout.anchor(at: contentView.bounds.minY)
@@ -251,6 +306,11 @@ private struct VirtualTranscript: NSViewRepresentable {
     func refresh() {
         guard !updating, !detached, contentSize.width > 0, contentSize.height > 0 else { return }
         let size = contentSize
+        if scrollAnimation != nil, size != lastSize || topInset != renderedTopInset ||
+            bottomInset != renderedBottomInset || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            cancelScrollAnimation()
+            requestedScroll = true
+        }
         // Match overlays to the actual viewport, not an assumed scrollbar style.
         // Publish outside the representable update/layout pass to avoid mutating
         // SwiftUI state while it is rendering. Read current geometry when delivered.
@@ -278,7 +338,8 @@ private struct VirtualTranscript: NSViewRepresentable {
         let oldHeight = state.layout.totalHeight
         let needsRestore = !initialized || requestedScroll || size != lastSize ||
             bottomInset != renderedBottomInset || topInset != renderedTopInset
-        let pinBottom = state.followsLatest && (needsRestore || pendingContentFollow || abs(content.bounds.height - bounds.maxY) < 1)
+        let pinBottom = state.followsLatest && (needsRestore || pendingContentFollow ||
+            scrollAnimation?.followsBottom == true || abs(content.bounds.height - bounds.maxY) < 1)
         pendingContentFollow = false
         renderedBottomInset = bottomInset
         renderedTopInset = topInset
@@ -290,7 +351,9 @@ private struct VirtualTranscript: NSViewRepresentable {
         }
         lastSize = size
         setDocumentSize()
-        if needsRestore || oldHeight != state.layout.totalHeight { restore(anchor, pinBottom: pinBottom) }
+        if needsRestore || oldHeight != state.layout.totalHeight || scrollAnimation != nil {
+            restore(anchor, pinBottom: pinBottom, animateBottom: !needsRestore)
+        }
         requestedScroll = false
         initialized = true
         // Measuring estimates can reveal another row; settle a bounded number of
@@ -334,7 +397,7 @@ private struct VirtualTranscript: NSViewRepresentable {
             changed = state.layout.measure(measurements)
             if changed {
                 setDocumentSize()
-                restore(anchor, pinBottom: pinBottom)
+                restore(anchor, pinBottom: pinBottom, animateBottom: !needsRestore)
             }
             for index in range {
                 let frame = CGRect(x: (size.width - width) / 2, y: state.layout.offsets[index] + topInset,
@@ -372,10 +435,23 @@ private struct VirtualTranscript: NSViewRepresentable {
                                       state.layout.totalHeight + bottomInset + topInset))
         if content.frame.size != size { content.setFrameSize(size) }
     }
-    private func restore(_ anchor: TranscriptLayout.Anchor?, pinBottom: Bool) {
+    private func restore(_ anchor: TranscriptLayout.Anchor?, pinBottom: Bool, animateBottom: Bool = false) {
         let maximum = max(0, content.bounds.height - contentView.bounds.height)
         let y = pinBottom ? maximum : anchor.flatMap { state.layout.position(of: $0) } ?? contentView.bounds.minY
-        let origin = NSPoint(x: 0, y: min(maximum, max(0, y)))
+        var target = min(maximum, max(0, y))
+        // Coalesce streaming growth into a bounded window. New chunks update the
+        // destination, never the start time, so a busy stream cannot keep us behind.
+        // Do not animate initial restoration, resizing, or explicit bottom jumps.
+        if scrollAnimation == nil, animateBottom, pinBottom,
+           state.sentMessageID == nil, target > contentView.bounds.minY + 1 {
+            beginScrollAnimation(followsBottom: true)
+        }
+        if let scroll = scrollAnimation, target > scroll.origin {
+            let progress = min(1, max(0, (ProcessInfo.processInfo.systemUptime - scroll.started) / scroll.duration))
+            let eased = 1 - pow(1 - progress, 3)
+            target = scroll.origin + (target - scroll.origin) * eased
+        }
+        let origin = NSPoint(x: 0, y: target)
         if contentView.bounds.origin != origin {
             contentView.scroll(to: origin)
             reflectScrolledClipView(contentView)
