@@ -135,6 +135,42 @@ import SwiftUI
         try expect(layout.visibleRange(y: 0, height: 600, overscan: 300).isEmpty && layout.anchor(at: 0) == nil)
     }
 
+    func toolClustersPreserveGeometryAndAnchors() throws {
+        func tool(_ id: String) -> Message {
+            let call = ToolCall(id: id, name: "shell", arguments: "{}")
+            return Message(role: .tool, text: "Done", toolResult: ToolResult(call: call, text: "Done"))
+        }
+        var messages = [Message(role: .user, text: "Run tools"), tool("first"), tool("second"),
+                        tool("third"), Message(role: .assistant, text: "Finished")]
+        var layout = TranscriptLayout()
+        layout.update(messages: messages, width: 700)
+        layout.measure(messages.map { (id: $0.id, height: CGFloat(40)) })
+        try expect(layout.offsets == [20, 84, 124, 164, 228])
+        try expect(layout.totalHeight == 300)
+        try expect(layout.visibleRange(y: 124, height: 0, overscan: 0) == 2..<3)
+        let anchor = layout.anchor(at: 172)!
+        try expect(anchor.id == messages[3].id && anchor.offset == 8)
+        let oversizedAnchor = TranscriptLayout.Anchor(id: messages[1].id, offset: 1_000)
+        try expect(layout.position(of: oversizedAnchor) == 123)
+
+        // Expanding a clustered row shifts later rows without inserting gaps.
+        layout.measure(messages[2].id, height: 80)
+        try expect(layout.position(of: anchor) == 212 && layout.totalHeight == 340)
+        layout.resize(to: 400)
+        try expect(layout.anchor(at: layout.position(of: anchor)!) == anchor)
+
+        // A compaction boundary splits a cluster even when every ID is unchanged.
+        let ids = layout.ids
+        messages[2].compaction = .automatic
+        layout.update(messages: messages, width: 400)
+        try expect(layout.ids == ids && layout.heights[2] == 80)
+        try expect(layout.offsets == [20, 84, 148, 252, 316])
+        try expect(layout.position(of: anchor) == 260 && layout.totalHeight == 388)
+        messages[2].compaction = nil
+        layout.update(messages: messages, width: 400)
+        try expect(layout.position(of: anchor) == 212 && layout.totalHeight == 340)
+    }
+
     func batchedMeasurementsPreserveGeometryAcrossResizeAndEdits() throws {
         var messages = (0..<100).map { Message(role: .user, text: "Message \($0)") }
         var layout = TranscriptLayout()

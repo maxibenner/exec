@@ -104,6 +104,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Local tool disclosures invalidate measured transcript heights", { try await TranscriptTests().localDisclosureChangesInvalidateMeasuredHeight() }),
             ("Near-bottom scrolling does not snap to the edge", { try TranscriptTests().preservesNearBottomScrolling() }),
             ("Virtual transcript geometry and scroll anchors", { try TranscriptTests().geometryPreservesAnchors() }),
+            ("Tool clusters preserve gap-free geometry and scroll anchors", { try TranscriptTests().toolClustersPreserveGeometryAndAnchors() }),
             ("Virtual transcript mounts only viewport rows", { try await TranscriptTests().mountsBoundedRowsAndRestoresPosition() }),
             ("Backend compaction snapshots preserve activity and status", { try AgentIntegrationTests().compactionSnapshotsPreserveActivity() }),
             ("Compaction rows remain visible without assistant text", { try TranscriptTests().compactionRowsRemainVisibleWithoutAssistantText() }),

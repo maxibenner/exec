@@ -16,18 +16,23 @@ struct TranscriptLayout {
     // for the current content/width. They also survive conversation switches.
     private var measured: [UUID: CGFloat] = [:]
     private var indices: [UUID: Int] = [:]
+    private var gaps: [CGFloat] = []
     static let spacing: CGFloat = 24
 
     /// Synchronize identities only when conversation data changes, not on every
     /// scroll/layout callback. Width-only updates leave the index untouched.
     mutating func update(messages: [Message], width: CGFloat) {
         let ids = messages.map(\.id)
-        guard self.ids != ids else {
+        let gaps = messages.indices.map { index -> CGFloat in
+            index + 1 < messages.count && messages[index].isToolCard && messages[index + 1].isToolCard ? 0 : Self.spacing
+        }
+        guard self.ids != ids || self.gaps != gaps else {
             resize(to: width)
             return
         }
         self.width = width
         self.ids = ids
+        self.gaps = gaps
         indices = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($0.element, $0.offset) })
         measured = measured.filter { indices[$0.key] != nil }
         heights = messages.map { measured[$0.id] ?? Self.estimate($0, width: width) }
@@ -74,7 +79,7 @@ struct TranscriptLayout {
 
     func position(of anchor: Anchor) -> CGFloat? {
         guard let index = indices[anchor.id] else { return nil }
-        return offsets[index] + min(anchor.offset, heights[index] + Self.spacing - 1)
+        return offsets[index] + min(anchor.offset, heights[index] + gaps[index] - 1)
     }
 
     func visibleRange(y: CGFloat, height: CGFloat, overscan: CGFloat) -> Range<Int> {
@@ -97,8 +102,8 @@ struct TranscriptLayout {
 
     private mutating func rebuildOffsets() {
         var y: CGFloat = 20
-        offsets = heights.map { height in
-            defer { y += height + Self.spacing }
+        offsets = heights.indices.map { index in
+            defer { y += heights[index] + gaps[index] }
             return y
         }
         totalHeight = ids.isEmpty ? 40 : y - Self.spacing + 32
@@ -148,5 +153,12 @@ struct TranscriptLayout {
         }
         flushParagraph()
         return max(1, lines) * 19
+    }
+}
+
+extension Message {
+    var isToolCard: Bool {
+        guard compaction == nil, let call = pendingTool?.call ?? toolResult?.call else { return false }
+        return call.name != "compact" || !call.id.hasPrefix("compaction:")
     }
 }
