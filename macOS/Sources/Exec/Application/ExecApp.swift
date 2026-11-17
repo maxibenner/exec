@@ -64,8 +64,7 @@ import SwiftUI
                 Group {
                     if let store = startup.store, let windows = startup.windows {
                         SessionSidebar(store: store, open: { windows.openSession($0) }, delete: {
-                            guard store.canNavigate, !store.isSessionRunning($0.id) else { return }
-                            store.deleteSession($0.id)
+                            windows.requestSessionDeletion($0.id)
                         })
                     } else {
                         Color.clear

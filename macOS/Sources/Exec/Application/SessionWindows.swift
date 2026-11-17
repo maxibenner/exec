@@ -11,6 +11,10 @@ import Observation
     private(set) var activeDetachedID: UUID?
     @ObservationIgnored private var controllers: [UUID: DetachedSessionController] = [:]
     @ObservationIgnored private var presentations: [ObjectIdentifier: TranscriptState] = [:]
+    @ObservationIgnored private(set) var isConfirmingDeletion = false
+    @ObservationIgnored var confirmSessionDeletion: @MainActor (NSAlert, NSWindow?) async -> NSApplication.ModalResponse = {
+        await SessionDeletionConfirmation.present($0, in: $1)
+    }
 
     private(set) var composerFocusRequest = 0
     private(set) var sidebarRevealRequest = 0
@@ -45,6 +49,27 @@ import Observation
         library.openSession(id) { [weak self] in
             self?.composerFocusRequest += 1
             self?.showMainWindow()
+        }
+    }
+
+    func requestSessionDeletion(_ id: UUID) {
+        guard !isConfirmingDeletion, library.canDeleteSession(id) else { return }
+        guard SessionDeletionConfirmation.isRequired(for: id, in: library) else {
+            library.deleteSession(id)
+            return
+        }
+        let alert = SessionDeletionConfirmation.makeAlert()
+        let window = NSApplication.shared.keyWindow ?? controllers[id]?.window ?? mainWindow
+        // Reserve the decision before yielding so shortcuts and other windows
+        // cannot stack alerts or replace the original deletion target.
+        isConfirmingDeletion = true
+        Task {
+            defer { isConfirmingDeletion = false }
+            let response = await confirmSessionDeletion(alert, window)
+            guard response == .alertFirstButtonReturn else { return }
+            // Navigation or automatic cleanup may have changed the catalog while
+            // the sheet was open. The library revalidates this exact ID.
+            library.deleteSession(id)
         }
     }
 

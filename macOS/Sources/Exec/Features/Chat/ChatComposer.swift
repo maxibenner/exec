@@ -5,6 +5,7 @@ struct ChatComposer: View {
     @Bindable var store: ChatPanel
     @Environment(SessionWindows.self) private var windows: SessionWindows?
     @FocusState.Binding var focused: Bool
+    var focusRequest: Int? = nil
     @State private var attachmentDropTargeted = false
     @State private var dismissedDraft: String?
     @State private var highlighted = 0
@@ -127,6 +128,7 @@ struct ChatComposer: View {
                 .focused($focused)
                 .disabled(!store.canEditDraft).allowsHitTesting(!store.navigating)
                 .accessibilityLabel("Message")
+                .background(ComposerFocus(request: focusRequest, enabled: store.canEditDraft))
                 .onSubmit {
                     if paletteVisible { chooseHighlighted() }
                     else if command != nil { dismissedDraft = nil }

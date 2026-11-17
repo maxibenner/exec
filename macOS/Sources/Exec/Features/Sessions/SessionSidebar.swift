@@ -90,6 +90,9 @@ struct SessionSidebar: View {
                         .transition(.opacity)
                         .onTapGesture { activate(child.id) }
                         .accessibilityAction { activate(child.id) }
+                        .accessibilityAction(named: "Delete Sub-agent") {
+                            if store.canDeleteSession(child.id) { delete(child) }
+                        }
                         .accessibilityAddTraits(store.sidebarSelectionID == child.id ? [.isSelected] : [])
                         .contextMenu {
                             Button("Delete Sub-agent", role: .destructive) { delete(child) }

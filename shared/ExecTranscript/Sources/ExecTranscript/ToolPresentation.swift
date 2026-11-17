@@ -16,8 +16,11 @@ public struct ToolPresentation: Sendable {
     public var inputs: [Field] = []
     public var outputTitle: String? = "Result"
     public var output: String
+    /// A result body can be published before the executor has settled.
+    public let isRunning: Bool
 
     public init(name: String, arguments rawArguments: String, result: ToolDisplayResult? = nil, descriptiveShellTitles: Bool = false) {
+        isRunning = result?.outcome == "running"
         struct DelegatedTask: Decodable {
             let task: String
             let title: String?
@@ -115,7 +118,8 @@ public struct ToolPresentation: Sendable {
             // finished presentation normally shows only an image, diff or page.
             inputs = [Field(title: "Arguments", text: rawArguments)]
         }
-        guard let result else { return }
+        // Child failure text is still output, not a terminal state for a live delegate.
+        guard let result, !isRunning else { return }
         // Preserve terminal failures, including edits that have no saved diff.
         if result.editPath == nil, result.searchQuery == nil, detail == nil {
             if result.text.hasPrefix("Tool error: ") || result.text.hasPrefix("Error: ") { detail = "Error" }

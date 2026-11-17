@@ -10,24 +10,32 @@ struct ToolMessageView: View {
     let call: ToolCall
     let result: ToolResult?
     let isAwaitingApproval: Bool
+    let isRunning: Bool
     let state: TranscriptState
     let messageID: UUID
     @AppStorage(ToolDisplayPreferences.descriptiveShellTitlesKey) private var descriptiveShellTitles = false
     @State private var expanded: Bool?
 
-    init(call: ToolCall, result: ToolResult?, isAwaitingApproval: Bool,
+    init(call: ToolCall, result: ToolResult?, isAwaitingApproval: Bool, isActive: Bool = false,
          state: TranscriptState, messageID: UUID) {
         self.call = call
         self.result = result
         self.isAwaitingApproval = isAwaitingApproval
+        isRunning = isActive || result?.outcome == "running" || (result == nil && !isAwaitingApproval)
         self.state = state
         self.messageID = messageID
         _expanded = State(initialValue: state.expanded[messageID])
     }
 
+    // Reveal saved child answers in the existing body as they arrive, but never
+    // override the reader's explicit disclosure choice on subsequent updates.
+    var isExpanded: Bool {
+        expanded ?? (result?.edit != nil || result?.generatedImage != nil || (call.name == "delegate" && result != nil))
+    }
+
     var body: some View {
         if call.name == "compact", call.id.hasPrefix("compaction:") {
-            CompactionMessageView(status: result == nil ? .streaming : .complete)
+            CompactionMessageView(status: isRunning ? .streaming : .complete)
         } else {
             card
         }
@@ -35,11 +43,11 @@ struct ToolMessageView: View {
 
     private var card: some View {
         let presentation = ToolPresentation(call: call, result: result, descriptiveShellTitles: descriptiveShellTitles)
-        return ToolCard(presentation: presentation, isExpanded: Binding(get: { expanded ?? (result?.edit != nil || result?.generatedImage != nil) }, set: { value in
+        return ToolCard(presentation: presentation, isExpanded: Binding(get: { isExpanded }, set: { value in
             state.followsLatest = false
             state.expanded[messageID] = value
             expanded = value
-        }), isRunning: result == nil && !isAwaitingApproval) {
+        }), isRunning: isRunning) {
             VStack(alignment: .leading, spacing: 12) {
                 if let generated = result?.generatedImage {
                     GeneratedImageView(attachment: generated)

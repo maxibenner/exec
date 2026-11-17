@@ -21,13 +21,13 @@ extension FocusedValues {
 struct SessionCommandScope: ViewModifier {
     let windows: SessionWindows
     let conversation: ChatStore
-    private var actions: SessionWindowActions {
+    var actions: SessionWindowActions {
         let library = windows.library
         var actions = SessionWindowActions()
         guard let id = conversation.currentSessionID,
               let session = library.sessionList.first(where: { $0.id == id }) else { return actions }
         if library.canDeleteSession(id) {
-            actions.delete = { library.deleteSession(id) }
+            actions.delete = { windows.requestSessionDeletion(id) }
         }
         if library.detachedSessionIDs.contains(id) {
             actions.attach = { windows.attach(id) }

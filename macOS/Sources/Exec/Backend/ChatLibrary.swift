@@ -243,28 +243,8 @@ import Observation
         searchModel = config.settings.searchModel ?? ""
         defaultAutoApproveTools = config.settings.autoApprove
         restoringDefaults = false
-        let observedIDs = Set(openConversations.compactMap(\.currentSessionID))
         try await refreshCatalog()
         guard !navigating else { return }
-        let persisted = Set(savedSummaries.map(\.id))
-        for conversation in openConversations {
-            let parentID = conversation.summary?.parent?.sessionId
-            guard let id = conversation.currentSessionID, observedIDs.contains(id), !persisted.contains(id),
-                  !registeringIDs.contains(id), conversation.markDeletedRemotely() else { continue }
-            if !conversation.hasUnsentDraft {
-                detachedSessionIDs.remove(id)
-                openConversations.removeAll { $0 === conversation }
-                sidebarOrder.removeAll { $0 == id }
-                if current === conversation {
-                    if let parentID,
-                       let parent = self.conversation(parentID) {
-                        activate(parent)
-                    } else {
-                        activate(try makeConversation())
-                    }
-                }
-            }
-        }
         for conversation in openConversations { conversation.reconnectIfNeeded() }
         connectionError = nil
     }
@@ -597,7 +577,7 @@ import Observation
             var failure: Error?
             do { try await self.sessions.delete(id: id) }
             catch { failure = error }
-            self.savedSummaries = try await self.sessions.list()
+            try await self.refreshCatalog()
             let removed = family.subtracting(self.savedSummaries.map(\.id))
             let currentRemoved = self.currentSessionID.map(removed.contains) == true
             self.detachedSessionIDs.subtract(removed)
@@ -648,6 +628,15 @@ import Observation
         return conversation
     }
     private func observe(_ conversation: ChatStore) {
+        conversation.confirmObservationLoss = { [weak self, weak conversation] in
+            guard let self, let conversation else { return true }
+            do {
+                guard try await self.refreshCatalog() else { return false }
+                // A local save/cancel can temporarily prevent removal. Confirmed
+                // absence still is not a connection failure while it settles.
+                return self.savedSummaries.contains { $0.id == conversation.currentSessionID }
+            } catch { return true } // A catalog outage must not hide a real connection failure.
+        }
         conversation.didCheckpoint = { [weak self, weak conversation] in
             guard let self, let conversation else { return }
             if let id = conversation.currentSessionID, !self.savedSummaries.contains(where: { $0.id == id }),
@@ -722,11 +711,59 @@ import Observation
 
     private func persistSelection() { sessions.select(currentSessionID) }
 
-    private func refreshCatalog() async throws {
+    @discardableResult private func refreshCatalog() async throws -> Bool {
         catalogRequest += 1
         let request = catalogRequest
+        // Only presentations that existed when this read began can be removed.
+        // A create/load that finishes in flight must survive an older catalog.
+        let observedResidents = Dictionary(uniqueKeysWithValues: openConversations.compactMap { conversation -> (UUID, UUID)? in
+            guard let id = conversation.currentSessionID, !registeringIDs.contains(id) else { return nil }
+            return (conversation.id, id)
+        })
         let summaries = try await sessions.list()
-        if request == catalogRequest { applyCatalog(summaries) }
+        guard request == catalogRequest else { return false }
+        applyCatalog(summaries)
+        try reconcileMissingResidents(observedResidents)
+        return true
+    }
+
+    private func reconcileMissingResidents(_ observedResidents: [UUID: UUID]) throws {
+        let persisted = Set(savedSummaries.map(\.id))
+        var removedCurrent = false
+        var parentID: UUID?
+        for conversation in openConversations {
+            guard let id = conversation.currentSessionID, observedResidents[conversation.id] == id,
+                  !persisted.contains(id), !registeringIDs.contains(id) else { continue }
+            let parent = conversation.summary?.parent?.sessionId
+            guard conversation.markDeletedRemotely(), !conversation.hasUnsentDraft else { continue }
+            if current === conversation { removedCurrent = true; parentID = parent }
+            detachedSessionIDs.remove(id)
+            openConversations.removeAll { $0 === conversation }
+            sidebarOrder.removeAll { $0 == id }
+        }
+        guard removedCurrent else { return }
+        if let parentID, !detachedSessionIDs.contains(parentID), let parent = conversation(parentID) {
+            activate(parent)
+        } else {
+            // Never retain a removed selection or borrow a detached parent's
+            // presentation. The child's observer may be cancelled by reconciliation.
+            let fallback = try makeConversation()
+            activate(fallback)
+            guard let parentID, !detachedSessionIDs.contains(parentID),
+                  savedSummaries.contains(where: { $0.id == parentID && !$0.unreadable }) else { return }
+            if !navigating {
+                openSession(parentID)
+            } else if openingSessionID == nil {
+                // A rename/reorder can also reconcile cleanup. Wait for it without
+                // superseding a user's subsequent navigation or restoring a stale child.
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.waitForNavigation()
+                    guard self.current === fallback, !self.navigating else { return }
+                    self.openSession(parentID)
+                }
+            }
+        }
     }
 
     private func applyCatalog(_ summaries: [SessionSummary]) {

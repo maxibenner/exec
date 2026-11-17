@@ -36,6 +36,28 @@ identity, no native selection, and preserved composer focus during child updates
 snapping even when final geometry is correct. Reduce Motion requires no intermediate motion.
 Reports contain synthetic geometry only; no screenshots are captured.
 
+For repeated insert/remove bursts, use `--stress-cycles 10 --stress-parents 100`
+with optional `--stress-kind children|parents|mixed`, `--stress-batch 3`,
+`--stress-interval-ms 80`, `--stress-noise`, or `--stress-reuse-ids`.
+`PROBE_OPTIMIZE=1 ./scripts/probe-sidebar.sh ...` builds an optimized probe.
+Stress reports retain mutation timestamps and flag undersampled or ambiguous fades;
+presentation-layer opacity does not prove visible text fading or GPU frame cadence.
+
+The lifecycle probe checks navigation, native editor ownership, and automatic child
+cleanup using the same isolated transport as the regression tests:
+
+```sh
+./scripts/probe-sidebar-lifecycle.sh --catalog-first
+.build/lifecycle-probe/run --completed
+```
+
+The probe invokes navigation APIs on production views; physical mouse/keyboard
+interaction remains a manual check. `--catalog-first` observes catalog removal before
+the child's next read fails; the default observes read failure first. `--completed`
+starts with a settled child instead of a running child. `--checks` runs the focused
+lifecycle regressions.
+Each invocation is a distinct case; failed runs are never automatically retried.
+
 Analyze an existing report with:
 
 ```sh

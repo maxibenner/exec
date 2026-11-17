@@ -11,7 +11,9 @@ public struct ToolCard<Content: View>: View {
     public init(presentation: ToolPresentation, isExpanded: Binding<Bool>, awaitingApproval: Bool = false, isRunning: Bool = false,
                 @ViewBuilder content: () -> Content) {
         self.presentation = presentation; _isExpanded = isExpanded
-        self.awaitingApproval = awaitingApproval; self.isRunning = isRunning; self.content = content()
+        self.awaitingApproval = awaitingApproval
+        self.isRunning = isRunning || presentation.isRunning
+        self.content = content()
     }
     public var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) { content } label: {

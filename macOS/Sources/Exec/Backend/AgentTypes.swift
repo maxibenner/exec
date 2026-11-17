@@ -125,7 +125,9 @@ extension AgentSnapshot {
     func transcript(images: [UUID: ImageAttachment], pendingIDs: inout [String: UUID]) throws -> [Message] {
         var calls: [String: ToolCall] = [:]
         for message in messages { for call in message.calls ?? [] { calls[call.id] = try call.presentation() } }
-        let answered = Set(messages.compactMap(\.callID))
+        // A running delegate result already occupies its tool row, but does not
+        // mean the executor has settled. Keep activity separate from row presence.
+        let represented = Set(messages.filter { $0.role == "tool" }.compactMap(\.callID))
         var result: [Message] = []
         for message in messages + pendingInput.filter({ pending in !messages.contains { $0.id == pending.id } }) {
             switch message.role {
@@ -142,12 +144,13 @@ extension AgentSnapshot {
                 result.append(Message(id: message.id, role: .assistant, text: message.text, status: status,
                                       toolCalls: try (message.calls ?? []).map { try $0.presentation() }))
                 // Existing UI shows only entered/awaiting tools, not speculative future calls.
-                for call in message.calls ?? [] where !answered.contains(call.id) &&
+                for call in message.calls ?? [] where !represented.contains(call.id) &&
                     (activeToolCallID == call.id || approval?.call.id == call.id) {
                     let id = pendingIDs[call.id] ?? UUID()
                     pendingIDs[call.id] = id
-                    result.append(Message(id: id, role: .tool, text: "", pendingTool: .init(
-                        call: try call.presentation(), isAwaitingApproval: approval?.call.id == call.id)))
+                    result.append(Message(id: id, role: .tool, text: "",
+                        status: activeToolCallID == call.id ? .streaming : .complete, pendingTool: .init(
+                            call: try call.presentation(), isAwaitingApproval: approval?.call.id == call.id)))
                 }
             case "tool":
                 guard let callID = message.callID, let call = calls[callID] else { throw ExecError("The backend returned an unmatched tool result.") }
@@ -163,10 +166,14 @@ extension AgentSnapshot {
                         let reference = try details["image"].decoded(AgentImage.self)
                         if details["origin"].string == "screenshot" { tool.screenshot = images[reference.id] }
                         else { tool.generatedImage = images[reference.id] }
+                    // Delegation details remain lossless in AgentMessage. Its text
+                    // already contains the settled children in original task order.
                     default: break
                     }
                 }
-                result.append(Message(id: pendingIDs[callID] ?? message.id, role: .tool, text: message.text, toolResult: tool))
+                let running = activeToolCallID == callID || message.outcome == "running"
+                result.append(Message(id: pendingIDs[callID] ?? message.id, role: .tool, text: message.text,
+                                      status: running ? .streaming : .complete, toolResult: tool))
             default: throw ExecError("The backend returned an unknown message role.")
             }
         }

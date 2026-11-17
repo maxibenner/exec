@@ -6,28 +6,11 @@ struct ChatView: View {
     @FocusState private var composerFocused: Bool
     @Environment(\.openWindow) private var openWindow
 
-    private struct ComposerFocusTarget: Hashable {
-        let conversation: ObjectIdentifier
-        let request: Int
-        let navigating: Bool
-        let authenticating: Bool
-    }
-
     var body: some View {
         ConversationView(library: store, conversation: store.current,
                          presentation: windows.presentation(for: store.current),
-                         focused: $composerFocused, showsNavigationError: true)
-            .task(id: ComposerFocusTarget(conversation: ObjectIdentifier(store.current),
-                                          request: windows.composerFocusRequest,
-                                          navigating: store.navigating,
-                                          authenticating: store.authenticating)) {
-                // Wait until local restoration/navigation enables the composer.
-                guard !store.navigating, !store.authenticating else { return }
-                composerFocused = false
-                await Task.yield()
-                guard !Task.isCancelled, !store.navigating, !store.authenticating else { return }
-                composerFocused = true
-            }
+                         focused: $composerFocused, showsNavigationError: true,
+                         composerFocusRequest: windows.composerFocusRequest)
             .id(ObjectIdentifier(store.current))
             .transaction(value: ObjectIdentifier(store.current)) { transaction in
                 transaction.animation = nil

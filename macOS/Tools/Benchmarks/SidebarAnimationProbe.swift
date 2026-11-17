@@ -120,16 +120,59 @@ private struct ProbeWindow: View {
         let selection: Int
         let table: String
         let focus: String
+        var duplicateMarkers: [String]? = nil
+    }
+    struct Mutation: Codable {
+        let time: Double // Absolute uptime, aligned with Phase.startedAt.
+        let inserted: [String]
+        let removed: [String]
+        let rows: Int
+        let selection: UUID?
     }
     struct Phase: Codable {
         let name: String
         let samples: [Sample]
+        var startedAt: Double? = nil
+        var mutations: [Mutation]? = nil
+        var peak: Sample? = nil
+    }
+    /// Keep targets near the top; catalog size stresses reconciliation, not offscreen fades.
+    /// Repeated removals/reinsertions are intentional test input, never retries of a failed run.
+    struct Stress: Codable {
+        let cycles: Int
+        let parents: Int
+        let batch: Int
+        let intervalMS: Int
+        let kind: String
+        let noise: Bool
+        let reuseIDs: Bool
+
+        init(_ arguments: [String]) throws {
+            func number(_ flag: String, _ fallback: Int, _ range: ClosedRange<Int>) throws -> Int {
+                guard let index = arguments.firstIndex(of: flag) else { return fallback }
+                guard arguments.indices.contains(index + 1), let value = Int(arguments[index + 1]), range.contains(value) else {
+                    throw ExecError("Invalid \(flag); expected \(range)")
+                }
+                return value
+            }
+            cycles = try number("--stress-cycles", 0, 1...1000)
+            parents = try number("--stress-parents", 100, 5...2000)
+            batch = try number("--stress-batch", 2, 1...3)
+            intervalMS = try number("--stress-interval-ms", 80, 0...500)
+            let index = arguments.firstIndex(of: "--stress-kind")
+            kind = index.flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil } ?? "mixed"
+            guard ["children", "parents", "mixed"].contains(kind) else { throw ExecError("Invalid --stress-kind") }
+            noise = arguments.contains("--stress-noise")
+            reuseIDs = arguments.contains("--stress-reuse-ids")
+        }
     }
     struct Report: Codable {
         let operatingSystem: String
         let reduceMotion: Bool
         let simpleDetail: Bool
         let phases: [Phase]
+        var stress: Stress? = nil
+        var probeBuild: String? = nil
     }
     @MainActor static func descendants(_ view: NSView) -> [NSView] {
         [view] + view.subviews.flatMap { descendants($0) }
@@ -138,6 +181,7 @@ private struct ProbeWindow: View {
         let views = descendants(host)
         let table = views.compactMap { $0 as? NSTableView }.first
         var markers: [String: Geometry] = [:]
+        var duplicates: [String] = []
         for marker in views.compactMap({ $0 as? SidebarProbeMarker.Marker }) {
             guard let layer = marker.layer else { continue }
             let presentation = layer.presentation() ?? layer
@@ -148,20 +192,24 @@ private struct ProbeWindow: View {
                 opacity *= current.opacity
                 ancestor = current.superlayer
             }
+            if markers[marker.key] != nil { duplicates.append(marker.key) }
             markers[marker.key] = Geometry(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height, opacity: Double(opacity))
         }
         let keys = table.map { descendants($0).flatMap { $0.layer?.animationKeys() ?? [] } } ?? []
         return Sample(time: ProcessInfo.processInfo.systemUptime - start, markers: markers,
             animations: Array(Set(keys)).sorted(), rows: table?.numberOfRows ?? -1,
             selection: table?.selectedRow ?? -1, table: table.map { String(describing: ObjectIdentifier($0)) } ?? "none",
-            focus: host.window?.firstResponder.map { "\(type(of: $0))@\(ObjectIdentifier($0))" } ?? "none")
+            focus: host.window?.firstResponder.map { "\(type(of: $0))@\(ObjectIdentifier($0))" } ?? "none",
+            duplicateMarkers: duplicates.sorted())
     }
     @MainActor static func measure(_ name: String, host: NSView,
                                    change: @escaping @MainActor () async throws -> Void) async throws -> Phase {
         let start = ProcessInfo.processInfo.systemUptime
         var samples = [sample(host, start: start)]
-        let task = Task { try await change() }
-        for _ in 0..<65 {
+        var finished = false
+        let task = Task { defer { finished = true }; try await change() }
+        // Continue sampling long bursts instead of silently missing their tail.
+        while samples.count < 66 || !finished {
             try await Task.sleep(for: .milliseconds(10))
             samples.append(sample(host, start: start))
         }
@@ -170,7 +218,8 @@ private struct ProbeWindow: View {
         // the sampling window; slow/broken mutations must not pass as no-ops.
         try await Task.sleep(for: .milliseconds(150))
         samples.append(sample(host, start: start))
-        let phase = Phase(name: name, samples: samples)
+        let phase = Phase(name: name, samples: samples, startedAt: start)
+        if name.hasPrefix("stress-") { return phase }
         let keys = Set(samples.flatMap { $0.markers.keys })
         let moving = keys.compactMap { key -> String? in
             let values = samples.compactMap { $0.markers[key] }
@@ -218,6 +267,13 @@ private struct ProbeWindow: View {
             guard let before = phase.samples.first, let after = phase.samples.last else { continue }
             if phase.samples.contains(where: { $0.selection != -1 || $0.focus.contains("TableView") }) {
                 failures.append("\(phase.name): native selection or keyboard focus changed")
+            }
+            if phase.mutations != nil {
+                failures += assessStress(phase, reduced: report.reduceMotion).issues.map { "\(phase.name): \($0)" }
+                if !report.simpleDetail, !after.focus.contains("FieldEditor") {
+                    failures.append("\(phase.name): composer focus was not restored")
+                }
+                continue
             }
             let initial = Set(before.markers.keys), final = Set(after.markers.keys)
             guard let outcome = expected[phase.name] else { failures.append("Unknown phase: \(phase.name)"); continue }
@@ -316,17 +372,200 @@ private struct ProbeWindow: View {
         return failures
     }
 
+    /// Per-mutation windows catch transient rows that endpoint-only checks miss.
+    /// Fewer than six samples / 80 ms is inconclusive, not a missing-fade verdict.
+    /// Markers measure inherited layer opacity/geometry, not rendered pixels or GPU cadence.
+    /// They can extend outside clipping bounds; this is not proof of visible text fading.
+    /// Focus noise deliberately blurs the window; its recovery check is a separate
+    /// synthetic assertion, not evidence that an ordinary deletion loses focus.
+    static func assessStress(_ phase: Phase, reduced: Bool) -> (issues: [String], checked: Int, short: Int, unseen: Int) {
+        guard let mutations = phase.mutations, let start = phase.startedAt,
+              let before = phase.samples.first, let after = phase.samples.last, let peak = phase.peak else {
+            return (["Missing stress evidence"], 0, 0, 0)
+        }
+        var issues: [String] = []
+        var checked = 0, short = 0, unseen = 0
+        func distinct(_ values: [Double]) -> Int { Set(values.map { Int(($0 * 100).rounded()) }).count }
+        if after.rows != mutations.last?.rows || after.markers.keys.contains(where: { $0.hasPrefix("child:") }) {
+            issues.append("incorrect settled parent/child counts")
+        }
+        let targets = Set(mutations.flatMap(\.inserted))
+        if !targets.isSubset(of: Set(peak.markers.keys)) { issues.append("inserted targets missing at settled peak") }
+        for frame in [peak, after] {
+            if frame.markers.values.contains(where: { $0.opacity < 0.98 || $0.height <= 0 || $0.width <= 0 }) {
+                issues.append("settled content invisible or empty")
+            }
+        }
+        for (index, mutation) in mutations.enumerated() {
+            for (inserting, keys) in [(true, mutation.inserted), (false, mutation.removed)] {
+                for key in keys {
+                    let end = mutations.dropFirst(index + 1).first { $0.inserted.contains(key) || $0.removed.contains(key) }?.time
+                        ?? (after.time + start)
+                    let frames = phase.samples.filter { $0.time + start >= mutation.time && $0.time + start < end }
+                    // Include the last pre-mutation frame: native List can reset
+                    // to model opacity before the first post-mutation sample.
+                    let preceding = phase.samples.last { $0.time + start < mutation.time }
+                    let boundaryFrames = preceding.map { [$0] + frames } ?? frames
+                    if boundaryFrames.contains(where: { $0.duplicateMarkers?.contains(key) == true }) {
+                        issues.append("mutation \(index) \(key): ambiguous duplicate presentation markers")
+                        continue
+                    }
+                    let opacity = frames.compactMap { $0.markers[key]?.opacity }
+                    if opacity.isEmpty { unseen += 1; continue }
+                    let partial = opacity.filter { $0 > 0.02 && $0 < 0.98 }
+                    // Two adjacent samples can prove an abrupt reset even when
+                    // the interrupted window is too short to assess a full fade.
+                    if !reduced {
+                        let jumped = zip(boundaryFrames, boundaryFrames.dropFirst()).contains { a, b in
+                            guard b.time - a.time < 0.06, let x = a.markers[key]?.opacity,
+                                  let y = b.markers[key]?.opacity else { return false }
+                            return abs(y - x) > 0.6
+                        }
+                        if jumped { issues.append("mutation \(index) \(key): opacity jumped by >0.6 within 60ms") }
+                    }
+                    if reduced, !partial.isEmpty { issues.append("mutation \(index) \(key): fade with Reduce Motion") }
+                    if end - mutation.time < 0.08 || frames.count < 6 { short += 1; continue }
+                    checked += 1
+                    if !reduced, distinct(partial) < 3 {
+                        let near = phase.samples.filter { $0.time + start >= mutation.time - 0.06 && $0.time + start < end }
+                        let gap = zip(near, near.dropFirst()).contains { a, b in
+                            b.time - a.time > 0.06 && abs((a.markers[key]?.opacity ?? 0) - (b.markers[key]?.opacity ?? 0)) > 0.02
+                        }
+                        issues.append("mutation \(index) \(key): \(inserting ? "insertion" : "removal") \(gap ? "undersampled" : "lacks sampled fade") (\(distinct(partial)) intermediate values)")
+                    }
+                }
+            }
+        }
+        // Settled legs also check retained neighbors and row height. Retargeted
+        // paths need not be monotonic; do not mistake their reversals for jumps.
+        for (a, b) in [(before, peak), (peak, after)] {
+            let frames = phase.samples.filter { $0.time >= a.time && $0.time <= b.time }
+            for key in Set(a.markers.keys).intersection(b.markers.keys) {
+                for property in [\Geometry.y, \Geometry.height] {
+                    let origin = a.markers[key]![keyPath: property], destination = b.markers[key]![keyPath: property]
+                    guard abs(origin - destination) > 1 else { continue }
+                    let values = frames.compactMap { $0.markers[key]?[keyPath: property] }
+                    let intermediate = values.filter { $0 > min(origin, destination) + 0.1 && $0 < max(origin, destination) - 0.1 }
+                    if !reduced, distinct(intermediate) < 3 {
+                        let trajectory = frames.compactMap { frame in frame.markers[key].map { (frame.time, $0[keyPath: property]) } }
+                        let gap = zip(trajectory, trajectory.dropFirst()).contains { a, b in b.0 - a.0 > 0.06 && abs(b.1 - a.1) > 1 }
+                        issues.append("\(key): retained geometry \(gap ? "undersampled" : "snapped")")
+                    }
+                }
+            }
+        }
+        if reduced, phase.samples.contains(where: { !$0.animations.isEmpty }) { issues.append("native animation with Reduce Motion") }
+        return (issues, checked, short, unseen)
+    }
+
+    static func printIssues(_ issues: [String], report: Report) {
+        let gapsInEvidence = issues.filter { $0.contains("undersampled") || $0.contains("ambiguous") }.count
+        print("Checks: \(issues.count - gapsInEvidence) observed failures; \(gapsInEvidence) sampling-limited failures (not proof of a snap/missing fade)")
+        for issue in issues.prefix(24) { print("  \(issue)") }
+        if issues.count > 24 { print("  ... \(issues.count - 24) more; analyze saved JSON for complete per-mutation evidence") }
+        let phases = report.phases.filter { $0.mutations != nil }
+        guard !phases.isEmpty else { return }
+        let coverage = phases.map { assessStress($0, reduced: report.reduceMotion) }
+        let mutations = phases.flatMap { $0.mutations ?? [] }
+        let gaps = phases.flatMap { phase in zip(phase.samples, phase.samples.dropFirst()).map { $1.time - $0.time } }
+        let failed = phases.filter { phase in issues.contains { $0.hasPrefix("\(phase.name):") } }.count
+        print("Stress: \(phases.count) cycles; \(mutations.filter { !$0.inserted.isEmpty || !$0.removed.isEmpty }.count) structural snapshots; \(mutations.flatMap(\.inserted).count) insertions / \(mutations.flatMap(\.removed).count) removals")
+        print("Fade windows: checked=\(coverage.reduce(0) { $0 + $1.checked }), short=\(coverage.reduce(0) { $0 + $1.short }), unobserved=\(coverage.reduce(0) { $0 + $1.unseen }); failed cycles=\(failed); max sample gap=\(String(format: "%.3f", gaps.max() ?? 0))s")
+        let duplicateFrames = phases.flatMap(\.samples).filter { !($0.duplicateMarkers ?? []).isEmpty }.count
+        let multiplicityRecorded = phases.flatMap(\.samples).allSatisfy { $0.duplicateMarkers != nil }
+        print("Ambiguous marker frames: \(duplicateFrames)\(multiplicityRecorded ? "" : " (older report may not record duplicates)"). Short/unobserved windows do not establish smoothness; counts are synthetic catalog mutations, not user clicks or backend creates.")
+    }
+
+    @MainActor private static func stressPhases(_ stress: Stress, host: NSView, library: ChatLibrary,
+                                        transport: SidebarProbeTransport) async throws -> [Phase] {
+        let roots = (0..<stress.parents).map { _ in UUID() }
+        let stableParents = (0..<stress.batch).map { _ in UUID() }
+        let stableChildren = (0..<stress.batch).map { _ in UUID() }
+        var tick = 0
+        func snapshots(_ parents: [UUID], _ children: [UUID]) -> [AgentJSON] {
+            (parents + roots).enumerated().map {
+                SidebarProbeTransport.snapshot($0.element, title: "Stress conversation \($0.offset + 1)", activity: Double(1000 + tick))
+            } + children.enumerated().map {
+                SidebarProbeTransport.snapshot($0.element, title: "Stress child \($0.offset + 1)", parent: roots[0], activity: Double(1000 + tick))
+            }
+        }
+        await transport.install(snapshots([], []))
+        try await library.refreshSharedState()
+        library.openSession(roots[0])
+        await library.waitForNavigation()
+        try await Task.sleep(for: .milliseconds(600))
+        var phases: [Phase] = []
+        print("Stress configuration: cycles=\(stress.cycles), parents=\(stress.parents), batch=\(stress.batch), interval=\(stress.intervalMS)ms, kind=\(stress.kind), noise=\(stress.noise), reuseIDs=\(stress.reuseIDs)")
+        for cycle in 0..<stress.cycles {
+            let parents = stress.kind == "children" ? [] : (stress.reuseIDs ? stableParents : stableParents.map { _ in UUID() })
+            let children = stress.kind == "parents" ? [] : (stress.reuseIDs ? stableChildren : stableChildren.map { _ in UUID() })
+            var currentParents: [UUID] = [], currentChildren: [UUID] = []
+            var mutations: [Mutation] = []
+            var peak: Sample?
+            func install(_ parents: [UUID], _ children: [UUID]) async throws {
+                let old = Set(currentParents.map { "group:\($0)" } + currentChildren.map { "child:\($0)" })
+                let new = Set(parents.map { "group:\($0)" } + children.map { "child:\($0)" })
+                await transport.install(snapshots(parents, children))
+                try await library.refreshSharedState()
+                currentParents = parents; currentChildren = children
+                mutations.append(Mutation(time: ProcessInfo.processInfo.systemUptime,
+                    inserted: new.subtracting(old).sorted(), removed: old.subtracting(new).sorted(),
+                    rows: stress.parents + parents.count, selection: library.sidebarSelectionID))
+            }
+            func interleave(_ step: Int) async throws {
+                try await Task.sleep(for: .milliseconds(stress.intervalMS / 2))
+                if stress.noise {
+                    tick += 1 // Same geometry, new activity metadata; not a structural change.
+                    try await install(currentParents, currentChildren)
+                    if step.isMultiple(of: 2) { host.window?.makeFirstResponder(nil) }
+                    let selected = roots[(cycle + step) % 2]
+                    library.openSession(selected)
+                    await library.waitForNavigation()
+                    guard library.sidebarSelectionID == selected else { throw ExecError("Stress selection did not apply") }
+                    mutations.append(Mutation(time: ProcessInfo.processInfo.systemUptime, inserted: [], removed: [],
+                        rows: stress.parents + currentParents.count, selection: selected))
+                }
+                try await Task.sleep(for: .milliseconds(stress.intervalMS - stress.intervalMS / 2))
+            }
+            var phase = try await measure("stress-\(stress.kind)-\(cycle + 1)", host: host) {
+                try await install(parents, children)
+                try await interleave(0)
+                try await install(Array(parents.dropFirst()), Array(children.dropFirst()))
+                try await interleave(1)
+                try await install(parents, children) // Return while removal is still in flight.
+                try await interleave(2)
+                try await Task.sleep(for: .milliseconds(350))
+                peak = sample(host, start: 0)
+                try await install(Array(parents.dropFirst()), Array(children.dropFirst()))
+                try await interleave(3)
+                try await install([], [])
+                try await interleave(4)
+                try await Task.sleep(for: .milliseconds(350))
+            }
+            phase.mutations = mutations
+            if let peak, let start = phase.startedAt {
+                phase.peak = Sample(time: peak.time - start, markers: peak.markers, animations: peak.animations,
+                                    rows: peak.rows, selection: peak.selection, table: peak.table, focus: peak.focus,
+                                    duplicateMarkers: peak.duplicateMarkers)
+            }
+            phases.append(phase)
+            if (cycle + 1).isMultiple(of: 25) || cycle + 1 == stress.cycles { print("Stress sampled \(cycle + 1)/\(stress.cycles) cycles") }
+        }
+        return phases
+    }
+
     @MainActor static func run() async throws {
         let arguments = CommandLine.arguments
         if let index = arguments.firstIndex(of: "--analyze-report"), arguments.indices.contains(index + 1) {
             let data = try Data(contentsOf: URL(fileURLWithPath: arguments[index + 1]))
             let report = try JSONDecoder().decode(Report.self, from: data)
             let issues = failures(in: report)
-            print("\(issues.isEmpty ? "PASS" : "FAIL") saved report: \(issues.count) animation defects")
-            for issue in issues { print("  \(issue)") }
+            print("\(issues.isEmpty ? "PASS" : "FAIL") saved report: \(issues.count) check failures")
+            printIssues(issues, report: report)
             if arguments.contains("--check"), !issues.isEmpty { throw ExecError("Saved animation checks failed") }
             return
         }
+        let stress = try Stress(arguments)
         let suite = "exec-sidebar-probe-\(UUID())"
         let preferences = UserDefaults(suiteName: suite)!
         defer { preferences.removePersistentDomain(forName: suite) }
@@ -361,6 +600,9 @@ private struct ProbeWindow: View {
             try await Task.sleep(for: .milliseconds(300))
         }
         var phases: [Phase] = []
+        if stress.cycles > 0 {
+            phases = try await stressPhases(stress, host: host, library: library, transport: transport)
+        } else {
         phases.append(try await measure("children-insert", host: host) {
             await transport.install(parents + children)
             try await library.refreshSharedState()
@@ -435,18 +677,21 @@ private struct ProbeWindow: View {
             try await Task.sleep(for: .milliseconds(200))
             table.scrollRowToVisible(0)
         })
+        }
         let report = Report(operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
-                            reduceMotion: reduceMotion, simpleDetail: simple, phases: phases)
+                            reduceMotion: reduceMotion, simpleDetail: simple, phases: phases,
+                            stress: stress.cycles > 0 ? stress : nil,
+                            probeBuild: try? String(contentsOfFile: ".build/sidebar-animation-probe.sources", encoding: .utf8))
         let args = CommandLine.arguments
         let output = args.firstIndex(of: "--output").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
             ?? ".build/sidebar-animation-report.json"
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = stress.cycles > 0 ? [.sortedKeys] : [.prettyPrinted, .sortedKeys]
         try encoder.encode(report).write(to: URL(fileURLWithPath: output))
         print("Report: \(output). Samples inspect owned view/layer geometry, not screenshots. Native drag gestures are not simulated.")
         let issues = failures(in: report)
-        print("\(issues.isEmpty ? "PASS" : "FAIL"): \(phases.count) phases, \(issues.count) animation defects")
-        for issue in issues { print("  \(issue)") }
+        print("\(issues.isEmpty ? "PASS" : "FAIL"): \(phases.count) phases, \(issues.count) check failures")
+        printIssues(issues, report: report)
         if args.contains("--check"), !issues.isEmpty { throw ExecError("Sidebar animation checks failed") }
     }
 }

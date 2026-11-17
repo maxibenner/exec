@@ -17,6 +17,23 @@ func expectFailure(_ operation: () throws -> Void) throws {
 @main struct TestRunner {
     @MainActor static func main() async {
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Incremental delegation keeps one active result card", { try DelegationProgressTests().projectsIncrementalResultsInOneActiveCard() }),
+            ("Delegation preserves results through cleanup and disclosure changes", { try DelegationProgressTests().preservesResultsThroughCleanupFailureAndDisclosureChanges() }),
+            ("Delegation sync replaces results without replaying work", { try await DelegationProgressTests().syncReplacesPartialAndFinalResultsWithoutReplayingWork() }),
+            ("Deletion cancellation preserves running work", { try await SessionDeletionTests().cancellationLeavesRunningWorkUntouched() }),
+            ("Deletion retains its target and ignores duplicates", { try await SessionDeletionTests().confirmationKeepsOriginalIDAndIgnoresDuplicateRequests() }),
+            ("Deletion detects running descendants", { try await SessionDeletionTests().runningFamilyIncludesNestedAndNonresidentWork() }),
+            ("Idle deletion is immediate and single-shot", { try await SessionDeletionTests().idleDeletionIsImmediateAndSingleShot() }),
+            ("Cleanup during confirmation cannot redirect deletion", { try await SessionDeletionTests().automaticCleanupWhileConfirmingDoesNotDeleteAnotherSession() }),
+            ("Detached deletion uses the same confirmation", { try await SessionDeletionTests().detachedWindowCommandUsesTheSameConfirmation() }),
+            ("Automatic cleanup reconciles both catalog/poll orders without warnings", { try await SessionLifecycleTests().cleanupOrdersNeverPublishConnectionWarnings() }),
+            ("Cleanup preserves unsent drafts and genuine observation failures", { try await SessionLifecycleTests().cleanupPreservesDraftsAndRealFailures() }),
+            ("Cleanup settles remote cancellation without hiding real errors", { try await SessionLifecycleTests().cleanupSettlesRemoteCancellationWithoutHidingRealErrors() }),
+            ("Stale catalogs and observer generations cannot remove new residents", { try await SessionLifecycleTests().staleCatalogsAndObserverGenerationsCannotRemoveNewResidents() }),
+            ("Creation and registration survive older catalog absence", { try await SessionLifecycleTests().creationAndRegistrationSurviveOlderAbsence() }),
+            ("Automatic cleanup loads an evicted parent with a safe failure fallback", { try await SessionLifecycleTests().cleanupLoadsEvictedParentAndKeepsSafeFallback() }),
+            ("Cleanup during navigation respects parent window ownership", { try await SessionLifecycleTests().cleanupDuringNavigationRespectsParentWindowOwnership() }),
+            ("Native composer focus follows repeated requests, rapid navigation and cleanup", { try await SessionLifecycleTests().nativeComposerFocusFollowsRequestsAndCleanup() }),
             ("Attachment remove marks stay centered at 1× and 2×", { try AttachmentRemoveButtonTests().marksStayCentered() }),
             ("Child-session navigation preserves approvals without replaying work", { try await DelegationTests().childNavigationPreservesApprovalAndDoesNotReplayWork() }),
             ("Child steering targets the owned operation, including initial snapshot races", { try await DelegationTests().childSteeringUsesExistingOperation() }),

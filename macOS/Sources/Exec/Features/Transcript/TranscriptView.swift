@@ -486,6 +486,7 @@ private struct MessageView: View, Equatable {
         } else if let call = message.pendingTool?.call ?? message.toolResult?.call {
             ToolMessageView(call: call, result: message.toolResult,
                             isAwaitingApproval: message.pendingTool?.isAwaitingApproval == true,
+                            isActive: message.status == .streaming,
                             state: state, messageID: message.id)
         } else if message.role == .user {
             HStack {

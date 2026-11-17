@@ -7,22 +7,25 @@ struct ConversationView: View {
     @State private var panel: ChatPanel
     let presentation: TranscriptState
     let showsNavigationError: Bool
+    let composerFocusRequest: Int?
     @FocusState.Binding var composerFocused: Bool
     @State private var errorHeight: CGFloat = 20
     @State private var composerHeight: CGFloat = 140
 
     init(library: ChatLibrary, conversation: ChatStore, presentation: TranscriptState,
-         focused: FocusState<Bool>.Binding, showsNavigationError: Bool = false) {
+         focused: FocusState<Bool>.Binding, showsNavigationError: Bool = false,
+         composerFocusRequest: Int? = nil) {
         self.init(panel: ChatPanel(library: library, conversation: conversation), presentation: presentation,
-                  focused: focused, showsNavigationError: showsNavigationError)
+                  focused: focused, showsNavigationError: showsNavigationError, composerFocusRequest: composerFocusRequest)
     }
 
     init(panel: ChatPanel, presentation: TranscriptState, focused: FocusState<Bool>.Binding,
-         showsNavigationError: Bool = false) {
+         showsNavigationError: Bool = false, composerFocusRequest: Int? = nil) {
         _panel = State(initialValue: panel)
         _composerFocused = focused
         self.presentation = presentation
         self.showsNavigationError = showsNavigationError
+        self.composerFocusRequest = composerFocusRequest
     }
 
     private var error: String? { showsNavigationError ? panel.library.error : panel.current.error }
@@ -72,7 +75,7 @@ struct ConversationView: View {
                         .background(.background)
                 }
                 if let error { errorView(error).background(.background) }
-                ChatComposer(store: panel, focused: $composerFocused)
+                ChatComposer(store: panel, focused: $composerFocused, focusRequest: composerFocusRequest)
                     .disabled(panel.navigating)
             }
             .padding(.trailing, presentation.trailingInset)

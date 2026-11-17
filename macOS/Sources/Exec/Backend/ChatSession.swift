@@ -102,19 +102,31 @@ import CryptoKit
         }
         return summary
     }
+    private static let observationLossMessage = "Lost connection to this conversation. Reopen it to reconnect; work may still be running."
+    private static let deletedDraftMessage = "This conversation was deleted on another device. Copy your unsent draft before closing it."
+
     /// A deleted remote conversation never resumes or resaves. Keep any local
     /// unsent draft available for copying rather than discarding another device's work.
     @discardableResult func markDeletedRemotely() -> Bool {
-        guard task == nil, !isSaving, !isStopping, !isRestoringSession else { return false }
+        guard !deletionPending, !hasUnsavedChanges,
+              task == nil, commandTask == nil, stopTask == nil, !isSaving, !isRestoringSession else { return false }
         closePresentation()
         deletedRemotely = true
-        isSending = false; isCompacting = false
+        isSending = false; isCompacting = false; isStopping = false
         try? tools.apply(nil)
         messages = []
-        error = hasUnsentDraft ? "This conversation was deleted on another device. Copy your unsent draft before closing it." : nil
+        // Confirmed deletion replaces only presentation warnings, never a real
+        // operation/configuration failure. A stale remote `cancelling` snapshot
+        // is not a local cancellation task and must not pin a removed child.
+        if error == Self.observationLossMessage || error == Self.deletedDraftMessage { error = nil }
+        if error == nil, hasUnsentDraft { error = Self.deletedDraftMessage }
         return true
     }
     var didCheckpoint: (() async throws -> Void)?
+    /// Confirm against the catalog before exposing a read failure. False means
+    /// absence was confirmed or a newer read superseded this one; a 404 alone
+    /// is never evidence of deletion.
+    var confirmObservationLoss: (() async -> Bool)?
     var didFinish: (() -> Void)?
     private var task: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
@@ -294,8 +306,14 @@ import CryptoKit
                 }
                 guard let self, self.observerGeneration == generation, !Task.isCancelled else { return }
                 if attempt == 1 {
+                    let reportLoss = await self.confirmObservationLoss?() ?? true
+                    // Catalog reconciliation can close this presentation, or a
+                    // new load/deletion can replace the observer while awaiting it.
+                    guard self.observerGeneration == generation, !Task.isCancelled else { return }
                     self.observationLost = true
-                    self.error = "Lost connection to this conversation. Reopen it to reconnect; work may still be running."
+                    if reportLoss, self.error == nil {
+                        self.error = Self.observationLossMessage
+                    }
                     // Keep the last known operation ownership. Disconnection is not completion.
                 } else {
                     // A stale cursor, partial page read, or rejected snapshot must
