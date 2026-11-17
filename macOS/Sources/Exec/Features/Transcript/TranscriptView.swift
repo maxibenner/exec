@@ -48,7 +48,21 @@ private struct VirtualTranscript: NSViewRepresentable {
     private final class DocumentView: NSView {
         override var isFlipped: Bool { true }
     }
+    private final class ReaderScroller: NSScroller {
+        override class var isCompatibleWithOverlayScrollers: Bool { true }
+        var track: ((() -> Void) -> Void)?
+        override func sendAction(_ action: Selector?, to target: Any?) -> Bool {
+            guard let track else { return super.sendAction(action, to: target) }
+            var sent = false
+            track { sent = super.sendAction(action, to: target) }
+            return sent
+        }
+    }
     private let content = DocumentView()
+    private var trackingReaderScroll = false
+    private var lastScrollY: CGFloat = 0
+    private var wheelDirection: CGFloat = 0
+    private static let bottomTolerance: CGFloat = 2
     let state: TranscriptState
     private var messages: [Message] = []
     private var arrivingToolIDs: Set<UUID> = []
@@ -95,6 +109,9 @@ private struct VirtualTranscript: NSViewRepresentable {
         state.scrollView = self
         drawsBackground = false
         borderType = .noBorder
+        let scroller = ReaderScroller()
+        scroller.track = { [weak self] action in self?.withReaderScroll(action) }
+        verticalScroller = scroller
         hasVerticalScroller = true
         verticalScrollElasticity = .allowed
         autohidesScrollers = true
@@ -229,47 +246,62 @@ private struct VirtualTranscript: NSViewRepresentable {
         reuse.removeAll()
     }
     @objc private func scrolled() {
+        let previousY = lastScrollY
+        lastScrollY = contentView.bounds.minY
         guard !updating else { return }
-        cancelScrollAnimation()
-        // Our own geometry corrections run under `updating`. Other offset changes
-        // include keyboard, wheel and scrollbar navigation; resizing isn't a scroll.
-        if initialized, contentSize == lastSize {
-            navigationAnchor = nil
-            readingAnchor = nil
-            let maximum = max(0, content.bounds.height - contentView.bounds.height)
-            let position = min(maximum, max(0, contentView.bounds.minY))
-            let previousPosition = state.anchor.flatMap { state.layout.position(of: $0) } ?? position
-            let scrolledDown = contentView.bounds.minY > max(0, previousPosition)
-            let distanceFromBottom = maximum - position
-            // A new turn resumes following only after a downward scroll reaches
-            // the bottom. Streaming/measurement corrections run under `updating`,
-            // and merely filling the reserved space leaves the reader in place.
-            // Any upward movement opts out, including a two-pixel keyboard or
-            // scrollbar move near the bottom. A no-op notification cannot opt in.
-            let upward = position < max(0, previousPosition)
-            let nearBottom = !upward && (state.followsLatest ? distanceFromBottom <= 40 :
-                scrolledDown && distanceFromBottom < 1)
-            if nearBottom { state.sentMessageID = nil }
-            if state.followsLatest != nearBottom { state.followsLatest = nearBottom }
+        // Bounds changes also come from TextKit, delayed hosting layout and
+        // rubber-band recovery. None of those is permission to change intent.
+        let eventType = NSApp.currentEvent?.type
+        if initialized, contentSize == lastSize,
+           trackingReaderScroll || eventType == .keyDown || eventType == .leftMouseDragged {
+            let delta = lastScrollY - previousY
+            if delta != 0 { readerScrolled(down: delta > 0) }
         }
         rememberAnchor()
         scheduleRefresh()
     }
-    override func scrollWheel(with event: NSEvent) {
-        // Stop before AppKit moves the clip view, including at a scroll boundary.
-        if scrollAnimation != nil {
-            cancelScrollAnimation()
-            navigationAnchor = nil
-            readingAnchor = nil
-        }
-        if event.scrollingDeltaY > 0 { state.followsLatest = false }
-        super.scrollWheel(with: event)
-        if event.scrollingDeltaY > 0 {
-            // Upward intent opts out even inside the usual near-bottom tolerance.
+
+    // Scope native scroller actions and keyboard scrolling, not layout work
+    // that happens to produce a bounds notification between reader actions.
+    func withReaderScroll(_ action: () -> Void) {
+        let wasTracking = trackingReaderScroll
+        trackingReaderScroll = true
+        defer { trackingReaderScroll = wasTracking }
+        action()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        withReaderScroll { super.keyDown(with: event) }
+    }
+
+    private func readerScrolled(down: Bool) {
+        cancelScrollAnimation()
+        navigationAnchor = nil
+        readingAnchor = nil
+        if !down {
             state.followsLatest = false
-            navigationAnchor = nil
-            readingAnchor = nil
-            rememberAnchor()
+        } else if content.bounds.height - contentView.bounds.maxY <= Self.bottomTolerance {
+            state.followsLatest = true
+            state.sentMessageID = nil
+        }
+        rememberAnchor()
+        scheduleRefresh()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        // Momentum keeps the gesture's direction. A spring rebound must not
+        // undo upward intent, nor opt a downward gesture out of following.
+        if event.momentumPhase.isEmpty, event.scrollingDeltaY != 0 {
+            wheelDirection = event.scrollingDeltaY
+        }
+        if event.scrollingDeltaY != 0 {
+            cancelScrollAnimation()
+            if wheelDirection > 0 { readerScrolled(down: false) }
+        }
+        super.scrollWheel(with: event)
+        // Check after delivery even at a boundary where no bounds event fires.
+        if event.scrollingDeltaY != 0, wheelDirection != 0 {
+            readerScrolled(down: wheelDirection < 0)
         }
     }
 

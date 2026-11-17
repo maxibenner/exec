@@ -2,81 +2,86 @@ import AppKit
 
 @MainActor
 struct LinkedTextTests {
-    func wordFadesOverlapWithoutQueuingOrChangingDuration() throws {
-        var fades = StreamedWordFades()
+    func lineFadesShareBatchEpochAndNeverQueue() throws {
+        let view = makeTextView()
         let burst = (0..<200).map { "word\($0)" }.joined(separator: " ")
-        fades.append(burst, after: 0, at: 10)
-        try expect(fades.entrances.count == 200)
-        try expect(fades.entrances[0].started == 10)
-        try expect(abs(fades.entrances[1].started - 10.025) < 0.000001)
-        try expect(fades.entrances.allSatisfy { $0.started <= 10.1 })
-        try expect(fades.entrances[100].started != fades.entrances[101].started)
-        let original = fades.entrances.map(\.started)
-        let next = burst + " next"
-        fades.append(next, after: (burst as NSString).length, at: 10.01)
-        try expect(Array(fades.entrances.dropLast().map(\.started)) == original)
-        // Even the previous burst's delayed words do not hold up this arrival.
-        try expect(fades.entrances.last?.started == 10.01)
+        view.update(LinkedText.attributed(AttributedString(burst)))
+        let lines = visualLines(in: view)
+        try expect(lines.count > 10 && !burst.contains("\n")) // Real wrapped lines, not paragraphs.
+        var fades = StreamedLineFades()
+        fades.edit(oldLength: 0, edit: RenderedTextEdit(from: "", to: burst), animatesNewText: true, at: 1)
+        fades.beginDrawing(lines[0], at: 10) { fresh in
+            lines.map { NSIntersectionRange(fresh, $0) }.filter { $0.length > 0 }
+        }
+        try expect(fades.entrances.map(\.range) == lines)
+        let starts = fades.entrances.map(\.started)
+        try expect(starts[0] == 10 && abs(starts[1] - 10.025) < 0.000001)
+        try expect(starts == starts.sorted() && starts.allSatisfy { $0 <= 10.1 })
+        fades.beginDrawing(lines.last!, at: 10.2) { [$0] }
+        try expect(fades.entrances.map(\.started) == starts) // Different dirty range, same batch epoch.
+        let next = burst + " continuation"
+        fades.edit(oldLength: (burst as NSString).length, edit: RenderedTextEdit(from: burst, to: next),
+                   animatesNewText: true, at: 10.35)
+        let fresh = fades.entrances.last!.range
+        fades.beginDrawing(fresh, at: 10.35) { [$0] }
+        try expect(Array(fades.entrances.dropLast().map(\.started)) == starts)
+        try expect(fades.entrances.last!.started == 10.35)
+        try expect(fresh == NSRange(location: (burst as NSString).length, length: 13))
+        // Every fresh line/continuation has a full 360 ms; none inherits an
+        // almost-complete fade or waits for earlier lines to finish.
         for entrance in fades.entrances {
-            try expect(abs(entrance.opacity(at: entrance.started) - 0) < 0.000001)
+            try expect(entrance.opacity(at: entrance.started) == 0)
             try expect(abs(entrance.opacity(at: entrance.started + 0.18) - 0.5) < 0.000001)
             try expect(entrance.opacity(at: entrance.started + 0.361) == 1)
         }
-        fades.expire(at: 10.361)
-        try expect(!fades.entrances.isEmpty)
-        try expect(fades.entrances.contains { $0.started == 10.01 })
-        fades.expire(at: 10.461)
+        fades.expire(at: 10.711)
         try expect(fades.entrances.isEmpty)
-        fades.append(next + " slow", after: (next as NSString).length, at: 20)
-        try expect(fades.entrances.count == 1)
-        try expect(abs(fades.entrances[0].opacity(at: 20.18) - 0.5) < 0.000001)
     }
 
-    func wordFadesPreservePartialWordsAndUnicode() throws {
-        var fades = StreamedWordFades()
-        fades.append("hel", after: 0, at: 1)
-        fades.append("hello world", after: 3, at: 1.05)
-        try expect(fades.entrances.count == 2)
-        try expect(fades.entrances[0].range == NSRange(location: 0, length: 5))
-        try expect(fades.entrances[0].started == 1)
-        try expect(fades.entrances[1].started == 1.05)
-        fades.expire(at: 2)
-        fades.append("hello worlds", after: 11, at: 2)
-        try expect(fades.entrances.count == 1) // Only the new continuation fades.
-        try expect(fades.entrances[0].range == NSRange(location: 11, length: 1))
+    func nativeWrappedLinesAndFreshContinuations() throws {
+        let view = makeTextView()
+        let layout = view.layoutManager as! StreamedTextLayoutManager
+        let container = view.textContainer!
+        let window = NSWindow(contentRect: view.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        defer { window.contentView = nil }
+        view.animatesStreamedText = true
+        view.revealsInitialStreamedText = true
+        let source = "All words on each visual line fade together without a left to right wipe. A partial last line"
+        view.update(LinkedText.attributed(AttributedString(source)))
+        window.contentView = view
+        let lines = visualLines(in: view)
+        try expect(lines.count >= 3)
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let firstGlyphs = layout.glyphRange(forCharacterRange: lines[0], actualCharacterRange: nil)
+        try expect(drawGlyphs(layout, container: container, range: firstGlyphs) == 0)
+        try expect(layout.fades.entrances.map(\.range) == lines)
+        let starts = layout.fades.entrances.map(\.started)
+        try expect(layout.fades.entrances.allSatisfy { !$0.waitingForPaint })
+        _ = drawGlyphs(layout, container: container, range:
+            layout.glyphRange(forCharacterRange: lines.last!, actualCharacterRange: nil))
+        try expect(layout.fades.entrances.map(\.started) == starts)
+        view.setSelectedRange(NSRange(location: 0, length: 8))
+        view.update(LinkedText.attributed(AttributedString(source + " continues")))
+        let fresh = layout.fades.entrances.last!
+        try expect(fresh.range == NSRange(location: (source as NSString).length, length: 10))
+        try expect(fresh.waitingForPaint && fresh.opacity(at: .greatestFiniteMagnitude) == 0)
+        _ = drawGlyphs(layout, container: container)
+        try expect(Array(layout.fades.entrances.prefix(lines.count).map(\.started)) == starts)
+        try expect(layout.fades.entrances.last!.started >= starts[0])
+        try expect(view.selectedRange() == NSRange(location: 0, length: 8))
+        try expect(view.string == source + " continues") // Full content exists before reveal.
 
+        // TextKit, not custom word/grapheme tokenization, owns Unicode shaping.
         for (partial, complete) in [("cafe", "cafe\u{301}"), ("👩", "👩🏽‍💻"), ("🇺", "🇺🇳"), ("1", "1️⃣")] {
-            fades.reset()
-            fades.append(partial, after: 0, at: 3)
-            fades.append(complete, after: (partial as NSString).length, at: 3.1)
-            try expect(fades.entrances.count == 1)
-            try expect(fades.entrances[0].started == 3)
-            try expect(fades.entrances[0].range == NSRange(location: 0, length: (complete as NSString).length))
+            view.update(LinkedText.attributed(AttributedString("History " + partial)))
+            view.update(LinkedText.attributed(AttributedString("History " + complete)))
+            _ = drawGlyphs(layout, container: container)
+            try expect(view.string == "History " + complete)
+            try expect(layout.fades.entrances.allSatisfy { NSMaxRange($0.range) <= view.textStorage!.length })
         }
-        fades.reset()
-        let unicode = "cafe\u{301} 👨‍👩‍👧‍👦 🇺🇳 你好世界 नमस्ते — hello!"
-        fades.append(unicode, after: 0, at: 4)
-        let text = unicode as NSString
-        try expect(fades.entrances.count > 6)
-        var previousEnd = 0
-        for entrance in fades.entrances {
-            try expect(entrance.range.location >= previousEnd)
-            try expect(text.rangeOfComposedCharacterSequences(for: entrance.range) == entrance.range)
-            previousEnd = NSMaxRange(entrance.range)
-        }
-        fades.reset()
-        let combiningSpace = "old \u{301}new"
-        fades.append(combiningSpace, after: 4, at: 5)
-        for entrance in fades.entrances {
-            try expect((combiningSpace as NSString).rangeOfComposedCharacterSequences(for: entrance.range) == entrance.range)
-        }
-        fades.reset()
-        fades.append("history continued", after: 7, at: 5)
-        try expect(fades.entrances.count == 1)
-        try expect(fades.entrances[0].range.location == 8)
     }
 
-    func nativeWordFadesPreserveLayoutAndStopOnDetach() throws {
+    func nativeLineFadesPreserveLayoutAndStopOnDetach() throws {
         let storage = NSTextStorage()
         let layout = StreamedTextLayoutManager()
         let container = NSTextContainer(size: NSSize(width: 240, height: 1000))
@@ -101,7 +106,7 @@ struct LinkedTextTests {
         try expect(view.string == source && storage.length == (source as NSString).length)
         try expect(view.selectedRange() == NSRange(location: 0, length: 4))
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            try expect(layout.fades.entrances.count > 5 && !layout.hasAnimationClock)
+            try expect(layout.fades.entrances.count == 1 && !layout.hasAnimationClock)
             _ = drawGlyphs(layout, container: container)
             try expect(layout.hasAnimationClock)
         } else {
@@ -148,7 +153,7 @@ struct LinkedTextTests {
             try expect(layout.fades.entrances.isEmpty)
             return
         }
-        try expect(layout.fades.entrances.count == 2 && !layout.hasAnimationClock)
+        try expect(layout.fades.entrances.count == 1 && !layout.hasAnimationClock)
         try await Task.sleep(for: .milliseconds(40)) // Layout/mount delay must consume no fade time.
         try expect(layout.fades.entrances.allSatisfy { $0.waitingForPaint && $0.opacity(at: 1_000_000) == 0 })
         window.contentView = view // Only now may AppKit schedule the first native draw.
@@ -157,7 +162,7 @@ struct LinkedTextTests {
         try expect(layout.hasAnimationClock && layout.fades.entrances.allSatisfy { !$0.waitingForPaint })
         view.animatesStreamedText = false
         view.update(LinkedText.attributed(AttributedString("First words!")))
-        try expect(Array(layout.fades.entrances.prefix(2).map(\.started)) == starts)
+        try expect(Array(layout.fades.entrances.prefix(1).map(\.started)) == starts)
         try expect(layout.hasAnimationClock)
         _ = drawGlyphs(layout, container: container) // Paint the final punctuation, too.
         try await Task.sleep(for: .milliseconds(500))
@@ -166,26 +171,56 @@ struct LinkedTextTests {
     }
 
     func renderedEditsRetainFadesAndCodeAppendPositions() throws {
-        var fades = StreamedWordFades()
+        var fades = StreamedLineFades()
         let old = "Before `partial"
-        fades.append(old, after: 7, at: 10)
+        fades.edit(oldLength: 7, edit: RenderedTextEdit(from: "Before ", to: old), animatesNewText: true, at: 10)
+        fades.beginDrawing(NSRange(location: 0, length: 15), at: 10) { [$0] }
         let new = "Before partial"
-        fades.edit(from: old, to: new, edit: RenderedTextEdit(from: old, to: new), animatesNewText: false, at: 10.1)
+        fades.edit(oldLength: (old as NSString).length, edit: RenderedTextEdit(from: old, to: new),
+                   animatesNewText: false, at: 10.1)
         try expect(fades.entrances.count == 1)
         try expect(fades.entrances[0].range == NSRange(location: 7, length: 7))
-        try expect(fades.entrances[0].started == 10.025)
+        try expect(fades.entrances[0].started == 10)
         let code = "swift\nlet val\n", appended = "swift\nlet value = 1\n"
         fades.reset()
-        fades.append(code, after: 0, at: 20)
+        fades.edit(oldLength: 0, edit: RenderedTextEdit(from: "", to: code), animatesNewText: true, at: 20)
+        fades.beginDrawing(NSRange(location: 0, length: 14), at: 20) { _ in
+            [NSRange(location: 0, length: 6), NSRange(location: 6, length: 8)]
+        }
         let edit = RenderedTextEdit(from: code, to: appended)
         try expect(edit.oldRange == NSRange(location: 13, length: 0))
-        fades.edit(from: code, to: appended, edit: edit, animatesNewText: true, at: 20.1)
-        try expect(fades.entrances.contains { $0.range == NSRange(location: 10, length: 5) && $0.started == 20.05 })
-        try expect(fades.entrances.contains { $0.range == NSRange(location: 18, length: 1) && $0.waitingForPaint })
-        try expect(fades.entrances.allSatisfy { NSMaxRange($0.range) < (appended as NSString).length })
+        fades.edit(oldLength: (code as NSString).length, edit: edit, animatesNewText: true, at: 20.1)
+        try expect(fades.entrances.contains { $0.range == NSRange(location: 6, length: 7) && $0.started == 20.025 })
+        try expect(fades.entrances.contains { $0.range == NSRange(location: 13, length: 6) && $0.waitingForPaint })
+        try expect(fades.entrances.contains { $0.range == NSRange(location: 19, length: 1) && $0.started == 20.025 })
     }
 
-    private func drawGlyphs(_ layout: NSLayoutManager, container: NSTextContainer) -> Int {
+    private func makeTextView() -> LinkedText.TextView {
+        let storage = NSTextStorage()
+        let layout = StreamedTextLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 240, height: 1000))
+        storage.addLayoutManager(layout); layout.addTextContainer(container)
+        let view = LinkedText.TextView(frame: NSRect(x: 0, y: 0, width: 240, height: 1000), textContainer: container)
+        view.textContainerInset = .zero
+        container.lineFragmentPadding = 0
+        container.widthTracksTextView = true
+        container.heightTracksTextView = false
+        view.isVerticallyResizable = false
+        view.isHorizontallyResizable = false
+        return view
+    }
+
+    private func visualLines(in view: LinkedText.TextView) -> [NSRange] {
+        let layout = view.layoutManager!, container = view.textContainer!
+        layout.ensureLayout(for: container)
+        var lines: [NSRange] = []
+        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { _, _, _, range, _ in
+            lines.append(layout.characterRange(forGlyphRange: range, actualGlyphRange: nil))
+        }
+        return lines
+    }
+
+    private func drawGlyphs(_ layout: NSLayoutManager, container: NSTextContainer, range: NSRange? = nil) -> Int {
         layout.ensureLayout(for: container)
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 240, pixelsHigh: 200,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
@@ -194,7 +229,7 @@ struct LinkedTextTests {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
         context.cgContext.clear(CGRect(x: 0, y: 0, width: 240, height: 200))
-        layout.drawGlyphs(forGlyphRange: layout.glyphRange(for: container), at: .zero)
+        layout.drawGlyphs(forGlyphRange: range ?? layout.glyphRange(for: container), at: .zero)
         context.flushGraphics()
         NSGraphicsContext.restoreGraphicsState()
         return (0..<200).reduce(0) { total, y in

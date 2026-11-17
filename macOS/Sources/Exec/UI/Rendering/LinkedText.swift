@@ -194,7 +194,7 @@ struct LinkedText: NSViewRepresentable {
             defer { changingLayout = wasChanging }
             let selection = selectedRange()
             let edit = RenderedTextEdit(from: string, to: text.string)
-            streamedLayout?.prepareEdit(from: string, to: text.string, edit: edit, animatesNewText: canAnimate)
+            streamedLayout?.prepareEdit(oldLength: (string as NSString).length, edit: edit, animatesNewText: canAnimate)
             textStorage?.setAttributedString(text)
             completeLayout()
             // Streaming updates must not clear an in-progress selection.
@@ -335,25 +335,27 @@ struct RenderedTextEdit {
     }
 }
 
-/// Timing is independent of model cadence: each arrival gets its own bounded
-/// stagger, never a place in a queue behind earlier words.
-struct StreamedWordFades {
+/// Each arrival starts on its first paint, split by actual TextKit visual lines.
+/// Lines fade uniformly, with a bounded ordered delay, never a serial queue.
+struct StreamedLineFades {
     static let duration: TimeInterval = 0.36
     static let stagger: TimeInterval = 0.025
     static let maximumDelay: TimeInterval = 0.1
 
     struct Entrance {
         var range: NSRange
-        var started: TimeInterval
-        var waitingForPaint = false
+        let batch: Int
+        var started: TimeInterval = 0
+        var waitingForPaint = true
 
         func opacity(at now: TimeInterval) -> CGFloat {
             guard !waitingForPaint else { return 0 }
-            return min(1, max(0, (now - started) / StreamedWordFades.duration))
+            return min(1, max(0, (now - started) / StreamedLineFades.duration))
         }
     }
 
     private(set) var entrances: [Entrance] = []
+    private var nextBatch = 0
 
     mutating func expire(at now: TimeInterval) {
         entrances.removeAll { !$0.waitingForPaint && now - $0.started >= Self.duration }
@@ -361,19 +363,32 @@ struct StreamedWordFades {
 
     mutating func reset() { entrances.removeAll(keepingCapacity: true) }
 
-    mutating func beginDrawing(_ range: NSRange, at now: TimeInterval) {
-        for index in entrances.indices where entrances[index].waitingForPaint &&
-            NSIntersectionRange(entrances[index].range, range).length > 0 {
-            entrances[index].started += now // Pending starts contain only the stagger.
-            entrances[index].waitingForPaint = false
+    mutating func beginDrawing(_ range: NSRange, at now: TimeInterval,
+                               lines: (NSRange) -> [NSRange]) {
+        let batches = Set(entrances.filter {
+            $0.waitingForPaint && NSIntersectionRange($0.range, range).length > 0
+        }.map(\.batch))
+        // Start the whole batch on one epoch, even if AppKit draws separate
+        // dirty ranges. Later drawing must not reschedule its remaining lines.
+        for batch in batches {
+            var index = 0
+            entrances = entrances.flatMap { entrance -> [Entrance] in
+                guard entrance.batch == batch else { return [entrance] }
+                return lines(entrance.range).map { range in
+                    defer { index += 1 }
+                    return Entrance(range: range, batch: batch,
+                        started: now + min(Double(index) * Self.stagger, Self.maximumDelay),
+                        waitingForPaint: false)
+                }
+            }
         }
     }
 
-    mutating func edit(from old: String, to new: String, edit: RenderedTextEdit,
+    mutating func edit(oldLength: Int, edit: RenderedTextEdit,
                        animatesNewText: Bool, at now: TimeInterval) {
-        let oldLength = (old as NSString).length
-        // Remap surviving glyphs rather than cancelling all fades when Markdown
-        // removes delimiters or changes a block. Never replay unchanged history.
+        expire(at: now)
+        // Retain prefix/suffix timing through rendered Markdown edits. A new
+        // continuation gets its own fade, not the nearly finished previous one.
         if edit.oldRange.location != oldLength || edit.oldRange.length != 0 {
             entrances = entrances.flatMap { entrance -> [Entrance] in
                 let prefix = NSIntersectionRange(entrance.range, NSRange(location: 0, length: edit.oldRange.location))
@@ -390,84 +405,28 @@ struct StreamedWordFades {
             }
         }
         if animatesNewText, edit.newRange.length > 0,
-           old.isEmpty || edit.newRange.location > 0 || NSMaxRange(edit.oldRange) < oldLength {
-            append((new as NSString).substring(to: NSMaxRange(edit.newRange)),
-                   after: edit.newRange.location, at: now, waitingForPaint: true)
+           oldLength == 0 || edit.newRange.location > 0 || NSMaxRange(edit.oldRange) < oldLength {
+            entrances.append(Entrance(range: edit.newRange, batch: nextBatch))
+            nextBatch += 1
         }
         entrances.sort { $0.range.location < $1.range.location }
     }
-
-    mutating func append(_ string: String, after oldLength: Int, at now: TimeInterval,
-                         waitingForPaint: Bool = false) {
-        expire(at: now)
-        let text = string as NSString
-        guard oldLength < text.length else { return }
-        // Re-tokenize only the trailing whitespace-delimited segment and the
-        // addition. It may complete a word, combining sequence or ZWJ emoji.
-        let separator = text.rangeOfCharacter(from: .whitespacesAndNewlines, options: .backwards,
-                                              range: NSRange(location: 0, length: oldLength))
-        // Even a space can acquire a combining mark; never start inside that
-        // composed sequence when scanning the new suffix.
-        let start = separator.location == NSNotFound ? 0
-            : NSMaxRange(text.rangeOfComposedCharacterSequences(for: separator))
-        let suffix = NSRange(location: start, length: text.length - start)
-        var slot = 0
-        for range in Self.wordRanges(in: text, range: suffix) {
-            guard NSMaxRange(range) > oldLength else { continue }
-            if range.location < oldLength {
-                // An in-flight partial word keeps its original timing. After
-                // it finishes, only the newly arrived suffix gets a fresh fade.
-                if let index = entrances.lastIndex(where: { NSIntersectionRange($0.range, range).length > 0 }) {
-                    entrances[index].range.length = NSMaxRange(range) - entrances[index].range.location
-                    continue
-                }
-            }
-            // Reuse five slots within this burst rather than making its tail
-            // one whole-chunk fade or building an arbitrarily long backlog.
-            let slotCount = Int(Self.maximumDelay / Self.stagger) + 1
-            let delay = Double(slot % slotCount) * Self.stagger
-            let addition = text.rangeOfComposedCharacterSequences(for:
-                NSRange(location: max(oldLength, range.location), length: NSMaxRange(range) - max(oldLength, range.location)))
-            entrances.append(Entrance(range: addition, started: (waitingForPaint ? 0 : now) + delay,
-                                      waitingForPaint: waitingForPaint))
-            slot += 1
-        }
-    }
-
-    private static func wordRanges(in text: NSString, range suffix: NSRange) -> [NSRange] {
-        var ranges: [NSRange] = []
-        func addSymbols(_ range: NSRange) {
-            text.enumerateSubstrings(in: range, options: .byComposedCharacterSequences) { substring, range, _, _ in
-                if let substring, !substring.allSatisfy(\.isWhitespace) { ranges.append(range) }
-            }
-        }
-        // Foundation word boundaries cover languages without spaces. Fill the
-        // gaps with whole graphemes so emoji/punctuation also enter safely.
-        var cursor = suffix.location
-        text.enumerateSubstrings(in: suffix, options: [.byWords, .substringNotRequired]) { _, range, _, _ in
-            addSymbols(NSRange(location: cursor, length: range.location - cursor))
-            ranges.append(range)
-            cursor = NSMaxRange(range)
-        }
-        addSymbols(NSRange(location: cursor, length: NSMaxRange(suffix) - cursor))
-        return ranges
-    }
 }
 
-/// Draw only new words with partial-opacity entrances. TextKit still owns the
-/// complete storage, selection, accessibility, glyph shaping and geometry.
+/// Opacity affects only fresh glyphs. TextKit immediately owns the complete
+/// storage, selection, accessibility, shaping and geometry; no reveal mask.
 final class StreamedTextLayoutManager: NSLayoutManager {
-    private(set) var fades = StreamedWordFades()
+    private(set) var fades = StreamedLineFades()
     private var timer: Timer?
     var hasAnimationClock: Bool { timer != nil }
 
-    func prepareEdit(from old: String, to new: String, edit: RenderedTextEdit, animatesNewText: Bool) {
+    func prepareEdit(oldLength: Int, edit: RenderedTextEdit, animatesNewText: Bool) {
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             cancelEntrances()
             return
         }
         invalidateEntrances()
-        fades.edit(from: old, to: new, edit: edit, animatesNewText: animatesNewText,
+        fades.edit(oldLength: oldLength, edit: edit, animatesNewText: animatesNewText,
                    at: ProcessInfo.processInfo.systemUptime)
     }
 
@@ -514,7 +473,16 @@ final class StreamedTextLayoutManager: NSLayoutManager {
         }
         var cursor = range.location
         let now = ProcessInfo.processInfo.systemUptime
-        fades.beginDrawing(characterRange(forGlyphRange: range, actualGlyphRange: nil), at: now)
+        fades.beginDrawing(characterRange(forGlyphRange: range, actualGlyphRange: nil), at: now) { fresh in
+            var lines: [NSRange] = []
+            let glyphs = self.glyphRange(forCharacterRange: fresh, actualCharacterRange: nil)
+            self.enumerateLineFragments(forGlyphRange: glyphs) { _, _, _, line, _ in
+                let characters = self.characterRange(forGlyphRange: line, actualGlyphRange: nil)
+                let portion = NSIntersectionRange(fresh, characters)
+                if portion.length > 0 { lines.append(portion) }
+            }
+            return lines
+        }
         startClockIfNeeded()
         for entrance in fades.entrances {
             let fresh = NSIntersectionRange(NSRange(location: cursor, length: NSMaxRange(range) - cursor),

@@ -302,7 +302,7 @@ import SwiftUI
         }
         // Rows outside the viewport must still be measured when revisited after
         // a width change, rather than treating retained estimates as final sizes.
-        view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[10] + 8))
+        view.withReaderScroll { view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[10] + 8)) }
         view.refresh()
         try await settle(view)
         try expect(!state.followsLatest)
@@ -534,7 +534,7 @@ import SwiftUI
         view.layoutSubtreeIfNeeded(); view.refresh()
         let bottom = view.documentView!.bounds.height - view.contentView.bounds.height
         // Even a small upward move opts out; refresh must not undo that intent.
-        view.contentView.setBoundsOrigin(NSPoint(x: 0, y: bottom - 15))
+        view.withReaderScroll { view.contentView.setBoundsOrigin(NSPoint(x: 0, y: bottom - 15)) }
         view.refresh()
         let remaining = view.documentView!.bounds.height - view.contentView.bounds.maxY
         try expect(!state.followsLatest && abs(remaining - 15) < 1)
@@ -670,7 +670,7 @@ import SwiftUI
         view.layoutSubtreeIfNeeded(); view.refresh()
         try expect(view.mountedRowCount > 0 && view.mountedRowCount < 40)
         try expect(abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 2)
-        view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[500] + 8))
+        view.withReaderScroll { view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[500] + 8)) }
         view.refresh()
         try expect(!state.followsLatest)
         let anchor = state.layout.anchor(at: view.contentView.bounds.minY)!

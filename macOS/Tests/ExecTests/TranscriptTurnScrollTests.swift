@@ -77,7 +77,7 @@ import AppKit
         messages[1].text = String(repeating: "Response line.\n\n", count: 80)
         update(view, messages)
         try aligned(sent, in: view)
-        view.contentView.scroll(to: NSPoint(x: 0, y: 180))
+        view.withReaderScroll { view.contentView.scroll(to: NSPoint(x: 0, y: 180)) }
         view.reflectScrolledClipView(view.contentView)
         view.refresh()
         let y = view.contentView.bounds.minY
@@ -119,7 +119,7 @@ import AppKit
                 try expect(!state.followsLatest && state.sentMessageID == sent.id)
             }
             func scroll(to y: CGFloat) {
-                view.contentView.scroll(to: NSPoint(x: 0, y: y))
+                view.withReaderScroll { view.contentView.scroll(to: NSPoint(x: 0, y: y)) }
                 view.reflectScrolledClipView(view.contentView)
                 view.refresh()
             }

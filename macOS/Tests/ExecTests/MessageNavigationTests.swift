@@ -90,12 +90,12 @@ import AppKit
 
         // A wheel/scrollbar change discards the keyboard cursor. Navigate relative
         // to the new viewport, not the message visited before the manual scroll.
-        view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[20] + 5))
+        view.withReaderScroll { view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[20] + 5)) }
         view.reflectScrolledClipView(view.contentView)
         settle(view)
         view.navigateSentMessage(.next)
         try aligned(22, in: view)
-        view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[20] + 5))
+        view.withReaderScroll { view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[20] + 5)) }
         view.reflectScrolledClipView(view.contentView)
         settle(view)
         view.navigateSentMessage(.previous)
