@@ -79,6 +79,11 @@ impl State {
                 .expect("validated configuration"),
             model: self.record.model.clone(),
             workspace: self.record.workspace.clone(),
+            can_change_workspace: !self.record.workspace_locked()
+                && self.active.is_none()
+                && !self.updating
+                && !self.disposed
+                && self.storage_error.is_none(),
             messages: self.record.messages.clone(),
             pending_input: self.record.pending_input.clone(),
             metadata: self.record.metadata.clone(),
@@ -112,6 +117,19 @@ pub struct Conversation {
     events: EventHub,
     input_arrived: Notify,
 }
+/// Keep an idle descendant from starting work across a parent's durable reset.
+/// Dropping also wakes observers waiting for an in-flight mutation to settle.
+pub(crate) struct IdleReservation(Arc<Conversation>);
+impl Drop for IdleReservation {
+    fn drop(&mut self) {
+        let mut state = self.0.state();
+        state.updating = false;
+        self.0.events.send(Arc::new(ServiceEvent::Snapshot {
+            snapshot: state.snapshot(self.0.provider.as_ref()),
+        }));
+    }
+}
+
 pub struct Submission {
     pub operation_id: String,
     /// Dropping the receipt only detaches. Use Conversation::cancel to stop work.
@@ -359,10 +377,49 @@ impl Conversation {
             .iter()
             .filter(|d| record.metadata.tool_enabled(&d.name))
     }
+    pub(crate) fn reserve_idle(self: &Arc<Self>) -> Result<IdleReservation> {
+        let mut state = self.state();
+        if state.disposed || state.active.is_some() || state.updating {
+            return Err(Error::Busy);
+        }
+        state.updating = true;
+        Ok(IdleReservation(self.clone()))
+    }
+    /// Called under the manager's catalog lock after checking delegation ownership.
+    /// Retain descendant reservations through both the save and publication.
+    pub(crate) fn start_clear(
+        self: &Arc<Self>,
+        descendants: Vec<IdleReservation>,
+    ) -> Result<tokio::task::JoinHandle<Result<ConversationSnapshot>>> {
+        self.start_mutation(
+            |record| {
+                record.messages.clear();
+                record.pending_input.clear();
+                record.operation = None;
+                record.executing_tool_id = None;
+                record.provider_state = None;
+                record.usage = None;
+                // Drop ownership only; forks/other sessions may still use these files.
+                record.resources.clear();
+                record.metadata.activity_at = SessionMetadata::activity();
+                Ok(())
+            },
+            descendants,
+        )
+    }
     pub(crate) async fn mutate_record(
         self: &Arc<Self>,
         mutate: impl FnOnce(&mut ConversationRecord) -> Result<()>,
     ) -> Result<ConversationSnapshot> {
+        self.start_mutation(mutate, vec![])?
+            .await
+            .map_err(|_| Error::Internal)?
+    }
+    fn start_mutation(
+        self: &Arc<Self>,
+        mutate: impl FnOnce(&mut ConversationRecord) -> Result<()>,
+        keep_idle: Vec<IdleReservation>,
+    ) -> Result<tokio::task::JoinHandle<Result<ConversationSnapshot>>> {
         let record = {
             let mut s = self.state();
             if s.disposed {
@@ -381,7 +438,7 @@ impl Conversation {
             record
         };
         let conversation = self.clone();
-        tokio::spawn(async move {
+        Ok(tokio::spawn(async move {
             let saved = AssertUnwindSafe(async {
                 if let Some(persist) = &conversation.persist {
                     persist.save(record.clone()).await?;
@@ -391,22 +448,24 @@ impl Conversation {
             .catch_unwind()
             .await
             .unwrap_or(Err(Error::Internal));
-            let mut state = conversation.state();
-            state.updating = false;
-            if saved.is_ok() {
-                state.record = record;
-            } else {
-                state.storage_error = Some(Error::Storage.to_string());
-            }
-            let snapshot = state.snapshot(conversation.provider.as_ref());
-            conversation.events.send(Arc::new(ServiceEvent::Snapshot {
-                snapshot: snapshot.clone(),
-            }));
+            let snapshot = {
+                let mut state = conversation.state();
+                state.updating = false;
+                if saved.is_ok() {
+                    state.record = record;
+                } else {
+                    state.storage_error = Some(Error::Storage.to_string());
+                }
+                let snapshot = state.snapshot(conversation.provider.as_ref());
+                conversation.events.send(Arc::new(ServiceEvent::Snapshot {
+                    snapshot: snapshot.clone(),
+                }));
+                snapshot
+            };
+            drop(keep_idle);
             saved.map_err(|_| Error::Storage)?;
             Ok(snapshot)
-        })
-        .await
-        .map_err(|_| Error::Internal)?
+        }))
     }
     /// Subscription and initial snapshot are taken under the same lock as events.
     /// Lagging observers must reconnect explicitly; they can never block execution.

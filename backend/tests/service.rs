@@ -116,6 +116,7 @@ async fn workspace_updates_validate_paths_publish_snapshots_and_lock_after_accep
     let canonical = fs::canonicalize(target.path()).unwrap();
     assert_eq!(updated["workspace"], canonical.to_str().unwrap());
     assert_eq!(updated["configuration"]["instructionsFrozen"], false);
+    assert_eq!(updated["canChangeWorkspace"], true);
     let published = tokio::time::timeout(Duration::from_secs(5), events.next())
         .await
         .unwrap()
@@ -132,6 +133,75 @@ async fn workspace_updates_validate_paths_publish_snapshots_and_lock_after_accep
         Error::Api(409)
     );
     f.service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn workspace_updates_reject_active_failed_and_interrupted_first_turns() {
+    for cancel in [false, true] {
+        let entered = CancellationToken::new();
+        let ready = entered.clone();
+        let release = CancellationToken::new();
+        let held = release.clone();
+        let provider = FakeProvider::new(vec![script(move |request| {
+            let ready = ready.clone();
+            let held = held.clone();
+            Box::pin(futures_util::stream::once(async move {
+                ready.cancel();
+                tokio::select! {
+                    biased;
+                    _ = request.cancel.cancelled() => Err(Error::Cancelled),
+                    _ = held.cancelled() => Err(Error::Provider(exec_agent::ProviderFailure::Request)),
+                }
+            }))
+        })]);
+        let f = setup(provider.clone(), vec![]).await;
+        let c = f
+            .client
+            .create("fake", f.root.path().to_str().unwrap())
+            .await
+            .unwrap();
+        assert!(c.can_change_workspace);
+        let path = format!("/v1/conversations/{}/workspace", c.id);
+        let body = json!({"workspace":f.root.path()});
+        let operation = f.client.submit(&c.id, "first").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), entered.cancelled())
+            .await
+            .unwrap();
+        let active = f
+            .client
+            .call("GET", &format!("/v1/conversations/{}", c.id), None)
+            .await
+            .unwrap();
+        assert_eq!(active["canChangeWorkspace"], false);
+        assert_eq!(
+            f.client
+                .call("PUT", &path, Some(body.clone()))
+                .await
+                .unwrap_err(),
+            Error::Api(409)
+        );
+        if cancel {
+            f.client.cancel(&c.id, &operation).await.unwrap();
+        } else {
+            release.cancel();
+        }
+        let finished = terminal(&f.client, &c.id).await;
+        assert!(!finished.can_change_workspace);
+        assert_eq!(
+            finished.operation.unwrap().state,
+            if cancel {
+                OperationState::Interrupted
+            } else {
+                OperationState::Failed
+            }
+        );
+        assert_eq!(
+            f.client.call("PUT", &path, Some(body)).await.unwrap_err(),
+            Error::Api(409)
+        );
+        assert_eq!(provider.count(), 1);
+        f.service.close().await.unwrap();
+    }
 }
 
 #[tokio::test]

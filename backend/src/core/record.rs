@@ -37,6 +37,17 @@ pub(super) fn required_option<'de, T: Deserialize<'de>, D: serde::Deserializer<'
     Option::deserialize(deserializer)
 }
 impl ConversationRecord {
+    /// Any accepted input or operation permanently binds its workspace, including
+    /// failed/interrupted turns and legacy records with frozen instructions.
+    pub(crate) fn workspace_locked(&self) -> bool {
+        self.configuration
+            .as_ref()
+            .is_some_and(|config| config.instructions_frozen)
+            || !self.messages.is_empty()
+            || !self.pending_input.is_empty()
+            || self.operation.is_some()
+    }
+
     pub fn validate(&self) -> Result<()> {
         self.metadata.validate()?;
         if self.usage.as_ref().is_some_and(|usage| !usage.valid()) {

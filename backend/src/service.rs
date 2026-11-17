@@ -852,6 +852,7 @@ async fn handle(
                 "model",
                 "workspace",
                 "fork",
+                "clear",
                 "compact",
                 "images",
                 "files",
@@ -912,6 +913,24 @@ async fn handle(
             .header("X-Content-Type-Options", "nosniff")
             .body(Body::from_stream(frames))
             .unwrap());
+    }
+    if method == "POST" && action == Some("clear") {
+        let _: Empty = body(request).await?;
+        if host.stop.is_cancelled() {
+            return Err(ApiError(503, "Service is stopping."));
+        }
+        let snapshot = options
+            .manager
+            .clear(parts[0])
+            .await
+            .map_err(|error| match error {
+                Error::Invalid("Conversation not found.") => {
+                    ApiError(404, "Conversation not found.")
+                }
+                Error::Storage => ApiError(409, "Conversation requires storage recovery."),
+                other => ApiError::from(other),
+            })?;
+        return Ok(json_response(200, snapshot));
     }
     let conversation = options
         .manager

@@ -330,7 +330,10 @@ pub(crate) fn permits(method: &str, path: &str) -> bool {
     parts.len() == 5
         && match method {
             "GET" => parts[4] == "sync",
-            "POST" => matches!(parts[4], "turns" | "steer" | "cancel" | "approvals"),
+            "POST" => matches!(
+                parts[4],
+                "turns" | "steer" | "cancel" | "approvals" | "clear"
+            ),
             "PUT" => matches!(parts[4], "settings" | "model" | "title" | "workspace"),
             _ => false,
         }
@@ -470,6 +473,16 @@ mod tests {
         assert!(!permits("POST", &route));
         assert!(!permits("PUT", &format!("{route}?override=true")));
         assert!(!permits("PUT", "/v1/conversations/not-an-id/workspace"));
+    }
+
+    #[test]
+    fn clear_is_scoped_to_an_existing_conversation_route() {
+        let route = format!("/v1/conversations/{}/clear", crate::core::new_id());
+        assert!(permits("POST", &route));
+        assert!(!permits("GET", &route));
+        assert!(!permits("PUT", &route));
+        assert!(!permits("POST", &format!("{route}?force=true")));
+        assert!(!permits("POST", "/v1/conversations/not-an-id/clear"));
     }
 
     #[test]

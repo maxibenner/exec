@@ -550,21 +550,49 @@ impl AgentManager {
         let workspace = canonical_workspace(workspace).await?;
         conversation
             .mutate_record(move |record| {
-                let config = record.configuration.as_mut().unwrap();
-                if config.instructions_frozen
-                    || !record.messages.is_empty()
-                    || !record.pending_input.is_empty()
-                    || record.operation.is_some()
-                {
+                if record.workspace_locked() {
                     return Err(Error::WorkspaceLocked);
                 }
                 record.workspace = workspace;
-                config.workspace_instructions = None;
+                record
+                    .configuration
+                    .as_mut()
+                    .unwrap()
+                    .workspace_instructions = None;
                 record.provider_state = None;
                 record.usage = None;
                 Ok(())
             })
             .await
+    }
+    /// Reset only conversation context, never configuration or shared asset files.
+    /// Reserve idle descendants under the catalog lock so delegation and reset
+    /// cannot cross, even through an already acquired Conversation handle.
+    pub async fn clear(&self, id: &str) -> Result<ConversationSnapshot> {
+        let task = {
+            let catalog = self.catalog.lock().unwrap();
+            if catalog.closed || catalog.account_busy {
+                return Err(Error::Busy);
+            }
+            let conversation = catalog
+                .conversations
+                .get(id)
+                .ok_or(Error::Invalid("Conversation not found."))?;
+            let family = Self::deletion_family(&catalog, id);
+            if family.iter().any(|id| catalog.mutating.contains(id))
+                || conversation.busy()
+                || Self::delegation_owned(&catalog, conversation)
+            {
+                return Err(Error::Busy);
+            }
+            let mut descendants = Vec::new();
+            for child_id in family.iter().skip(1) {
+                descendants.push(catalog.conversations[child_id].reserve_idle()?);
+            }
+            conversation.start_clear(descendants)?
+        };
+        // The owned save retains all reservations if this caller disconnects.
+        task.await.map_err(|_| Error::Internal)?
     }
     pub async fn fork(
         self: &Arc<Self>,

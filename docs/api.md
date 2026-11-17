@@ -144,6 +144,7 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | PUT | `/v1/conversations/:id/title` | `{title}` → saved idle snapshot |
 | PUT | `/v1/conversations/:id/model` | `{model}` → saved idle snapshot |
 | PUT | `/v1/conversations/:id/workspace` | `{workspace}` → saved idle snapshot, only before the first accepted turn; otherwise 409 |
+| POST | `/v1/conversations/:id/clear` | `{}` → `200 ConversationSnapshot`, after durable idle-only context/transcript reset in the same session |
 | POST | `/v1/conversations/:id/fork` | `{}` → `201` independent saved snapshot of the transcript, including during an active turn |
 | DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after durable deletion; active work returns 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
@@ -156,9 +157,53 @@ Images may be uploaded while a turn is active, then queued through `/steer` as c
 
 Missing conversations return 404; invalid requests 400; busy/storage-blocked submissions and stale approvals/cancellations 409. Approval decisions are single use, including races. Cancellation acceptance is not cleanup completion; the acknowledgement echoes the exact operation accepted for cancellation.
 
-A snapshot has `id`, `model`, `workspace`, `configuration`, `messages`, `pendingInput`, `metadata`, `usage`, `contextUsage`, `resources`, `operation`, `approval`, `activeToolCallID`, and `storageError`. Nullable fields are serialized explicitly as null. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in [`backend/src/core/types.rs`](../backend/src/core/types.rs); command validation is in [`backend/src/service.rs`](../backend/src/service.rs).
+A snapshot has `id`, `model`, `workspace`, `canChangeWorkspace`, `configuration`, `messages`, `pendingInput`, `metadata`, `usage`, `contextUsage`, `resources`, `operation`, `approval`, `activeToolCallID`, and `storageError`. Nullable fields are serialized explicitly as null. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in [`backend/src/core/types.rs`](../backend/src/core/types.rs); command validation is in [`backend/src/service.rs`](../backend/src/service.rs).
 
 **Turn acceptance is in-memory, not a durable receipt.** A 202 can precede the input checkpoint; a lost response can happen after effects. No idempotent replay mechanism is advertised. Terminal success is published only after its final checkpoint succeeds. Intermediate snapshots/events are not durability receipts.
+
+## Clear and fork
+
+`POST /v1/conversations/:id/clear` requires the JSON body `{}` and returns
+`200 ConversationSnapshot` only after the cleared record is saved. It keeps the same
+session ID; it does not submit `/clear` as a turn, call a provider, replay input/tools,
+create a session, or delete child sessions. The encrypted remote route also permits it.
+
+The returned snapshot has `messages:[]`, `pendingInput:[]`, `resources:[]`, and null
+`operation`, `approval`, `activeToolCallID`, `usage`, `contextUsage`, and `storageError`.
+Opaque provider continuation state and persisted tool-execution state are cleared too.
+`model`, `workspace`, the entire `configuration` (system prompt, reasoning effort, search
+model, auto approval, and frozen project instructions), and metadata (title, manual naming,
+parent provenance, and disabled tools) are preserved; `metadata.activityAt` is refreshed.
+Frozen instructions stay frozen even with an empty transcript: clearing a used session
+never unlocks its workspace or reloads AGENTS.md. An unused, unfrozen session can still
+change workspace, as reported by advisory `canChangeWorkspace`.
+
+Clear requires the session and all descendants to be idle, with no upload/settings/catalog
+mutation underway. A child still owned by an active parent delegation cannot be cleared,
+even if that child has finished its own operation. These conflicts return
+`409 {"error":"Conversation is busy."}` without cancellation, waiting for work, or changes.
+Cancellation is not sufficient until cleanup finishes. Idle descendants are reserved
+through the reset so no child work can cross its durable publication. Missing sessions
+return 404; invalid bodies/IDs return 400. A storage-blocked session or failed clear save
+returns `409 {"error":"Conversation requires storage recovery."}`; the previous transcript
+remains published with `storageError` set, and subsequent work/writes are blocked. An
+accepted clear save finishes if the caller disconnects; do not automatically retry an
+uncertain command.
+
+Clear drops this session's resource references only. It does **not** remove attachment,
+image, shell-log, or workspace files, which other sessions/forks may still reference.
+Observers receive a full `snapshot` frame after settlement. `/sync` with an old `after`
+anchor returns `reset:true`, `offset:0`, `total:0`, `prefix:null`, and the empty snapshot
+when cleared, including repeated requests with the same cursor. Clients must replace,
+not append, on reset. A stale `before` anchor returns 409; refresh from `/sync` instead.
+A new transcript with the old message count still resets an old cursor because message
+IDs differ.
+
+Fork remains independent: an idle fork copies transcript, provider context, usage,
+configuration, settings, tool selection, workspace, and resource references, without
+inference or replay. It gets a new ID and fork title and is not owned by the source's
+parent delegation. Active forks omit pending input and unfinished work, and discard
+opaque provider state that could reference omitted calls; they do not resume that work.
 
 ## Settings and instructions
 
@@ -176,6 +221,17 @@ does not lock it. A concurrent workspace change and send cannot mix folders with
 project instructions: one may return 409 before acceptance. No operation is retried.
 The endpoint is also available over the encrypted remote route; existing frontend flows
 remain compatible and need not expose it.
+
+Clients (including Swift) can use snapshot `canChangeWorkspace` to enable workspace
+selection. It is false if instructions are frozen, messages or pending input exist, any
+operation has been accepted (including failed/interrupted operations), or the conversation
+is currently working, updating, closed, or storage-blocked. This field is advisory, not a
+reservation: the PUT rechecks eligibility atomically and may return 409 after a concurrent
+send or update. Successful PUT returns `200 ConversationSnapshot`; invalid paths/bodies
+return 400, unknown conversations return 404, and busy or permanently locked conversations
+return 409. Existing clients can conservatively check `configuration.instructionsFrozen`,
+`messages`, `pendingInput`, `operation`, and `storageError`; collection summaries omit
+`messages`, so prefer `canChangeWorkspace` rather than inferring eligibility from a summary.
 
 Snapshots include `configuration: {settings, instructionsFrozen, workspaceInstructions}`.
 The nullable workspace instructions are loaded by the manager from root AGENTS.md at the

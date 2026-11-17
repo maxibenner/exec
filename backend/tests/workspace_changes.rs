@@ -39,6 +39,7 @@ async fn workspace_changes_survive_reload_and_freeze_only_at_first_acceptance() 
     // Rejection before acceptance must not lock the workspace.
     assert!(manager.submit(&id, "not accepted".into()).await.is_err());
     assert!(!c.snapshot().configuration.instructions_frozen);
+    assert!(c.snapshot().can_change_workspace);
     let changed = manager
         .select_workspace(&id, new.path().join(".").to_string_lossy().into_owned())
         .await
@@ -147,6 +148,7 @@ async fn workspace_write_blocks_submission_and_finishes_after_caller_detaches() 
     let task = tokio::spawn(async move { updating.select_workspace(&id, target).await });
     entered.cancelled().await;
     assert_ne!(c.snapshot().workspace, new_path);
+    assert!(!c.snapshot().can_change_workspace);
     assert!(matches!(
         manager.submit(&c.id, "busy".into()).await,
         Err(Error::Busy)
@@ -162,6 +164,7 @@ async fn workspace_write_blocks_submission_and_finishes_after_caller_detaches() 
     release.cancel();
     until(&c, |s| s.workspace == new_path).await;
     assert!(!c.snapshot().configuration.instructions_frozen);
+    assert!(c.snapshot().can_change_workspace);
     // Use embedded submission so this fixture does not invoke automatic titles.
     complete(c.submit("ready".into()).unwrap()).await;
     assert_eq!(
@@ -200,6 +203,7 @@ async fn failed_workspace_save_keeps_published_folder_and_never_retries() {
     );
     assert_eq!(c.snapshot().workspace, initial);
     assert!(c.snapshot().storage_error.is_some());
+    assert!(!c.snapshot().can_change_workspace);
     assert_eq!(
         manager.select_workspace(&c.id, initial).await.unwrap_err(),
         Error::Storage
@@ -225,10 +229,17 @@ async fn failed_or_cancelled_first_turn_never_unlocks_workspace() {
                 }))
             })
         };
-        let manager = AgentManager::default();
+        let profile = directory();
+        let provider = FakeProvider::new(vec![script]);
+        let manager = AgentManager::open(
+            JsonConversationStore::open(profile.path()).await.unwrap(),
+            |_| (provider.clone(), vec![]),
+        )
+        .await
+        .unwrap();
         let c = manager
             .create(ConversationOptions::new(
-                FakeProvider::new(vec![script]),
+                provider.clone(),
                 "fake",
                 workspace.path().to_string_lossy(),
             ))
@@ -255,6 +266,22 @@ async fn failed_or_cancelled_first_turn_never_unlocks_workspace() {
                 .unwrap_err(),
             Error::WorkspaceLocked
         );
+        assert!(!c.snapshot().can_change_workspace);
         manager.close().await.unwrap();
+        let restored = AgentManager::open(
+            JsonConversationStore::open(profile.path()).await.unwrap(),
+            |_| (provider.clone(), vec![]),
+        )
+        .await
+        .unwrap();
+        assert!(!restored.get(&c.id).unwrap().snapshot().can_change_workspace);
+        assert_eq!(
+            restored
+                .select_workspace(&c.id, workspace.path().to_string_lossy().into_owned())
+                .await
+                .unwrap_err(),
+            Error::WorkspaceLocked
+        );
+        restored.close().await.unwrap();
     }
 }

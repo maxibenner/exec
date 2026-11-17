@@ -524,6 +524,8 @@ pub struct ConversationSnapshot {
     pub resources: Vec<ResourceRef>,
     pub model: String,
     pub workspace: String,
+    /// Advisory eligibility; the mutation rechecks under the conversation lock.
+    pub can_change_workspace: bool,
     pub messages: Vec<Message>,
     pub operation: Option<Operation>,
     pub approval: Option<Approval>,
