@@ -6,8 +6,9 @@ struct LinkedText: NSViewRepresentable {
     let text: NSAttributedString
     @Environment(\.openURL) private var openURL
 
-    init(source: AttributedString, fontSize: CGFloat = NSFont.systemFontSize, weight: NSFont.Weight = .regular) {
-        text = Self.attributed(source, fontSize: fontSize, weight: weight)
+    init(source: AttributedString, fontSize: CGFloat = NSFont.systemFontSize, weight: NSFont.Weight = .regular,
+         foregroundColor: NSColor = .labelColor) {
+        text = Self.attributed(source, fontSize: fontSize, weight: weight, foregroundColor: foregroundColor)
     }
 
     init(text: NSAttributedString) { self.text = text }
@@ -35,7 +36,7 @@ struct LinkedText: NSViewRepresentable {
         view.isVerticallyResizable = false
         view.textContainer?.heightTracksTextView = false
         view.isAutomaticLinkDetectionEnabled = false
-        view.linkTextAttributes = [.foregroundColor: NSColor.linkColor, .cursor: NSCursor.pointingHand]
+        view.linkTextAttributes = [.foregroundColor: AppColors.nativeBlue, .cursor: NSCursor.pointingHand]
         view.delegate = context.coordinator
         return view
     }
@@ -47,7 +48,8 @@ struct LinkedText: NSViewRepresentable {
     }
 
     static func attributed(_ source: AttributedString, fontSize: CGFloat = NSFont.systemFontSize,
-                           weight: NSFont.Weight = .regular) -> NSAttributedString {
+                           weight: NSFont.Weight = .regular,
+                           foregroundColor: NSColor = .labelColor) -> NSAttributedString {
         let text = NSMutableAttributedString(string: "")
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
@@ -59,7 +61,7 @@ struct LinkedText: NSViewRepresentable {
             if intent.contains(.stronglyEmphasized) { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
             if intent.contains(.emphasized) { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
             var attributes: [NSAttributedString.Key: Any] = [
-                .font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph
+                .font: font, .foregroundColor: foregroundColor, .paragraphStyle: paragraph
             ]
             if intent.contains(.code) {
                 attributes[.backgroundColor] = NSColor.quaternarySystemFill

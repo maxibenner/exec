@@ -28,8 +28,8 @@ struct UpdateBadge: View {
             .padding(.trailing, 2)
         }
         .buttonStyle(UpdateBadgeButtonStyle())
-        .foregroundStyle(.blue)
-        .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .foregroundStyle(AppColors.blue)
+        .background(AppColors.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .contain)
     }
 }

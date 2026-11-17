@@ -505,11 +505,12 @@ private struct MessageView: View, Equatable {
                     if !message.images.isEmpty { AttachmentStrip(images: message.images) }
                     if !message.files.isEmpty { FileAttachmentStrip(files: message.files) }
                     if !message.text.isEmpty {
-                        LinkedText(source: AttributedString(message.text))
+                        LinkedText(source: AttributedString(message.text), foregroundColor: .white)
                     }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(Color.blue.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
+                .foregroundStyle(.white)
+                .background(AppColors.blue, in: RoundedRectangle(cornerRadius: 10))
                 .frame(maxWidth: 600, alignment: .trailing)
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("You: \(message.text)")

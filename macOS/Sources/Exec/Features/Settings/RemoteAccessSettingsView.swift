@@ -37,7 +37,7 @@ struct RemoteAccessSettingsView: View {
                 }
             } footer: {
                 Text("Exec must remain open and the Mac awake. You can host your own relay as a docker container; find the code on [Github](https://github.com/maxibenner/exec/tree/main/relay).")
-                    .tint(.blue)
+                    .tint(AppColors.blue)
             }
             if status["enabled"].bool || !status["devices"].array.isEmpty {
                 Section {

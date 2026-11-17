@@ -41,6 +41,12 @@ import QuartzCore
                 try expect(baseLayer.opacity == 1 && (baseLayer.animationKeys() ?? []).isEmpty)
                 try expect(baseLayer.backgroundColor == bases[0].backgroundColor)
             }
+            for pulse in pulses {
+                let blue = NSColor(cgColor: pulse.backgroundColor!)!.usingColorSpace(.sRGB)!
+                try expect(abs(blue.redComponent) < 0.001)
+                try expect(abs(blue.greenComponent - 122.0 / 255.0) < 0.001)
+                try expect(abs(blue.blueComponent - 1) < 0.001 && blue.alphaComponent == 1)
+            }
             for opacity: Float in [0, 0.5, 1] {
                 CATransaction.begin()
                 CATransaction.setDisableActions(true)

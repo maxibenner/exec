@@ -380,6 +380,18 @@ import SwiftUI
                     let texts = textViews(in: row)
                     try expect(texts.map(\.string) == (message.text.isEmpty ? [] : [message.text]))
                     if let text = texts.first {
+                        let storage = text.textStorage!
+                        var hasWhiteText = true
+                        storage.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+                            guard let color = (value as? NSColor)?.usingColorSpace(.sRGB) else {
+                                hasWhiteText = false
+                                return
+                            }
+                            hasWhiteText = hasWhiteText && color.redComponent > 0.99
+                                && color.greenComponent > 0.99 && color.blueComponent > 0.99
+                                && color.alphaComponent == 1
+                        }
+                        try expect(hasWhiteText)
                         let range = NSRange(location: 0, length: (message.text as NSString).length)
                         text.setSelectedRange(range)
                         try expect(text.selectedRange() == range)
@@ -394,7 +406,9 @@ import SwiftUI
                     var bluePixels = 0
                     for y in stride(from: 0, to: bitmap.pixelsHigh, by: 4) {
                         for x in stride(from: 0, to: bitmap.pixelsWide, by: 4) {
-                            guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                            guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                            // Cached SwiftUI surfaces can retain compositing alpha;
+                            // verify blue coverage here, exact sRGB in the layer test.
                             if color.blueComponent > color.redComponent + 0.04,
                                color.blueComponent > color.greenComponent + 0.02 {
                                 bluePixels += 1

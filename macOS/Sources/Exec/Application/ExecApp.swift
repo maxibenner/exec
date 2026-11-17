@@ -19,6 +19,8 @@ import SwiftUI
             if let store = startup.store {
                 SettingsView(store: store, canCheckForUpdates: updater.canCheckForUpdates,
                              checkForUpdates: updater.checkForUpdates)
+                    .tint(AppColors.blue)
+                    .accentColor(AppColors.blue)
             }
         }
         .defaultSize(width: 500, height: 560)
@@ -110,6 +112,8 @@ import SwiftUI
                     Color.clear
                 }
             }
+            .tint(AppColors.blue)
+            .accentColor(AppColors.blue)
             .background(WindowReference { windowGeometry.observe($0) })
             .task {
                 // macOS 14 lacks suppressed scene launch; retain its existing path.

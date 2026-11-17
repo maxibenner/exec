@@ -106,7 +106,9 @@ import Observation
             window.tabbingMode = .disallowed
             window.title = self.title(for: id)
             window.contentView = NSHostingView(rootView: DetachedConversationView(
-                windows: self, conversation: conversation, presentation: self.presentation(for: conversation)))
+                windows: self, conversation: conversation, presentation: self.presentation(for: conversation))
+                .tint(AppColors.blue)
+                .accentColor(AppColors.blue))
             let controller = DetachedSessionController(window: window)
             controller.didClose = { [weak self] in
                 guard let self else { return }

@@ -48,7 +48,7 @@ struct ToolApprovalView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .foregroundStyle(prominent ? Color.white : Color.primary)
-                .background(prominent ? Color.accentColor : Color.primary.opacity(0.06),
+                .background(prominent ? AppColors.blue : Color.primary.opacity(0.06),
                             in: RoundedRectangle(cornerRadius: 6))
                 .contentShape(RoundedRectangle(cornerRadius: 6))
                 .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)

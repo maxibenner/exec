@@ -100,7 +100,7 @@ struct WorkingIndicator: NSViewRepresentable {
                     dot.backgroundColor = base.cgColor
                     dot.opacity = 1
                 }
-                for dot in activeDots { dot.backgroundColor = NSColor.controlAccentColor.cgColor }
+                for dot in activeDots { dot.backgroundColor = AppColors.nativeBlue.cgColor }
             }
             for dot in baseDots + activeDots { dot.contentsScale = window?.backingScaleFactor ?? 2 }
             CATransaction.commit()
