@@ -4,6 +4,7 @@ import SwiftUI
 /// TextKit supplies link-only cursor rectangles while retaining normal text selection and wrapping.
 struct LinkedText: NSViewRepresentable {
     let text: NSAttributedString
+    @Environment(\.animatesStreamedText) private var animatesStreamedText
     @Environment(\.openURL) private var openURL
 
     init(source: AttributedString, fontSize: CGFloat = NSFont.systemFontSize, weight: NSFont.Weight = .regular,
@@ -19,7 +20,7 @@ struct LinkedText: NSViewRepresentable {
         // Use the same complete-document engine as measurement. Viewport-driven
         // TextKit 2 can leave an unvisited tail estimated even in a full-height row.
         let storage = NSTextStorage()
-        let layout = NSLayoutManager()
+        let layout = StreamedTextLayoutManager()
         let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         storage.addLayoutManager(layout)
         layout.addTextContainer(container)
@@ -43,6 +44,7 @@ struct LinkedText: NSViewRepresentable {
 
     func updateNSView(_ view: TextView, context: Context) {
         context.coordinator.open = { url in openURL(url) }
+        view.animatesStreamedText = animatesStreamedText
         view.update(text)
         context.coordinator.measurement.update(text)
     }
@@ -79,6 +81,7 @@ struct LinkedText: NSViewRepresentable {
 
     final class TextView: NSTextView {
         private var changingLayout = false
+        var animatesStreamedText = false
 
         override func setFrameSize(_ newSize: NSSize) {
             let wasChanging = changingLayout
@@ -162,6 +165,10 @@ struct LinkedText: NSViewRepresentable {
             changingLayout = true
             defer { changingLayout = wasChanging }
             let selection = selectedRange()
+            let old = string as NSString
+            let appended = text.length > old.length && (text.string as NSString).substring(to: old.length) == old as String
+            (layoutManager as? StreamedTextLayoutManager)?.prepareAppend(
+                appended && animatesStreamedText && window != nil ? NSRange(location: old.length, length: text.length - old.length) : nil)
             textStorage?.setAttributedString(text)
             completeLayout()
             // Streaming updates must not clear an in-progress selection.
@@ -240,5 +247,69 @@ final class LinkedTextMeasurement {
         if sizes.count >= 8 { sizes.removeAll(keepingCapacity: true) }
         sizes[width] = result
         return result
+    }
+}
+
+// Scoped to live assistant text; measurement and other selectable text stay static.
+private struct AnimatesStreamedTextKey: EnvironmentKey {
+    static let defaultValue = false
+}
+extension EnvironmentValues {
+    var animatesStreamedText: Bool {
+        get { self[AnimatesStreamedTextKey.self] }
+        set { self[AnimatesStreamedTextKey.self] = newValue }
+    }
+}
+
+/// Draw only newly appended glyphs with a brief, partial-opacity entrance. The
+/// storage, selection, accessibility and geometry always contain the full text.
+private final class StreamedTextLayoutManager: NSLayoutManager {
+    private var entrance: (range: NSRange, started: TimeInterval)?
+    private var timer: Timer?
+
+    func prepareAppend(_ range: NSRange?) {
+        guard let range, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            entrance = nil
+            timer?.invalidate()
+            timer = nil
+            return
+        }
+        if let current = entrance {
+            // Coalesce without restarting the clock on every token.
+            entrance = (NSUnionRange(current.range, range), current.started)
+            return
+        }
+        entrance = (range, ProcessInfo.processInfo.systemUptime)
+        timer = Timer.scheduledTimer(timeInterval: 1.0 / 60, target: self,
+                                     selector: #selector(advanceEntrance), userInfo: nil, repeats: true)
+    }
+
+    @MainActor @objc private func advanceEntrance() {
+        guard let current = entrance else { timer?.invalidate(); timer = nil; return }
+        let finished = ProcessInfo.processInfo.systemUptime - current.started >= 0.18 ||
+            NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if finished { entrance = nil }
+        textContainers.forEach { $0.textView?.needsDisplay = true }
+        if finished { timer?.invalidate(); timer = nil }
+    }
+
+    override func drawGlyphs(forGlyphRange range: NSRange, at origin: NSPoint) {
+        guard let entrance, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            super.drawGlyphs(forGlyphRange: range, at: origin)
+            return
+        }
+        let fresh = NSIntersectionRange(range, glyphRange(forCharacterRange: entrance.range, actualCharacterRange: nil))
+        guard fresh.length > 0 else { super.drawGlyphs(forGlyphRange: range, at: origin); return }
+        if fresh.location > range.location {
+            super.drawGlyphs(forGlyphRange: NSRange(location: range.location, length: fresh.location - range.location), at: origin)
+        }
+        NSGraphicsContext.saveGraphicsState()
+        let progress = min(1, (ProcessInfo.processInfo.systemUptime - entrance.started) / 0.18)
+        NSGraphicsContext.current?.cgContext.setAlpha(0.55 + 0.45 * progress)
+        super.drawGlyphs(forGlyphRange: fresh, at: origin)
+        NSGraphicsContext.restoreGraphicsState()
+        if NSMaxRange(fresh) < NSMaxRange(range) {
+            super.drawGlyphs(forGlyphRange: NSRange(location: NSMaxRange(fresh), length: NSMaxRange(range) - NSMaxRange(fresh)), at: origin)
+        }
     }
 }

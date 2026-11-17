@@ -51,6 +51,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     private let content = DocumentView()
     let state: TranscriptState
     private var messages: [Message] = []
+    private var arrivingToolIDs: Set<UUID> = []
     private var messagesChanged = true
     private var rows: [UUID: MessageHost] = [:]
     private var reuse: [MessageHost] = []
@@ -122,6 +123,10 @@ private struct VirtualTranscript: NSViewRepresentable {
             state.followsLatest = false
             navigationAnchor = TranscriptLayout.Anchor(id: sent.id, offset: -Self.navigationPadding)
             requestedScroll = true
+        }
+        if hasReceivedMessages {
+            let previous = Set(self.messages.map(\.id))
+            arrivingToolIDs.formUnion(filtered.filter { $0.isToolCard && !previous.contains($0.id) }.map(\.id))
         }
         hasReceivedMessages = true
         if let id = state.sentMessageID, !filtered.contains(where: { $0.id == id }) {
@@ -266,7 +271,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         guard initialized, window != nil,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         scrollAnimation = (contentView.bounds.minY, ProcessInfo.processInfo.systemUptime,
-                           followsBottom ? 0.12 : 0.2, followsBottom)
+                           followsBottom ? 0.24 : 0.2, followsBottom)
         scrollAnimationTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .milliseconds(16)) }
@@ -366,6 +371,7 @@ private struct VirtualTranscript: NSViewRepresentable {
             for id in Array(rows.keys) where !wanted.contains(id) {
                 if let row = rows.removeValue(forKey: id) {
                     row.didInvalidateSize = nil
+                    row.layer?.removeAnimation(forKey: "streamEntrance")
                     row.removeFromSuperview()
                     row.rootView = TranscriptRow(message: nil, state: state, width: width)
                     if reuse.count < 4 { reuse.append(row) }
@@ -421,6 +427,18 @@ private struct VirtualTranscript: NSViewRepresentable {
             navigationAnchor = nil
             state.followsLatest = true
         }
+        // Only newly delivered cards, never virtualized history or status updates.
+        for id in arrivingToolIDs {
+            guard let row = rows[id], window != nil,
+                  row.frame.intersects(contentView.bounds),
+                  !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { continue }
+            let animation = CABasicAnimation(keyPath: "opacity")
+            animation.fromValue = 0.55
+            animation.toValue = 1
+            animation.duration = 0.18
+            row.layer?.add(animation, forKey: "streamEntrance")
+        }
+        arrivingToolIDs.removeAll()
         rememberAnchor()
         if changed { scheduleRefresh() }
     }
@@ -598,7 +616,8 @@ private struct MessageView: View, Equatable {
                     Label("Failed", systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.red)
                 }
-                if !message.text.isEmpty { MarkdownView(source: message.text, cache: state.markdown) }
+                if !message.text.isEmpty { MarkdownView(source: message.text, cache: state.markdown)
+                    .environment(\.animatesStreamedText, message.status == .streaming) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityLabel("Assistant reply")
