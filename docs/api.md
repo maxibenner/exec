@@ -235,16 +235,29 @@ Crash recovery never resumes work or steals ownership. Verify the old host and i
 
 Tests cover these contracts with fake providers/transports and real network-bound TCP connections/subprocesses. Live OpenAI/DeepSeek, Linux deployment, browser OAuth, native OS permission behavior and Swift UI integration are not claimed verified.
 
+## Context after failure or interruption
+
+Failed and interrupted assistant replies remain in provider context, including partial
+text or a notice when no text was returned. A runtime annotation marks them as incomplete
+and states that no tool calls from that response executed. Unfinalized calls are never
+replayed. Finalized calls retain their paired results, including failed, denied,
+interrupted and unexecuted outcomes. Streaming output, running tool progress and
+transcript-only compaction activity remain excluded. Stable context IDs, recovery and
+compaction use the same projection; saved transcript text and status are unchanged.
+Nothing resumes or retries automatically after failure or cancellation.
+
 ## Steering
 
 Steering targets an exact active operation; stale, cancelling or settling operations
 return 409. Ordinary turn submission still rejects a busy conversation. Accepted steering
 input is observable in `pendingInput` (up to 32 messages), checkpointed by the runner while
-streaming or executing, and incorporated only after all finalized calls have outcomes.
-The `input` event contains `messageID`; later message events reconcile the same ID when
-incorporated. A pending approval is withdrawn; old unstarted calls receive `not_executed`.
-A live executor keeps ownership through completion/cleanup and is not cancelled merely
-because new input arrived. No later old action starts after the safe boundary.
+streaming, awaiting approval or executing, and incorporated only after all finalized calls
+have outcomes. The `input` event contains `messageID`; later message events reconcile the
+same ID when incorporated. Steering is additive: the in-flight provider response and its
+tool-call batch finish normally, including preparation, pending approvals and execution.
+New input neither withdraws approval nor supersedes calls already requested by that response.
+The model receives the results and queued input together at its next decision. Use explicit
+denial or cancellation to stop an action; steering does not grant approval or cancel work.
 
 Like turn submission, 202 is in-memory acceptance, not a durable receipt. A crash before
 its checkpoint can lose newly accepted input. Checkpointed pending input survives restart
@@ -658,7 +671,8 @@ turn operations, not manual maintenance operations.
 
 The OpenAI provider supports manual compaction and automatic compaction at 95% of the
 last completed measured context window. Before inference the runner prepares required
-model metadata. Automatic compaction includes completed history/tool outcomes but excludes
+model metadata. Automatic compaction includes finalized history/tool outcomes and explicitly
+marked failed/interrupted replies, but excludes
 new trailing user input; accepted steering is checkpointed while the request is in flight.
 The provider appends the Responses v2 `compaction_trigger`, accepts exactly one encrypted
 compaction item, and discards incidental text/calls without executing them. There is no

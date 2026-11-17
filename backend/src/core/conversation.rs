@@ -726,6 +726,11 @@ impl Conversation {
                 images: Default::default(),
                 model: s.record.model.clone(),
                 message_ids,
+                incomplete_message_ids: history
+                    .iter()
+                    .filter(|m| m.is_incomplete_reply())
+                    .map(|m| m.id().to_owned())
+                    .collect(),
                 messages,
                 instructions: s
                     .record
@@ -882,10 +887,8 @@ impl Conversation {
             id: id.clone(),
             text,
         });
-        if s.pending.take().is_some() {
-            // Dropping the one-shot withdraws the exact old approval, never grants it.
-            self.emit(&s, EventKind::Approval { approval_id: None });
-        }
+        // Steering is additive. Only an explicit approval decision or cancellation
+        // may resolve an outstanding action; new input is consumed by the next step.
         self.emit(
             &s,
             EventKind::Input {
@@ -895,23 +898,17 @@ impl Conversation {
         self.input_arrived.notify_one();
         Ok(id)
     }
-    fn has_pending_input(&self) -> bool {
-        !self.state().record.pending_input.is_empty()
-    }
-    fn inject_pending_input(&self) -> bool {
-        let mut s = self.state();
+    fn inject_pending_input(&self, s: &mut State) {
         let pending = std::mem::take(&mut s.record.pending_input);
-        let changed = !pending.is_empty();
-        if changed {
+        if !pending.is_empty() {
             // Steering can start a new user turn without replacing the operation.
             // Reset only when input is consumed, after the previous executors settle.
             s.active.as_mut().unwrap().delegated_agents = 0;
         }
         for message in pending {
             s.record.messages.push(message);
-            self.changed(&s, s.record.messages.len() - 1);
+            self.changed(s, s.record.messages.len() - 1);
         }
-        changed
     }
     pub fn cancel(&self, operation_id: &str) -> bool {
         let mut s = self.state();
@@ -1135,7 +1132,6 @@ impl Conversation {
         let max_steps = self.state().record.max_steps;
         for _ in 0..max_steps {
             check_cancel(cancel)?;
-            self.inject_pending_input();
             self.compact_history(cancel, true).await?;
             let calls = self.respond(cancel).await?;
             self.checkpoint(None).await?;
@@ -1157,6 +1153,9 @@ impl Conversation {
     async fn respond(&self, cancel: &CancellationToken) -> Result<Vec<ToolCall>> {
         let (mut request, index, mut known) = {
             let mut s = self.state();
+            // Include input accepted during compaction too. This lock establishes
+            // which instructions belong to the response that is about to start.
+            self.inject_pending_input(&mut s);
             let messages = context(&s.record.messages);
             let known: HashSet<String> = s
                 .record
@@ -1180,6 +1179,11 @@ impl Conversation {
             (
                 ProviderRequest {
                     images: Default::default(),
+                    incomplete_message_ids: s.record.messages[..index]
+                        .iter()
+                        .filter(|m| m.is_incomplete_reply())
+                        .map(|m| m.id().to_owned())
+                        .collect(),
                     message_ids: s.record.messages[..index]
                         .iter()
                         .filter(|m| m.in_context())
@@ -1235,6 +1239,7 @@ impl Conversation {
                 known,
             )
         };
+        let mut metadata = None;
         let response: Result<Vec<ToolCall>> = async {
             self.checkpoint(None).await?;
             check_cancel(cancel)?;
@@ -1242,7 +1247,6 @@ impl Conversation {
             self.resolve_images(&mut request, &history).await?;
             let mut stream = self.provider.stream(request);
             let mut calls = vec![];
-            let mut metadata = None;
             let mut last_save: Option<Instant> = None;
             loop {
                 let event = tokio::select! {
@@ -1307,16 +1311,6 @@ impl Conversation {
                     }
                     ProviderEvent::Done => {
                         check_cancel(cancel)?;
-                        if let Some((state, usage)) = metadata {
-                            let mut s = self.state();
-                            s.record.provider_state = state;
-                            // A response that reports no measurement leaves the
-                            // last known context usage in place instead of
-                            // falling back to "unknown".
-                            if usage.is_some() {
-                                s.record.usage = usage;
-                            }
-                        }
                         return Ok(calls);
                     }
                 }
@@ -1326,6 +1320,16 @@ impl Conversation {
         .await;
         {
             let mut s = self.state();
+            // Provider state and the finalized reply must be visible atomically:
+            // a concurrent checkpoint must not pair completed opaque output with
+            // a streaming reply that recovery would mark incomplete.
+            if let Some((state, usage)) = metadata.filter(|_| response.is_ok()) {
+                s.record.provider_state = state;
+                // Preserve the last measurement when this response reports none.
+                if usage.is_some() {
+                    s.record.usage = usage;
+                }
+            }
             let Message::Assistant { calls, status, .. } = &mut s.record.messages[index] else {
                 unreachable!()
             };
@@ -1417,14 +1421,10 @@ impl Conversation {
         }
         self.checkpoint(None).await?;
         check_cancel(cancel)?;
-        let (send, receive) = oneshot::channel();
+        let (send, mut receive) = oneshot::channel();
         {
             let mut s = self.state();
             check_cancel(cancel)?;
-            if !s.record.pending_input.is_empty() {
-                self.set_state(&mut s, OperationState::Running);
-                return Ok(false);
-            }
             let approval = Approval {
                 id: new_id(),
                 operation_id: s.record.operation.as_ref().unwrap().id.clone(),
@@ -1441,7 +1441,13 @@ impl Conversation {
             self.set_state(&mut s, OperationState::AwaitingApproval);
             self.emit(&s, EventKind::Approval { approval_id });
         }
-        let decision = tokio::select! { biased; _ = cancel.cancelled() => false, value = receive => value.unwrap_or(false) };
+        let decision = loop {
+            tokio::select! { biased;
+                _ = cancel.cancelled() => break false,
+                value = &mut receive => break value.unwrap_or(false),
+                _ = self.input_arrived.notified() => self.checkpoint(None).await?,
+            }
+        };
         {
             let mut s = self.state();
             s.pending = None;
@@ -1458,9 +1464,9 @@ impl Conversation {
             let mut text =
                 "Not executed: operation interrupted. Do not retry without a new user request."
                     .to_string();
-            if self.has_pending_input() {
-                text = "Not executed: new user input superseded this action. Reconsider using the new instructions.".into();
-            } else if !cancel.is_cancelled() {
+            // Finish calls from the current response before injecting steering.
+            // Input must not invalidate preparation, approval or execution in flight.
+            if !cancel.is_cancelled() {
                 if let Some(tool) = self.tools.get(&call.name) {
                     let mut started = false;
                     let action = AssertUnwindSafe(async {
@@ -1474,7 +1480,6 @@ impl Conversation {
                         let asks_approval = !auto_approve && prepared.approval().is_some();
                         let approved = if let Some(description) = prepared.approval().filter(|_| !auto_approve) { self.ask(call,description.into(),prepared.details(),cancel).await? } else { true };
                         check_cancel(cancel)?;
-                        if self.has_pending_input() { return Ok((ToolOutcome::NotExecuted, "Not executed: new user input superseded this action. Reconsider using the new instructions.".into())); }
                         if !approved { return Ok((ToolOutcome::Denied,"User denied this action. Nothing was executed. Do not retry without a new user request.".into())); }
                         if asks_approval { prepared.approval_granted()?; }
                         {
@@ -1487,10 +1492,6 @@ impl Conversation {
                         self.checkpoint(None).await?; check_cancel(cancel)?;
                         {
                             let mut s = self.state();
-                            if !s.record.pending_input.is_empty() {
-                                return Ok((ToolOutcome::NotExecuted, "Not executed: new user input superseded this action. Reconsider using the new instructions.".into()));
-                            }
-                            // Executor ownership is the safe-boundary linearization point.
                             started=true; s.active_tool=Some(call.id.clone());
                         }
                         // Poll once before announcing entry: Rust async functions are lazy.

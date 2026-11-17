@@ -581,6 +581,7 @@ async fn openai_services_and_compaction_use_separate_context_and_keep_only_compa
     let mut request = ProviderRequest {
         model: "test".into(),
         message_ids: vec![new_id(), new_id()],
+        incomplete_message_ids: Default::default(),
         messages: vec![
             ContextMessage::User {
                 text: "original".into(),
@@ -610,6 +611,147 @@ async fn openai_services_and_compaction_use_separate_context_and_keep_only_compa
     assert!(events.iter().all(Result::is_ok));
     assert!(matches!(events.last(), Some(Ok(ProviderEvent::Done))));
     assert_eq!(transport.requests.lock().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn recovered_incomplete_reply_does_not_replay_completed_opaque_output() {
+    let root = support::directory();
+    let path = root.path().join("credentials.json");
+    save(&path, &session(false));
+    let transport = Fake::new(|request| async move {
+        if matches!(request.endpoint, Endpoint::Models) {
+            return Ok(response(
+                json!({"models":[{"slug":"fake","context_window":10000}]}),
+            ));
+        }
+        Ok(wire(vec![json!({"type":"response.completed","response":{
+            "status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Partial attempt"}]}]
+        }})]))
+    });
+    let auth = Authentication::open(path, None, transport.clone())
+        .await
+        .unwrap();
+    let provider = Arc::new(OpenAIProvider::new(auth, transport.clone()));
+    let c = support::conversation(provider.clone(), vec![]);
+    support::complete(c.submit("first".into()).unwrap()).await;
+    // Older runtimes could checkpoint opaque metadata before finalizing the reply.
+    let mut record = c.record();
+    let Message::Assistant { status, .. } = &mut record.messages[1] else {
+        panic!()
+    };
+    *status = MessageStatus::Streaming;
+    record.operation.as_mut().unwrap().state = OperationState::Running;
+    let recovered = Conversation::new(support::options(provider, vec![]), Some(record)).unwrap();
+    assert_eq!(
+        support::complete(recovered.submit("Continue explicitly".into()).unwrap())
+            .await
+            .state,
+        OperationState::Completed
+    );
+    let requests = transport.requests.lock().unwrap();
+    let body: Value =
+        serde_json::from_str(requests.last().unwrap().body.as_ref().unwrap()).unwrap();
+    let text = body["input"][1]["content"].as_str().unwrap();
+    assert!(
+        text.contains("was interrupted before completion") && text.ends_with("Partial attempt")
+    );
+    assert_eq!(body["input"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn legacy_compaction_supplements_incomplete_replies_until_recompacted() {
+    use futures_util::StreamExt;
+    let root = support::directory();
+    let path = root.path().join("credentials.json");
+    save(&path, &session(false));
+    let transport = Fake::new(|request| async move {
+        let body: Value = serde_json::from_str(request.body.as_ref().unwrap()).unwrap();
+        let output =
+            if body["input"].as_array().unwrap().last().unwrap()["type"] == "compaction_trigger" {
+                json!([{"type":"compaction","encrypted_content":"opaque-summary"}])
+            } else {
+                json!([{"type":"message","content":[{"type":"output_text","text":"answer"}]}])
+            };
+        Ok(wire(vec![
+            json!({"type":"response.completed","response":{"status":"completed","output":output}}),
+        ]))
+    });
+    let auth = Authentication::open(path, None, transport.clone())
+        .await
+        .unwrap();
+    let provider = OpenAIProvider::new(auth, transport.clone());
+    let mut request = ProviderRequest {
+        model: "test".into(),
+        message_ids: vec![new_id(), new_id(), new_id()],
+        incomplete_message_ids: Default::default(),
+        messages: vec![
+            ContextMessage::User {
+                text: "first".into(),
+            },
+            ContextMessage::User {
+                text: "next".into(),
+            },
+            ContextMessage::Assistant {
+                text: "answer".into(),
+                calls: vec![],
+            },
+        ],
+        images: Default::default(),
+        instructions: String::new(),
+        effort: None,
+        provider_state: None,
+        tools: vec![],
+        cancel: CancellationToken::new(),
+    };
+    let mut legacy = provider.compact(request.clone()).await.unwrap();
+    legacy["prefix"]
+        .as_object_mut()
+        .unwrap()
+        .remove("includes_incomplete");
+    request.provider_state = Some(legacy);
+    let failed = Message::Assistant {
+        id: new_id(),
+        text: "Partial attempt".into(),
+        calls: vec![],
+        status: MessageStatus::Failed,
+    };
+    request
+        .incomplete_message_ids
+        .insert(failed.id().to_owned());
+    request.message_ids.insert(1, failed.id().to_owned());
+    request.messages.insert(1, context(&[failed]).remove(0));
+    request.message_ids.push(new_id());
+    request.messages.push(ContextMessage::User {
+        text: "new input".into(),
+    });
+    let events: Vec<_> = provider.stream(request.clone()).collect().await;
+    assert!(events.iter().all(Result::is_ok));
+    let compacted = provider.compact(request.clone()).await.unwrap();
+    assert_eq!(compacted["prefix"]["includes_incomplete"], true);
+    request.provider_state = Some(compacted);
+    request.message_ids.push(new_id());
+    request.messages.push(ContextMessage::User {
+        text: "latest input".into(),
+    });
+    let events: Vec<_> = provider.stream(request).collect().await;
+    assert!(events.iter().all(Result::is_ok));
+    let requests = transport.requests.lock().unwrap();
+    let bodies: Vec<Value> = requests
+        .iter()
+        .map(|r| serde_json::from_str(r.body.as_ref().unwrap()).unwrap())
+        .collect();
+    for body in &bodies[1..3] {
+        assert_eq!(body["input"][0]["encrypted_content"], "opaque-summary");
+        assert!(
+            body["input"][1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("failed before completion")
+        );
+        assert_eq!(body["input"][2]["content"], "new input");
+    }
+    assert_eq!(bodies[3]["input"].as_array().unwrap().len(), 2);
+    assert_eq!(bodies[3]["input"][1]["content"], "latest input");
 }
 
 #[tokio::test]

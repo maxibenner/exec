@@ -31,6 +31,10 @@ struct Context {
 #[derive(Clone, Serialize, Deserialize)]
 struct Prefix {
     through: String,
+    // Older prefixes excluded failed/interrupted replies. Supplement those
+    // prefixes without discarding their summary or replaying the entire history.
+    #[serde(default)]
+    includes_incomplete: bool,
     output: Vec<Value>,
 }
 fn identity(session: &auth::Session) -> String {
@@ -79,6 +83,10 @@ fn input(request: &ProviderRequest, state: &Context) -> Result<Vec<Value>> {
     if request.messages.len() != request.message_ids.len()
         || request.message_ids.iter().any(|id| !valid_id(id))
         || request.message_ids.iter().collect::<HashSet<_>>().len() != request.message_ids.len()
+        || request
+            .incomplete_message_ids
+            .iter()
+            .any(|id| !request.message_ids.contains(id))
     {
         return Err(Error::Invalid("Stable context message IDs are required."));
     }
@@ -97,7 +105,15 @@ fn input(request: &ProviderRequest, state: &Context) -> Result<Vec<Value>> {
         .as_ref()
         .map(|p| p.output.clone())
         .unwrap_or_default();
-    for (index, message) in request.messages.iter().enumerate().skip(start) {
+    for (index, message) in request.messages.iter().enumerate() {
+        let incomplete = request
+            .incomplete_message_ids
+            .contains(&request.message_ids[index]);
+        if index < start
+            && (!incomplete || state.prefix.as_ref().is_some_and(|p| p.includes_incomplete))
+        {
+            continue;
+        }
         match message {
             ContextMessage::User { text } => {
                 if let Some(images) = request.images.get(&index) {
@@ -111,8 +127,12 @@ fn input(request: &ProviderRequest, state: &Context) -> Result<Vec<Value>> {
                 }
             }
             ContextMessage::Assistant { text, calls } => {
+                if incomplete && !calls.is_empty() {
+                    return Err(invalid());
+                }
                 if let Some(output) = index
                     .checked_sub(1)
+                    .filter(|_| !incomplete)
                     .and_then(|i| state.outputs.get(&request.message_ids[i]))
                 {
                     if self::calls(output)? != *calls || self::text(output) != *text {
@@ -636,6 +656,7 @@ impl ChatProvider for OpenAIProvider {
                     outputs: BTreeMap::new(),
                     prefix: Some(Prefix {
                         through,
+                        includes_incomplete: true,
                         output: compacted,
                     }),
                     ..state

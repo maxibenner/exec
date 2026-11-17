@@ -233,12 +233,12 @@ async fn crash_restart(phase: &str) {
     {
         let requests = p.requests.lock().unwrap();
         if phase == "partial" {
-            assert!(
-                !requests[0]
-                    .messages
-                    .iter()
-                    .any(|m| matches!(m, ContextMessage::Assistant { .. }))
-            );
+            assert!(matches!(
+                &requests[0].messages[1],
+                ContextMessage::Assistant { text, calls }
+                if text.contains("was interrupted before completion")
+                    && text.ends_with("Saved partial response") && calls.is_empty()
+            ));
         } else {
             assert_eq!(
                 requests[0]

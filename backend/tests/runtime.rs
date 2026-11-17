@@ -142,7 +142,7 @@ async fn cancellation_withdraws_approval_pairs_all_calls_and_retains_context() {
     );
 }
 #[tokio::test]
-async fn cancelled_streaming_stays_visible_but_not_in_completed_context() {
+async fn cancelled_streaming_remains_in_context_as_an_incomplete_attempt() {
     let entered = CancellationToken::new();
     let signal = entered.clone();
     let p = FakeProvider::new(vec![
@@ -162,19 +162,22 @@ async fn cancelled_streaming_stays_visible_but_not_in_completed_context() {
         matches!(&c.snapshot().messages[1],Message::Assistant{text,status:MessageStatus::Interrupted,..} if text=="Partial")
     );
     complete(c.submit("Next".into()).unwrap()).await;
-    assert!(
-        !p.requests.lock().unwrap()[1]
-            .messages
-            .iter()
-            .any(|m| matches!(m, ContextMessage::Assistant { .. }))
-    );
+    let requests = p.requests.lock().unwrap();
+    assert!(matches!(
+        &requests[1].messages[1],
+        ContextMessage::Assistant { text, calls }
+        if text.contains("was interrupted before completion")
+            && text.ends_with("Partial") && calls.is_empty()
+    ));
+    assert_eq!(requests[1].messages.len(), requests[1].message_ids.len());
+    assert_eq!(requests[1].message_ids[1], c.snapshot().messages[1].id());
 }
 #[tokio::test]
-async fn incomplete_output_never_executes_calls_or_retries() {
-    let p = FakeProvider::new(vec![response(vec![
-        ProviderEvent::Text("Partial".into()),
-        call("a"),
-    ])]);
+async fn incomplete_output_retains_failed_context_without_executing_or_retrying_calls() {
+    let p = FakeProvider::new(vec![
+        response(vec![ProviderEvent::Text("Partial".into()), call("a")]),
+        answer(),
+    ]);
     let c = conversation(
         p.clone(),
         vec![tool(None, |_| async { panic!("incomplete call executed") })],
@@ -187,6 +190,27 @@ async fn incomplete_output_never_executes_calls_or_retries() {
     assert!(
         matches!(&c.snapshot().messages[1],Message::Assistant{calls,status:MessageStatus::Failed,..} if calls.is_empty())
     );
+    // Recovery keeps the original status/text; only provider context gets a notice.
+    let record = c.record();
+    record.validate().unwrap();
+    let restored = Conversation::new(options(p.clone(), vec![]), Some(record)).unwrap();
+    assert_eq!(p.count(), 1);
+    assert_eq!(
+        complete(restored.submit("Continue explicitly".into()).unwrap())
+            .await
+            .state,
+        OperationState::Completed
+    );
+    assert!(outcomes(&restored).is_empty());
+    let requests = p.requests.lock().unwrap();
+    assert!(matches!(
+        &requests[1].messages[1],
+        ContextMessage::Assistant { text, calls }
+        if text.contains("failed before completion") && text.ends_with("Partial")
+            && text.contains("No tool calls from this response were executed") && calls.is_empty()
+    ));
+    assert_eq!(requests[1].messages.len(), requests[1].message_ids.len());
+    assert_eq!(requests[1].message_ids[1], c.snapshot().messages[1].id());
 }
 #[tokio::test]
 async fn duplicate_call_ids_fail_before_execution() {
@@ -243,11 +267,14 @@ async fn running_tool_cancellation_waits_for_cleanup_and_records_possible_effect
 }
 #[tokio::test]
 async fn provider_errors_are_safe_and_not_retried() {
-    let p = FakeProvider::new(vec![script(|_| {
-        Box::pin(futures_util::stream::once(async {
-            Err(Error::Tool("secret token raw response".into()))
-        }))
-    })]);
+    let p = FakeProvider::new(vec![
+        script(|_| {
+            Box::pin(futures_util::stream::once(async {
+                Err(Error::Tool("secret token raw response".into()))
+            }))
+        }),
+        answer(),
+    ]);
     let c = conversation(p.clone(), vec![]);
     assert_eq!(
         complete(c.submit("Hi".into()).unwrap()).await.state,
@@ -259,6 +286,18 @@ async fn provider_errors_are_safe_and_not_retried() {
             .contains("secret token")
     );
     assert_eq!(p.count(), 1);
+    complete(c.submit("Next request".into()).unwrap()).await;
+    let requests = p.requests.lock().unwrap();
+    assert!(matches!(
+        &requests[1].messages[1],
+        ContextMessage::Assistant { text, calls }
+        if text.contains("failed before completion") && calls.is_empty()
+    ));
+    assert!(
+        !serde_json::to_string(&requests[1].messages)
+            .unwrap()
+            .contains("secret token")
+    );
 }
 #[tokio::test]
 async fn default_step_limit_allows_128_steps_but_not_a_129th_request() {
@@ -327,13 +366,18 @@ async fn preparation_errors_never_execute_or_expose_raw_errors() {
         response(vec![call("a"), ProviderEvent::Done]),
         answer(),
     ]);
-    let c = conversation(p, vec![tool]);
+    let c = conversation(p.clone(), vec![tool]);
     assert_eq!(
         complete(c.submit("Change".into()).unwrap()).await.state,
         OperationState::Completed
     );
     assert_eq!(outcomes(&c), [ToolOutcome::Failed]);
     assert!(c.snapshot().messages[2].text().contains("did not execute"));
+    assert!(matches!(
+        p.requests.lock().unwrap()[1].messages.last(),
+        Some(ContextMessage::Tool { call_id, text, outcome: ToolOutcome::Failed })
+        if call_id == "a" && text.contains("did not execute")
+    ));
 }
 #[tokio::test]
 async fn manager_conversations_have_independent_cancellation_and_context() {

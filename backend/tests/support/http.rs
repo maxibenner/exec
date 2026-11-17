@@ -78,6 +78,7 @@ pub fn provider(transport: Arc<dyn HttpTransport>) -> DeepSeekProvider {
 pub fn request() -> ProviderRequest {
     ProviderRequest {
         message_ids: vec![],
+        incomplete_message_ids: Default::default(),
         images: Default::default(),
         instructions: String::new(),
         effort: Some("none".into()),

@@ -263,7 +263,7 @@ async fn failed_child_does_not_drop_siblings_and_returned_sessions_are_deleted()
 }
 
 #[tokio::test]
-async fn steering_a_child_withdraws_approval_and_reaches_its_context() {
+async fn steering_a_child_preserves_approval_and_reaches_its_next_response() {
     let workspace = directory();
     let provider = FakeProvider::new(vec![
         response(vec![
@@ -277,7 +277,7 @@ async fn steering_a_child_withdraws_approval_and_reaches_its_context() {
     let (manager, parent) = setup(
         provider.clone(),
         vec![tool(Some("Approve"), |_| async {
-            panic!("steering must withdraw approval")
+            Ok("Action completed".into())
         })],
         workspace.path(),
     )
@@ -301,16 +301,24 @@ async fn steering_a_child_withdraws_approval_and_reaches_its_context() {
     })
     .await
     .unwrap();
+    let operation = child.operation.unwrap().id;
+    let approval = child.approval.unwrap().id;
     manager
-        .steer(
-            &child.id,
-            &child.operation.unwrap().id,
-            "Do not run the tool; explain instead".into(),
-        )
+        .steer(&child.id, &operation, "Explain the result afterward".into())
         .unwrap();
+    let session = manager.get(&child.id).unwrap();
+    assert_eq!(session.snapshot().approval.unwrap().id, approval);
+    assert_eq!(provider.count(), 2);
+    assert!(session.resolve_approval(&operation, &approval, true));
     assert_eq!(complete(run).await.state, OperationState::Completed);
     let requests = provider.requests.lock().unwrap();
-    assert!(requests[2].messages.iter().any(|m| matches!(m, ContextMessage::User { text, .. } if text == "Do not run the tool; explain instead")));
+    assert!(requests[2].messages.iter().any(|m| matches!(m,
+        ContextMessage::Tool { outcome: ToolOutcome::Completed, text, .. }
+        if text == "Action completed"
+    )));
+    assert!(matches!(requests[2].messages.last(),
+        Some(ContextMessage::User { text }) if text == "Explain the result afterward"
+    ));
     assert_eq!(requests.len(), 4);
     assert_eq!(manager.list().unwrap().len(), 1);
 }

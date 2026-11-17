@@ -508,7 +508,7 @@ private struct MessageView: View, Equatable {
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 if message.status == .failed {
-                    Label("Failed · excluded from context", systemImage: "exclamationmark.circle")
+                    Label("Failed", systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.red)
                 }
                 if !message.text.isEmpty { MarkdownView(source: message.text, cache: state.markdown) }

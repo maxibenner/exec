@@ -16,6 +16,7 @@ struct Provider {
     hold: AtomicBool,
     fail: AtomicBool,
     entered: CancellationToken,
+    release: CancellationToken,
 }
 #[async_trait]
 impl ChatProvider for Provider {
@@ -44,8 +45,10 @@ impl ChatProvider for Provider {
         self.compactions.lock().unwrap().push(r.clone());
         self.entered.cancel();
         if self.hold.load(Ordering::SeqCst) {
-            r.cancel.cancelled().await;
-            return Err(Error::Cancelled);
+            tokio::select! {
+                _ = r.cancel.cancelled() => return Err(Error::Cancelled),
+                _ = self.release.cancelled() => {},
+            }
         }
         if self.fail.load(Ordering::SeqCst) {
             return Err(Error::Internal);
@@ -101,6 +104,41 @@ async fn automatic_compaction_uses_completed_prefix_keeps_new_input_and_visible_
             .is_some()
     );
 }
+#[tokio::test]
+async fn compaction_preserves_failed_attempts_with_aligned_context_ids() {
+    let failed = support::conversation(
+        support::FakeProvider::new(vec![support::response(vec![ProviderEvent::Text(
+            "Partial attempt".into(),
+        )])]),
+        vec![],
+    );
+    assert_eq!(
+        support::complete(failed.submit("first".into()).unwrap())
+            .await
+            .state,
+        OperationState::Failed
+    );
+    let p = Arc::new(Provider::default());
+    let c = Conversation::new(support::options(p.clone(), vec![]), Some(failed.record())).unwrap();
+    assert_eq!(
+        support::complete(c.compact().unwrap()).await.state,
+        OperationState::Completed
+    );
+    let compactions = p.compactions.lock().unwrap();
+    let request = &compactions[0];
+    assert_eq!(request.messages, context(&failed.snapshot().messages));
+    assert_eq!(request.message_ids.len(), request.messages.len());
+    assert_eq!(request.message_ids[1], failed.snapshot().messages[1].id());
+    assert!(matches!(
+        &request.messages[1],
+        ContextMessage::Assistant { text, calls }
+        if text.contains("failed before completion") && text.ends_with("Partial attempt")
+            && calls.is_empty()
+    ));
+    assert_eq!(context(&c.snapshot().messages), request.messages);
+    assert!(p.requests.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn manual_compaction_is_exclusive_cancellable_and_keeps_original_on_failure() {
     let p = Arc::new(Provider::default());
@@ -257,6 +295,30 @@ async fn accepted_steering_is_checkpointed_while_automatic_compaction_waits() {
     assert_eq!(p.requests.lock().unwrap().len(), 1);
     assert_eq!(c.snapshot().pending_input[0].id(), id);
 }
+#[tokio::test]
+async fn steering_during_compaction_reaches_the_immediately_following_response() {
+    let p = Arc::new(Provider::default());
+    let c = support::conversation(p.clone(), vec![]);
+    support::complete(c.submit("first".into()).unwrap()).await;
+    p.hold.store(true, Ordering::SeqCst);
+    let run = c.submit("second".into()).unwrap();
+    p.entered.cancelled().await;
+    c.steer(&run.operation_id, "adjust before responding".into())
+        .unwrap();
+    p.release.cancel();
+    assert_eq!(
+        support::complete(run).await.state,
+        OperationState::Completed
+    );
+    assert!(c.snapshot().pending_input.is_empty());
+    let requests = p.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(matches!(
+        requests[1].messages.last(),
+        Some(ContextMessage::User { text }) if text == "adjust before responding"
+    ));
+}
+
 #[tokio::test]
 async fn manual_compaction_api_receipt_and_opaque_checkpoint_survive_restart() {
     use exec_agent::service::*;

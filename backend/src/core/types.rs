@@ -101,7 +101,8 @@ impl Message {
             _ => false,
         }
     }
-    /// Keep transcript-only activity out of both provider messages and parallel IDs.
+    /// Keep in-flight and transcript-only activity out of provider messages and IDs.
+    /// Failed/interrupted replies remain context, explicitly marked as incomplete.
     pub fn in_context(&self) -> bool {
         !self.is_compaction()
             && !matches!(
@@ -109,17 +110,20 @@ impl Message {
                 Self::Tool {
                     outcome: ToolOutcome::Running,
                     ..
+                } | Self::Assistant {
+                    status: MessageStatus::Streaming,
+                    ..
                 }
             )
-            && matches!(
-                self,
-                Self::User { .. }
-                    | Self::Tool { .. }
-                    | Self::Assistant {
-                        status: MessageStatus::Completed,
-                        ..
-                    }
-            )
+    }
+    pub fn is_incomplete_reply(&self) -> bool {
+        matches!(
+            self,
+            Self::Assistant {
+                status: MessageStatus::Failed | MessageStatus::Interrupted,
+                ..
+            }
+        )
     }
     pub fn id(&self) -> &str {
         match self {
@@ -168,6 +172,24 @@ pub fn context(messages: &[Message]) -> Vec<ContextMessage> {
                 text: text.clone(),
                 calls: calls.clone(),
             }),
+            Message::Assistant {
+                text,
+                status: status @ (MessageStatus::Failed | MessageStatus::Interrupted),
+                ..
+            } => {
+                let status = if *status == MessageStatus::Failed {
+                    "failed"
+                } else {
+                    "was interrupted"
+                };
+                Some(ContextMessage::Assistant {
+                    text: format!(
+                        "[This assistant response {status} before completion. Any partial text below is incomplete. No tool calls from this response were executed.]\n{text}"
+                    ),
+                    // Never replay unfinalized calls from an incomplete response.
+                    calls: vec![],
+                })
+            }
             Message::Tool {
                 call_id,
                 text,
@@ -184,8 +206,10 @@ pub fn context(messages: &[Message]) -> Vec<ContextMessage> {
 }
 #[derive(Clone)]
 pub struct ProviderRequest {
-    /// Stable IDs parallel to completed context messages; never provider wire identifiers.
+    /// Stable IDs parallel to provider-visible context messages; never provider wire identifiers.
     pub message_ids: Vec<String>,
+    /// Terminal incomplete replies have no finalized opaque provider output.
+    pub incomplete_message_ids: std::collections::HashSet<String>,
     pub images: std::collections::BTreeMap<usize, Vec<super::ImageInput>>,
     pub model: String,
     pub messages: Vec<ContextMessage>,
