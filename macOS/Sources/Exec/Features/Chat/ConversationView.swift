@@ -80,7 +80,6 @@ struct ConversationView: View {
                                      canResolve: { panel.canNavigate && panel.current.tools === executor })
                         .id(approval.id)
                         .disabled(!panel.canNavigate).layoutPriority(1)
-                        .background(.background)
                 }
                 if let error { errorView(error).background(.background) }
                 ChatComposer(store: panel, focused: $composerFocused, focusRequest: composerFocusRequest)

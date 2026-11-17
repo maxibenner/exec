@@ -9,13 +9,6 @@ struct ToolApprovalView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(approval.kind == .screenshot ? "Share a screenshot?" : approval.kind == .shell ? "Run shell command?" : approval.kind == .edit ? "Apply file edit?" : "Approve tool action?").font(.headline)
-            if approval.kind != .screenshot {
-                Text(verbatim: approval.directory.path).font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle).help(approval.directory.path).textSelection(.enabled)
-            }
-            if let timeout = approval.timeoutSeconds {
-                Text("Timeout: \(timeout) seconds").font(.caption).foregroundStyle(.secondary)
-            }
             ScrollView([.horizontal, .vertical]) {
                 Text(preview).font(.system(.body, design: .monospaced))
                     .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
@@ -24,10 +17,6 @@ struct ToolApprovalView: View {
             .defaultScrollAnchor(.topLeading)
             .frame(height: previewHeight)
             .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
-            if approval.kind == .shell {
-                Text("Not sandboxed: this command can access files outside the workspace, use the network, or delete data with your user privileges.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             HStack(spacing: 10) {
                 Spacer()
                 Button("Deny") {
@@ -40,8 +29,13 @@ struct ToolApprovalView: View {
                 // Deliberately not the default Return action: approval must be explicit.
             }
         }
+        .padding(12)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 10))
+        .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.12)) }
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
+        .environment(\.colorScheme, .light)
         .frame(maxWidth: 820)
-        .padding(.horizontal, 20).padding(.vertical, 16)
+        .padding(.horizontal, 20).padding(.top, 8)
         .frame(maxWidth: .infinity)
     }
 
