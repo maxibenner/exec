@@ -113,7 +113,32 @@ import SwiftUI
         }
     }
 
+    private func estimatesPreserveNewlinesAndGraphemes() throws {
+        let fixtures = ["", "\n", "\r\n", "x\r\n\r\nx\n", "x\u{85}x\u{2028}x\u{2029}",
+            "\tx\n\nx  \nx\\\nx\nx\n# x\n> x\n- x\n* x\n+ x\n1. x\n| x\n    x\n",
+            "```swift\nx\n~~~\nx\n```\n\n~~~\nx\n~~~\n", String(repeating: "x ", count: 200)]
+            + (UInt8(0)...127).map { "x" + String(UnicodeScalar($0)) + "x\n" }
+        for width: CGFloat in [1, 65, 320, 620, 900] {
+            for role in [Message.Role.user, .assistant] {
+                // Replacing x with one non-ASCII grapheme forces the original
+                // estimator path without changing wrapping or Markdown structure.
+                let sources = fixtures.map { "x\n" + $0 }
+                var ascii = TranscriptLayout()
+                ascii.update(messages: sources.map { Message(role: role, text: $0) }, width: width)
+                for grapheme in ["é", "e\u{301}", "👨‍👩‍👧‍👦"] {
+                    var unicode = TranscriptLayout()
+                    unicode.update(messages: sources.map {
+                        Message(role: role, text: $0.replacingOccurrences(of: "x", with: grapheme))
+                    }, width: width)
+                    try expect(ascii.heights == unicode.heights && ascii.offsets == unicode.offsets &&
+                               ascii.totalHeight == unicode.totalHeight)
+                }
+            }
+        }
+    }
+
     func geometryPreservesAnchors() throws {
+        try estimatesPreserveNewlinesAndGraphemes()
         let messages = (0..<1_000).map { Message(role: .user, text: "Message \($0)") }
         var layout = TranscriptLayout()
         layout.update(messages: messages, width: 700)

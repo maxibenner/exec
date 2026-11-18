@@ -122,7 +122,19 @@ struct TranscriptLayout {
         func wrappedLines(_ count: Int) -> CGFloat {
             CGFloat(max(1, (count + charactersPerLine - 1) / charactersPerLine))
         }
-        let sourceLines = message.text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        let text = message.text
+        let bytes = text.utf8
+        let sourceLines: [Substring]
+        // ASCII with LF-only breaks has identical byte/grapheme boundaries.
+        // Avoid walking Characters for every cold offscreen estimate; retain the
+        // original path for Unicode and other newlines (including CRLF clusters).
+        if bytes.allSatisfy({ $0 < 128 && !(11...13).contains($0) }) {
+            sourceLines = bytes.split(separator: 10, omittingEmptySubsequences: false).map {
+                text[$0.startIndex..<$0.endIndex]
+            }
+        } else {
+            sourceLines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        }
         if message.role == .user {
             return sourceLines.reduce(0) { $0 + wrappedLines($1.count) } * 19 + 16
         }
