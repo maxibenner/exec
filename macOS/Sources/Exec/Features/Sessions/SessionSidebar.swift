@@ -18,35 +18,13 @@ private struct SidebarSessionGroup: Identifiable, Equatable {
 }
 
 struct SessionSidebar: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var store: ChatLibrary
     let open: (UUID) -> Void
     let delete: (SessionSummary) -> Void
     @State private var renaming = false
     @State private var renameID: UUID?
     @State private var renameTitle = ""
-    private let horizontalPadding: CGFloat = 12
-    private var rowAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.25) }
-
-    // A presentation snapshot gives asynchronous catalog changes an explicit
-    // transaction before List reconciles its native rows. No timers or delays.
-    // Children are part of the native row's presentation snapshot, so catalog
-    // changes invalidate its height without replacing its stable parent identity.
-    @State private var displayedGroups: [SidebarSessionGroup]
-    // Keep appearance state above List's recycled rows. Scrolling an existing
-    // child back into view must not replay its insertion fade.
-    @State private var revealedChildIDs: Set<UUID>
     private var groups: [SidebarSessionGroup] { SidebarSessionGroup.snapshot(store) }
-
-    init(store: ChatLibrary, open: @escaping (UUID) -> Void,
-         delete: @escaping (SessionSummary) -> Void) {
-        self.store = store
-        self.open = open
-        self.delete = delete
-        let initial = SidebarSessionGroup.snapshot(store)
-        _displayedGroups = State(initialValue: initial)
-        _revealedChildIDs = State(initialValue: Set(initial.flatMap { $0.children.map(\.id) }))
-    }
 
     private func activate(_ id: UUID) {
         guard store.canNavigate else { return }
@@ -55,11 +33,9 @@ struct SessionSidebar: View {
 
     var body: some View {
         let sessions = groups
-        let shortcutIDs = displayedGroups.prefix(9).map(\.id)
-        // The library owns the active session; do not give the native table a
-        // selection binding (its active selection can turn blue on mouse-down).
+        let shortcutIDs = sessions.prefix(9).map(\.id)
         List {
-            ForEach(displayedGroups) { group in
+            ForEach(sessions) { group in
                 let session = group.session
                 VStack(alignment: .leading, spacing: 2) {
                     SessionRow(session: session, store: store,
@@ -67,8 +43,6 @@ struct SessionSidebar: View {
                                    guard store.canNavigate, !store.isSessionRunning(session.id) else { return }
                                    renameID = session.id; renameTitle = session.title; renaming = true
                                }, delete: { delete(session) })
-                        .padding(.horizontal, horizontalPadding)
-                        // A row-wide Button interferes with native drag reordering.
                         .onTapGesture { activate(session.id) }
                         .accessibilityAction { activate(session.id) }
                         .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
@@ -79,7 +53,6 @@ struct SessionSidebar: View {
                             if store.needsApproval(child.id) {
                                 Image(systemName: "hand.raised").foregroundStyle(.orange)
                                     .accessibilityLabel("Approval required")
-
                             } else if store.needsAttention(child.id) {
                                 Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
                             } else if store.isSessionWaiting(child.id) {
@@ -88,17 +61,10 @@ struct SessionSidebar: View {
                             }
                         }
                         .font(.caption2).foregroundStyle(.secondary)
-                        // Keep status symbols from changing the child row's height.
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .frame(height: 22, alignment: .center)
-                        .padding(.horizontal, horizontalPadding)
+                        .padding(.vertical, 3)
                         .contentShape(Rectangle())
                         .background(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 4))
-                        .modifier(SidebarChildAppearance(visible: revealedChildIDs.contains(child.id), animation: rowAnimation) {
-                            revealedChildIDs.insert(child.id)
-                        })
-                        .transition(.opacity)
                         .onTapGesture { activate(child.id) }
                         .accessibilityAction { activate(child.id) }
                         .accessibilityAction(named: "Delete Sub-agent") {
@@ -112,20 +78,10 @@ struct SessionSidebar: View {
                     }
                     SessionRowMetadata(session: session, shortcut: shortcutIDs.firstIndex(of: session.id).map { $0 + 1 })
                         .padding(.top, 3).padding(.bottom, 5)
-                        .padding(.horizontal, horizontalPadding)
                         .contentShape(Rectangle())
                         .onTapGesture { activate(session.id) }
                         .accessibilityAction { activate(session.id) }
                 }
-                .padding(.vertical, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .modifier(SidebarAnimatedHeight(animation: rowAnimation))
-                // macOS sidebar rows retain a 16-point content gutter even
-                // with zero listRowInsets. Cancel it on the content only; keep
-                // the native row background and the list's outer margin intact.
-                .padding(.horizontal, -16)
-                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
                 .listRowBackground(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(store.sidebarSelectionID == session.id
@@ -134,33 +90,14 @@ struct SessionSidebar: View {
                 .moveDisabled(!store.canReorderSessions)
             }
             .onMove { offsets, destination in
-                // Offsets must still refer to the current catalog when a drag ends.
-                guard displayedGroups.map(\.id) == store.sidebarSessions.map(\.id) else { return }
-                store.moveSidebarSessions(from: offsets, to: destination)
-                // Commit in the native drop transaction, not a later catalog animation.
-                displayedGroups = groups
-                revealedChildIDs.formIntersection(displayedGroups.flatMap { $0.children.map(\.id) })
+                withAnimation {
+                    store.moveSidebarSessions(from: offsets, to: destination)
+                }
             }
         }
         .listStyle(.sidebar)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
         .padding(.horizontal, 10)
-        // Select conversations without making the sidebar a keyboard-focus target.
-        // Conversation shortcuts remain available through SessionCommands.
-        .focusable(false)
-        .onChange(of: sessions) { _, updated in
-            guard displayedGroups != updated else { return }
-            let previousStructure = displayedGroups.map { [$0.id] + $0.children.map(\.id) }
-            let nextStructure = updated.map { [$0.id] + $0.children.map(\.id) }
-            let structuralChange = previousStructure != nextStructure
-            withAnimation(structuralChange ? rowAnimation : nil) {
-                revealedChildIDs.formIntersection(updated.flatMap { $0.children.map(\.id) })
-                displayedGroups = updated
-            }
-        }
-        // Keep native row appearance stable during deletion and reordering.
-        // Activation/mutation guards block conflicting actions without dimming
-        // and re-enabling the entire list (which flashes all child rows).
+        .animation(.default, value: sessions)
         .alert("Rename Conversation", isPresented: $renaming) {
             TextField("Name", text: $renameTitle)
             Button("Rename") {
