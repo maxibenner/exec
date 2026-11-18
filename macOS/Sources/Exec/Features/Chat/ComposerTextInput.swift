@@ -42,7 +42,8 @@ struct ComposerTextInput: NSViewRepresentable {
     }
 
     final class EditorScrollView: NSScrollView, NSTextViewDelegate {
-        let editor = Editor()
+        // The caret drawing hooks below use TextKit 1, as does our measurement.
+        let editor = Editor(usingTextLayoutManager: false)
         var onChange: ((String) -> Void)?
         var onFocus: ((Bool) -> Void)?
         var onSubmit: (() -> Void)?
@@ -75,7 +76,7 @@ struct ComposerTextInput: NSViewRepresentable {
             editor.drawsBackground = false
             editor.font = .preferredFont(forTextStyle: .body)
             editor.textColor = .labelColor
-            editor.insertionPointColor = .labelColor
+            editor.insertionPointColor = AppColors.nativeBlue
             editor.textContainerInset = .zero
             editor.textContainer?.lineFragmentPadding = 0
             editor.isVerticallyResizable = true
@@ -105,6 +106,7 @@ struct ComposerTextInput: NSViewRepresentable {
 
         func update(text: String, session: ObjectIdentifier, request: Int?, enabled: Bool, focused: Bool) {
             let changedSession = self.session != session
+            if changedSession { editor.hasEditingPosition = false }
             // Marked text may differ from the binding until IME composition
             // commits. Only an actual external draft change should replace it.
             if changedSession || (boundText != text && editor.string != text) {
@@ -192,13 +194,47 @@ struct ComposerTextInput: NSViewRepresentable {
         }
     }
 
-    final class Editor: NSTextView {
+    class Editor: NSTextView {
         var onFocus: (() -> Void)?
+        var hasEditingPosition = false
         var placeholder = "" { didSet { if oldValue != placeholder { needsDisplay = true } } }
+        private static let caretWidth: CGFloat = 2
+
+        override func mouseDown(with event: NSEvent) {
+            // A plain refocusing click resumes at the retained caret/selection.
+            // Once focused, clicks place the caret normally; modified and multi-
+            // clicks continue to use native selection behavior immediately.
+            if hasEditingPosition, window?.firstResponder !== self, event.clickCount == 1,
+               event.modifierFlags.intersection([.shift, .control, .option, .command]).isEmpty,
+               window?.makeFirstResponder(self) == true {
+                return
+            }
+            super.mouseDown(with: event)
+        }
+
+        func caretRect(for rect: NSRect) -> NSRect {
+            var caret = rect
+            caret.size.width = Self.caretWidth
+            caret = backingAlignedRect(caret, options: [.alignMinXNearest, .alignMaxXNearest,
+                                                       .alignMinYNearest, .alignMaxYNearest])
+            // AppKit supplies x = -0.5 at a line start. Without this clamp, the
+            // clip view cuts off part of the caret in our zero-inset editor.
+            caret.origin.x = max(bounds.minX, caret.minX)
+            return caret
+        }
+
+        override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
+            super.drawInsertionPoint(in: caretRect(for: rect), color: insertionPointColor, turnedOn: flag)
+        }
+
+        override func setNeedsDisplay(_ rect: NSRect, avoidAdditionalLayout flag: Bool) {
+            // Include the widened stroke when AppKit draws or erases a blink.
+            super.setNeedsDisplay(rect.insetBy(dx: -Self.caretWidth, dy: 0), avoidAdditionalLayout: flag)
+        }
 
         override func becomeFirstResponder() -> Bool {
             let accepted = super.becomeFirstResponder()
-            if accepted { onFocus?() }
+            if accepted { hasEditingPosition = true; onFocus?() }
             return accepted
         }
 
@@ -209,13 +245,14 @@ struct ComposerTextInput: NSViewRepresentable {
         }
 
         override func draw(_ dirtyRect: NSRect) {
-            super.draw(dirtyRect)
+            // Keep the placeholder underneath the insertion point.
             if string.isEmpty {
                 (placeholder as NSString).draw(at: .zero, withAttributes: [
                     .font: font ?? NSFont.preferredFont(forTextStyle: .body),
                     .foregroundColor: NSColor.placeholderTextColor
                 ])
             }
+            super.draw(dirtyRect)
         }
     }
 }

@@ -2,10 +2,11 @@ import SwiftUI
 
 struct FileAttachmentStrip: View {
     let files: [FileAttachment]
+    var scrollsWithTranscript = false
     var remove: ((UUID) -> Void)?
 
     var body: some View {
-        ScrollView(.horizontal) {
+        AttachmentStripScrollView(scrollsWithTranscript: scrollsWithTranscript) {
             HStack(spacing: 10) {
                 ForEach(files) { file in
                     HStack(spacing: 8) {
@@ -28,6 +29,5 @@ struct FileAttachmentStrip: View {
             }
             .padding(2)
         }
-        .scrollIndicators(.hidden)
     }
 }

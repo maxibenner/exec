@@ -790,8 +790,12 @@ private struct MessageView: View, Equatable {
             HStack {
                 Spacer(minLength: 40)
                 VStack(alignment: .trailing, spacing: 8) {
-                    if !message.images.isEmpty { AttachmentStrip(images: message.images) }
-                    if !message.files.isEmpty { FileAttachmentStrip(files: message.files) }
+                    if !message.images.isEmpty {
+                        AttachmentStrip(images: message.images, scrollsWithTranscript: true)
+                    }
+                    if !message.files.isEmpty {
+                        FileAttachmentStrip(files: message.files, scrollsWithTranscript: true)
+                    }
                     if !message.text.isEmpty {
                         LinkedText(source: AttributedString(message.text), foregroundColor: .white)
                     }

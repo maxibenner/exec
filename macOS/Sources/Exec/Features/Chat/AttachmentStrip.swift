@@ -2,10 +2,11 @@ import SwiftUI
 
 struct AttachmentStrip: View {
     let images: [ImageAttachment]
+    var scrollsWithTranscript = false
     var remove: ((UUID) -> Void)?
 
     var body: some View {
-        ScrollView(.horizontal) {
+        AttachmentStripScrollView(scrollsWithTranscript: scrollsWithTranscript) {
             HStack(spacing: 10) {
                 ForEach(images) { image in
                     AttachmentThumbnail(attachment: image)
@@ -18,7 +19,6 @@ struct AttachmentStrip: View {
             }
             .padding(2)
         }
-        .scrollIndicators(.hidden)
     }
 }
 

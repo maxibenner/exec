@@ -108,6 +108,14 @@ struct ComposerTextInputTests {
             view.update(text: draft, session: ObjectIdentifier(session), request: 2, enabled: true, focused: true)
             try await settle()
             try expect(view.contentView.bounds.origin == origin && view.editor.selectedRange() == selection)
+            // A refocusing mouse click resumes the old insertion point, rather
+            // than placing it where that first click happened to land.
+            try expect(window.makeFirstResponder(other))
+            try await settle()
+            click(view.editor, at: NSPoint(x: 10, y: origin.y + 10))
+            try await settle()
+            try expect(window.firstResponder === view.editor)
+            try expect(view.editor.selectedRange() == selection && view.contentView.bounds.origin == origin)
         }
         view.update(text: "", session: ObjectIdentifier(session), request: 2, enabled: true, focused: true)
         try await settle()
@@ -162,6 +170,61 @@ struct ComposerTextInputTests {
                                   replacementRange: NSRange(location: 0, length: 5))
         try expect(!view.textView(view.editor, doCommandBy: #selector(NSResponder.insertNewline(_:))))
         try expect(submitted == 1)
+    }
+
+    func drawsConsistentBlueCaret() throws {
+        _ = NSApplication.shared
+        let view = ComposerTextInput.EditorScrollView()
+        try expect(view.editor.insertionPointColor == AppColors.nativeBlue)
+        // Draw offscreen without depending on the active app or blink phase.
+        let editor = CaretDrawingEditor(usingTextLayoutManager: false)
+        editor.insertionPointColor = view.editor.insertionPointColor
+        editor.frame = NSRect(x: 0, y: 0, width: 100, height: 30)
+        for scale in [1, 2] {
+            for x: CGFloat in [-0.5, 24.5] {
+                let rect = NSRect(x: x, y: 2, width: 1, height: 20)
+                let caret = editor.caretRect(for: rect)
+                try expect(caret.width == 2 && caret.minX >= 0)
+                let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 100 * scale,
+                                              pixelsHigh: 30 * scale, bitsPerSample: 8, samplesPerPixel: 4,
+                                              hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                              bytesPerRow: 0, bitsPerPixel: 0)!
+                let context = NSGraphicsContext(bitmapImageRep: bitmap)!
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = context
+                context.cgContext.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
+                NSColor.white.setFill()
+                NSRect(x: 0, y: 0, width: 100, height: 30).fill()
+                // Even a native callback supplying a text color must use blue.
+                editor.drawInsertionPoint(in: rect, color: .black, turnedOn: true)
+                context.flushGraphics()
+                NSGraphicsContext.restoreGraphicsState()
+                // Fractional backing coordinates may split an edge over two
+                // pixels; compare ink coverage rather than counting edge pixels.
+                let blueCoverage = (0..<bitmap.pixelsWide).reduce(CGFloat.zero) { coverage, x in
+                    guard let color = bitmap.colorAt(x: x, y: 10 * scale)?.usingColorSpace(.deviceRGB) else { return coverage }
+                    return coverage + max(0, color.blueComponent - color.redComponent)
+                }
+                try expect(abs(blueCoverage - CGFloat(2 * scale)) < 0.03)
+            }
+        }
+    }
+
+    private final class CaretDrawingEditor: ComposerTextInput.Editor {
+        override var shouldDrawInsertionPoint: Bool { true }
+    }
+
+    private func click(_ editor: NSTextView, at point: NSPoint) {
+        let location = editor.convert(point, to: nil)
+        let window = editor.window!
+        func event(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                              timestamp: ProcessInfo.processInfo.systemUptime,
+                              windowNumber: window.windowNumber, context: nil,
+                              eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        // This focus-only path does not enter AppKit's mouse-tracking loop.
+        editor.mouseDown(with: event(.leftMouseDown))
     }
 
     private func settle() async throws { try await Task.sleep(for: .milliseconds(30)) }
