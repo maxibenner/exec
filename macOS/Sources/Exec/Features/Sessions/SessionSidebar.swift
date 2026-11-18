@@ -83,12 +83,13 @@ struct SessionSidebar: View {
                         .accessibilityAction { activate(session.id) }
                 }
                 .padding(.horizontal, 10)
-                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                .listRowBackground(
+                .background(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(store.sidebarSelectionID == session.id
                               ? Color.primary.opacity(0.08) : Color.clear)
                 )
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                .listRowBackground(Color.clear)
                 .moveDisabled(!store.canReorderSessions)
             }
             .onMove { offsets, destination in
