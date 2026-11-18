@@ -52,12 +52,12 @@ struct SessionSidebar: View {
                             Text(verbatim: child.title).lineLimit(1).truncationMode(.tail)
                             Spacer(minLength: 0)
                             if store.needsApproval(child.id) {
-                                Image(systemName: "hand.raised").foregroundStyle(.orange)
+                                SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
                                     .accessibilityLabel("Approval required")
                             } else if store.needsAttention(child.id) {
-                                Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+                                SessionStatusIndicator(symbol: "exclamationmark.circle").foregroundStyle(.orange)
                             } else if store.isSessionWaiting(child.id) {
-                                Image(systemName: "stopwatch").foregroundStyle(.green)
+                                SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
                                     .accessibilityLabel("Waiting")
                             }
                         }
@@ -142,6 +142,23 @@ private struct SessionRowMetadata: View {
     }
 }
 
+private struct SessionStatusIndicator: View {
+    var symbol: String? = nil
+    private let size: CGFloat = 14
+
+    var body: some View {
+        Group {
+            if let symbol {
+                Image(systemName: symbol).resizable().scaledToFit()
+            } else {
+                // The native small spinner is 16 pt; a frame alone does not resize it.
+                ProgressView().controlSize(.small).fixedSize().scaleEffect(size / 16)
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
 struct SessionRow: View {
     let session: SessionSummary
     let store: ChatLibrary
@@ -156,16 +173,16 @@ struct SessionRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             Group {
                 if needsApproval {
-                    Image(systemName: "hand.raised").foregroundStyle(.orange)
+                    SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
                         .help("Approval required").accessibilityLabel("Approval required")
                 } else if needsAttention {
-                    Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+                    SessionStatusIndicator(symbol: "exclamationmark.circle").foregroundStyle(.orange)
                         .help("Conversation needs attention").accessibilityLabel("Conversation needs attention")
                 } else if store.isSessionWaiting(session.id) {
-                    Image(systemName: "stopwatch").foregroundStyle(.green)
+                    SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
                         .accessibilityLabel("Waiting")
                 } else if store.isSessionResponding(session.id) {
-                    ProgressView().controlSize(.mini).accessibilityLabel("Running")
+                    SessionStatusIndicator().accessibilityLabel("Running")
                 } else {
                     Color.clear
                 }
