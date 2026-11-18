@@ -22,7 +22,9 @@ struct SettingsWindowConfiguration: NSViewRepresentable {
                     toolbar.allowsUserCustomization = false
                     window.toolbar = toolbar
                 }
-                if window.toolbarStyle != .unified { window.toolbarStyle = .unified }
+                // A compact native header keeps the first sidebar row close to the
+                // window controls without custom insets or overlapping their hit area.
+                if window.toolbarStyle != .unifiedCompact { window.toolbarStyle = .unifiedCompact }
                 if !window.styleMask.contains(.fullSizeContentView) {
                     window.styleMask.insert(.fullSizeContentView)
                 }

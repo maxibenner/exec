@@ -16,6 +16,8 @@ struct ToolsSettingsView: View {
                     .toggleStyle(.checkbox)
                     .accessibilityIdentifier("default-tool-\(tool.name)")
                 }
+            } header: {
+                Text("Default Tool Selection")
             } footer: {
                 Text("Sets the default tools available in a new session. Existing sessions keep their tool selections.")
             }

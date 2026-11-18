@@ -16,9 +16,7 @@ struct SettingsView: View {
                         Text(section.title)
                     } icon: {
                         Image(systemName: section.systemImage)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 12, height: 12)
+                            .font(.system(size: 15))
                     }
                     .tag(section)
                 }

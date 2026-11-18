@@ -6,9 +6,12 @@ struct ModelsAndToolsSettingsView: View {
     private var connected: [ProviderConnection] { store.connectedProviders }
 
     var body: some View {
+        @Bindable var settings = store
         Form {
-            Section("Tool Titles") {
+            Section("Generated Titles") {
                 Toggle("Descriptive shell titles", isOn: $descriptiveShellTitles)
+                Toggle("Automatic session titles", isOn: $settings.automaticTitles)
+                    .disabled(store.authenticating || connected.isEmpty)
             }
             providerSettings
         }
@@ -18,9 +21,6 @@ struct ModelsAndToolsSettingsView: View {
     private var providerSettings: some View {
         @Bindable var settings = store
         return Group {
-            Section("Session Titles") {
-                Toggle("Automatic session titles", isOn: $settings.automaticTitles)
-            }
             if connected.isEmpty {
                 Section { Text("No providers connected").foregroundStyle(.secondary) }
             }

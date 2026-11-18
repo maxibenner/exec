@@ -21,7 +21,9 @@ import SwiftUI
             preferences.removePersistentDomain(forName: suite)
         }
 
-        for section: ChatLibrary.SettingsTab in [.modelsAndTools, .tools, .systemPrompt] {
+        // Providers uses a padded stack rather than a grouped Form; both must
+        // retain the same compact native header when switching sections.
+        for section: ChatLibrary.SettingsTab in [.modelsAndTools, .tools, .systemPrompt, .accounts] {
             store.settingsTab = section
             for _ in 0..<20 {
                 window.contentView?.layoutSubtreeIfNeeded()
@@ -34,7 +36,7 @@ import SwiftUI
                   let toolbar = window.toolbar else {
                 throw CheckFailure(description: "Settings must have a native split view and toolbar")
             }
-            try expect(window.titleVisibility == .hidden && window.toolbarStyle == .unified)
+            try expect(window.titleVisibility == .hidden && window.toolbarStyle == .unifiedCompact)
             try expect(!sidebar.canCollapse && !sidebar.isCollapsed)
             try expect(!toolbar.items.contains { $0.itemIdentifier == .toggleSidebar })
             let sidebarTop = sidebar.viewController.view.convert(sidebar.viewController.view.bounds, to: nil).maxY
