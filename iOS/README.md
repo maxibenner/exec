@@ -36,7 +36,15 @@ xcrun xcresulttool export attachments --path .build/ui-checks.xcresult \
   --output-path .build/ui-screenshots
 ```
 
-The tests launch with `--ui-fixture`, using only synthetic sessions and delayed fake responses. This launch mode exists only in Debug simulator builds and injects a fake transport and in-memory credential storage, exercising the real foreground/recovery lifecycle without network or Keychain access.
+The tests launch with `--ui-fixture`, using only synthetic sessions and delayed fake responses. This launch mode exists only in Debug simulator builds and injects a fake transport and in-memory credential storage, exercising the real foreground/recovery lifecycle without network or Keychain access. Local display preferences use a separate UserDefaults suite, reset on each fixture launch.
+
+`SettingsUITests` uses `--settings-fixture` for shell cards with descriptive and blank titles. Additional flags cover an offline host (`--settings-offline`), delayed save acknowledgement (`--slow-settings-save`), a rejected first save followed by a background library edit (`--settings-save-fails`), and accepted saves whose subsequent read fails (`--settings-refresh-fails`). A second save would succeed after the simulated rejection, so an automatic retry would incorrectly dismiss the sheet and fail the draft-preservation check.
+
+## Settings
+
+**On This Device → Descriptive shell titles** is local to the iPhone, defaults off, and works offline. It changes shell-card summaries, including cached transcripts; missing or blank descriptions fall back to the command. Expanded commands and output are unchanged. Shared agent controls still require a connection.
+
+**Done** sends one `PATCH /v1/library` only when the system prompt was edited, then dismisses on the mutation acknowledgement, independently of the follow-up read. Rejection keeps the sheet and draft without retrying. Background library refreshes do not overwrite a dirty draft. An unchanged sheet can close offline; an unsaved prompt cannot be dismissed by swiping or by Done while offline.
 
 ## Foreground synchronization
 

@@ -8,6 +8,7 @@ import ExecTranscript
 struct NativeTranscript: UIViewControllerRepresentable {
     let conversationID: String?
     let snapshot: RemoteJSON
+    let descriptiveShellTitles: Bool
     let bottomPadding: CGFloat
     let hasEarlier: Bool
     let loadEarlier: () -> Void
@@ -38,12 +39,15 @@ struct NativeTranscript: UIViewControllerRepresentable {
             table.hasEarlier = hasEarlier
             table.loadEarlier = loadEarlier
         }
-        context.coordinator.update(conversationID: conversationID, snapshot: snapshot, table: table, followBottom: paddingChanged && nearBottom)
+        context.coordinator.update(conversationID: conversationID, snapshot: snapshot,
+                                   descriptiveShellTitles: descriptiveShellTitles,
+                                   table: table, followBottom: paddingChanged && nearBottom)
     }
     @MainActor final class Coordinator {
         private var source: UITableViewDiffableDataSource<Int, String>?
         private var rows: [String: RemoteTranscriptRow] = [:]
         private var conversationID: String?
+        private var descriptiveShellTitles = false
         private var expansion: [String: Bool] = [:]
         func attach(_ table: UITableView) {
             source = UITableViewDiffableDataSource(tableView: table) { [weak self] table, path, id in
@@ -58,10 +62,11 @@ struct NativeTranscript: UIViewControllerRepresentable {
                         guard snapshot.itemIdentifiers.contains(id) else { return }
                         snapshot.reconfigureItems([id]); source.apply(snapshot, animatingDifferences: false)
                     })
+                    let descriptiveShellTitles = self.descriptiveShellTitles
                     cell.contentConfiguration = UIHostingConfiguration {
                         MobileToolCard(call: call, result: row.message, awaitingApproval: row.awaitingApproval,
                                        isRunning: row.isRunning, roundsTop: row.roundsTop, roundsBottom: row.roundsBottom,
-                                       expanded: binding)
+                                       descriptiveShellTitles: descriptiveShellTitles, expanded: binding)
                     }.margins(.horizontal, 16)
                         .margins(.top, row.roundsTop ? 6 : 0)
                         .margins(.bottom, row.roundsBottom ? 6 : 0)
@@ -72,24 +77,29 @@ struct NativeTranscript: UIViewControllerRepresentable {
                 return cell
             }
         }
-        func update(conversationID: String?, snapshot: RemoteJSON, table: UITableView, followBottom: Bool) {
+        func update(conversationID: String?, snapshot: RemoteJSON, descriptiveShellTitles: Bool,
+                    table: UITableView, followBottom: Bool) {
             guard let source else { return }
             let changedConversation = self.conversationID != conversationID
+            let changedDisplay = self.descriptiveShellTitles != descriptiveShellTitles
             let nearBottom = followBottom || table.contentOffset.y + table.bounds.height - table.adjustedContentInset.bottom >= table.contentSize.height - 60
             var next: [String: RemoteTranscriptRow] = [:]
             var ids: [String] = []
             for row in RemoteTranscriptRow.project(snapshot) where !row.id.isEmpty && next[row.id] == nil { ids.append(row.id); next[row.id] = row }
-            guard changedConversation || next != rows || followBottom else { return }
+            guard changedConversation || changedDisplay || next != rows || followBottom else { return }
             let previousIDs = Set(source.snapshot().itemIdentifiers)
             let firstOld = source.snapshot().itemIdentifiers.first
             let prepending = !changedConversation && firstOld.map { ids.first != $0 && ids.contains($0) } == true
             let anchor = prepending ? table.indexPathsForVisibleRows?.min().flatMap { source.itemIdentifier(for: $0) } ?? firstOld : nil
             let oldPosition = anchor.flatMap { source.indexPath(for: $0) }
                 .map { table.rectForRow(at: $0).minY - table.contentOffset.y }
-            let changed = ids.filter { previousIDs.contains($0) && next[$0] != rows[$0] }
+            let changed = ids.filter {
+                previousIDs.contains($0) && (next[$0] != rows[$0] || (changedDisplay && next[$0]?.call != nil))
+            }
             if changedConversation { expansion.removeAll() }
             else { expansion = expansion.filter { next[$0.key] != nil } }
             rows = next; self.conversationID = conversationID
+            self.descriptiveShellTitles = descriptiveShellTitles
             var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
             snapshot.appendSections([0]); snapshot.appendItems(ids)
             snapshot.reconfigureItems(changed)
@@ -131,6 +141,7 @@ private struct MobileToolCard: View {
     let isRunning: Bool
     let roundsTop: Bool
     let roundsBottom: Bool
+    let descriptiveShellTitles: Bool
     @Binding var expanded: Bool
     private var presentation: ToolPresentation {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -141,7 +152,8 @@ private struct MobileToolCard: View {
             editPath: details["type"].string == "edit" ? details["path"].string : nil,
             searchQuery: details["type"].string == "search" ? details["result"]["query"].string : nil,
             pageText: details["type"].string == "page" ? details["content"]["text"].string : nil)
-        return ToolPresentation(name: call["name"].string ?? "Tool", arguments: arguments, result: display)
+        return ToolPresentation(name: call["name"].string ?? "Tool", arguments: arguments, result: display,
+                                descriptiveShellTitles: descriptiveShellTitles)
     }
     var body: some View {
         let presentation = presentation

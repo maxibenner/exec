@@ -2,7 +2,17 @@ import SwiftUI
 import UIKit
 import ExecRemote
 
+enum ToolDisplayPreferences {
+    static let descriptiveShellTitlesKey = "descriptiveShellTitles"
+}
+
 @main struct ExecRemoteApp: App {
+    private let preferences: UserDefaults = {
+        #if DEBUG && targetEnvironment(simulator)
+        if RemoteUIFixture.enabled { return RemoteUIFixture.preferences }
+        #endif
+        return .standard
+    }()
     @State private var store: RemoteStore = {
         #if DEBUG && targetEnvironment(simulator)
         if RemoteUIFixture.enabled { return RemoteUIFixture.makeStore() }
@@ -13,6 +23,7 @@ import ExecRemote
     var body: some Scene {
         WindowGroup {
             RootView(store: store)
+                .defaultAppStorage(preferences)
                 .task(id: phase) {
                     if phase == .active { await store.observe() }
                     else { await store.suspend() }
@@ -233,9 +244,11 @@ private struct SessionControls: View {
 
 struct ConversationScreen: View {
     @Bindable var store: RemoteStore
+    @AppStorage(ToolDisplayPreferences.descriptiveShellTitlesKey) private var descriptiveShellTitles = false
     @State private var composerHeight: CGFloat = 68
     var body: some View {
         NativeTranscript(conversationID: store.selected, snapshot: store.displaySnapshot,
+                         descriptiveShellTitles: descriptiveShellTitles,
                          bottomPadding: composerHeight, hasEarlier: store.hasEarlierMessages,
                          loadEarlier: { Task { await store.loadEarlier() } })
         .ignoresSafeArea(.container, edges: [.top, .bottom])
@@ -433,11 +446,19 @@ struct NewChatScreen: View {
 struct SharedSettingsScreen: View {
     let store: RemoteStore
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(ToolDisplayPreferences.descriptiveShellTitlesKey) private var descriptiveShellTitles = false
     @State private var prompt = ""
+    @State private var savedPrompt: String?
+    @State private var savingPrompt = false
     @FocusState private var editingPrompt: Bool
+    private var promptChanged: Bool { savedPrompt.map { prompt != $0 } ?? false }
     var body: some View {
         NavigationStack {
             Form {
+                Section("On This Device") {
+                    Toggle("Descriptive shell titles", isOn: $descriptiveShellTitles)
+                        .accessibilityIdentifier("descriptive-shell-titles")
+                }
                 Section("Shared Agent Settings") {
                     Toggle("Automatic session titles", isOn: Binding(get: { store.library["automaticTitles"].bool }, set: { value in patch(["automaticTitles":.bool(value)]) }))
                     Toggle("Auto mode for new chats", isOn: Binding(get: { store.library["settings"]["autoApprove"].bool }, set: { value in patch(["settings":.object(["autoApprove":.bool(value)])]) }))
@@ -446,16 +467,42 @@ struct SharedSettingsScreen: View {
                         ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
                     }
                 }
+                .disabled(store.busy || !store.connected)
                 Section("System Prompt") {
                     TextEditor(text: $prompt).frame(minHeight: 120).focused($editingPrompt)
-                    Button("Save System Prompt") { editingPrompt = false; patch(["settings":.object(["systemPrompt":.string(prompt)])]) }
+                        .accessibilityIdentifier("settings-system-prompt")
+                }
+                .disabled(savingPrompt || store.busy || !store.connected)
+            }
+            .navigationTitle("Settings")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: done)
+                        .disabled(savingPrompt || (promptChanged && (store.busy || !store.connected)))
                 }
             }
-            .disabled(store.busy || !store.connected)
-            .navigationTitle("Settings")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .onAppear { prompt = store.library["settings"]["systemPrompt"].string ?? "" }
-            .onChange(of: store.library["settings"]["systemPrompt"]) { _, value in if !editingPrompt { prompt = value.string ?? "" } }
+            .onAppear(perform: refreshPrompt)
+            .onChange(of: store.library["settings"]["systemPrompt"]) { _, _ in refreshPrompt() }
+        }
+        .interactiveDismissDisabled(promptChanged || savingPrompt)
+    }
+    private func refreshPrompt() {
+        // A background library read must not replace a draft, even after focus
+        // leaves the editor or a save fails.
+        guard savedPrompt == nil || (!promptChanged && !editingPrompt) else { return }
+        prompt = store.library["settings"]["systemPrompt"].string ?? ""
+        savedPrompt = prompt
+    }
+    private func done() {
+        editingPrompt = false
+        guard promptChanged else { dismiss(); return }
+        guard !savingPrompt, !store.busy, store.connected else { return }
+        savingPrompt = true
+        let body: RemoteJSON = .object(["settings": .object(["systemPrompt": .string(prompt)])])
+        Task {
+            // Acceptance, not the follow-up refresh, decides whether to dismiss.
+            await store.mutate("PATCH", "/v1/library", body) { _ in dismiss() }
+            savingPrompt = false
         }
     }
     private func patch(_ value: [String:RemoteJSON]) { Task { await store.mutate("PATCH", "/v1/library", .object(value)) } }

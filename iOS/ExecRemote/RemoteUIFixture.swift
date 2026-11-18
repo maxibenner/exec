@@ -7,9 +7,17 @@ import ExecRemote
 /// or network access.
 @MainActor enum RemoteUIFixture {
     static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--ui-fixture") }
+    static let preferences: UserDefaults = {
+        let suite = "com.numbersoffice.exec.remote.ui-fixture"
+        let preferences = UserDefaults(suiteName: suite)!
+        preferences.removePersistentDomain(forName: suite)
+        return preferences
+    }()
     static func makeStore() -> RemoteStore {
         let store = RemoteStore(client: FixtureTransport(), loadHost: { host }, saveHost: { _ in }, forgetHost: {})
         store.conversations = conversations
+        store.library = library
+        store.models = models
         return store
     }
     static var host: PairedHost {
@@ -37,8 +45,10 @@ import ExecRemote
                                      .object(["id": .string("high"), "name": .string("High")])])]),
          .object(["id": .string("fixture/basic"), "name": .string("Fixture Basic"), "efforts": .array([])])]
     }
+    private static var updatedLibrary: RemoteJSON?
+    private static var promptSaves = 0
     static var library: RemoteJSON {
-        .object(["defaultModel": .string("fixture/reasoning"), "automaticTitles": .bool(true),
+        updatedLibrary ?? .object(["defaultModel": .string("fixture/reasoning"), "automaticTitles": .bool(true),
                  "defaultDisabledTools": .array(ProcessInfo.processInfo.arguments.contains("--all-tools-enabled") ? [] : [.string("shell")]),
                  "settings": .object(["systemPrompt": .string("Synthetic fixture instructions"),
                                       "autoApprove": .bool(true), "effort": .string("high")])])
@@ -72,7 +82,13 @@ import ExecRemote
             return .array((conversations + created).filter { !deleted.contains($0["id"].string ?? "") })
         }
         if method == "GET", path == "/v1/models" { return .array(models) }
-        if method == "GET", path == "/v1/library" { return library }
+        if method == "PATCH", path == "/v1/library" { return try await patchLibrary(body ?? .null) }
+        if method == "GET", path == "/v1/library" {
+            if updatedLibrary != nil, ProcessInfo.processInfo.arguments.contains("--settings-refresh-fails") {
+                throw RemoteFailure("Fixture settings refresh failed.")
+            }
+            return library
+        }
         if method == "GET", path.hasPrefix("/v1/conversations/"), path.contains("/sync") {
             let id = String(path.split(separator: "/")[2])
             let full = snapshot(id)
@@ -86,6 +102,39 @@ import ExecRemote
                             "prefix": .string(String(repeating: "a", count: 64))])
         }
         throw RemoteFailure("Unsupported UI fixture request.")
+    }
+    private static func patchLibrary(_ body: RemoteJSON) async throws -> RemoteJSON {
+        guard case .object(let patch) = body, case .object(var fields) = library,
+              patch.keys.allSatisfy({ ["automaticTitles", "defaultModel", "settings"].contains($0) }) else {
+            throw RemoteFailure("Invalid fixture settings patch.")
+        }
+        if body["settings"]["systemPrompt"].string != nil {
+            promptSaves += 1
+            if ProcessInfo.processInfo.arguments.contains("--slow-settings-save") {
+                try await Task.sleep(for: .seconds(3))
+            }
+            if promptSaves == 1, ProcessInfo.processInfo.arguments.contains("--settings-save-fails") {
+                // Simulate another client's edit arriving on a background read
+                // after rejection. A dirty, unfocused draft must survive it.
+                fields["automaticTitles"] = .bool(false)
+                fields["settings"] = .object(["systemPrompt": .string("Refreshed fixture instructions"),
+                                              "autoApprove": .bool(true), "effort": .string("high")])
+                updatedLibrary = .object(fields)
+                throw RemoteFailure("Fixture settings save failed.")
+            }
+        }
+        for (key, value) in patch {
+            if key == "settings" {
+                guard case .object(let changes) = value, case .object(var settings) = fields[key],
+                      changes.keys.allSatisfy({ ["autoApprove", "systemPrompt"].contains($0) }) else {
+                    throw RemoteFailure("Invalid fixture agent settings.")
+                }
+                settings.merge(changes) { _, new in new }
+                fields[key] = .object(settings)
+            } else { fields[key] = value }
+        }
+        updatedLibrary = .object(fields)
+        return library
     }
     private static func browse(_ path: String) async throws -> RemoteJSON {
         // Delay just Sources so UI checks can choose the displayed parent, or
@@ -130,10 +179,23 @@ import ExecRemote
     }
     static func snapshot(_ id: String) -> RemoteJSON {
         if let value = created.first(where: { $0.id == id }) { return value }
-        let messages: [RemoteJSON] = (1...40).map { index in
+        var messages: [RemoteJSON] = (1...40).map { index in
             .object(["id": .string("message-\(index)"), "role": .string(index.isMultiple(of: 2) ? "user" : "assistant"),
                      "text": .string("\(id) message \(index)\nThis is an isolated transcript for checking native navigation underlap, scrolling, and composer spacing."),
                      "status": .string("completed")])
+        }
+        if ProcessInfo.processInfo.arguments.contains("--settings-fixture") {
+            messages += [
+                .object(["id": .string("shell-calls"), "role": .string("assistant"), "text": .string(""), "calls": .array([
+                    .object(["id": .string("described-shell"), "name": .string("shell"), "arguments": .object([
+                        "command": .string("printf 'fixture output'"), "description": .string("Print fixture output")])]),
+                    .object(["id": .string("legacy-shell"), "name": .string("shell"), "arguments": .object([
+                        "command": .string("pwd"), "description": .string("  ")])])])]),
+                .object(["id": .string("shell-result"), "role": .string("tool"), "callID": .string("described-shell"),
+                         "text": .string("Exit code: 0\nfixture output"), "outcome": .string("completed")]),
+                .object(["id": .string("legacy-result"), "role": .string("tool"), "callID": .string("legacy-shell"),
+                         "text": .string("Exit code: 0\n/Fixture/Workspace"), "outcome": .string("completed")])
+            ]
         }
         return .object(["id": .string(id), "metadata": .object(["title": .string("Session \(id.split(separator: "-").last ?? "")")]),
                         "messages": .array(messages),
@@ -143,7 +205,10 @@ import ExecRemote
 
 private actor FixtureTransport: RemoteTransport {
     var isConnected = false
-    func connect(_ host: PairedHost) { isConnected = true }
+    func connect(_ host: PairedHost) throws {
+        if ProcessInfo.processInfo.arguments.contains("--settings-offline") { throw RemoteFailure("Fixture host is offline.") }
+        isConnected = true
+    }
     func disconnect() { isConnected = false }
     func request(_ method: String, _ path: String, body: RemoteJSON?) async throws -> RemoteJSON {
         guard isConnected else { throw RemoteFailure("Fixture is disconnected.") }
