@@ -132,10 +132,10 @@ import CryptoKit
         return true
     }
     var didCheckpoint: (() async throws -> Void)?
-    /// Confirm against the catalog before exposing a read failure. False means
-    /// absence was confirmed or a newer read superseded this one; a 404 alone
-    /// is never evidence of deletion.
-    var confirmObservationLoss: (() async -> Bool)?
+    /// Confirm against the catalog before exposing a read failure. A superseded
+    /// read is not evidence of removal, even when its response omitted this session.
+    enum CatalogPresence { case present, removed, superseded }
+    var confirmPresence: (() async throws -> CatalogPresence)?
     var didFinish: (() -> Void)?
     private var task: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
@@ -356,11 +356,11 @@ import CryptoKit
                 failures += 1
                 if failures >= 2 {
                     if !self.observationLost {
-                        let reportLoss = await self.confirmObservationLoss?() ?? true
+                        let presence = (try? await self.confirmPresence?()) ?? .present
                         // Catalog reconciliation may close or replace this observer.
                         guard self.observerGeneration == generation, !Task.isCancelled else { return }
                         self.observationLost = true
-                        if reportLoss, self.error == nil { self.error = Self.observationLossMessage }
+                        if presence == .present, self.error == nil { self.error = Self.observationLossMessage }
                     }
                     do { try await sleep(.milliseconds(delay)) } catch { return }
                     delay = min(delay * 2, 8_000)
@@ -628,9 +628,9 @@ import CryptoKit
             await pending?.value
             defer { stopTask = nil; isStopping = operationActive && snapshot?.operation?.state == "cancelling"; updateSleepActivity(); drainCommands() }
             guard let id = currentSessionID else { return }
+            pauseObservation()
+            defer { observe() }
             do {
-                pauseObservation()
-                defer { observe() }
                 let reader = api.transcriptReader(id)
                 let current = try await reader.read()
                 transcriptReader = reader
@@ -647,7 +647,15 @@ import CryptoKit
                     if value.operation?.active != true || value.operation?.id != target { break }
                     try await Task.sleep(for: .milliseconds(100))
                 }
-            } catch { self.error = error.localizedDescription; isStopping = false }
+            } catch {
+                // The parent may save the interrupted result and remove its child
+                // before this cleanup read. Only confirmed absence makes a 404
+                // expected; cancellation/transport/storage failures remain actionable.
+                if isSubagent, (error as? AgentHTTPError)?.status == 404,
+                   (try? await confirmPresence?()) == .removed { return }
+                self.error = error.localizedDescription
+                isStopping = false
+            }
         }
     }
     var canRequestFork: Bool { canFork }

@@ -717,14 +717,12 @@ import Observation
         return conversation
     }
     private func observe(_ conversation: ChatStore) {
-        conversation.confirmObservationLoss = { [weak self, weak conversation] in
-            guard let self, let conversation else { return true }
-            do {
-                guard try await self.refreshCatalog() else { return false }
-                // A local save/cancel can temporarily prevent removal. Confirmed
-                // absence still is not a connection failure while it settles.
-                return self.savedSummaries.contains { $0.id == conversation.currentSessionID }
-            } catch { return true } // A catalog outage must not hide a real connection failure.
+        conversation.confirmPresence = { [weak self, weak conversation] in
+            guard let self, let conversation else { return .present }
+            guard try await self.refreshCatalog() else { return .superseded }
+            // A local save/cancel can temporarily prevent resident removal.
+            // The confirmed catalog still distinguishes absence from a failed read.
+            return self.savedSummaries.contains { $0.id == conversation.currentSessionID } ? .present : .removed
         }
         conversation.didCheckpoint = { [weak self, weak conversation] in
             guard let self, let conversation else { return }

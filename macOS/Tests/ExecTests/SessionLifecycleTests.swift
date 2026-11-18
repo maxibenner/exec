@@ -12,13 +12,13 @@ actor LifecycleTransport: AgentTransport {
         }
         private(set) var requests: [Request] = []
         private var replies: [String: Data] = [:]
-        private var failures: Set<String> = []
+        private var failures: [String: Int] = [:]
         func reply(_ path: String, _ value: AgentJSON) throws { replies[path] = try JSONEncoder().encode(value) }
-        func fail(_ path: String) { failures.insert(path) }
+        func fail(_ path: String, status: Int = 500) { failures[path] = status }
         func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
             requests.append(Request(method: method, path: path))
             let route = String(path.split(separator: "?", maxSplits: 1)[0])
-            if failures.contains(route) { throw ExecError("Synthetic read failure") }
+            if let status = failures[route] { throw AgentHTTPError(status: status, message: "Synthetic read failure") }
             if method == "GET", route.hasSuffix("/sync"), let data = replies[String(route.dropLast(5))] {
                 let snapshot = try JSONDecoder().decode(AgentJSON.self, from: data)
                 return try JSONEncoder().encode(AgentJSON.object([
@@ -253,8 +253,8 @@ private struct LifecycleFocusHost: View {
         // A local explicit deletion owns its reconciliation until it completes.
         child.beginDeletion()
         try await fixture.removeChild()
-        let reportLoss = await child.confirmObservationLoss?()
-        try expect(reportLoss == false && !child.deletedRemotely)
+        let presence = try await child.confirmPresence?()
+        try expect(presence == .removed && !child.deletedRemotely)
         try expect(child.isStopping && child.error == "Real operation failure")
         child.resumeAfterFailedDeletion()
         try await library.refreshSharedState()
