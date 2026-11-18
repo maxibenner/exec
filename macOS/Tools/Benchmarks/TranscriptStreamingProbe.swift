@@ -5,6 +5,27 @@ import AppKit
 @main @MainActor struct TranscriptStreamingProbe {
     static var reduceMotion = CommandLine.arguments.contains("--reduce-motion") || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
+    // Deliver through NSApplication's real local monitors, but stop at the
+    // window boundary so synthetic presses never open URLs or native menus.
+    final class ProbeWindow: NSWindow {
+        var inspectPress: (() -> Void)?
+        override func sendEvent(_ event: NSEvent) {
+            if [.leftMouseDown, .rightMouseDown, .leftMouseDragged].contains(event.type), event.eventNumber == 4242 {
+                inspectPress?()
+                return
+            }
+            super.sendEvent(event)
+        }
+    }
+    struct Interaction: Codable {
+        let kind: String
+        let displayedOffset: Double
+        let pendingPinDelta: Double
+        let anchorError: Double
+        let expectedCharacter: Int
+        let oldIncorrectCharacter: Int
+        let actualCharacter: Int
+    }
     struct Sample: Codable {
         let time: Double
         let y: Double
@@ -23,6 +44,11 @@ import AppKit
         var maxContinuityError: Double = 0
         var toolOpacities: [Float] = []
         var checks: [String] = []
+        var interactions: [Interaction] = []
+        var completionOffset: Double = 0
+        var completionBeginTime: Double = 0
+        var completionSettledOffset: Double = 0
+        var completionMetadataPendingCleanup = false
     }
     struct Failure: Error, CustomStringConvertible { let description: String }
     static func require(_ condition: Bool, _ message: String) throws {
@@ -105,14 +131,17 @@ import AppKit
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let reduced = reduceMotion
         var reports: [Case] = []
-        for dark in [false, true] {
+        cases: for dark in [false, true] {
             for width: CGFloat in [430, 900] {
                 for cadence in ["fast", "slow", "bursty"] {
+                    if let requested = CommandLine.arguments.first(where: { $0.hasPrefix("--case=") }),
+                       requested != "--case=\(dark ? "dark" : "light")-\(Int(width))-\(cadence)" { continue }
                     let report = try await exercise(dark: dark, width: width, cadence: cadence, reduced: reduced, output: output)
                     reports.append(report)
                     let error = report.samples.map { abs($0.y - $0.maximum) }.max() ?? 0
                     let offset = report.samples.map(\.offset).max() ?? 0
-                    print("PASS \(report.name): samples=\(report.samples.count) arrivals=\(report.arrivals) overlaps=\(report.overlaps) capped=\(report.capped) pinError=\(error) maxOffset=\(offset) continuityError=\(report.maxContinuityError) pixels=\(report.pixelComparisons) checks=\(report.checks.joined(separator: ","))")
+                    print("PASS \(report.name): samples=\(report.samples.count) arrivals=\(report.arrivals) overlaps=\(report.overlaps) capped=\(report.capped) pinError=\(error) maxOffset=\(offset) continuityError=\(report.maxContinuityError) interactions=\(report.interactions.count) pixels=\(report.pixelComparisons) checks=\(report.checks.joined(separator: ","))")
+                    if CommandLine.arguments.contains("--smoke") { break cases }
                 }
             }
         }
@@ -126,7 +155,7 @@ import AppKit
         var report = Case(name: "\(dark ? "dark" : "light")-\(Int(width))-\(cadence)")
         let state = TranscriptState()
         let view = TranscriptScrollView(state: state)
-        let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: width, height: 540),
+        let window = ProbeWindow(contentRect: NSRect(x: 80, y: 80, width: width, height: 540),
             styleMask: [.titled], backing: .buffered, defer: false)
         window.title = "Synthetic transcript streaming probe"
         window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
@@ -260,17 +289,209 @@ import AppKit
         grow(); try require(!active(), "Reduce Motion allowed growth animation")
         reduceMotion = reduced
         report.checks.append("reduce-motion")
+        // Status-only completion during a REAL nonzero presentation must keep
+        // the original start/from/duration and expire at the original deadline.
         grow()
-        _ = view.hitTest(NSPoint(x: view.frame.midX, y: view.frame.midY))
-        try require(!active(), "Hit testing did not cancel before native selection")
-        grow()
-        if let text = texts(view).last {
-            text.setSelectedRange(NSRange(location: 0, length: 5))
-            try require(!active(), "Selection did not cancel")
-            grow(); try require(!active(), "Selection allowed new motion")
-            text.setSelectedRange(NSRange(location: 0, length: 0))
+        let started = CACurrentMediaTime()
+        try await Task.sleep(for: .milliseconds(70))
+        let beforeCompletion = layer.animation(forKey: TranscriptGrowthMotion.animationKey) as? CABasicAnimation
+        report.completionOffset = offset()
+        report.completionBeginTime = beforeCompletion?.beginTime ?? 0
+        if !reduced { try require(offset() > 1 && active(), "Completion fixture has no displayed motion") }
+        let completedHeight = state.layout.totalHeight
+        messages[messages.count - 1].status = .complete
+        update()
+        if !reduced {
+            let after = layer.animation(forKey: TranscriptGrowthMotion.animationKey) as? CABasicAnimation
+            try require(after != nil && after?.beginTime == beforeCompletion?.beginTime &&
+                after?.fromValue as? Double == beforeCompletion?.fromValue as? Double &&
+                after?.duration == beforeCompletion?.duration, "Completion cancelled/restarted motion")
         }
-        report.checks.append("hit-test/selection")
+        try require(state.layout.totalHeight == completedHeight, "Plain completion changed geometry")
+        // Use Core Animation's assigned start, not the time the animation was
+        // submitted: transaction/compositor startup can lag submission under load.
+        let deadline = beforeCompletion.map { layer.convertTime($0.beginTime + $0.duration, to: nil) } ?? started
+        while CACurrentMediaTime() < deadline + 0.04 {
+            try await Task.sleep(for: .milliseconds(8))
+        }
+        report.completionSettledOffset = offset()
+        let expired = layer.animation(forKey: TranscriptGrowthMotion.animationKey)
+        report.completionMetadataPendingCleanup = expired != nil
+        // CA may retain expired model metadata until a later transaction. The
+        // presentation must already be zero at the ORIGINAL deadline, and any
+        // retained animation must still have its original start and duration.
+        try require(abs(offset()) < 0.01 && (expired == nil ||
+            (expired?.beginTime == beforeCompletion?.beginTime && expired?.duration == beforeCompletion?.duration)),
+            "Completion extended original presentation lifetime")
+        messages[messages.count - 1].status = .streaming
+        messages[messages.count - 1].text += "\n\n```swift"
+        update()
+        try await Task.sleep(for: .milliseconds(30))
+        let provisionalHeight = state.layout.totalHeight
+        messages[messages.count - 1].status = .complete
+        update()
+        try require(!active() && state.layout.totalHeight != provisionalHeight, "Final Markdown correction did not settle immediately")
+        try pinned()
+        messages[messages.count - 1].text += "\nlet final = 1\n```"
+        messages[messages.count - 1].status = .streaming
+        update()
+        view.cancelGrowthMotion()
+        report.checks.append("completion-lifetime/final-markdown")
+
+        let document = view.documentView!
+        let clip = view.contentView
+        func nativeHit(_ point: NSPoint) -> NSView? {
+            view.hitTest(view.superview?.convert(point, from: nil) ?? point)
+        }
+        for kind in ["press", "context-menu", "control-click", "drag", "prepaint", "pending-only", "selection", "control"] {
+            state.jumpToLatest(); update()
+            try await Task.sleep(for: .milliseconds(25))
+            if kind != "pending-only" {
+                messages[messages.count - 1].text += String(repeating: "\n\nAnother [arrived link](https://example.com/arrived) paragraph.", count: 3)
+                update()
+                try await Task.sleep(for: .milliseconds(35))
+            }
+            // Freeze only this diagnostic phase at a sampled native presentation;
+            // settling/overlap/completion above run on the normal compositor clock.
+            let time = layer.convertTime(CACurrentMediaTime(), from: nil)
+            layer.speed = 0; layer.timeOffset = time
+            CATransaction.flush()
+            try await Task.sleep(for: .milliseconds(20))
+            let displayedOffset = offset()
+            if !reduced && kind != "pending-only" { try require(displayedOffset > 1, "No presentation for \(kind)") }
+            let pinBeforePending = clip.bounds.minY
+            if kind == "prepaint" || kind == "pending-only" {
+                messages[messages.count - 1].text += "\n\nPending, not displayed.\n\nSecond pending paragraph."
+                update(paint: false)
+                try require(clip.bounds.minY > pinBeforePending, "Prepaint fixture did not change model pin")
+            }
+            let pendingDelta = clip.bounds.minY - pinBeforePending
+            if reduced && pendingDelta != 0 {
+                // Reduce Motion intentionally applies layout immediately; there
+                // is no displayed compensation to preserve before paint.
+                window.displayIfNeeded(); CATransaction.flush()
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            guard let presentedDocument = layer.presentation(), let presentedClip = clip.layer?.presentation(),
+                  let text = texts(view).last, let storage = text.textStorage, let layout = text.layoutManager,
+                  let container = text.textContainer else { throw Failure(description: "Missing native presentation/text") }
+            // Convert a real link glyph through the document/clip presentation
+            // hierarchy. This independently measures the displayed character,
+            // not the animation's fromValue or the logical pinned viewport.
+            var target: (point: NSPoint, character: Int, wrong: Int, documentPoint: NSPoint, visibleY: CGFloat)?
+            storage.enumerateAttribute(.link, in: NSRange(location: 0, length: storage.length)) { value, range, stop in
+                guard value != nil else { return }
+                let glyph = layout.glyphIndexForCharacter(at: range.location)
+                let rect = layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+                let local = NSPoint(x: rect.minX + text.textContainerOrigin.x + 1, y: rect.midY + text.textContainerOrigin.y)
+                let pointInDocument = text.convert(local, to: document)
+                let visible = presentedDocument.convert(pointInDocument, to: presentedClip)
+                guard presentedClip.bounds.insetBy(dx: 20, dy: 20).contains(visible) else { return }
+                let point = clip.convert(NSPoint(x: visible.x - presentedClip.bounds.minX + clip.bounds.minX,
+                    y: visible.y - presentedClip.bounds.minY + clip.bounds.minY), to: nil)
+                let expected = text.characterIndexForInsertion(at: local)
+                let wrong = text.characterIndexForInsertion(at: text.convert(point, from: nil))
+                guard reduced || wrong != expected else { return }
+                target = (point, expected, wrong, pointInDocument, visible.y - presentedClip.bounds.minY); stop.pointee = true
+            }
+            guard let target else { throw Failure(description: "No displayed link target for \(kind)") }
+            let wasActive = active()
+            _ = nativeHit(target.point)
+            _ = view.hitTest(NSPoint(x: -100, y: -100))
+            try require(active() == wasActive && offset() == displayedOffset && clip.bounds.minY == pinBeforePending + pendingDelta,
+                        "Passive/rejected hit test mutated motion")
+            // A real event outside this transcript must be just as inert.
+            let outside = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: -100, y: -100), modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 4242, clickCount: 1, pressure: 1)!
+            NSApp.sendEvent(outside)
+            try require(active() == wasActive && clip.bounds.minY == pinBeforePending + pendingDelta, "Outside press mutated motion")
+            var delivered = false
+            var deliveredHit: NSView?
+            let type: NSEvent.EventType = kind == "context-menu" ? .rightMouseDown : kind == "drag" ? .leftMouseDragged : .leftMouseDown
+            let event = NSEvent.mouseEvent(with: type, location: target.point, modifierFlags: kind == "control-click" ? .control : [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 4242, clickCount: 1, pressure: 1)!
+            var control: NSButton?
+            if kind == "control" {
+                let button = NSButton(title: "Synthetic control", target: nil, action: nil)
+                let center = text.convert(text.convert(target.point, from: nil), to: document)
+                // Position in the displayed source area, not the old logical target.
+                button.frame = NSRect(x: center.x - 10, y: center.y - displayedOffset - 10, width: 100, height: 20)
+                document.addSubview(button); control = button
+                window.displayIfNeeded(); CATransaction.flush()
+                try await Task.sleep(for: .milliseconds(20))
+                guard let presentedButton = button.layer?.presentation(), let buttonClip = clip.layer?.presentation() else {
+                    throw Failure(description: "Missing displayed native control")
+                }
+                let visiblePoint = clip.convert(target.point, from: nil)
+                try require(presentedButton.bounds.contains(presentedButton.convert(visiblePoint, from: buttonClip)),
+                            "Control fixture is not actually displayed at the event point")
+                if !reduced { try require(nativeHit(target.point) !== button, "Control fixture lacks the old incorrect target") }
+            }
+            window.inspectPress = {
+                delivered = true
+                // NSApplication's production monitor must already have rebased.
+                deliveredHit = nativeHit(target.point)
+            }
+            if kind == "selection" {
+                // Also covers programmatic/accessibility selected-range changes.
+                text.setSelectedRange(NSRange(location: target.character, length: 5))
+                delivered = true
+                deliveredHit = nativeHit(target.point)
+            } else { NSApp.sendEvent(event) }
+            try require(delivered, "Synthetic event never reached the native window")
+            let actual = text.characterIndexForInsertion(at: text.convert(target.point, from: nil))
+            let docPoint = text.convert(text.convert(target.point, from: nil), to: document)
+            // Snapshot numbers, not retained presentation-layer objects: AppKit
+            // can replace/detach that tree on the next transaction (the button
+            // fixture deliberately commits a display before delivering its press).
+            let error = abs(docPoint.y - target.documentPoint.y)
+            try require(error < 1.01 && actual == target.character,
+                "\(kind) displayed anchor/target jumped: error=\(error), expected=\(target.character), oldWrong=\(target.wrong), actual=\(actual)")
+            if let control { try require(deliveredHit === control, "Displayed control target lost before native delivery"); control.removeFromSuperview() }
+            else { try require(deliveredHit === text, "Native link/text target lost before native delivery") }
+            try require(storage.attribute(.link, at: actual, effectiveRange: nil) != nil, "Displayed link lost")
+            if !reduced {
+                try require(!active() && !state.followsLatest && state.anchor == state.layout.anchor(at: clip.bounds.minY), "Interaction failed to preserve reader intent/anchor")
+                if kind == "prepaint" { try require(abs(clip.bounds.minY - (pinBeforePending - displayedOffset)) < 1.01, "Used pending rather than displayed geometry") }
+            }
+            // Verify the next committed presentation too, not just model math
+            // or animation removal. No screen/window capture is involved.
+            let visibleY = target.visibleY
+            CATransaction.flush()
+            try await Task.sleep(for: .milliseconds(20))
+            guard let settledDocument = layer.presentation(), let settledClip = clip.layer?.presentation() else {
+                throw Failure(description: "Missing post-interaction presentation")
+            }
+            let settledY = settledDocument.convert(docPoint, to: settledClip).y - settledClip.bounds.minY
+            try require(abs(settledY - visibleY) < 1.01, "Committed presentation jumped after \(kind): \(settledY - visibleY)")
+            report.interactions.append(Interaction(kind: kind, displayedOffset: displayedOffset, pendingPinDelta: pendingDelta,
+                anchorError: error, expectedCharacter: target.character, oldIncorrectCharacter: target.wrong, actualCharacter: actual))
+            if kind == "selection" {
+                grow(); try require(!active(), "Selection allowed new motion")
+                text.setSelectedRange(NSRange(location: 0, length: 0))
+            }
+            layer.speed = 1; layer.timeOffset = 0
+            window.inspectPress = nil
+        }
+        state.jumpToLatest(); update()
+        report.checks.append("passive-hit/press/menu/drag/prepaint/selection/control")
+        if !reduced {
+            grow()
+            try await Task.sleep(for: .milliseconds(30))
+            try require(offset() > 0, "Clamp fixture has no presentation")
+            // Simulate a native document correction arriving before paint.
+            // Preserving the old anchor is impossible outside the new range.
+            document.setFrameSize(NSSize(width: document.frame.width, height: clip.bounds.height + 5))
+            let event = NSEvent.mouseEvent(with: .leftMouseDown, location: view.convert(NSPoint(x: 40, y: 80), to: nil),
+                modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 4242, clickCount: 1, pressure: 1)!
+            NSApp.sendEvent(event)
+            try require(!active() && clip.bounds.minY.isFinite && (0...5).contains(clip.bounds.minY), "Rebase escaped corrected native range")
+            state.jumpToLatest(); update()
+            report.checks.append("clamped-rebase")
+        }
         grow()
         view.withReaderScroll { view.contentView.scroll(to: NSPoint(x: 0, y: view.contentView.bounds.minY - 2)) }
         let reading = view.contentView.bounds.minY

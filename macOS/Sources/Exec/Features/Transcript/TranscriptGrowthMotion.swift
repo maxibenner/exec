@@ -10,6 +10,8 @@ import AppKit
     weak var layer: CALayer?
     private(set) var pendingOffset: CGFloat?
 
+    var isActive: Bool { pendingOffset != nil || layer?.animation(forKey: Self.animationKey) != nil }
+
     func add(growth: CGFloat) {
         guard growth > 0, let layer else { return }
         let current = pendingOffset ?? (layer.presentation()?.transform.m42 ?? 0)

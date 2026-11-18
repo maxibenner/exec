@@ -120,6 +120,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Downward scrolling to the bottom resumes transcript tracking, not streaming growth", { try TranscriptTurnScrollTests().resumesFollowingOnlyAfterScrollingDownToBottom() }),
             ("First sends anchor before the viewport is laid out", { try TranscriptTurnScrollTests().anchorsBeforeInitialLayout() }),
             ("Streaming visual growth coalesces and stays bounded", { try TranscriptScrollTests().growthCoalescesWithoutMovingLogicalGeometry() }),
+            ("Completion preserves only identical rendering and passive hit tests are inert", { try TranscriptScrollTests().completionPreservesOnlyIdenticalRendering() }),
             ("Streaming pins every measured pass and respects manual opt-out", { try TranscriptScrollTests().pinsEveryMeasuredPassAndRespectsManualOptOut() }),
             ("Bottom following survives native geometry and rubber-band rebound", { try TranscriptScrollTests().bottomFollowSurvivesNativeGeometryAndBounce() }),
             ("A downward boundary wheel resumes a short reserved turn", { try TranscriptScrollTests().boundaryWheelResumesShortReservedTurn() }),

@@ -144,7 +144,10 @@ private struct VirtualTranscript: NSViewRepresentable {
             $0.compaction != nil || $0.role != .assistant || !$0.text.isEmpty || $0.status == .failed
         }
         streamingGrowthPending = initialized && Self.isStreamingGrowth(from: self.messages, to: filtered)
-        if self.messages != filtered, !streamingGrowthPending { cancelGrowthMotion() }
+        if self.messages != filtered, !streamingGrowthPending, growthMotion.isActive,
+           !preservesCompletedRendering(from: self.messages, to: filtered) {
+            cancelGrowthMotion()
+        }
         // Look for the latest user row, not the last visible row: the first
         // response chunk may arrive in the same SwiftUI update as the send.
         if hasReceivedMessages, let sent = filtered.last(where: { $0.role == .user }),
@@ -203,7 +206,9 @@ private struct VirtualTranscript: NSViewRepresentable {
         selectionClearing?.stop()
         selectionClearing = nil
         if window != nil, !detached {
-            selectionClearing = TranscriptSelectionClearing(self)
+            selectionClearing = TranscriptSelectionClearing(self) { [weak self] in
+                self?.rebaseGrowthForReaderInteraction()
+            }
             scheduleRefresh()
         }
     }
@@ -275,7 +280,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     // Scope native scroller actions and keyboard scrolling, not layout work
     // that happens to produce a bounds notification between reader actions.
     func withReaderScroll(_ action: () -> Void) {
-        cancelGrowthMotion()
+        rebaseGrowthForReaderInteraction()
         let wasTracking = trackingReaderScroll
         trackingReaderScroll = true
         defer { trackingReaderScroll = wasTracking }
@@ -302,7 +307,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        cancelGrowthMotion()
+        rebaseGrowthForReaderInteraction()
         // Momentum keeps the gesture's direction. A spring rebound must not
         // undo upward intent, nor opt a downward gesture out of following.
         if event.momentumPhase.isEmpty, event.scrollingDeltaY != 0 {
@@ -340,6 +345,30 @@ private struct VirtualTranscript: NSViewRepresentable {
         return grew
     }
 
+    // Completion can be data-only, but provisional Markdown may instead become
+    // literal text or lose an empty fence. Preserve motion only for identical
+    // rendering, not merely identical source or equal row height.
+    private func preservesCompletedRendering(from old: [Message], to new: [Message]) -> Bool {
+        guard old.count == new.count else { return false }
+        return zip(old, new).allSatisfy { previous, next in
+            if previous == next { return true }
+            guard previous.role == .assistant, previous.compaction == nil,
+                  previous.pendingTool == nil, previous.toolResult == nil,
+                  previous.status == .streaming, next.status == .complete else { return false }
+            var completed = previous
+            completed.status = .complete
+            guard completed == next else { return false }
+            // Compare renderer inputs, not native attributed strings: identical
+            // code/table blocks allocate distinct NSTextTableBlock objects.
+            func sameBlocks(_ a: [MarkdownBlock], _ b: [MarkdownBlock]) -> Bool {
+                a.count == b.count && zip(a, b).allSatisfy {
+                    $0.kind == $1.kind && $0.text == $1.text && sameBlocks($0.children, $1.children)
+                }
+            }
+            return sameBlocks(StreamingMarkdown.parse(previous.text), MarkdownDocument.parse(next.text))
+        }
+    }
+
     private var hasTextSelection: Bool {
         func selected(_ view: NSView) -> Bool {
             if let text = view as? NSTextView, text.selectedRanges.contains(where: { $0.rangeValue.length > 0 }) { return true }
@@ -356,7 +385,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     @objc private func selectionChanged(_ notification: Notification) {
         guard let text = notification.object as? NSTextView, text.isDescendant(of: content),
               text.selectedRanges.contains(where: { $0.rangeValue.length > 0 }) else { return }
-        cancelGrowthMotion()
+        rebaseGrowthForReaderInteraction()
     }
 
     @objc private func motionPolicyChanged() {
@@ -366,11 +395,34 @@ private struct VirtualTranscript: NSViewRepresentable {
         }
     }
 
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        // Native hit testing ignores presentation transforms. Settle BEFORE
-        // AppKit chooses a text/link/control target, including hover and menus.
+    // Called before mouse delivery/target selection, or by native selection and
+    // keyboard/scroll input. Passive hit testing must never mutate the viewport.
+    private func rebaseGrowthForReaderInteraction() {
+        guard !updating, !detached, growthMotion.isActive else { return }
+        var y = contentView.bounds.minY
+        if let document = content.layer?.presentation(), let clip = contentView.layer?.presentation() {
+            // In this flipped hierarchy: newY = pinnedY - displayedOffset.
+            // Convert the actual presentation viewport, including its scroll
+            // origin: a queued prepaint arrival may have changed BOTH the model
+            // pin and pending compensation without displaying either yet.
+            y = document.convert(clip.bounds.origin, from: clip).y
+        }
+        let maximum = max(0, content.bounds.height - contentView.bounds.height)
+        y = min(maximum, max(0, y.isFinite ? y : contentView.bounds.minY))
+        cancelScrollAnimation()
+        updating = true
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        contentView.scroll(to: NSPoint(x: contentView.bounds.minX, y: y))
+        reflectScrolledClipView(contentView)
         cancelGrowthMotion()
-        return super.hitTest(point)
+        CATransaction.commit()
+        updating = false
+        state.followsLatest = false
+        navigationAnchor = nil
+        readingAnchor = nil
+        rememberAnchor()
+        scheduleRefresh()
     }
 
     private func cancelScrollAnimation() {
@@ -543,6 +595,7 @@ private struct VirtualTranscript: NSViewRepresentable {
             }
             changed = state.layout.measure(measurements)
             if changed {
+                if !canAnimateGrowth { cancelGrowthMotion() }
                 setDocumentSize()
                 restore(anchor, pinBottom: pinBottom)
             }

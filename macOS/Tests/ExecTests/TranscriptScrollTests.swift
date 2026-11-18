@@ -24,6 +24,55 @@ import AppKit
         try expect(layer.animationKeys() == nil && motion.pendingOffset == nil)
     }
 
+    func completionPreservesOnlyIdenticalRendering() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        window.contentView = view
+        defer { view.detach(); window.contentView = nil }
+        var messages = [Message(role: .assistant, text: String(repeating: "Paragraph.\n\n", count: 30) + "```swift\nlet code = 1\n```\n\nTail.", status: .streaming)]
+        func update() {
+            view.update(messages: messages, jumpRequest: state.jumpRequest)
+            view.layoutSubtreeIfNeeded(); view.viewWillDraw()
+        }
+        func seedMotion() {
+            // Policy-independent test of cancellation, not live presentation.
+            let animation = CABasicAnimation(keyPath: "transform.translation.y")
+            animation.fromValue = 48; animation.toValue = 0; animation.duration = 0.18
+            view.documentView!.layer!.add(animation, forKey: TranscriptGrowthMotion.animationKey)
+        }
+        func active() -> Bool { view.documentView!.layer!.animation(forKey: TranscriptGrowthMotion.animationKey) != nil }
+        update()
+        seedMotion()
+        _ = view.hitTest(NSPoint(x: 50, y: 50))
+        _ = view.hitTest(NSPoint(x: -50, y: -50))
+        try expect(active()) // Both accepted and rejected passive queries are inert.
+        messages[0].status = .complete
+        update()
+        try expect(active() == !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        // Same source can change rendering on completion: an empty provisional
+        // code block disappears. It must settle immediately, not finish the FLIP.
+        messages[0].text += "\n\n```swift"
+        messages[0].status = .streaming
+        update()
+        let streamingHeight = state.layout.totalHeight
+        seedMotion()
+        messages[0].status = .complete
+        update()
+        try expect(!active() && state.layout.totalHeight != streamingHeight)
+        // Restyling, replacements and removals must not inherit old motion.
+        for change in 0..<3 {
+            seedMotion()
+            if change == 0 { messages[0].text = "**Replacement**" }
+            if change == 1 { messages = [Message(role: .assistant, text: messages[0].text)] }
+            if change == 2 { messages = [] }
+            update()
+            try expect(!active())
+        }
+    }
+
     func pinsEveryMeasuredPassAndRespectsManualOptOut() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
