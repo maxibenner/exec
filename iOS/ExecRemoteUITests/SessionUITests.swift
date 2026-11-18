@@ -100,6 +100,59 @@ import XCTest
         }
     }
 
+    private func openManualPairing(_ app: XCUIApplication) -> XCUIElement {
+        app.buttons["Session Options"].tap()
+        app.buttons["Forget Host"].tap()
+        let scan = app.buttons["Scan Pairing QR Code"]
+        XCTAssertTrue(scan.waitForExistence(timeout: 5))
+        scan.tap()
+        XCTAssertTrue(app.staticTexts["Camera Unavailable"].waitForExistence(timeout: 5))
+        let input = app.descendants(matching: .any).matching(identifier: "manual-pairing-code").firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(input.frame.width, app.frame.width * 0.75,
+                             "Manual pairing input should use the native form's available width.")
+        capture("manual-pairing-form", app: app)
+        return input
+    }
+
+    private func pairingInvitation(expires: Double) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "version": 1, "relay": "ws://127.0.0.1:1",
+            "route": String(repeating: "0", count: 64),
+            "hostKey": Data(repeating: 0, count: 32).base64EncodedString(),
+            "secret": String(repeating: "1", count: 64),
+            "expires": expires, "localDevelopment": true
+        ])
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func testManualPairingAcceptsCodeAndIgnoresSurroundingWhitespace() throws {
+        let app = launch()
+        let input = openManualPairing(app)
+        let pair = app.buttons["Pair Device"]
+        XCTAssertFalse(pair.isEnabled)
+        input.tap()
+        input.typeText("  \n")
+        XCTAssertFalse(pair.isEnabled)
+        input.typeText(try pairingInvitation(expires: Date().timeIntervalSince1970 + 600) + "\n ")
+        XCTAssertTrue(pair.isEnabled)
+        capture("manual-pairing-input", app: app)
+        pair.tap()
+        XCTAssertTrue(app.buttons["session-fixture-1"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["New Chat"].isEnabled)
+    }
+
+    func testManualPairingRejectsExpiredInvitations() throws {
+        let app = launch()
+        let input = openManualPairing(app)
+        input.tap()
+        input.typeText(try pairingInvitation(expires: 1))
+        app.buttons["Pair Device"].tap()
+        XCTAssertTrue(app.staticTexts["This invitation has expired. Create a new QR code on the Mac."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Scan Pairing QR Code"].exists)
+        XCTAssertFalse(app.buttons["session-fixture-1"].exists)
+    }
+
     private func deleteMiddleSession(_ app: XCUIApplication) {
         let row = app.buttons["session-fixture-3"]
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))

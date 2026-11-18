@@ -7,6 +7,8 @@ struct ScannerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var authorized = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
     @State private var failure: String?
+    @State private var manualCode = ""
+    private var pairingCode: String { manualCode.trimmingCharacters(in: .whitespacesAndNewlines) }
     var body: some View {
         NavigationStack {
             Group {
@@ -14,7 +16,35 @@ struct ScannerView: View {
                     CameraScanner(scanned: scanned, failed: { failure = $0 })
                         .ignoresSafeArea()
                 } else {
-                    ContentUnavailableView("Camera Unavailable", systemImage: "qrcode", description: Text(failure ?? "Enable camera access in Settings and use a device that supports camera scanning."))
+                    Form {
+                        Section {
+                            ContentUnavailableView {
+                                Label("Camera Unavailable", systemImage: "qrcode")
+                            } description: {
+                                Text(failure ?? "Enable camera access or enter the pairing code manually below.")
+                            }
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets())
+                        }
+                        Section {
+                            TextField("Pairing code", text: $manualCode, axis: .vertical)
+                                .lineLimit(3...5)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.asciiCapable)
+                                .privacySensitive()
+                                .accessibilityIdentifier("manual-pairing-code")
+                        }
+                    }
+                    .safeAreaInset(edge: .bottom) {
+                        Button { scanned(pairingCode) } label: {
+                            Text("Pair Device").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(pairingCode.isEmpty)
+                        .padding()
+                    }
                 }
             }
             .navigationBarTitleDisplayMode(.inline)

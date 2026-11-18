@@ -7,7 +7,9 @@ A thin SwiftUI client for accessing the Rust backend remotely. It contains no ag
 
 1. Start the relay as described in [`relay/README.md`](../relay/README.md).
 2. Build/open the current Mac app; configure **Settings → Remote Access** with `ws://127.0.0.1:8787` enabled.
-3. Pairing requires scanning a Mac pairing QR code on a physical device. Use the isolated UI fixtures below for simulator checks.
+3. On the Mac, create a pairing QR code and click **Copy to clipboard** beneath it. In the simulator, tap **Scan Pairing QR Code**, paste the copied text into **Pairing code** on the **Camera Unavailable** screen, and tap **Pair Device**. Manual entry uses the same invitation validation and connection flow as scanning on a physical device.
+
+Launch without `--ui-fixture` to connect to the real backend. Use the isolated UI fixtures below for checks without network or Keychain access.
 
 CLI simulator build:
 
