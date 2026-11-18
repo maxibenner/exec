@@ -117,7 +117,7 @@ async fn defaults_order_rename_model_and_fork_survive_restart_without_mutating_s
 }
 
 #[tokio::test]
-async fn busy_sessions_reject_mutations_but_fork_without_waiting() {
+async fn busy_sessions_allow_rename_and_fork_but_reject_model_changes() {
     let entered = CancellationToken::new();
     let signal = entered.clone();
     let p = FakeProvider::new(vec![script(move |request| {
@@ -132,10 +132,13 @@ async fn busy_sessions_reject_mutations_but_fork_without_waiting() {
     let c = manager.create(options(p.clone(), vec![])).await.unwrap();
     let run = c.submit("work".into()).unwrap();
     entered.cancelled().await;
-    assert_eq!(
-        manager.rename(&c.id, "rename".into()).await.unwrap_err(),
-        Error::Busy
-    );
+    let before = c.snapshot();
+    let renamed = manager.rename(&c.id, "rename".into()).await.unwrap();
+    assert_eq!(renamed.metadata.title.as_deref(), Some("rename"));
+    assert!(renamed.metadata.manually_named);
+    assert_eq!(renamed.messages, before.messages);
+    assert_eq!(renamed.operation, before.operation);
+    assert!(c.busy());
     assert_eq!(
         manager
             .select_model(&c.id, "other".into())

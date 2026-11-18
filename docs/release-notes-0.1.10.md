@@ -1,0 +1,4 @@
+- Converted settings to sidebar-style navigation to prepare for additional settings categories
+- Updated message styling and smoothed transcript following
+- Updated the sidebar for more predictable animations
+- Made caret position persistent between session changes
