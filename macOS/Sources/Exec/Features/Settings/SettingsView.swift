@@ -6,36 +6,41 @@ struct SettingsView: View {
     let checkForUpdates: () -> Void
 
     var body: some View {
-        HSplitView {
+        NavigationSplitView(columnVisibility: .constant(.all)) {
             List(selection: Binding<ChatLibrary.SettingsTab?>(
                 get: { store.settingsTab },
                 set: { if let section = $0 { store.settingsTab = section } }
             )) {
                 ForEach(ChatLibrary.SettingsTab.allCases, id: \.self) { section in
-                    Label(section.title, systemImage: section.systemImage)
-                        .tag(section)
+                    Label {
+                        Text(section.title)
+                    } icon: {
+                        Image(systemName: section.systemImage)
+                            .font(.system(size: 15))
+                    }
+                    .tag(section)
                 }
             }
             .listStyle(.sidebar)
             .contentMargins(.top, 0, for: .scrollContent)
             .accessibilityLabel("Settings sections")
-            .frame(minWidth: 180, idealWidth: 200, maxWidth: 260, maxHeight: .infinity, alignment: .topLeading)
-
-            VStack(alignment: .leading, spacing: 0) {
-                Text(store.settingsTab.title)
-                    .font(.title2.weight(.semibold))
-                    .accessibilityAddTraits(.isHeader)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 12)
-                    .padding(.bottom, 8)
-
-                settingsDetail
-                    .contentMargins(.top, 0, for: .scrollContent)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
-            .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(.background)
+            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 260)
+            .toolbar(removing: .sidebarToggle)
+        } detail: {
+            settingsDetail
+                .contentMargins(.top, 0, for: .scrollContent)
+                .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(.background)
+                .background(SettingsWindowConfiguration())
+                .toolbar {
+                    ToolbarItem(placement: .navigation) {
+                        Text(store.settingsTab.title)
+                            .font(.headline)
+                            .accessibilityAddTraits(.isHeader)
+                    }
+                }
         }
+        .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 700, idealWidth: 760, minHeight: 400, idealHeight: 560)
     }
 
