@@ -46,8 +46,8 @@ struct RootView: View {
                         List {
                             ForEach(RemoteSessionListDay.group(store.conversations)) { group in
                                 Section {
-                                    ForEach(group.rows) { row in
-                                        sessionRow(row)
+                                    ForEach(Array(group.rows.enumerated()), id: \.element.id) { index, row in
+                                        sessionRow(row, isFirst: index == 0, isLast: index == group.rows.count - 1)
                                     }
                                 } header: {
                                     Text(group.day.title(now: context.date))
@@ -118,7 +118,7 @@ struct RootView: View {
             .sheet(isPresented: $creating) { NewChatScreen(store: store) }
         }
     }
-    private func sessionRow(_ row: RemoteSessionListDay.Row) -> some View {
+    private func sessionRow(_ row: RemoteSessionListDay.Row, isFirst: Bool, isLast: Bool) -> some View {
         let conversation = row.conversation
         return Button { store.selected = conversation.id } label: {
             HStack(alignment: .center, spacing: 12) {
@@ -162,8 +162,7 @@ struct RootView: View {
         }
         .accessibilityIdentifier("session-\(conversation.id)")
         .disabled(conversation["unreadable"].bool)
-        // Keep native grouped resting corners and native swipe actions; a custom
-        // background or clip would replace the system's swipe-corner animation.
+        .listRowBackground(SessionRowBackground(isFirst: isFirst, isLast: isLast))
         .listRowSeparator(.hidden)
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button("Delete", systemImage: "trash", role: .destructive) {
