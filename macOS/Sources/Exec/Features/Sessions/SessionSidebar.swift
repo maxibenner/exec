@@ -4,6 +4,17 @@ private struct SidebarSessionGroup: Identifiable, Equatable {
     let session: SessionSummary
     let children: [SessionSummary]
     var id: UUID { session.id }
+
+    @MainActor static func snapshot(_ store: ChatLibrary) -> [Self] {
+        // Build the ordered catalog once, not once again for every parent.
+        let sessions = store.sessionList
+        var children: [UUID: [SessionSummary]] = [:]
+        for session in sessions {
+            if let parent = session.parent?.sessionId { children[parent, default: []].append(session) }
+        }
+        return sessions.filter { $0.parent == nil && !store.detachedSessionIDs.contains($0.id) }
+            .map { Self(session: $0, children: children[$0.id] ?? []) }
+    }
 }
 
 struct SessionSidebar: View {
@@ -25,18 +36,14 @@ struct SessionSidebar: View {
     // Keep appearance state above List's recycled rows. Scrolling an existing
     // child back into view must not replay its insertion fade.
     @State private var revealedChildIDs: Set<UUID>
-    private var groups: [SidebarSessionGroup] {
-        store.sidebarSessions.map { SidebarSessionGroup(session: $0, children: store.childSessions(of: $0.id)) }
-    }
+    private var groups: [SidebarSessionGroup] { SidebarSessionGroup.snapshot(store) }
 
     init(store: ChatLibrary, open: @escaping (UUID) -> Void,
          delete: @escaping (SessionSummary) -> Void) {
         self.store = store
         self.open = open
         self.delete = delete
-        let initial = store.sidebarSessions.map {
-            SidebarSessionGroup(session: $0, children: store.childSessions(of: $0.id))
-        }
+        let initial = SidebarSessionGroup.snapshot(store)
         _displayedGroups = State(initialValue: initial)
         _revealedChildIDs = State(initialValue: Set(initial.flatMap { $0.children.map(\.id) }))
     }
