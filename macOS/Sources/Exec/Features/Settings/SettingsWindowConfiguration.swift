@@ -15,7 +15,18 @@ struct SettingsWindowConfiguration: NSViewRepresentable {
         func configure() {
             if let window {
                 if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
+                // SwiftUI drops an empty toolbar. Keep the sidebar's native header
+                // height without inserting a placeholder control in the detail pane.
+                if window.toolbar == nil {
+                    let toolbar = NSToolbar(identifier: "ExecSettings")
+                    toolbar.allowsUserCustomization = false
+                    window.toolbar = toolbar
+                }
                 if window.toolbarStyle != .unified { window.toolbarStyle = .unified }
+                if !window.styleMask.contains(.fullSizeContentView) {
+                    window.styleMask.insert(.fullSizeContentView)
+                }
+                if !window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = true }
             }
             // SwiftUI can attach the split controller after the initial move callback.
             var ancestor = superview

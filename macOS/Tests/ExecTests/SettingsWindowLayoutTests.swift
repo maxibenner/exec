@@ -40,7 +40,22 @@ import SwiftUI
             let sidebarTop = sidebar.viewController.view.convert(sidebar.viewController.view.bounds, to: nil).maxY
             let detailTop = detail.viewController.view.convert(detail.viewController.view.bounds, to: nil).maxY
             try expect(abs(sidebarTop - detailTop) < 1)
+            // No custom toolbar view may recreate a section-title button.
+            try expect(toolbar.items.allSatisfy { $0 is NSTrackingSeparatorToolbarItem || $0.view == nil })
+            guard let detailContent = findDetailContent(in: detail.viewController.view) else {
+                throw CheckFailure(description: "Missing settings content")
+            }
+            let contentTop = detailContent.convert(detailContent.bounds, to: nil).maxY
+            try expect(abs(contentTop - detailTop) < 1)
         }
+    }
+
+    private func findDetailContent(in view: NSView) -> SettingsWindowConfiguration.ConfigurationView? {
+        if let content = view as? SettingsWindowConfiguration.ConfigurationView { return content }
+        for child in view.subviews {
+            if let content = findDetailContent(in: child) { return content }
+        }
+        return nil
     }
 
     private func findSplit(in view: NSView) -> NSSplitViewController? {

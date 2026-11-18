@@ -16,7 +16,9 @@ struct SettingsView: View {
                         Text(section.title)
                     } icon: {
                         Image(systemName: section.systemImage)
-                            .font(.system(size: 15))
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 12, height: 12)
                     }
                     .tag(section)
                 }
@@ -32,14 +34,9 @@ struct SettingsView: View {
                 .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .background(.background)
                 .background(SettingsWindowConfiguration())
-                .toolbar {
-                    ToolbarItem(placement: .navigation) {
-                        Text(store.settingsTab.title)
-                            .font(.headline)
-                            .accessibilityAddTraits(.isHeader)
-                    }
-                }
+                .ignoresSafeArea(.container, edges: .top)
         }
+        .toolbar(.visible, for: .windowToolbar)
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 700, idealWidth: 760, minHeight: 400, idealHeight: 560)
     }
