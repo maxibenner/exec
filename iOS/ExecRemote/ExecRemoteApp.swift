@@ -33,13 +33,13 @@ struct RootView: View {
                 else {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
                         List {
-                            ForEach(RemoteSessionDay.group(store.conversations)) { day in
+                            ForEach(RemoteSessionListDay.group(store.conversations)) { group in
                                 Section {
-                                    ForEach(day.conversations, id: \.id) { conversation in
-                                        sessionRow(conversation)
+                                    ForEach(group.rows) { row in
+                                        sessionRow(row)
                                     }
                                 } header: {
-                                    Text(day.title(now: context.date))
+                                    Text(group.day.title(now: context.date))
                                         .font(.title3.bold())
                                         .foregroundStyle(Color(uiColor: .label))
                                         .textCase(nil)
@@ -107,36 +107,52 @@ struct RootView: View {
             .sheet(isPresented: $creating) { NewChatScreen(store: store) }
         }
     }
-    private func sessionRow(_ conversation: RemoteJSON) -> some View {
-        Button { store.selected = conversation.id } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(conversation["metadata"]["title"].string ?? conversation["title"].string ?? "New Chat")
-                    .font(.headline).foregroundStyle(Color(uiColor: .label)).lineLimit(1)
-                HStack(spacing: 8) {
-                    Text(RemoteSessionDay.activityDate(conversation), format: .dateTime.hour().minute())
-                        .fixedSize()
-                    if let workspace = conversation["workspace"].string, !workspace.isEmpty {
-                        Text(URL(fileURLWithPath: workspace).lastPathComponent)
-                            .lineLimit(1).truncationMode(.middle)
-                    }
-                    Spacer(minLength: 4)
-                    if RemoteMessageSubmission.isActive(conversation) {
-                        ProgressView().controlSize(.mini).accessibilityLabel("Active")
-                            .accessibilityIdentifier("session-active-\(conversation.id)")
-                            .frame(width: 16, height: 20)
+    private func sessionRow(_ row: RemoteSessionListDay.Row) -> some View {
+        let conversation = row.conversation
+        return Button { store.selected = conversation.id } label: {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(conversation["metadata"]["title"].string ?? conversation["title"].string ?? "New Chat")
+                        .font(row.isSubagent ? .subheadline : .headline)
+                        .foregroundStyle(Color(uiColor: row.isSubagent ? .secondaryLabel : .label))
+                        .lineLimit(1).truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if !row.isSubagent {
+                        HStack(spacing: 8) {
+                            Text(RemoteSessionDay.activityDate(conversation), format: .dateTime.hour().minute())
+                                .fixedSize()
+                            if let workspace = conversation["workspace"].string, !workspace.isEmpty {
+                                Text(URL(fileURLWithPath: workspace).lastPathComponent)
+                                    .lineLimit(1).truncationMode(.middle)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .font(.subheadline).foregroundStyle(Color(uiColor: .secondaryLabel))
                     }
                 }
-                .font(.subheadline).foregroundStyle(Color(uiColor: .secondaryLabel))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if !row.isSubagent {
+                    // Always reserve the status slot, including for idle sessions.
+                    Group {
+                        if RemoteMessageSubmission.isActive(conversation) {
+                            ProgressView().controlSize(.regular).accessibilityLabel("Active")
+                                .accessibilityIdentifier("session-active-\(conversation.id)")
+                        } else {
+                            Color.clear.accessibilityHidden(true)
+                        }
+                    }
+                    .frame(width: 24, height: 24)
+                }
             }
+            .padding(.leading, CGFloat(row.depth) * 16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 6)
+            .padding(.vertical, row.isSubagent ? 2 : 6)
             .contentShape(Rectangle())
         }
         .accessibilityIdentifier("session-\(conversation.id)")
         .disabled(conversation["unreadable"].bool)
-        // The native background supplies grouped outer corners at rest and
-        // gray highlighting with animated trailing corners when any row is swiped.
-        // A custom row background or clip would replace that per-row animation.
+        // Keep native grouped resting corners and native swipe actions; a custom
+        // background or clip would replace the system's swipe-corner animation.
         .listRowSeparator(.hidden)
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button("Delete", systemImage: "trash", role: .destructive) {
@@ -208,7 +224,7 @@ private struct SessionControls: View {
         .disabled(busy)
         Spacer()
         Button(action: create) {
-            Label("New Chat", systemImage: "square.and.pencil")
+            Label("New Session", systemImage: "plus")
                 .frame(width: 24, height: 24)
         }
         .disabled(busy || !connected)
