@@ -1,6 +1,28 @@
+import AppKit
+import CoreImage
 import Foundation
 
 @MainActor struct RemoteAccessSettingsTests {
+    func pairingQRCodePreparesStableScanAndCopyContent() throws {
+        let invitation: AgentJSON = .object([
+            "id": .string("synthetic-invitation"), "secret": .string("synthetic-only"),
+            "relay": .string("wss://relay.example"), "expires": .number(2_000_000_000)
+        ])
+        let code = try PairingQRCode(invitation)
+        try expect(try JSONDecoder().decode(AgentJSON.self, from: Data(code.text.utf8)) == invitation)
+        try expect(code.expires == 2_000_000_000)
+        for _ in 0..<4 {
+            try expect(try PairingQRCode(invitation).text == code.text)
+        }
+        guard let image = code.image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let detector = CIDetector(ofType: CIDetectorTypeQRCode, context: nil,
+                                       options: [CIDetectorAccuracy: CIDetectorAccuracyHigh]) else {
+            throw CheckFailure(description: "Prepared pairing QR image is unavailable")
+        }
+        let scanned = detector.features(in: CIImage(cgImage: image)).compactMap { ($0 as? CIQRCodeFeature)?.messageString }
+        try expect(scanned == [code.text])
+    }
+
     private func status(_ enabled: Bool, _ connection: String, relay: String = RemoteAccessSettings.defaultRelay) -> AgentJSON {
         .object(["enabled": .bool(enabled), "connectionStatus": .string(connection), "relay": .string(relay)])
     }

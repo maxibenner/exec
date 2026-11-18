@@ -158,6 +158,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Compaction rows remain visible without assistant text", { try TranscriptTests().compactionRowsRemainVisibleWithoutAssistantText() }),
             ("Read file headers show actual line ranges", { try ReadFileSummaryTests().showsActualReturnedLines() }),
             ("Account usage remaining allowance and expiry", { try AccountUsageLabelTests().remainingAllowanceAndExpiry() }),
+            ("Pairing QR prepares stable scan and copy content", { try RemoteAccessSettingsTests().pairingQRCodePreparesStableScanAndCopyContent() }),
             ("Remote settings commit once and disable with an invalid draft", { try await RemoteAccessSettingsTests().savesOnCommitAndDisablesWithInvalidDraft() }),
             ("Remote toggle failures revert without replay", { try await RemoteAccessSettingsTests().failedToggleRevertsWithoutRetry() }),
             ("Account usage fits settings widths", { try AccountUsageLabelTests().fitsAvailableWidths() }),

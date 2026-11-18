@@ -5,7 +5,7 @@ struct RemoteAccessSettingsView: View {
     let api: AgentAPI
     @State private var settings: RemoteAccessSettings
     @FocusState private var relayFocused: Bool
-    @State private var invitation: AgentJSON?
+    @State private var invitation: PairingQRCode?
     @State private var error: String?
     @State private var busy = false
     @State private var revoking: String?
@@ -13,10 +13,6 @@ struct RemoteAccessSettingsView: View {
     init(api: AgentAPI) {
         self.api = api
         _settings = State(initialValue: RemoteAccessSettings(api: api))
-    }
-    private var invitationText: String? {
-        guard let invitation, let data = try? JSONEncoder().encode(invitation) else { return nil }
-        return String(decoding: data, as: UTF8.self)
     }
     var body: some View {
         Form {
@@ -57,7 +53,8 @@ struct RemoteAccessSettingsView: View {
                     if status["enabled"].bool {
                         VStack(alignment: .leading, spacing: 12) {
                             Button("Create Pairing QR Code") { perform {
-                                invitation = try await api.request("POST", "/v1/remote/invitations", .object([:]))
+                                let response = try await api.request("POST", "/v1/remote/invitations", .object([:]))
+                                invitation = try PairingQRCode(response)
                             } }
                             .buttonStyle(.bordered)
                             .foregroundStyle(.primary)
@@ -72,7 +69,7 @@ struct RemoteAccessSettingsView: View {
         .disabled(busy || settings.saving || !settings.loaded || invitation != nil)
         .accessibilityHidden(invitation != nil)
         .overlay {
-            if let text = invitationText, let image = qr(text) {
+            if let code = invitation {
                 ZStack {
                     Color.black.opacity(0.3)
                         .contentShape(Rectangle())
@@ -89,23 +86,22 @@ struct RemoteAccessSettingsView: View {
                             .buttonStyle(.plain)
                             .accessibilityLabel("Close pairing QR code")
                         }
-                        Image(nsImage: image)
+                        Image(nsImage: code.image)
                             .interpolation(.none)
                             .resizable()
                             .frame(width: 220, height: 220)
                             .padding(12)
-                            .background(.white, in: RoundedRectangle(cornerRadius: 8))
                             .accessibilityLabel("Pairing QR code")
                         Button("Copy to clipboard") {
                             NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(text, forType: .string)
+                            NSPasteboard.general.setString(code.text, forType: .string)
                         }
                         .buttonStyle(.bordered)
                     }
                     .padding(24)
                     .frame(width: 320)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
-                    .shadow(color: .black.opacity(0.2), radius: 20, y: 8)
+                    .background(.white, in: RoundedRectangle(cornerRadius: 20))
+                    .environment(\.colorScheme, .light)
                     .onExitCommand { invitation = nil }
                 }
             }
@@ -125,14 +121,14 @@ struct RemoteAccessSettingsView: View {
                 while !Task.isCancelled {
                     try await Task.sleep(for: .seconds(2))
                     if !busy && !settings.saving {
-                        let observedInvitation = invitationText
+                        let observedInvitation = invitation?.text
                         try await settings.refresh()
                         // An older poll must not dismiss a newly created invitation.
-                        if !busy, observedInvitation == invitationText, !status["invitationActive"].bool {
+                        if !busy, observedInvitation == invitation?.text, !status["invitationActive"].bool {
                             invitation = nil
                         }
                     }
-                    if let expiry = invitation?["expires"].number, expiry <= Date().timeIntervalSince1970 { invitation = nil }
+                    if let expiry = invitation?.expires, expiry <= Date().timeIntervalSince1970 { invitation = nil }
                 }
             } catch is CancellationError {} catch { if !Task.isCancelled { self.error = error.localizedDescription } }
         }
@@ -142,11 +138,26 @@ struct RemoteAccessSettingsView: View {
         busy = true; error = nil
         Task { defer { busy = false }; do { try await action() } catch { self.error = error.localizedDescription } }
     }
-    private func qr(_ text: String) -> NSImage? {
-        let filter = CIFilter.qrCodeGenerator(); filter.message = Data(text.utf8); filter.correctionLevel = "M"
+}
+
+// Prepare both before presenting; redraws must not re-encode the invitation or replace its image.
+struct PairingQRCode {
+    let text: String
+    let image: NSImage
+    let expires: TimeInterval?
+
+    init(_ invitation: AgentJSON) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(invitation)
+        let filter = CIFilter.qrCodeGenerator(); filter.message = data; filter.correctionLevel = "M"
         guard let output = filter.outputImage,
-              let image = CIContext().createCGImage(output.transformed(by: .init(scaleX: 6, y: 6)), from: output.extent.applying(.init(scaleX: 6, y: 6))) else { return nil }
-        return NSImage(cgImage: image, size: .init(width: image.width, height: image.height))
+              let image = CIContext().createCGImage(output.transformed(by: .init(scaleX: 6, y: 6)), from: output.extent.applying(.init(scaleX: 6, y: 6))) else {
+            throw ExecError("The pairing QR code could not be generated.")
+        }
+        text = String(decoding: data, as: UTF8.self)
+        self.image = NSImage(cgImage: image, size: .init(width: image.width, height: image.height))
+        expires = invitation["expires"].number
     }
 }
 private extension AgentJSON { var selfID: String { self["id"].string ?? "" } }
