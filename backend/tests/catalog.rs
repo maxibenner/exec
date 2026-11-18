@@ -49,6 +49,7 @@ async fn defaults_order_rename_model_and_fork_survive_restart_without_mutating_s
     let config = LibraryConfiguration {
         automatic_titles: false,
         default_model: Some("first-model".into()),
+        default_disabled_tools: vec!["shell".into()],
         settings: SessionSettings {
             system_prompt: "default prompt".into(),
             effort: None,

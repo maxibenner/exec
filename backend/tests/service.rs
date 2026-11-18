@@ -1322,7 +1322,7 @@ async fn session_tool_selection_create_patch_metadata_and_validation() {
         .create("fake", f.root.path().to_str().unwrap())
         .await
         .unwrap();
-    assert!(default.metadata.disabled_tools.is_empty());
+    assert_eq!(default.metadata.disabled_tools, ["shell"]);
     let created = f
         .client
         .call(

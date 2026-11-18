@@ -35,7 +35,7 @@ import Foundation
             let before = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(configuration))
             let after = try JSONDecoder().decode(AgentJSON.self, from: JSONEncoder().encode(value))
             var patch: [String: AgentJSON] = [:]
-            for field in ["automaticTitles", "defaultModel", "order"] where before[field] != after[field] { patch[field] = after[field] }
+            for field in ["automaticTitles", "defaultModel", "defaultDisabledTools", "order"] where before[field] != after[field] { patch[field] = after[field] }
             var settings: [String: AgentJSON] = [:]
             for field in ["systemPrompt", "autoApprove", "effort", "searchModel"] where before["settings"][field] != after["settings"][field] { settings[field] = after["settings"][field] }
             if !settings.isEmpty { patch["settings"] = .object(settings) }

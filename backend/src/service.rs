@@ -317,8 +317,17 @@ struct Create {
     model: Option<String>,
     workspace: String,
     settings: Option<SessionSettings>,
-    #[serde(default)]
-    disabled_tools: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_disabled_tools")]
+    disabled_tools: Option<Vec<String>>,
+}
+// Omission inherits library defaults; a present value must be an array, not null.
+fn deserialize_disabled_tools<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Vec::<String>::deserialize(deserializer).map(Some)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]

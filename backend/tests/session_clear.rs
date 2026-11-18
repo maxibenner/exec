@@ -632,7 +632,7 @@ async fn clear_settles_real_delegation_and_retains_interrupted_child() {
             Some("fake".into()),
             workspace.path().to_string_lossy().into_owned(),
             None,
-            vec![],
+            Some(vec![]),
         )
         .await
         .unwrap();

@@ -371,7 +371,7 @@ async fn selections_survive_restart_forks_and_temporarily_missing_tools() {
             Some("fake".into()),
             workspace.path().to_string_lossy().into_owned(),
             None,
-            vec!["change".into(), "delegate".into()],
+            Some(vec!["change".into(), "delegate".into()]),
         )
         .await
         .unwrap();
@@ -483,7 +483,7 @@ async fn delegated_children_inherit_enforcement_and_cannot_change_selection() {
             Some("fake".into()),
             workspace.path().to_string_lossy().into_owned(),
             None,
-            vec!["change".into()],
+            Some(vec!["change".into()]),
         )
         .await
         .unwrap();

@@ -365,7 +365,7 @@ impl AgentManager {
             let mut value = serde_json::to_value(current).map_err(|_| Error::Internal)?;
             for (key, replacement) in patch {
                 match key.as_str() {
-                    "automaticTitles" | "defaultModel" | "order" => {
+                    "automaticTitles" | "defaultModel" | "defaultDisabledTools" | "order" => {
                         value[key] = replacement.clone()
                     }
                     "settings" => {
@@ -494,7 +494,7 @@ impl AgentManager {
         model: Option<String>,
         workspace: String,
         settings: Option<SessionSettings>,
-        disabled_tools: Vec<String>,
+        disabled_tools: Option<Vec<String>>,
     ) -> Result<Arc<Conversation>> {
         let defaults = self.library_configuration()?;
         let model = model.or(defaults.default_model).ok_or(Error::Invalid(
@@ -509,15 +509,19 @@ impl AgentManager {
         let mut options = ConversationOptions::new(provider, model, workspace);
         options.tools = self.delegation_tools(options.provider.clone(), tools);
         options.settings = settings;
-        if disabled_tools.iter().any(|name| {
-            !options
-                .tools
-                .iter()
-                .any(|tool| tool.definition().name == *name)
+        // Explicit selections must match the current catalog. Inherited defaults, like
+        // persisted session selections, retain names while tools are unavailable.
+        if disabled_tools.as_ref().is_some_and(|names| {
+            names.iter().any(|name| {
+                !options
+                    .tools
+                    .iter()
+                    .any(|tool| tool.definition().name == *name)
+            })
         }) {
             return Err(Error::Invalid("Unknown disabled tool."));
         }
-        options.metadata.disabled_tools = disabled_tools;
+        options.metadata.disabled_tools = disabled_tools.unwrap_or(defaults.default_disabled_tools);
         self.create(options).await
     }
     pub async fn rename(&self, id: &str, title: String) -> Result<ConversationSnapshot> {

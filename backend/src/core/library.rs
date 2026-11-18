@@ -25,17 +25,7 @@ pub struct SessionMetadata {
 }
 impl SessionMetadata {
     pub fn validate(&self) -> Result<()> {
-        let mut names = std::collections::HashSet::new();
-        if self.disabled_tools.len() > 256
-            || self.disabled_tools.iter().any(|name| {
-                name.is_empty()
-                    || name.len() > 128
-                    || name.chars().any(|c| c.is_control() || c.is_whitespace())
-                    || !names.insert(name)
-            })
-        {
-            return Err(Error::Invalid("Invalid disabled tools."));
-        }
+        validate_disabled_tools(&self.disabled_tools)?;
         if self.parent.as_ref().is_some_and(|parent| {
             !valid_id(&parent.session_id)
                 || !valid_id(&parent.operation_id)
@@ -66,23 +56,45 @@ impl SessionMetadata {
     }
 }
 
+fn validate_disabled_tools(disabled_tools: &[String]) -> Result<()> {
+    let mut names = std::collections::HashSet::new();
+    if disabled_tools.len() > 256
+        || disabled_tools.iter().any(|name| {
+            name.is_empty()
+                || name.len() > 128
+                || name.chars().any(|c| c.is_control() || c.is_whitespace())
+                || !names.insert(name)
+        })
+    {
+        return Err(Error::Invalid("Invalid disabled tools."));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LibraryConfiguration {
     #[serde(default = "enabled")]
     pub automatic_titles: bool,
     pub default_model: Option<String>,
+    /// Defaults for new top-level sessions only; retain unavailable tool names.
+    #[serde(default = "default_disabled_tools")]
+    pub default_disabled_tools: Vec<String>,
     pub settings: SessionSettings,
     pub order: Vec<String>,
 }
 fn enabled() -> bool {
     true
 }
+fn default_disabled_tools() -> Vec<String> {
+    vec!["shell".into()]
+}
 impl Default for LibraryConfiguration {
     fn default() -> Self {
         Self {
             automatic_titles: true,
             default_model: None,
+            default_disabled_tools: default_disabled_tools(),
             settings: SessionSettings::default(),
             order: vec![],
         }
@@ -91,6 +103,7 @@ impl Default for LibraryConfiguration {
 impl LibraryConfiguration {
     pub fn validate(&self) -> Result<()> {
         self.settings.validate()?;
+        validate_disabled_tools(&self.default_disabled_tools)?;
         if self
             .default_model
             .as_ref()
