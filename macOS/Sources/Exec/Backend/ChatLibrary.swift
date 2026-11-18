@@ -5,7 +5,7 @@ import Observation
 @MainActor @Observable final class ChatLibrary {
     private(set) var current: ChatStore
     private(set) var models: [ChatModel] = []
-    enum SettingsTab { case modelsAndTools, systemPrompt, accounts, usage, updates, remoteAccess }
+    enum SettingsTab: CaseIterable { case modelsAndTools, tools, systemPrompt, accounts, remoteAccess, usage, updates }
     var settingsTab = SettingsTab.modelsAndTools
     var connectionError: String?
     private(set) var openingSessionID: UUID?
@@ -56,6 +56,12 @@ import Observation
     var defaultEffort: String? { didSet { saveDefaults() } }
     var automaticTitles = true { didSet { saveDefaults() } }
     var defaultAutoApproveTools = true { didSet { saveDefaults() } }
+    private(set) var defaultDisabledTools: Set<String> = ["shell"] { didSet { saveDefaults() } }
+    func setDefaultToolEnabled(_ name: String, _ enabled: Bool) {
+        guard SessionTool.names.contains(name), defaultDisabledTools.contains(name) == enabled else { return }
+        if enabled { defaultDisabledTools.remove(name) }
+        else { defaultDisabledTools.insert(name) }
+    }
     var searchModel = "" { didSet { guard !restoringDefaults else { return }; saveDefaults(); for item in openConversations { item.searchModel = searchModel; item.scheduleSave() } } }
     var defaultSessionModel: ChatModel? { models.first { $0.id == defaultModel } ?? models.first }
     var effectiveDefaultModel: String { defaultModel.isEmpty ? "" : defaultSessionModel?.id ?? "" }
@@ -68,7 +74,7 @@ import Observation
         self.preferences = preferences
         self.residentLimit = max(1, residentLimit)
         sessions = SessionCatalog(api: provider.api, preferences: preferences)
-        current = ChatStore(provider: provider)
+        current = ChatStore(provider: provider, disabledTools: ["shell"])
         if let data = preferences.data(forKey: Self.modelCacheKey),
            let cached = try? JSONDecoder().decode([ChatModel].self, from: data) {
             models = cached
@@ -93,6 +99,7 @@ import Observation
         systemPrompt = config.settings.systemPrompt
         searchModel = config.settings.searchModel ?? ""
         defaultAutoApproveTools = config.settings.autoApprove
+        defaultDisabledTools = Set(config.defaultDisabledTools)
         restoringDefaults = false
         current = try makeConversation()
         openConversations = [current]
@@ -119,7 +126,13 @@ import Observation
                 let settings = AgentSettings(systemPrompt: systemPrompt, autoApprove: defaultAutoApproveTools,
                     effort: defaultEffort, searchModel: searchModel.isEmpty ? nil : searchModel)
                 let titles = automaticTitles
-                do { try await sessions.update { $0.defaultModel = model; $0.settings = settings; $0.automaticTitles = titles } }
+                let disabledTools = defaultDisabledTools.sorted()
+                do {
+                    try await sessions.update {
+                        $0.defaultModel = model; $0.settings = settings; $0.automaticTitles = titles
+                        $0.defaultDisabledTools = disabledTools
+                    }
+                }
                 catch { navigationError = error.localizedDescription; return }
                 if revision == defaultsRevision { return }
             }
@@ -248,6 +261,7 @@ import Observation
         systemPrompt = config.settings.systemPrompt
         searchModel = config.settings.searchModel ?? ""
         defaultAutoApproveTools = config.settings.autoApprove
+        defaultDisabledTools = Set(config.defaultDisabledTools)
         restoringDefaults = false
         try await refreshCatalog()
         guard !navigating else { return }
@@ -663,7 +677,10 @@ import Observation
     }
 
     private func makeConversation() throws -> ChatStore {
-        let conversation = ChatStore(provider: provider, defaultAutoApproveTools: defaultAutoApproveTools)
+        // Keep unavailable names in shared defaults, but only submit this client's
+        // selectable tools when creating a session with an explicit selection.
+        let conversation = ChatStore(provider: provider, defaultAutoApproveTools: defaultAutoApproveTools,
+                                     disabledTools: defaultDisabledTools.intersection(SessionTool.names))
         conversation.installModels(models)
         conversation.selectedModel = defaultSessionModel?.id ?? defaultModel
         conversation.selectedEffort = effectiveDefaultEffort

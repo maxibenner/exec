@@ -26,7 +26,8 @@ struct ProviderSettingsView: View {
                 .padding(.horizontal, 12)
             Spacer(minLength: 0)
         }
-        .padding(20)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 20)
         .background(.background)
         .disabled(store.accountBusy || !store.canNavigate)
         .onChange(of: connected.map(\.id)) { _, ids in

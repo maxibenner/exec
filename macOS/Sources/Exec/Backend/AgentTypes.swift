@@ -15,15 +15,27 @@ struct AgentSettings: Codable, Sendable, Equatable {
 struct AgentLibraryConfiguration: Codable, Sendable {
     var automaticTitles = true
     var defaultModel: String?
+    var defaultDisabledTools: [String] = ["shell"]
     var settings = AgentSettings()
     var order: [UUID] = []
-    private enum CodingKeys: String, CodingKey { case automaticTitles, defaultModel, settings, order }
+    private enum CodingKeys: String, CodingKey { case automaticTitles, defaultModel, defaultDisabledTools, settings, order }
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(automaticTitles, forKey: .automaticTitles)
         try values.encode(defaultModel, forKey: .defaultModel)
+        try values.encode(defaultDisabledTools, forKey: .defaultDisabledTools)
         try values.encode(settings, forKey: .settings)
         try values.encode(order.map { $0.uuidString.lowercased() }, forKey: .order)
+    }
+}
+extension AgentLibraryConfiguration {
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        automaticTitles = try values.decode(Bool.self, forKey: .automaticTitles)
+        defaultModel = try values.decodeIfPresent(String.self, forKey: .defaultModel)
+        defaultDisabledTools = try values.decodeIfPresent([String].self, forKey: .defaultDisabledTools) ?? ["shell"]
+        settings = try values.decode(AgentSettings.self, forKey: .settings)
+        order = try values.decode([UUID].self, forKey: .order)
     }
 }
 struct AgentImage: Codable, Sendable, Equatable {

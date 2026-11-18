@@ -137,7 +137,7 @@ import Foundation
             try expect(fresh.needsInitialWorkspaceSelection && fresh.canSelectWorkspace)
             try expect(fresh.selectedModel == config.defaultModel && fresh.selectedEffort == config.settings.effort)
             try expect(fresh.systemPrompt == config.settings.systemPrompt && fresh.searchModel == config.settings.searchModel)
-            try expect(!fresh.autoApproveTools && fresh.disabledTools.isEmpty)
+            try expect(!fresh.autoApproveTools && fresh.disabledTools == Set(config.defaultDisabledTools))
             try expect(fresh.messages.isEmpty && fresh.contextUsage == nil && !fresh.hasUnsentDraft)
             // Each fresh session presents its own picker once, only in its owning window.
             let window = NSWindow()

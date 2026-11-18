@@ -65,6 +65,7 @@ async fn full_logs_are_private_readable_and_shared_until_the_last_fork_is_delete
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;
+    library.default_disabled_tools.clear(); // Shell execution is the subject of this fixture.
     client.update_library(library).await.unwrap();
     let c = client
         .create("fake", workspace.path().to_str().unwrap())
@@ -151,6 +152,7 @@ async fn denial_creates_no_log_and_cancellation_keeps_diagnostics() {
     // These fixtures exercise chat requests, not optional metadata inference.
     let mut library = client.library().await.unwrap();
     library.automatic_titles = false;
+    library.default_disabled_tools.clear(); // Test approval/cancellation with Shell explicitly enabled.
     client.update_library(library).await.unwrap();
     let c = client
         .create_with_settings(

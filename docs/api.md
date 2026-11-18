@@ -254,8 +254,13 @@ Snapshots and catalog metadata include `metadata.disabledTools:[string]`, defaul
 `[]`. Older saved sessions and clients' snapshots may omit the field; absence means no
 tools are disabled. This is session policy, not a shared library default or approval mode.
 
-- Creation accepts optional top-level `disabledTools`; omission or `[]` enables every
-  otherwise available tool. The selection is persisted with the new conversation.
+- Library configuration includes `defaultDisabledTools:[string]`, initially `["shell"]`
+  (also when absent from older libraries). `PATCH /v1/library` updates these defaults for
+  future sessions only; existing sessions retain their saved selection. Explicit `[]`
+  enables all tools by default. Defaults retain names of temporarily unavailable tools.
+- Creation accepts optional top-level `disabledTools`; omission inherits the library
+  defaults, while `[]` explicitly enables every otherwise available tool. The selection
+  is copied and persisted with the new conversation; `null` is invalid.
 - `PATCH /v1/conversations/:id` requires `{disabledTools:[string]}` and replaces the whole
   set, rather than adding/removing individual names. Send `[]` to re-enable all tools.
   Success returns the saved snapshot. Updates are idle-only; active operations or a
@@ -280,7 +285,8 @@ tools are disabled. This is session policy, not a shared library default or appr
   be retried automatically.
 - Sub-agents inherit their parent's selection and cannot change it (PATCH returns 400).
   Forks copy the selection but can change it independently. Both survive save/reload.
-  New macOS conversations start with all tools selected; later edits affect only that session.
+  New macOS conversations copy the defaults from Settings → Tools, initially all enabled
+  except Shell. Later per-session edits affect only that session.
 
 The macOS selector stays editable during generation, approvals, cancellation and configuration
 saves. Checkboxes reflect the latest local choice immediately, with no pending badge or queue

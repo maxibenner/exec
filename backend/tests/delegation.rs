@@ -37,7 +37,7 @@ async fn root(
                 effort: Some("low".into()),
                 search_model: Some("search-model".into()),
             }),
-            vec![],
+            Some(vec![]),
         )
         .await
         .unwrap()
