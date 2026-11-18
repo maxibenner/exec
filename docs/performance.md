@@ -32,9 +32,11 @@ The probe samples presentation-layer positions, sizes and inherited opacity roug
 10 ms through parent/child insertion, removal and reordering, persistence echoes and rollback,
 rapid child removal/reinsertion, metadata-only updates and offscreen row recycling. `--check`
 requires intermediate motion/fades, correct final row counts and visible content, stable table
-identity, no native selection, and preserved composer focus during child updates. It rejects
-snapping even when final geometry is correct. Reduce Motion requires no intermediate motion.
-Reports contain synthetic geometry only; no screenshots are captured.
+identity, no native selection, and preserved composer focus during child updates. It flags
+abrupt sampled motion even when final geometry is correct. Reduce Motion requires no
+intermediate motion. Reports contain synthetic geometry only; no screenshots are captured.
+The script fails if instrumentation hooks drift, measures the allocated group height (not
+just its natural content), and records source hashes beside the binary.
 
 For repeated insert/remove bursts, use `--stress-cycles 10 --stress-parents 100`
 with optional `--stress-kind children|parents|mixed`, `--stress-batch 3`,
@@ -42,6 +44,65 @@ with optional `--stress-kind children|parents|mixed`, `--stress-batch 3`,
 `PROBE_OPTIMIZE=1 ./scripts/probe-sidebar.sh ...` builds an optimized probe.
 Stress reports retain mutation timestamps and flag undersampled or ambiguous fades;
 presentation-layer opacity does not prove visible text fading or GPU frame cadence.
+
+### Polling and transcript contention
+
+The default phases use empty transcripts and explicit catalog refreshes. They do not
+establish reliability while loading or streaming conversations. Use the polling workload
+for the production two-second catalog loop, 200 ms active transcript readers, 64-message
+backfill, streaming suffix updates, and title wrapping during child insertion/removal:
+
+```sh
+PROBE_OPTIMIZE=1 ./scripts/probe-sidebar.sh --polling-cycles 5 \
+  --polling-messages 1000 --polling-append --check --output .build/sidebar-polling.json
+.build/sidebar-animation-probe --polling-cycles 4 --polling-messages 1000 \
+  --polling-append --polling-navigate --check --output .build/sidebar-navigation.json
+```
+
+`--polling-append` adds messages while children change, rather than only editing the tail.
+`--polling-navigate` switches between two conversations (cold first, then resident).
+Compare with `--simple-detail` to isolate transcript rendering from data synchronization,
+and `--reduce-motion` for immediate-layout behavior. Polling replaces the default phases
+and cannot be combined with stress mode. All data remains synthetic; unexpected transport
+routes fail closed. Reports include actual catalog/sync response evidence, not just intended
+fixture mutations. Initial creation uses an isolated workspace, never a native picker.
+
+A gap of 60 ms or more during a fade makes continuity **inconclusive** and fails `--check`,
+even if some intermediate opacity values were seen. Presentation samples can lag during a
+main-thread stall and catch up on the next tick; that adjacent jump is not proof of a visible
+snap. Multiple children jumping together are correlated evidence, not independent failures.
+Do not treat sampling failures, ambiguous duplicate markers, or missed workload overlaps as
+passes. Stack sampling adds overhead: use a separate profiling run, not its animation verdict.
+
+Known remaining limits: very long cold/resident transcript remounts and rapid 100-parent
+navigation/reversal stress can still exceed this sampling budget. Native view attachment,
+SwiftUI fitting-size layout, and TextKit measurement remain main-thread work. The loaded
+append-only case is improved by preserving historical estimates; that is not proof that
+navigation or arbitrary live workloads are hitch-free. Also, a child created and deleted
+between catalog polls has no observed insertion state to animate. Pixel-level animation,
+physical interactions, and actual service timing still need interactive validation.
+
+### Implementation choices
+
+The sidebar keeps SwiftUI `List`, which is already backed by a native table here. Stable
+family IDs, native dragging, library-owned grey selection, and composer first-responder
+ownership are preserved. Height corrections at the same width retarget the animation;
+initial measurement and width changes stay immediate. Catalog grouping uses one ordered
+snapshot, and transcript insertion reuses retained height estimates instead of scanning
+all unmeasured Markdown again.
+
+A grouped `NSTableView` remains a possible fallback, not an automatic simplification.
+The earlier experiment (`a49b2de`, reverted by `d5443b1`) required custom layout and event
+routing and was rolled back to restore layout/dragging. A replacement must independently
+verify grey selection while composing, family dragging, child activation, menus,
+accessibility, shortcuts and Reduce Motion. `NSOutlineView` gives native child rows but
+requires extra work to preserve today's family footer/background and root-only dragging.
+Do not replace the container solely to make an isolated probe pass.
+
+Relevant Apple guidance: [transaction/animation mechanics](https://developer.apple.com/videos/play/wwdc2023/10156/),
+[SwiftUI update and list performance](https://developer.apple.com/videos/play/wwdc2023/10160/),
+and [AppKit/SwiftUI sizing](https://developer.apple.com/videos/play/wwdc2022/10074/).
+These explain mechanisms and measurement priorities, not a diagnosis of this particular app.
 
 The lifecycle probe checks navigation, native editor ownership, and automatic child
 cleanup using the same isolated transport as the regression tests:
