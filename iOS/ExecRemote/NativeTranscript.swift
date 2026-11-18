@@ -25,7 +25,6 @@ struct NativeTranscript: UIViewControllerRepresentable {
         table.allowsSelection = false
         table.register(MessageCell.self, forCellReuseIdentifier: "message")
         table.register(UITableViewCell.self, forCellReuseIdentifier: "tool")
-        table.register(UITableViewCell.self, forCellReuseIdentifier: "working")
         context.coordinator.attach(table)
         return controller
     }
@@ -46,19 +45,9 @@ struct NativeTranscript: UIViewControllerRepresentable {
         private var rows: [String: RemoteTranscriptRow] = [:]
         private var conversationID: String?
         private var expansion: [String: Bool] = [:]
-        private var active = false
-        private static let workingID = "transcript-working-indicator"
         func attach(_ table: UITableView) {
             source = UITableViewDiffableDataSource(tableView: table) { [weak self] table, path, id in
                 guard let self else { return UITableViewCell() }
-                if id == Self.workingID {
-                    let cell = table.dequeueReusableCell(withIdentifier: "working", for: path)
-                    cell.contentConfiguration = UIHostingConfiguration {
-                        MobileWorkingIndicator().frame(width: 28, height: 16)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }.margins(.horizontal, 16).margins(.vertical, 12)
-                    return cell
-                }
                 guard let row = self.rows[id] else { return UITableViewCell() }
                 if let call = row.call {
                     let cell = table.dequeueReusableCell(withIdentifier: "tool", for: path)
@@ -70,8 +59,12 @@ struct NativeTranscript: UIViewControllerRepresentable {
                         snapshot.reconfigureItems([id]); source.apply(snapshot, animatingDifferences: false)
                     })
                     cell.contentConfiguration = UIHostingConfiguration {
-                        MobileToolCard(call: call, result: row.message, awaitingApproval: row.awaitingApproval, expanded: binding)
-                    }.margins(.horizontal, 16).margins(.vertical, 6)
+                        MobileToolCard(call: call, result: row.message, awaitingApproval: row.awaitingApproval,
+                                       isRunning: row.isRunning, roundsTop: row.roundsTop, roundsBottom: row.roundsBottom,
+                                       expanded: binding)
+                    }.margins(.horizontal, 16)
+                        .margins(.top, row.roundsTop ? 6 : 0)
+                        .margins(.bottom, row.roundsBottom ? 6 : 0)
                     return cell
                 }
                 guard let cell = table.dequeueReusableCell(withIdentifier: "message", for: path) as? MessageCell else { return UITableViewCell() }
@@ -86,10 +79,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
             var next: [String: RemoteTranscriptRow] = [:]
             var ids: [String] = []
             for row in RemoteTranscriptRow.project(snapshot) where !row.id.isEmpty && next[row.id] == nil { ids.append(row.id); next[row.id] = row }
-            let nextActive = RemoteMessageSubmission.isActive(snapshot)
-            if nextActive { ids.append(Self.workingID) }
-            guard changedConversation || next != rows || active != nextActive || followBottom else { return }
-            active = nextActive
+            guard changedConversation || next != rows || followBottom else { return }
             let previousIDs = Set(source.snapshot().itemIdentifiers)
             let firstOld = source.snapshot().itemIdentifiers.first
             let prepending = !changedConversation && firstOld.map { ids.first != $0 && ids.contains($0) } == true
@@ -138,6 +128,9 @@ private struct MobileToolCard: View {
     let call: RemoteJSON
     let result: RemoteJSON
     let awaitingApproval: Bool
+    let isRunning: Bool
+    let roundsTop: Bool
+    let roundsBottom: Bool
     @Binding var expanded: Bool
     private var presentation: ToolPresentation {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -152,7 +145,8 @@ private struct MobileToolCard: View {
     }
     var body: some View {
         let presentation = presentation
-        ToolCard(presentation: presentation, isExpanded: $expanded, awaitingApproval: awaitingApproval) {
+        ToolCard(presentation: presentation, isExpanded: $expanded, awaitingApproval: awaitingApproval,
+                 isRunning: isRunning, roundsTop: roundsTop, roundsBottom: roundsBottom) {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(presentation.inputs.indices, id: \.self) { index in
                     section(presentation.inputs[index].title, text: presentation.inputs[index].text)
@@ -213,7 +207,7 @@ private struct MobileToolCard: View {
             || abs(previousBottomInset - adjustedContentInset.bottom) > 1
         // Self-sizing cells can resolve over several layout passes, after a
         // diffable update completes. Follow those changes as well as keyboard
-        // and composer resizing, keeping the working row above the composer.
+        // and composer resizing, keeping the last row above the composer.
         if (geometryChanged || needsBottomAlignment), wasNearBottom,
            !isTracking, !isDragging, !isDecelerating {
             let bottom = max(-adjustedContentInset.top, contentSize.height - bounds.height + adjustedContentInset.bottom)
