@@ -338,23 +338,13 @@ struct NewChatScreen: View {
     @State private var workspace = ""
     @State private var model = ""
     @State private var effort = ""
+    @State private var tools = RemoteSessionCreation.ToolSelection(library: .null)
+    @State private var initialized = false
     @State private var choosingFolder = false
     private var selectedModel: RemoteJSON { store.models.first { $0.id == model } ?? .null }
     var body: some View {
         NavigationStack {
             Form {
-                Section("Session settings") {
-                    Picker("Model", selection: $model) {
-                        ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
-                    }
-                    Picker("Reasoning", selection: $effort) {
-                        Text("Default").tag("")
-                        ForEach(selectedModel["efforts"].array, id: \.id) { option in
-                            Text(option["name"].string ?? option.id).tag(option.id)
-                        }
-                    }
-                    .disabled(selectedModel["efforts"].array.isEmpty)
-                }
                 Section("Workspace") {
                     Button { choosingFolder = true } label: {
                         HStack {
@@ -366,27 +356,54 @@ struct NewChatScreen: View {
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                         }
                     }
+                    .accessibilityIdentifier("new-session-workspace")
+                }
+                Section("Tools") {
+                    ForEach(RemoteSessionCreation.tools) { tool in
+                        Toggle(isOn: Binding(get: { tools.isEnabled(tool.id) },
+                                             set: { tools.setEnabled(tool.id, $0) })) {
+                            Label(tool.label, systemImage: tool.icon)
+                        }
+                        .accessibilityIdentifier("new-session-tool-\(tool.id)")
+                    }
+                }
+                Section("Model selection") {
+                    Picker("Model", selection: $model) {
+                        ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
+                    }
+                    Picker("Reasoning", selection: $effort) {
+                        Text("Default").tag("")
+                        ForEach(selectedModel["efforts"].array, id: \.id) { option in
+                            Text(option["name"].string ?? option.id).tag(option.id)
+                        }
+                    }
+                    .disabled(selectedModel["efforts"].array.isEmpty)
                 }
             }
             .sheet(isPresented: $choosingFolder) {
                 HostFolderPicker(store: store, initialPath: workspace) { workspace = $0 }
             }
-            .navigationTitle("New Chat")
+            .navigationTitle("New Session")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", systemImage: "xmark") { dismiss() }.labelStyle(.iconOnly)
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") { Task {
                         let body = RemoteSessionCreation.body(workspace: workspace, model: selectedModel,
-                                                              effort: effort, settings: store.library["settings"])
+                                                              effort: effort, settings: store.library["settings"], tools: tools)
                         await store.mutate("POST", "/v1/conversations", body) { value in
                             store.selected = value.id; dismiss()
                         }
-                    } }.disabled(!workspace.hasPrefix("/") || model.isEmpty || store.busy)
+                    } }.disabled(!workspace.hasPrefix("/") || model.isEmpty || store.busy || !store.connected)
                 }
             }
             .onAppear {
+                guard !initialized else { return }
+                initialized = true
                 workspace = store.conversations.first?["workspace"].string ?? ""
                 model = store.library["defaultModel"].string ?? store.models.first?.id ?? ""
+                tools = RemoteSessionCreation.ToolSelection(library: store.library)
                 resetEffort()
             }
             .onChange(of: model) { _, _ in resetEffort() }
@@ -436,13 +453,16 @@ private struct HostFolderPicker: View {
     @Environment(\.dismiss) private var dismiss
     @State private var listing: RemoteJSON = .null
     @State private var requestedPath: String?
-    @State private var loading = false
+    @State private var readGeneration = 0
     @State private var failure: String?
     init(store: RemoteStore, initialPath: String, choose: @escaping (String) -> Void) {
         self.store = store; self.choose = choose
         _requestedPath = State(initialValue: initialPath.isEmpty ? nil : initialPath)
     }
-    private var currentPath: String? { listing["path"].string }
+    private var currentPath: String? {
+        guard let path = listing["path"].string, path.hasPrefix("/") else { return nil }
+        return path
+    }
     var body: some View {
         NavigationStack {
             List {
@@ -452,12 +472,9 @@ private struct HostFolderPicker: View {
                     }
                     ForEach(listing["directories"].array, id: \.folderPath) { directory in
                         Button { requestedPath = directory["path"].string } label: {
-                            HStack {
-                                Label(directory["name"].string ?? "Folder", systemImage: "folder")
-                                Spacer()
-                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                            }
+                            Label(directory["name"].string ?? "Folder", systemImage: "folder")
                         }
+                        .accessibilityIdentifier("host-folder-\(directory.folderPath)")
                     }
                 } header: {
                     if let currentPath {
@@ -470,28 +487,35 @@ private struct HostFolderPicker: View {
                 }
                 if let failure { Text(failure).foregroundStyle(.red) }
             }
-            .disabled(loading)
+            .tint(.blue)
             .navigationTitle("Choose Folder")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", systemImage: "xmark") { dismiss() }.labelStyle(.iconOnly)
+                }
                 ToolbarItem(placement: .confirmationAction) {
+                    // A pending or failed read does not invalidate the displayed folder.
                     Button("Choose") { if let currentPath { choose(currentPath); dismiss() } }
-                        .disabled(currentPath == nil || loading || failure != nil)
+                        .disabled(currentPath == nil)
                 }
             }
             .task(id: requestedPath) {
-                loading = true; failure = nil
-                defer { loading = false }
+                readGeneration += 1
+                let generation = readGeneration
+                failure = nil
                 do {
-                    // Let an already-issued read finish when dismissing the sheet;
+                    // Drain already-issued reads even after navigation or dismissal;
                     // cancelling a secure-channel receive would close the shared socket.
                     let path = requestedPath
                     let request = Task { try await store.browseFolders(path, showHidden: false) }
                     let value = try await request.value
-                    try Task.checkCancellation()
+                    guard generation == readGeneration, !Task.isCancelled else { return }
                     listing = value
-                } catch { if !Task.isCancelled { failure = error.localizedDescription } }
+                } catch {
+                    guard generation == readGeneration, !Task.isCancelled else { return }
+                    failure = error.localizedDescription
+                }
             }
         }
     }

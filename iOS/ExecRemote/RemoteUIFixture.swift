@@ -30,22 +30,49 @@ import ExecRemote
                                           "activityAt": .number(Date().timeIntervalSince1970 * 1000 - Double(index) * 1000)])])
         }
     }
+    static var models: [RemoteJSON] {
+        [.object(["id": .string("fixture/reasoning"), "name": .string("Fixture Reasoning"),
+                  "defaultEffort": .string("high"),
+                  "efforts": .array([.object(["id": .string("low"), "name": .string("Low")]),
+                                     .object(["id": .string("high"), "name": .string("High")])])]),
+         .object(["id": .string("fixture/basic"), "name": .string("Fixture Basic"), "efforts": .array([])])]
+    }
+    static var library: RemoteJSON {
+        .object(["defaultModel": .string("fixture/reasoning"), "automaticTitles": .bool(true),
+                 "defaultDisabledTools": .array(ProcessInfo.processInfo.arguments.contains("--all-tools-enabled") ? [] : [.string("shell")]),
+                 "settings": .object(["systemPrompt": .string("Synthetic fixture instructions"),
+                                      "autoApprove": .bool(true), "effort": .string("high")])])
+    }
+    private static let folders: [String: [String]] = [
+        "/": ["Fixture"], "/Fixture": ["Projects", "Workspace"],
+        "/Fixture/Projects": ["Example"], "/Fixture/Projects/Example": [],
+        "/Fixture/Workspace": ["Sources", "Tests", "Unavailable"],
+        "/Fixture/Workspace/Sources": ["App"], "/Fixture/Workspace/Sources/App": [],
+        "/Fixture/Workspace/Tests": []
+    ]
+    private static var created: [RemoteJSON] = []
     private static var deleted: Set<String> = []
-    static func request(_ method: String, _ path: String) async throws -> RemoteJSON {
+    static func request(_ method: String, _ path: String, body: RemoteJSON?) async throws -> RemoteJSON {
         if method == "DELETE" {
             try await Task.sleep(for: .seconds(3))
             if ProcessInfo.processInfo.arguments.contains("--delete-fails") { throw RemoteFailure("Fixture deletion failed.") }
             deleted.insert(String(path.split(separator: "/").last!))
             return .null
         }
-        if path == "/v1/conversations" {
+        if method == "POST", path == "/v1/workspaces/browse" {
+            return try await browse(body?["path"].string ?? "/Fixture")
+        }
+        if method == "POST", path == "/v1/conversations" {
+            return try create(body ?? .null)
+        }
+        if method == "GET", path == "/v1/conversations" {
             if !deleted.isEmpty, ProcessInfo.processInfo.arguments.contains("--refresh-fails") {
                 throw RemoteFailure("Fixture refresh failed.")
             }
-            return .array(conversations.filter { !deleted.contains($0["id"].string ?? "") })
+            return .array((conversations + created).filter { !deleted.contains($0["id"].string ?? "") })
         }
-        if path == "/v1/models" { return .array([]) }
-        if path == "/v1/library" { return .object([:]) }
+        if method == "GET", path == "/v1/models" { return .array(models) }
+        if method == "GET", path == "/v1/library" { return library }
         if method == "GET", path.hasPrefix("/v1/conversations/"), path.contains("/sync") {
             let id = String(path.split(separator: "/")[2])
             let full = snapshot(id)
@@ -54,13 +81,55 @@ import ExecRemote
             guard case .object(var fields) = full else { throw RemoteFailure("Invalid UI fixture.") }
             fields["messages"] = .array(incremental ? Array(messages.suffix(1)) : messages)
             return .object(["snapshot": .object(fields),
-                            "offset": .number(incremental ? Double(messages.count - 1) : 0),
+                            "offset": .number(incremental ? Double(max(0, messages.count - 1)) : 0),
                             "total": .number(Double(messages.count)), "reset": .bool(!incremental),
                             "prefix": .string(String(repeating: "a", count: 64))])
         }
         throw RemoteFailure("Unsupported UI fixture request.")
     }
+    private static func browse(_ path: String) async throws -> RemoteJSON {
+        // Delay just Sources so UI checks can choose the displayed parent, or
+        // navigate to Tests and verify that the older reply cannot replace it.
+        if path == "/Fixture/Workspace/Sources", ProcessInfo.processInfo.arguments.contains("--slow-folders") {
+            try await Task.sleep(for: .seconds(3))
+        }
+        guard let children = folders[path] else { throw RemoteFailure("Fixture folder is unavailable.") }
+        let directories: [RemoteJSON] = children.map { name in
+            .object(["name": .string(name), "path": .string(path == "/" ? "/\(name)" : "\(path)/\(name)")])
+        }
+        return .object(["path": .string(path), "parent": path == "/" ? .null : .string((path as NSString).deletingLastPathComponent),
+                        "directories": .array(directories), "truncated": .bool(false)])
+    }
+    private static func create(_ body: RemoteJSON) throws -> RemoteJSON {
+        guard case .object(let fields) = body, let workspace = body["workspace"].string,
+              folders[workspace] != nil, models.contains(where: { $0["id"] == body["model"] }) else {
+            throw RemoteFailure("Invalid fixture session configuration.")
+        }
+        let disabled: [RemoteJSON]
+        if let selection = fields["disabledTools"] {
+            let supported = Set(RemoteSessionCreation.tools.map(\.id))
+            guard case .array(let names) = selection,
+                  names.allSatisfy({ $0.string.map(supported.contains) ?? false }),
+                  Set(names.compactMap(\.string)).count == names.count else {
+                throw RemoteFailure("Invalid fixture tool selection.")
+            }
+            disabled = names
+        } else {
+            disabled = library["defaultDisabledTools"].array
+        }
+        let index = created.count + 1
+        let value: RemoteJSON = .object([
+            "id": .string("fixture-new-\(index)"), "workspace": .string(workspace), "model": body["model"],
+            "configuration": .object(["model": body["model"], "settings": fields["settings"] ?? library["settings"]]),
+            "metadata": .object(["title": .string("New Session \(index)"), "disabledTools": .array(disabled),
+                                  "activityAt": .number(Date().timeIntervalSince1970 * 1000)]),
+            "messages": .array([]), "operation": .object(["state": .string("completed")])
+        ])
+        created.append(value)
+        return value
+    }
     static func snapshot(_ id: String) -> RemoteJSON {
+        if let value = created.first(where: { $0.id == id }) { return value }
         let messages: [RemoteJSON] = (1...40).map { index in
             .object(["id": .string("message-\(index)"), "role": .string(index.isMultiple(of: 2) ? "user" : "assistant"),
                      "text": .string("\(id) message \(index)\nThis is an isolated transcript for checking native navigation underlap, scrolling, and composer spacing."),
@@ -78,7 +147,7 @@ private actor FixtureTransport: RemoteTransport {
     func disconnect() { isConnected = false }
     func request(_ method: String, _ path: String, body: RemoteJSON?) async throws -> RemoteJSON {
         guard isConnected else { throw RemoteFailure("Fixture is disconnected.") }
-        return try await RemoteUIFixture.request(method, path)
+        return try await RemoteUIFixture.request(method, path, body: body)
     }
 }
 #endif
