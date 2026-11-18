@@ -3,22 +3,17 @@ import SwiftUI
 /// Interpolate the row's layout height, not just its rendered content, so the
 /// native List can lay out neighboring rows at each intermediate size.
 struct SidebarAnimatedHeight: ViewModifier {
-    let children: [UUID]
     let animation: Animation?
-    @State private var measured: Measurement?
-
-    private struct Measurement: Equatable {
-        var height: CGFloat
-        var children: [UUID]
-    }
+    @State private var measured: CGSize?
 
     func body(content: Content) -> some View {
         content
-            .onGeometryChange(for: Measurement.self) {
-                Measurement(height: $0.size.height, children: children)
-            } action: { updated in
-                let structuralChange = measured.map { $0.children != updated.children } == true
-                withAnimation(structuralChange ? animation : nil) {
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { updated in
+                // A title/status update can correct the natural height during a
+                // child transition. Retarget that animation instead of snapping
+                // just because the child IDs have already been reconciled.
+                // Initial measurement and sidebar-width changes stay immediate.
+                withAnimation(measured?.width == updated.width ? animation : nil) {
                     measured = updated
                 }
             }

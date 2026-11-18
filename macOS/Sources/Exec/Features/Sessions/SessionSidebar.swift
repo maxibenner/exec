@@ -113,7 +113,7 @@ struct SessionSidebar: View {
                 .padding(.vertical, 4)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
-                .modifier(SidebarAnimatedHeight(children: group.children.map(\.id), animation: rowAnimation))
+                .modifier(SidebarAnimatedHeight(animation: rowAnimation))
                 // macOS sidebar rows retain a 16-point content gutter even
                 // with zero listRowInsets. Cancel it on the content only; keep
                 // the native row background and the list's outer margin intact.

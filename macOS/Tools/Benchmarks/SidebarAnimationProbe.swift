@@ -1,11 +1,40 @@
 import AppKit
 import SwiftUI
+import CryptoKit
+
+private struct PollingEvent: Codable, Sendable {
+    let time: Double // Uptime, like Phase.startedAt; response evidence, not UI application time.
+    let kind: String
+    let stage: Int
+    let session: UUID?
+    let messages: Int
+    let bytes: Int
+}
+
+private extension AgentJSON {
+    func probeSetting(_ key: String, _ value: AgentJSON) -> AgentJSON {
+        guard case .object(var object) = self else { preconditionFailure("Expected synthetic object") }
+        object[key] = value
+        return .object(object)
+    }
+}
 
 /// Only synthetic snapshots are served. No sockets, accounts, Keychain or inference.
 private actor SidebarProbeTransport: AgentTransport {
     var snapshots: [UUID: AgentJSON] = [:]
     var order: [UUID] = []
     var failNextOrder = false
+    var rejected: [String] = []
+    var evidence: [PollingEvent] = []
+    private var pollingRoots: [UUID] = []
+    private var pollingChildren: [AgentJSON] = []
+    private var prefixes: [UUID: String] = [:]
+    private var remainingCatalogPolls = 0
+    private var stage = 0
+    private var pendingTitle = false
+    private var appendOnTitle = false
+    private var tick = 0
+    nonisolated static let longTitle = "Review concurrent workspace changes and summarize the delegated implementation results"
 
     func install(_ values: [AgentJSON]) {
         snapshots = Dictionary(uniqueKeysWithValues: values.map { (UUID(uuidString: $0["id"].string!)!, $0) })
@@ -13,12 +42,99 @@ private actor SidebarProbeTransport: AgentTransport {
     }
     func reorder(_ ids: [UUID]) { order = ids }
     func failOrder() { failNextOrder = true }
+    func reject(_ method: String, _ path: String) -> ExecError {
+        let message = "Unexpected probe request: \(method) \(path)"
+        rejected.append(message)
+        return ExecError(message)
+    }
+
+    // Generate history off the main actor. Only the final streaming message changes;
+    // immutable prefixes support real 64-message backfill and overlapping suffix reads.
+    func configurePolling(messages count: Int, roots: [UUID], children: [AgentJSON], append: Bool) throws {
+        appendOnTitle = append
+        pollingRoots = Array(roots.prefix(2))
+        pollingChildren = children
+        let paragraph = "Synthetic workspace analysis: preserve cancellation, stable identity, and conversation integrity.\n\n- Inspect the current implementation.\n- Verify the concurrent update.\n\n```swift\nlet result = values.map { $0 + 1 }\n```\n\n"
+        for id in pollingRoots {
+            let messages: [AgentJSON] = (0..<count).map { index in
+                .object(["id": .string(UUID().uuidString.lowercased()),
+                    "role": .string(index.isMultiple(of: 2) ? "user" : "assistant"),
+                    "text": .string("Message \(index + 1)\n\n" + String(repeating: paragraph, count: 8)),
+                    "status": .string(index == count - 1 ? "streaming" : "complete")])
+            }
+            let data = try JSONEncoder().encode(Array(messages.dropLast()))
+            prefixes[id] = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            snapshots[id] = snapshots[id]!
+                .probeSetting("messages", .array(messages))
+                .probeSetting("operation", .object(["id": .string(UUID().uuidString), "state": .string("running")]))
+        }
+    }
+    func armPollingCycle() { remainingCatalogPolls = 2 }
+    private func advanceCatalog() {
+        guard remainingCatalogPolls > 0 else { return }
+        remainingCatalogPolls -= 1
+        stage += 1
+        for child in pollingChildren {
+            let id = UUID(uuidString: child["id"].string!)!
+            order.removeAll { $0 == id }
+            snapshots[id] = stage.isMultiple(of: 2) ? nil : child
+            if !stage.isMultiple(of: 2) { order.append(id) }
+        }
+        // The next natural 200ms reader poll delivers a geometry-changing title
+        // while the 250ms child animation is in flight. No injected main-thread stall.
+        pendingTitle = true
+    }
+    private func sync(_ id: UUID, query: String?) throws -> (AgentJSON, String) {
+        var snapshot = snapshots[id]!
+        var messages = snapshot["messages"].array
+        let total = messages.count
+        let offset: Int, end: Int, reset: Bool, kind: String
+        if let query {
+            let fields = query.split(separator: "&").map(String.init)
+            if fields.count == 1, fields[0].hasPrefix("before="),
+               let index = messages.firstIndex(where: { $0["id"].string == String(fields[0].dropFirst(7)) }), index > 0 {
+                offset = max(0, index - 64); end = index; reset = false; kind = "sync-before"
+            } else if fields.count == 2, fields[0].hasPrefix("after="), fields[1] == "prefix=\(prefixes[id] ?? "")",
+                      let index = messages.firstIndex(where: { $0["id"].string == String(fields[0].dropFirst(6)) }), index == total - 1 {
+                offset = index; end = total; reset = false; kind = "sync-after"
+                tick += 1
+                messages[index] = messages[index].probeSetting("text", .string(messages[index]["text"].string! + "\nSynthetic progress \(tick)."))
+                if id == pollingRoots.first, pendingTitle {
+                    pendingTitle = false
+                    snapshot = snapshot.probeSetting("metadata", snapshot["metadata"].probeSetting("title",
+                        .string(stage.isMultiple(of: 2) ? "Conversation 1" : Self.longTitle)))
+                    evidence.append(PollingEvent(time: ProcessInfo.processInfo.systemUptime, kind: "title", stage: stage,
+                        session: id, messages: total, bytes: 0))
+                    if appendOnTitle {
+                        messages[index] = messages[index].probeSetting("status", .string("complete"))
+                        messages.append(.object(["id": .string(UUID().uuidString.lowercased()), "role": .string("assistant"),
+                            "text": .string("Synthetic delegation result \(stage)."), "status": .string("streaming")]))
+                        let data = try JSONEncoder().encode(Array(messages.dropLast()))
+                        prefixes[id] = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                        evidence.append(PollingEvent(time: ProcessInfo.processInfo.systemUptime, kind: "append", stage: stage,
+                            session: id, messages: messages.count, bytes: 0))
+                    }
+                }
+                snapshot = snapshot.probeSetting("messages", .array(messages))
+                snapshots[id] = snapshot
+            } else { throw reject("GET", "invalid synthetic sync cursor") }
+        } else {
+            offset = max(0, total - 64); end = total; reset = true; kind = "sync-initial"
+        }
+        let responseEnd = kind == "sync-after" ? messages.count : end
+        return (.object(["snapshot": snapshot.probeSetting("messages", .array(Array(messages[offset..<responseEnd]))),
+            "offset": .number(Double(offset)), "total": .number(Double(messages.count)), "reset": .bool(reset),
+            "prefix": prefixes[id].map(AgentJSON.string) ?? .null]), kind)
+    }
     func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
-        let route = String(path.split(separator: "?", maxSplits: 1)[0])
+        let parts = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        let route = String(parts[0]), query = parts.count == 2 ? String(parts[1]) : nil
         let result: AgentJSON
-        if route == "/v1/library" {
-            if method == "PATCH", let body {
-                // Make the persistence echo arrive while the native animation is running.
+        var kind: String?, session: UUID?
+        if route == "/v1/library", query == nil, method == "GET" || method == "PATCH" {
+            if method == "PATCH" {
+                guard let body else { throw reject(method, path) }
+                // Legacy reorder echo only; not used to synthesize polling workload.
                 try await Task.sleep(for: .milliseconds(80))
                 if failNextOrder { failNextOrder = false; throw ExecError("Synthetic reorder failure") }
                 let patch = try JSONDecoder().decode(AgentJSON.self, from: body)
@@ -27,32 +143,44 @@ private actor SidebarProbeTransport: AgentTransport {
             var configuration = AgentLibraryConfiguration()
             configuration.order = order
             return try JSONEncoder().encode(configuration)
-        } else if route == "/v1/conversations", method == "GET" {
-            result = .array(order.compactMap { snapshots[$0] })
-        } else if route == "/v1/conversations", method == "POST" {
-            result = Self.snapshot(UUID(), title: "New conversation")
+        } else if route == "/v1/conversations", query == nil, method == "GET" {
+            advanceCatalog()
+            // Real catalog responses contain summaries, not the heavy history.
+            result = .array(order.compactMap { snapshots[$0]?.probeSetting("messages", .array([])) })
+            kind = "catalog"
+        } else if route == "/v1/conversations", query == nil, method == "POST", let body {
+            let create = try JSONDecoder().decode(AgentJSON.self, from: body)
+            guard let workspace = create["workspace"].string else { throw reject(method, path) }
+            result = Self.snapshot(UUID(), title: "New conversation").probeSetting("workspace", .string(workspace))
             let id = UUID(uuidString: result["id"].string!)!
             snapshots[id] = result
             order.insert(id, at: 0)
         } else {
             let pieces = route.split(separator: "/")
-            guard pieces.count >= 3, let id = UUID(uuidString: String(pieces[2])),
-                  let snapshot = snapshots[id] else { throw ExecError("Unexpected probe request: \(method) \(route)") }
-            if method == "DELETE" {
+            guard (pieces.count == 3 || pieces.count == 4), pieces[0] == "v1", pieces[1] == "conversations",
+                  let id = UUID(uuidString: String(pieces[2])), let snapshot = snapshots[id] else { throw reject(method, path) }
+            session = id
+            if pieces.count == 3, query == nil, method == "DELETE" {
                 snapshots[id] = nil
                 order.removeAll { $0 == id }
                 result = .object([:])
-            } else if route.hasSuffix("/sync") {
-                result = .object(["snapshot": snapshot, "offset": .number(0), "total": .number(0),
-                                  "reset": .bool(true), "prefix": .null])
-            } else {
+            } else if pieces.count == 4, pieces[3] == "sync", method == "GET" {
+                (result, kind) = try sync(id, query: query)
+            } else if pieces.count == 3, query == nil, method == "GET" {
                 result = snapshot
-            }
+            } else { throw reject(method, path) }
         }
-        return try JSONEncoder().encode(result)
+        let data = try JSONEncoder().encode(result)
+        if !pollingRoots.isEmpty, let kind {
+            evidence.append(PollingEvent(time: ProcessInfo.processInfo.systemUptime, kind: kind, stage: stage,
+                session: session, messages: result["snapshot"]["messages"].array.count, bytes: data.count))
+        }
+        return data
     }
     nonisolated func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
-        AsyncThrowingStream { _ in }
+        AsyncThrowingStream { continuation in
+            Task { continuation.finish(throwing: await self.reject(method, path)) }
+        }
     }
     nonisolated static func snapshot(_ id: UUID, title: String, parent: UUID? = nil, activity: Double = 1000) -> AgentJSON {
         var metadata: [String: AgentJSON] = ["title": .string(title), "manuallyNamed": .bool(true), "activityAt": .number(activity)]
@@ -111,6 +239,7 @@ private struct ProbeWindow: View {
         let width: Double
         let height: Double
         let opacity: Double
+        var top: Double { y + height } // Layer coordinates are bottom-up.
     }
     struct Sample: Codable {
         let time: Double
@@ -166,12 +295,35 @@ private struct ProbeWindow: View {
             reuseIDs = arguments.contains("--stress-reuse-ids")
         }
     }
+    struct Polling: Codable {
+        let cycles: Int
+        let messages: Int
+        let navigate: Bool
+        var append: Bool? // Optional so historical reports remain readable.
+        init(_ arguments: [String]) throws {
+            func number(_ flag: String, fallback: Int, range: ClosedRange<Int>) throws -> Int {
+                guard let index = arguments.firstIndex(of: flag) else { return fallback }
+                guard arguments.indices.contains(index + 1), let value = Int(arguments[index + 1]), range.contains(value) else {
+                    throw ExecError("Invalid \(flag); expected \(range)")
+                }
+                return value
+            }
+            cycles = try number("--polling-cycles", fallback: 0, range: 1...20)
+            messages = try number("--polling-messages", fallback: 240, range: 66...1000)
+            navigate = arguments.contains("--polling-navigate")
+            append = arguments.contains("--polling-append")
+            guard messages.isMultiple(of: 2) else { throw ExecError("--polling-messages must be even (assistant tail)") }
+        }
+    }
     struct Report: Codable {
         let operatingSystem: String
         let reduceMotion: Bool
         let simpleDetail: Bool
         let phases: [Phase]
         var stress: Stress? = nil
+        var polling: Polling? = nil
+        fileprivate var pollingEvidence: [PollingEvent]? = nil
+        var rejectedRoutes: [String]? = nil
         var probeBuild: String? = nil
     }
     @MainActor static func descendants(_ view: NSView) -> [NSView] {
@@ -214,10 +366,12 @@ private struct ProbeWindow: View {
             samples.append(sample(host, start: start))
         }
         try await task.value
-        // Include a final settled frame even if the mutation took longer than
-        // the sampling window; slow/broken mutations must not pass as no-ops.
-        try await Task.sleep(for: .milliseconds(150))
-        samples.append(sample(host, start: start))
+        // Keep sampling through settlement; a deliberate 150ms gap would pollute
+        // the workload's maximum sampling-gap metric and hide late transitions.
+        for _ in 0..<15 {
+            try await Task.sleep(for: .milliseconds(10))
+            samples.append(sample(host, start: start))
+        }
         let phase = Phase(name: name, samples: samples, startedAt: start)
         if name.hasPrefix("stress-") { return phase }
         let keys = Set(samples.flatMap { $0.markers.keys })
@@ -253,7 +407,7 @@ private struct ProbeWindow: View {
     /// Require several intermediate presentation values, not merely an animation
     /// key or correct endpoints. This intentionally rejects the original sidebar.
     static func failures(in report: Report) -> [String] {
-        var failures: [String] = []
+        var failures = (report.rejectedRoutes ?? []) + pollingFailures(report)
         let expected: [String: (rows: Int, children: Int)] = [
             "children-insert": (5, 3), "children-swap": (5, 3),
             "children-remove-one": (5, 2), "children-remove-all": (5, 0),
@@ -413,15 +567,21 @@ private struct ProbeWindow: View {
                     let opacity = frames.compactMap { $0.markers[key]?.opacity }
                     if opacity.isEmpty { unseen += 1; continue }
                     let partial = opacity.filter { $0 > 0.02 && $0 < 0.98 }
-                    // Two adjacent samples can prove an abrupt reset even when
-                    // the interrupted window is too short to assess a full fade.
+                    // A post-stall presentation sample can lag, then catch up on
+                    // the next tick. Gaps during a fade remain inconclusive even
+                    // with enough other intermediate values; never pass them silently.
+                    let fadeEnd = min(end, mutation.time + 0.35)
+                    let gapped = zip(phase.samples, phase.samples.dropFirst()).contains { a, b in
+                        b.time + start >= mutation.time && a.time + start < fadeEnd && b.time - a.time >= 0.06
+                    }
                     if !reduced {
                         let jumped = zip(boundaryFrames, boundaryFrames.dropFirst()).contains { a, b in
                             guard b.time - a.time < 0.06, let x = a.markers[key]?.opacity,
                                   let y = b.markers[key]?.opacity else { return false }
                             return abs(y - x) > 0.6
                         }
-                        if jumped { issues.append("mutation \(index) \(key): opacity jumped by >0.6 within 60ms") }
+                        if gapped { issues.append("mutation \(index) \(key): fade continuity undersampled\(jumped ? " (post-stall opacity jump)" : "")") }
+                        else if jumped { issues.append("mutation \(index) \(key): sampled opacity jumped by >0.6 within 60ms") }
                     }
                     if reduced, !partial.isEmpty { issues.append("mutation \(index) \(key): fade with Reduce Motion") }
                     if end - mutation.time < 0.08 || frames.count < 6 { short += 1; continue }
@@ -441,16 +601,27 @@ private struct ProbeWindow: View {
         for (a, b) in [(before, peak), (peak, after)] {
             let frames = phase.samples.filter { $0.time >= a.time && $0.time <= b.time }
             for key in Set(a.markers.keys).intersection(b.markers.keys) {
-                for property in [\Geometry.y, \Geometry.height] {
+                // A metadata title may change its intrinsic height immediately;
+                // the structural contract is the containing group's layout height.
+                // Wrapping grows downward: compare the title's anchored TOP,
+                // not its lower edge (which moves with intrinsic text height).
+                let properties = key.hasPrefix("group:") ? [\Geometry.y, \Geometry.height] :
+                    [key.hasPrefix("parent:") ? \Geometry.top : \Geometry.y]
+                for property in properties {
                     let origin = a.markers[key]![keyPath: property], destination = b.markers[key]![keyPath: property]
                     guard abs(origin - destination) > 1 else { continue }
                     let values = frames.compactMap { $0.markers[key]?[keyPath: property] }
                     let intermediate = values.filter { $0 > min(origin, destination) + 0.1 && $0 < max(origin, destination) - 0.1 }
+                    let trajectory = frames.compactMap { frame in frame.markers[key].map { (frame.time, $0[keyPath: property]) } }
+                    let label = property == \Geometry.height ? "height" : "position"
                     if !reduced, distinct(intermediate) < 3 {
-                        let trajectory = frames.compactMap { frame in frame.markers[key].map { (frame.time, $0[keyPath: property]) } }
                         let gap = zip(trajectory, trajectory.dropFirst()).contains { a, b in b.0 - a.0 > 0.06 && abs(b.1 - a.1) > 1 }
-                        issues.append("\(key): retained geometry \(gap ? "undersampled" : "snapped")")
+                        issues.append("\(key): retained \(label) \(gap ? "undersampled" : "snapped")")
                     }
+                    if !reduced, property == \Geometry.height,
+                       zip(trajectory, trajectory.dropFirst()).contains(where: { a, b in
+                           b.0 - a.0 < 0.06 && abs(b.1 - a.1) > max(2, abs(destination - origin) * 0.6)
+                       }) { issues.append("\(key): height jumped by >60% within 60ms") }
                 }
             }
         }
@@ -458,7 +629,67 @@ private struct ProbeWindow: View {
         return (issues, checked, short, unseen)
     }
 
+    static func pollingFailures(_ report: Report) -> [String] {
+        guard let polling = report.polling else { return [] }
+        let events = report.pollingEvidence ?? []
+        var issues: [String] = []
+        let loads = events.filter { $0.kind == "sync-initial" }
+        if loads.count < (polling.navigate ? 2 : 1) || !events.contains(where: { $0.kind == "sync-before" }) ||
+            events.filter({ $0.kind == "sync-after" }).count < polling.cycles * 4 {
+            issues.append("Polling did not exercise cold load, history backfill and repeated suffix sync")
+        }
+        if report.phases.count != polling.cycles { issues.append("Incomplete polling cycles") }
+        if polling.append == true, events.filter({ $0.kind == "append" }).count != polling.cycles * 2 {
+            issues.append("Polling did not exercise transcript appends during every structural update")
+        }
+        for stage in 1...(polling.cycles * 2) {
+            guard let catalog = events.first(where: { $0.kind == "catalog" && $0.stage == stage }),
+                  let title = events.first(where: { $0.kind == "title" && $0.stage == stage }) else {
+                issues.append("Polling stage \(stage): missing catalog/title evidence"); continue
+            }
+            if !(0...0.25).contains(title.time - catalog.time) {
+                issues.append("Polling stage \(stage): title response did not overlap the 250ms structural animation")
+            }
+        }
+        guard let root = events.first(where: { $0.kind == "title" })?.session else { return issues }
+        for phase in report.phases {
+            let coverage = assessStress(phase, reduced: report.reduceMotion)
+            // Immediate removal is expected with Reduce Motion: no departing
+            // marker/fade window is required, only correct settled endpoints.
+            if !report.reduceMotion, coverage.short > 0 || coverage.unseen > 0 {
+                issues.append("\(phase.name): undersampled fade windows (short=\(coverage.short), unobserved=\(coverage.unseen))")
+            }
+            guard let before = phase.samples.first, let after = phase.samples.last, let peak = phase.peak else {
+                issues.append("\(phase.name): missing polling endpoints"); continue
+            }
+            for frame in [before, peak, after] {
+                for role in ["group:", "parent:", "footer:"] where frame.markers.keys.filter({ $0.hasPrefix(role) }).count != 5 {
+                    issues.append("\(phase.name): missing settled \(role) markers")
+                }
+            }
+            let key = "parent:\(root)"
+            if let a = before.markers[key], let b = peak.markers[key], let c = after.markers[key] {
+                if b.height - a.height < 2 || abs(c.height - a.height) > 0.5 {
+                    issues.append("\(phase.name): title metadata did not grow and restore parent geometry")
+                }
+                if phase.samples.contains(where: { abs(($0.markers[key]?.top ?? a.top) - a.top) > 0.5 }) {
+                    issues.append("\(phase.name): parent title top moved during child resizing")
+                }
+            } else { issues.append("\(phase.name): missing title geometry evidence") }
+            if !report.simpleDetail, !polling.navigate,
+               phase.samples.contains(where: { !$0.focus.contains("FieldEditor") || $0.focus != before.focus }) {
+                issues.append("\(phase.name): composer focus changed without navigation")
+            }
+        }
+        return issues
+    }
+
     static func printIssues(_ issues: [String], report: Report) {
+        if let polling = report.polling {
+            let events = report.pollingEvidence ?? []
+            let reads = events.filter { $0.kind.hasPrefix("sync-") }
+            print("Polling: \(polling.messages) messages/session, navigation=\(polling.navigate); initial=\(reads.filter { $0.kind == "sync-initial" }.count), backfill=\(reads.filter { $0.kind == "sync-before" }.count), suffix=\(reads.filter { $0.kind == "sync-after" }.count); \(reads.reduce(0) { $0 + $1.bytes }) sync response bytes")
+        }
         let gapsInEvidence = issues.filter { $0.contains("undersampled") || $0.contains("ambiguous") }.count
         print("Checks: \(issues.count - gapsInEvidence) observed failures; \(gapsInEvidence) sampling-limited failures (not proof of a snap/missing fade)")
         for issue in issues.prefix(24) { print("  \(issue)") }
@@ -554,6 +785,63 @@ private struct ProbeWindow: View {
         return phases
     }
 
+    /// Sleeps below only yield for observation/settling. Work is driven by the
+    /// unchanged production 2s catalog loop and active 200ms transcript readers.
+    @MainActor private static func pollingPhases(_ polling: Polling, host: NSView, library: ChatLibrary,
+        transport: SidebarProbeTransport, roots: [UUID], children: [UUID]) async throws -> [Phase] {
+        func observe(_ label: String, until condition: () -> Bool) async throws {
+            let deadline = ProcessInfo.processInfo.systemUptime + 10
+            while !condition() {
+                guard library.error == nil, library.connectionError == nil else {
+                    throw ExecError("Polling observation failed: \(library.error ?? library.connectionError!)")
+                }
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw ExecError("Timed out observing \(label)") }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        library.startSynchronization()
+        var phases: [Phase] = []
+        for cycle in 0..<polling.cycles {
+            var mutations: [Mutation] = []
+            var peak: Sample?
+            var phase = try await measure("polling-\(cycle + 1)", host: host) {
+                await transport.armPollingCycle()
+                for inserting in [true, false] {
+                    try await observe(inserting ? "catalog insertion" : "catalog removal") {
+                        library.childSessions(of: roots[0]).count == (inserting ? children.count : 0)
+                    }
+                    // First observation of applied library state, NOT synthetic server time.
+                    let keys = children.map { "child:\($0)" }
+                    mutations.append(Mutation(time: ProcessInfo.processInfo.systemUptime,
+                        inserted: inserting ? keys : [], removed: inserting ? [] : keys,
+                        rows: roots.count, selection: library.sidebarSelectionID))
+                    if polling.navigate {
+                        let target = inserting ? roots[1] : roots[0]
+                        library.openSession(target)
+                        await library.waitForNavigation()
+                        guard library.currentSessionID == target, library.current.messages.count >= polling.messages else {
+                            throw ExecError("Polling navigation did not load the complete synthetic transcript")
+                        }
+                    }
+                    try await observe("reader title update") {
+                        library.sessionList.first { $0.id == roots[0] }?.title ==
+                            (inserting ? SidebarProbeTransport.longTitle : "Conversation 1")
+                    }
+                    try await Task.sleep(for: .milliseconds(350)) // Settled endpoint, not workload.
+                    if inserting { peak = sample(host, start: 0) }
+                }
+            }
+            phase.mutations = mutations
+            if let peak, let start = phase.startedAt {
+                phase.peak = Sample(time: peak.time - start, markers: peak.markers, animations: peak.animations,
+                    rows: peak.rows, selection: peak.selection, table: peak.table, focus: peak.focus,
+                    duplicateMarkers: peak.duplicateMarkers)
+            }
+            phases.append(phase)
+        }
+        return phases
+    }
+
     @MainActor static func run() async throws {
         let arguments = CommandLine.arguments
         if let index = arguments.firstIndex(of: "--analyze-report"), arguments.indices.contains(index + 1) {
@@ -566,9 +854,14 @@ private struct ProbeWindow: View {
             return
         }
         let stress = try Stress(arguments)
+        let polling = try Polling(arguments)
+        guard stress.cycles == 0 || polling.cycles == 0 else { throw ExecError("Choose stress OR polling workload") }
         let suite = "exec-sidebar-probe-\(UUID())"
         let preferences = UserDefaults(suiteName: suite)!
         defer { preferences.removePersistentDomain(forName: suite) }
+        let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(suite, isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: workspace) }
         preferences.set(try JSONEncoder().encode([ChatModel(id: "deepseek/probe", name: "Probe")]), forKey: "chat.modelCatalog")
         let transport = SidebarProbeTransport()
         let parentIDs = (0..<5).map { _ in UUID() }
@@ -580,7 +873,14 @@ private struct ProbeWindow: View {
         await transport.install(parents)
         let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
         defer { library.closePresentations() }
-        try library.current.apply(parents[0].decoded(AgentSnapshot.self))
+        if polling.cycles > 0 {
+            try await transport.configurePolling(messages: polling.messages, roots: parentIDs, children: children,
+                                                 append: polling.append == true)
+            try await library.current.loadSession(parentIDs[0])
+            guard library.current.messages.count == polling.messages else { throw ExecError("Incomplete polling history backfill") }
+        } else {
+            try library.current.apply(parents[0].decoded(AgentSnapshot.self))
+        }
         try await library.refreshSharedState()
         let windows = SessionWindows(library: library)
         let simple = CommandLine.arguments.contains("--simple-detail")
@@ -600,7 +900,10 @@ private struct ProbeWindow: View {
             try await Task.sleep(for: .milliseconds(300))
         }
         var phases: [Phase] = []
-        if stress.cycles > 0 {
+        if polling.cycles > 0 {
+            phases = try await pollingPhases(polling, host: host, library: library, transport: transport,
+                                            roots: parentIDs, children: childIDs)
+        } else if stress.cycles > 0 {
             phases = try await stressPhases(stress, host: host, library: library, transport: transport)
         } else {
         phases.append(try await measure("children-insert", host: host) {
@@ -620,8 +923,16 @@ private struct ProbeWindow: View {
             try await library.refreshSharedState()
         })
         phases.append(try await measure("parent-insert-and-focus", host: host) {
+            let previous = library.current
             library.newConversation()
-            await library.current.waitForPendingSave()
+            guard let pending = library.pendingNewConversation, pending.needsInitialWorkspaceSelection,
+                  library.current === previous else { throw ExecError("Missing pending workspace creation flow") }
+            // Supply the empty isolated workspace in place of the native picker.
+            pending.consumeInitialWorkspaceSelection()
+            library.selectWorkspace(workspace, in: pending)
+            await library.waitForNavigation()
+            guard library.current === pending, pending.currentSessionID != nil, library.pendingNewConversation == nil,
+                  library.sidebarSessions.count == 6 else { throw ExecError("Synthetic creation did not finish: \(library.error ?? "no error")") }
         })
         phases.append(try await measure("parent-move-and-echo", host: host) {
             library.moveSidebarSessions(from: IndexSet(integer: 1), to: library.sidebarSessions.count)
@@ -678,15 +989,19 @@ private struct ProbeWindow: View {
             table.scrollRowToVisible(0)
         })
         }
+        library.closePresentations()
         let report = Report(operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
                             reduceMotion: reduceMotion, simpleDetail: simple, phases: phases,
                             stress: stress.cycles > 0 ? stress : nil,
-                            probeBuild: try? String(contentsOfFile: ".build/sidebar-animation-probe.sources", encoding: .utf8))
+                            polling: polling.cycles > 0 ? polling : nil,
+                            pollingEvidence: polling.cycles > 0 ? await transport.evidence : nil,
+                            rejectedRoutes: await transport.rejected,
+                            probeBuild: try? String(contentsOfFile: CommandLine.arguments[0] + ".sources", encoding: .utf8))
         let args = CommandLine.arguments
         let output = args.firstIndex(of: "--output").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
             ?? ".build/sidebar-animation-report.json"
         let encoder = JSONEncoder()
-        encoder.outputFormatting = stress.cycles > 0 ? [.sortedKeys] : [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = stress.cycles > 0 || polling.cycles > 0 ? [.sortedKeys] : [.prettyPrinted, .sortedKeys]
         try encoder.encode(report).write(to: URL(fileURLWithPath: output))
         print("Report: \(output). Samples inspect owned view/layer geometry, not screenshots. Native drag gestures are not simulated.")
         let issues = failures(in: report)
