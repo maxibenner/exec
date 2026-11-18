@@ -62,14 +62,6 @@ struct RemoteAccessSettingsView: View {
                             .buttonStyle(.bordered)
                             .foregroundStyle(.primary)
                             .disabled(!status["connected"].bool)
-                            if let text = invitationText, let image = qr(text) {
-                                HStack {
-                                    Spacer()
-                                    Image(nsImage: image).interpolation(.none).resizable().frame(width: 220, height: 220)
-                                        .padding(12).background(.white).accessibilityLabel("Pairing QR code")
-                                    Spacer()
-                                }
-                            }
                         }
                     }
                 }
@@ -77,7 +69,47 @@ struct RemoteAccessSettingsView: View {
             if let error = error ?? settings.error { Section { Text(error).foregroundStyle(.red).textSelection(.enabled) } }
         }
         .formStyle(.grouped)
-        .disabled(busy || settings.saving || !settings.loaded)
+        .disabled(busy || settings.saving || !settings.loaded || invitation != nil)
+        .accessibilityHidden(invitation != nil)
+        .overlay {
+            if let text = invitationText, let image = qr(text) {
+                ZStack {
+                    Color.black.opacity(0.3)
+                        .contentShape(Rectangle())
+                        .onTapGesture { invitation = nil }
+                        .accessibilityHidden(true)
+
+                    VStack(spacing: 16) {
+                        HStack {
+                            Text("Pairing QR Code").font(.headline)
+                            Spacer()
+                            Button { invitation = nil } label: {
+                                Image(systemName: "xmark")
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Close pairing QR code")
+                        }
+                        Image(nsImage: image)
+                            .interpolation(.none)
+                            .resizable()
+                            .frame(width: 220, height: 220)
+                            .padding(12)
+                            .background(.white, in: RoundedRectangle(cornerRadius: 8))
+                            .accessibilityLabel("Pairing QR code")
+                        Button("Copy to clipboard") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(text, forType: .string)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(24)
+                    .frame(width: 320)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+                    .shadow(color: .black.opacity(0.2), radius: 20, y: 8)
+                    .onExitCommand { invitation = nil }
+                }
+            }
+        }
         .confirmationDialog("Revoke this device?", isPresented: Binding(get: { revoking != nil }, set: { if !$0 { revoking = nil } })) {
             Button("Revoke", role: .destructive) {
                 guard let id = revoking else { return }; revoking = nil
