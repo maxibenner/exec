@@ -12,13 +12,8 @@ struct SettingsView: View {
                 set: { if let section = $0 { store.settingsTab = section } }
             )) {
                 ForEach(ChatLibrary.SettingsTab.allCases, id: \.self) { section in
-                    Label {
-                        Text(section.title)
-                    } icon: {
-                        Image(systemName: section.systemImage)
-                            .font(.system(size: 15))
-                    }
-                    .tag(section)
+                    Label(section.title, systemImage: section.systemImage)
+                        .tag(section)
                 }
             }
             .listStyle(.sidebar)
