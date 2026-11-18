@@ -8,6 +8,9 @@ private actor ClearSnapshotTransport: AgentTransport {
     private var failingMutation: String?
     private var commitBeforeFailure = false
     private var holdClear = false
+    private var pendingTurn: CheckedContinuation<Void, Never>?
+    private var holdTurn = false
+    var turnIsWaiting: Bool { pendingTurn != nil }
     private var pendingClear: CheckedContinuation<Void, Never>?
     private(set) var requests: [FakeAgentTransport.Request] = []
     var clearIsWaiting: Bool { pendingClear != nil }
@@ -21,12 +24,15 @@ private actor ClearSnapshotTransport: AgentTransport {
     func failNext(_ method: String, _ path: String, afterCommit: Bool = false) {
         failingMutation = method + " " + path; commitBeforeFailure = afterCommit
     }
+    func holdNextTurn() { holdTurn = true }
+    func releaseTurn() { pendingTurn?.resume(); pendingTurn = nil }
     func holdNextClear() { holdClear = true }
     func releaseClear() { pendingClear?.resume(); pendingClear = nil }
 
     func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
         requests.append(.init(method: method, path: path, body: body))
         if method == "GET" {
+            if let reply = mutations[method + " " + path] { return try JSONEncoder().encode(reply) }
             let route = String(path.split(separator: "?", maxSplits: 1)[0])
             if route == sessionPath + "/sync" {
                 return try JSONEncoder().encode(AgentSyncFixture.page(snapshot, path: path))
@@ -37,6 +43,10 @@ private actor ClearSnapshotTransport: AgentTransport {
         if method == "POST", path == sessionPath + "/clear", holdClear {
             holdClear = false
             await withCheckedContinuation { pendingClear = $0 }
+        }
+        if method == "POST", path == sessionPath + "/turns", holdTurn {
+            holdTurn = false
+            await withCheckedContinuation { pendingTurn = $0 }
         }
         let key = method + " " + path
         let fails = failingMutation == key
@@ -281,27 +291,95 @@ private actor ClearSnapshotTransport: AgentTransport {
         try expect(writes.count == 1 && writes[0].method == "PUT" && writes[0].path == path + "/settings")
     }
 
-    func unsavedAndActiveSessionsCannotClearOrQueueClear() async throws {
-        let transport = FakeAgentTransport()
+    func clearWaitsForSingleSubmissionThenResetsWithoutReplay() async throws {
+        let initial = try snapshot(), running = try snapshot(state: "running"), cleared = try snapshot(cleared: true)
+        let transport = ClearSnapshotTransport(path: path, snapshot: initial)
+        await transport.replyTo("GET", "/v1/providers", with: .array([
+            .object(["id": .string("openai"), "name": .string("OpenAI"), "connected": .bool(true)])
+        ]))
+        await transport.replyTo("POST", path + "/turns", with: running)
+        await transport.replyTo("POST", path + "/clear", with: cleared)
+        await transport.holdNextTurn()
+        let provider = AgentAccounts(api: AgentAPI(transport: transport))
+        try await provider.refreshConnections()
+        let store = ChatStore(provider: provider,
+                              sleepPrevention: .init(begin: { NSObject() }, end: { _ in }))
+        defer { store.closePresentation() }
+        try store.apply(initial.decoded(AgentSnapshot.self))
+        store.installModels([ChatModel(id: "openai/session", name: "Test")])
+        store.draft = "Start a turn"
+        store.send()
+        try await wait { await transport.turnIsWaiting }
+        store.draft = "/clear"
+        try expect(store.canClear)
+        store.clear()
+        await Task.yield()
+        try expect(!store.canClear)
+        await transport.releaseTurn()
+        await store.waitUntilIdle()
+        try expectSnapshot(store, cleared)
+        try expect(store.draft.isEmpty && store.error == nil && !store.busy)
+        let writes = await transport.requests.filter { $0.method != "GET" }
+        try expect(writes.map(\.path) == [path + "/turns", path + "/clear"])
+    }
+
+    func activeClearSavesPendingSettingsOnlyAfterCancellation() async throws {
+        let initial = try snapshot(state: "running"), cleared = try snapshot(cleared: true)
+        var settings = savedSettings
+        settings.effort = "high"
+        let updated = try snapshot(settings: settings, cleared: true)
+        let transport = ClearSnapshotTransport(path: path, snapshot: initial)
+        await transport.replyTo("POST", path + "/clear", with: cleared)
+        await transport.replyTo("PUT", path + "/settings", with: updated)
         let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)),
                               sleepPrevention: .init(begin: { NSObject() }, end: { _ in }))
+        defer { store.closePresentation() }
+        try store.apply(initial.decoded(AgentSnapshot.self))
+        store.selectedEffort = "high"
+        store.clear()
+        await store.waitUntilIdle()
+        try expectSnapshot(store, updated)
+        try expect(store.error == nil && !store.busy)
+        let writes = await transport.requests.filter { $0.method != "GET" }
+        try expect(writes.map(\.path) == [path + "/clear", path + "/settings"])
+    }
+
+    func unsavedSessionsCannotClear() async throws {
+        let transport = FakeAgentTransport()
+        let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)))
         defer { store.closePresentation() }
         store.draft = "/clear"
         try expect(store.currentSessionID == nil && !store.canClear)
         store.clear()
         await store.waitUntilIdle()
-        for state in ["running", "awaiting_approval", "cancelling"] {
-            try store.apply(snapshot(state: state).decoded(AgentSnapshot.self))
-            let messages = store.messages, approval = store.tools.pendingApproval?.id
-            try expect(store.busy && !store.canClear)
-            store.clear()
-            await store.waitUntilIdle()
-            try expect(store.messages == messages && store.draft == "/clear" && store.tools.pendingApproval?.id == approval)
-            try store.apply(snapshot().decoded(AgentSnapshot.self))
-            await Task.yield()
-            try expect(!store.busy && store.canClear && store.draft == "/clear")
-        }
         let requests = await transport.requests
-        try expect(requests.isEmpty) // Disabled clears must not turn into idle-time commands.
+        try expect(requests.isEmpty)
+    }
+
+    func activeSessionsClearImmediatelyWithoutWaitingForIdle() async throws {
+        for state in ["running", "awaiting_approval", "cancelling"] {
+            let initial = try snapshot(state: state), cleared = try snapshot(cleared: true)
+            let transport = ClearSnapshotTransport(path: path, snapshot: initial)
+            await transport.replyTo("POST", path + "/clear", with: cleared)
+            await transport.holdNextClear()
+            let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)),
+                                  sleepPrevention: .init(begin: { NSObject() }, end: { _ in }))
+            defer { store.closePresentation() }
+            try store.apply(initial.decoded(AgentSnapshot.self))
+            store.draft = "/clear"
+            try expect(store.busy && store.canClear && store.canEditDraft)
+            store.clear()
+            try await wait { await transport.clearIsWaiting }
+            try expect(store.busy && !store.canClear)
+            store.clear() // Never queue a second reset.
+            await transport.releaseClear()
+            await store.waitUntilIdle()
+            try expectSnapshot(store, cleared)
+            try expect(!store.busy && store.canClear && store.error == nil && store.draft.isEmpty)
+            try expect(store.messages.isEmpty && store.contextUsage == nil && store.tools.pendingApproval == nil)
+            let writes = await transport.requests.filter { $0.method != "GET" }
+            try expect(writes.count == 1)
+            try expectClear(writes[0])
+        }
     }
 }

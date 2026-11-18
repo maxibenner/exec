@@ -129,11 +129,14 @@ pub struct Conversation {
     events: EventHub,
     input_arrived: Notify,
 }
-/// Keep an idle descendant from starting work across a parent's durable reset.
+/// Keep a conversation from starting work across a durable reset.
 /// Dropping also wakes observers waiting for an in-flight mutation to settle.
-pub(crate) struct IdleReservation(Arc<Conversation>);
+pub(crate) struct IdleReservation(Arc<Conversation>, bool);
 impl Drop for IdleReservation {
     fn drop(&mut self) {
+        if !self.1 {
+            return;
+        }
         let mut state = self.0.state();
         state.updating = false;
         self.0.events.send(Arc::new(ServiceEvent::Snapshot {
@@ -425,13 +428,32 @@ impl Conversation {
             return Err(Error::Busy);
         }
         state.updating = true;
-        Ok(IdleReservation(self.clone()))
+        Ok(IdleReservation(self.clone(), true))
+    }
+    pub(crate) fn reserve_clear(self: &Arc<Self>) -> Result<IdleReservation> {
+        let mut state = self.state();
+        if state.disposed || state.updating {
+            return Err(Error::Busy);
+        }
+        if state.storage_error.is_some() {
+            return Err(Error::Storage);
+        }
+        state.updating = true;
+        Ok(IdleReservation(self.clone(), true))
+    }
+    pub(crate) async fn settle_active(&self) {
+        let (_, mut events) = self.subscribe();
+        while self.state().active.is_some() {
+            if events.recv().await.is_err() {
+                events = self.subscribe().1;
+            }
+        }
     }
     /// Called under the manager's catalog lock after checking delegation ownership.
     /// Retain descendant reservations through both the save and publication.
     pub(crate) fn start_clear(
         self: &Arc<Self>,
-        descendants: Vec<IdleReservation>,
+        reservations: Vec<IdleReservation>,
     ) -> Result<tokio::task::JoinHandle<Result<ConversationSnapshot>>> {
         self.start_mutation(
             |record| {
@@ -447,21 +469,23 @@ impl Conversation {
                 record.metadata.activity_at = SessionMetadata::activity();
                 Ok(())
             },
-            descendants,
+            reservations,
+            true,
         )
     }
     pub(crate) async fn mutate_record(
         self: &Arc<Self>,
         mutate: impl FnOnce(&mut ConversationRecord) -> Result<()>,
     ) -> Result<ConversationSnapshot> {
-        self.start_mutation(mutate, vec![])?
+        self.start_mutation(mutate, vec![], false)?
             .await
             .map_err(|_| Error::Internal)?
     }
     fn start_mutation(
         self: &Arc<Self>,
         mutate: impl FnOnce(&mut ConversationRecord) -> Result<()>,
-        keep_idle: Vec<IdleReservation>,
+        mut keep_idle: Vec<IdleReservation>,
+        reserved: bool,
     ) -> Result<tokio::task::JoinHandle<Result<ConversationSnapshot>>> {
         let record = {
             let mut s = self.state();
@@ -471,12 +495,17 @@ impl Conversation {
             if s.storage_error.is_some() {
                 return Err(Error::Storage);
             }
-            if s.active.is_some() || s.updating {
+            if s.active.is_some() || (s.updating && !reserved) {
                 return Err(Error::Busy);
             }
             let mut record = s.record.clone();
             mutate(&mut record)?;
             record.validate()?;
+            if reserved {
+                // Transfer the root reservation to this mutation; release it under
+                // the publication lock so snapshots reflect the final idle state.
+                keep_idle[0].1 = false;
+            }
             s.updating = true;
             record
         };

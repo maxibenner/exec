@@ -144,7 +144,7 @@ Bodies require `Content-Type: application/json` and reject unknown fields. Reque
 | PUT | `/v1/conversations/:id/title` | `{title}` → saved idle snapshot |
 | PUT | `/v1/conversations/:id/model` | `{model}` → saved idle snapshot |
 | PUT | `/v1/conversations/:id/workspace` | `{workspace}` → saved idle snapshot, only before the first accepted turn; otherwise 409 |
-| POST | `/v1/conversations/:id/clear` | `{}` → `200 ConversationSnapshot`, after durable idle-only context/transcript reset in the same session |
+| POST | `/v1/conversations/:id/clear` | `{}` → `200 ConversationSnapshot`, after cancellation, settlement and durable context/transcript reset in the same session |
 | POST | `/v1/conversations/:id/fork` | `{}` → `201` independent saved snapshot of the transcript, including during an active turn |
 | DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after cancelling and settling active work, then durably deleting the session and descendants; conflicting mutations return 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
@@ -178,17 +178,18 @@ Frozen instructions stay frozen even with an empty transcript: clearing a used s
 never unlocks its workspace or reloads AGENTS.md. An unused, unfrozen session can still
 change workspace, as reported by advisory `canChangeWorkspace`.
 
-Clear requires the session and all descendants to be idle, with no upload/settings/catalog
-mutation underway. A child still owned by an active parent delegation cannot be cleared,
-even if that child has finished its own operation. These conflicts return
-`409 {"error":"Conversation is busy."}` without cancellation, waiting for work, or changes.
-Cancellation is not sufficient until cleanup finishes. Idle descendants are reserved
-through the reset so no child work can cross its durable publication. Missing sessions
-return 404; invalid bodies/IDs return 400. A storage-blocked session or failed clear save
-returns `409 {"error":"Conversation requires storage recovery."}`; the previous transcript
-remains published with `storageError` set, and subsequent work/writes are blocked. An
-accepted clear save finishes if the caller disconnects; do not automatically retry an
-uncertain command.
+Clear immediately cancels active work in the session and its descendants, then waits for
+runners and tool cleanup to settle before saving the empty context. Descendants retain
+their own transcripts; they are reserved through the reset so no new child work can cross
+its durable publication. A child still owned by an active parent delegation cannot be
+cleared directly, even if that child has finished its own operation; clear its parent instead.
+An upload/settings/catalog mutation underway also conflicts. These conflicts return
+`409 {"error":"Conversation is busy."}` without cancelling work or changing context.
+Missing sessions return 404; invalid bodies/IDs return 400. A storage-blocked session or
+failed clear save returns `409 {"error":"Conversation requires storage recovery."}`; the
+previous (possibly now interrupted) transcript remains published with `storageError` set,
+and subsequent work/writes are blocked. Accepted cancellation, settlement and the clear
+save finish if the caller disconnects; do not automatically retry an uncertain command.
 
 Clear drops this session's resource references only. It does **not** remove attachment,
 image, shell-log, or workspace files, which other sessions/forks may still reference.

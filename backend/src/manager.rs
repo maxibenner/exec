@@ -565,11 +565,10 @@ impl AgentManager {
             })
             .await
     }
-    /// Reset only conversation context, never configuration or shared asset files.
-    /// Reserve idle descendants under the catalog lock so delegation and reset
-    /// cannot cross, even through an already acquired Conversation handle.
-    pub async fn clear(&self, id: &str) -> Result<ConversationSnapshot> {
-        let task = {
+    /// Cancel and settle the family before resetting context, preserving configuration
+    /// and shared assets. Reservations also block already acquired handles.
+    pub async fn clear(self: &Arc<Self>, id: &str) -> Result<ConversationSnapshot> {
+        let (conversation, family, reservations) = {
             let catalog = self.catalog.lock().unwrap();
             if catalog.closed || catalog.account_busy {
                 return Err(Error::Busy);
@@ -577,22 +576,51 @@ impl AgentManager {
             let conversation = catalog
                 .conversations
                 .get(id)
-                .ok_or(Error::Invalid("Conversation not found."))?;
-            let family = Self::deletion_family(&catalog, id);
-            if family.iter().any(|id| catalog.mutating.contains(id))
-                || conversation.busy()
-                || Self::delegation_owned(&catalog, conversation)
+                .ok_or(Error::Invalid("Conversation not found."))?
+                .clone();
+            let ids = Self::deletion_family(&catalog, id);
+            if ids.iter().any(|id| catalog.mutating.contains(id))
+                || Self::delegation_owned(&catalog, &conversation)
             {
                 return Err(Error::Busy);
             }
-            let mut descendants = Vec::new();
-            for child_id in family.iter().skip(1) {
-                descendants.push(catalog.conversations[child_id].reserve_idle()?);
+            let family: Vec<_> = ids
+                .iter()
+                .map(|id| catalog.conversations[id].clone())
+                .collect();
+            let reservations = family
+                .iter()
+                .map(|c| c.reserve_clear())
+                .collect::<Result<Vec<_>>>()?;
+            for session in &family {
+                if let Some(op) = session.snapshot().operation {
+                    session.cancel(&op.id);
+                }
             }
-            conversation.start_clear(descendants)?
+            (conversation, family, reservations)
         };
-        // The owned save retains all reservations if this caller disconnects.
-        task.await.map_err(|_| Error::Internal)?
+        let manager = self.clone();
+        // Own cancellation, settlement and persistence even if the caller disconnects.
+        tokio::spawn(async move {
+            for session in &family {
+                session.settle_active().await;
+            }
+            let mut reservations = reservations;
+            let task = {
+                let catalog = manager.catalog.lock().unwrap();
+                // Delegation creation already in flight may have inserted more children.
+                // Parent settlement has awaited their executors; reserve survivors too.
+                for id in Self::deletion_family(&catalog, &conversation.id) {
+                    if !family.iter().any(|session| session.id == id) {
+                        reservations.push(catalog.conversations[&id].reserve_idle()?);
+                    }
+                }
+                conversation.start_clear(reservations)?
+            };
+            task.await.map_err(|_| Error::Internal)?
+        })
+        .await
+        .map_err(|_| Error::Internal)?
     }
     pub async fn fork(
         self: &Arc<Self>,

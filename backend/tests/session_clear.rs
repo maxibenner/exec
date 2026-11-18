@@ -366,7 +366,7 @@ async fn clear_resets_reused_sync_cursors_and_keeps_unused_workspace_editable() 
 }
 
 #[tokio::test]
-async fn clear_rejects_active_approval_and_cancelling_work_then_discards_pending_input() {
+async fn clear_cancels_active_approval_and_discards_pending_input() {
     let fake = FakeProvider::new(vec![response(vec![call("approval"), ProviderEvent::Done])]);
     let manager = Arc::new(AgentManager::default());
     let tools = vec![tool(Some("Approve"), |_| async {
@@ -387,25 +387,13 @@ async fn clear_rejects_active_approval_and_cancelling_work_then_discards_pending
     .unwrap();
     let path = format!("/v1/conversations/{}/clear", c.id);
     let run = c.submit("original".into()).unwrap();
-    assert_eq!(manager.clear(&c.id).await.unwrap_err(), Error::Busy);
     let pending = approval(&c).await;
-    let before = c.record();
-    let response = post(service.address, &path).await;
-    assert_eq!(response.status(), 409);
-    assert_eq!(
-        response.json::<serde_json::Value>().await.unwrap(),
-        json!({"error":"Conversation is busy."})
-    );
-    assert_eq!(c.record(), before);
     c.steer(&run.operation_id, "never replay this".into())
         .unwrap();
-    assert!(c.cancel(&run.operation_id));
-    assert_eq!(manager.clear(&c.id).await.unwrap_err(), Error::Busy);
-    assert_eq!(complete(run).await.state, OperationState::Interrupted);
-    assert_eq!(c.snapshot().pending_input.len(), 1);
     let response = post(service.address, &path).await;
     assert_eq!(response.status(), 200);
     assert_cleared(&response.json::<ConversationSnapshot>().await.unwrap());
+    assert_eq!(complete(run).await.state, OperationState::Interrupted);
     assert!(!c.resolve_approval(&pending.operation_id, &pending.id, true));
     assert!(!c.cancel(&pending.operation_id));
     assert_eq!(fake.count(), 1);
@@ -469,7 +457,7 @@ async fn clear_reserves_idle_children_until_save_settles_even_if_caller_detaches
 }
 
 #[tokio::test]
-async fn clear_rejects_busy_descendants_and_idle_children_owned_by_active_delegation() {
+async fn clear_cancels_busy_descendants_but_rejects_children_owned_by_active_delegation() {
     let manager = Arc::new(AgentManager::default());
     let entered = CancellationToken::new();
     let child_entered = CancellationToken::new();
@@ -491,14 +479,11 @@ async fn clear_rejects_busy_descendants_and_idle_children_owned_by_active_delega
     assert_eq!(manager.clear(&child.id).await.unwrap_err(), Error::Busy);
     parent.cancel(&run.operation_id);
     complete(run).await;
-    let before = parent.record();
     let run = child.submit("child".into()).unwrap();
     child_entered.cancelled().await;
-    assert_eq!(manager.clear(&parent.id).await.unwrap_err(), Error::Busy);
-    assert_eq!(parent.record(), before);
-    child.cancel(&run.operation_id);
-    complete(run).await;
     assert_cleared(&manager.clear(&parent.id).await.unwrap());
+    assert_eq!(complete(run).await.state, OperationState::Interrupted);
+    assert!(!child.snapshot().messages.is_empty());
     assert_eq!(fake.count(), 2);
     manager.close().await.unwrap();
 }
@@ -546,4 +531,135 @@ async fn failed_clear_save_retains_transcript_and_blocks_retry() {
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
     assert!(matches!(c.submit("blocked".into()), Err(Error::Storage)));
     service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn clear_waits_for_cancelled_executor_and_finishes_durably_after_caller_detaches() {
+    let profile = directory();
+    let store = JsonConversationStore::open(profile.path()).await.unwrap();
+    let entered = CancellationToken::new();
+    let cancelled = CancellationToken::new();
+    let release = CancellationToken::new();
+    let (ready, stopped, held) = (entered.clone(), cancelled.clone(), release.clone());
+    let tools = vec![tool(None, move |context| {
+        let (ready, stopped, held) = (ready.clone(), stopped.clone(), held.clone());
+        async move {
+            ready.cancel();
+            context.cancel.cancelled().await;
+            stopped.cancel();
+            held.cancelled().await;
+            Err(Error::Cancelled)
+        }
+    })];
+    let fake = FakeProvider::new(vec![
+        response(vec![call("running"), ProviderEvent::Done]),
+        answer(),
+    ]);
+    let manager = AgentManager::open(store.clone(), |_| (fake.clone(), vec![]))
+        .await
+        .unwrap();
+    let c = manager.create(options(fake.clone(), tools)).await.unwrap();
+    let run = c.submit("erase active work".into()).unwrap();
+    entered.cancelled().await;
+    let settings = c.snapshot().configuration.clone();
+    let (m, id) = (manager.clone(), c.id.clone());
+    let clearing = tokio::spawn(async move { m.clear(&id).await });
+    tokio::time::timeout(Duration::from_secs(5), cancelled.cancelled())
+        .await
+        .unwrap();
+    assert!(!clearing.is_finished());
+    assert!(!c.snapshot().messages.is_empty());
+    assert!(matches!(c.submit("blocked".into()), Err(Error::Busy)));
+    assert_eq!(manager.clear(&c.id).await.unwrap_err(), Error::Busy);
+    clearing.abort();
+    assert!(clearing.await.unwrap_err().is_cancelled());
+    release.cancel();
+    assert_eq!(complete(run).await.state, OperationState::Interrupted);
+    assert_cleared(&until(&c, |s| s.operation.is_none()).await);
+    assert_eq!(c.snapshot().configuration, settings);
+    let saved = store.load().await.unwrap().pop().unwrap();
+    assert!(saved.messages.is_empty());
+    assert!(saved.provider_state.is_none());
+    assert!(saved.operation.is_none());
+    assert_eq!(saved.configuration.as_ref(), Some(&settings));
+    complete(c.submit("fresh input".into()).unwrap()).await;
+    assert_eq!(fake.count(), 2);
+    assert!(fake.requests.lock().unwrap()[1].provider_state.is_none());
+    manager.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn clear_accepts_already_cancelling_inference() {
+    let entered = CancellationToken::new();
+    let fake = FakeProvider::new(vec![waiting(entered.clone())]);
+    let manager = Arc::new(AgentManager::default());
+    let c = manager.create(options(fake.clone(), vec![])).await.unwrap();
+    let run = c.submit("erase".into()).unwrap();
+    entered.cancelled().await;
+    assert!(c.cancel(&run.operation_id));
+    assert_cleared(&manager.clear(&c.id).await.unwrap());
+    assert_eq!(complete(run).await.state, OperationState::Interrupted);
+    assert_eq!(fake.count(), 1);
+    manager.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn clear_settles_real_delegation_and_retains_interrupted_child() {
+    let entered = CancellationToken::new();
+    let fake = FakeProvider::new(vec![
+        response(vec![
+            ProviderEvent::ToolCall(ToolCall {
+                id: "delegate-call".into(),
+                name: "delegate".into(),
+                arguments: json!({"task":"child work", "title":"Child"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            }),
+            ProviderEvent::Done,
+        ]),
+        waiting(entered.clone()),
+    ]);
+    let manager = Arc::new(AgentManager::default());
+    let mut library = manager.library_configuration().unwrap();
+    library.automatic_titles = false;
+    manager.update_library(library).await.unwrap();
+    let workspace = directory();
+    let parent = manager
+        .create_session(
+            fake.clone(),
+            vec![],
+            Some("fake".into()),
+            workspace.path().to_string_lossy().into_owned(),
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+    let run = manager.submit(&parent.id, "delegate".into()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), entered.cancelled())
+        .await
+        .unwrap();
+    let child_id = manager
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.metadata.parent.is_some())
+        .unwrap()
+        .id;
+    let cleared = tokio::time::timeout(Duration::from_secs(5), manager.clear(&parent.id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_cleared(&cleared);
+    assert_eq!(complete(run).await.state, OperationState::Interrupted);
+    let child = manager.get(&child_id).unwrap();
+    assert!(!child.busy());
+    assert_eq!(
+        child.snapshot().operation.unwrap().state,
+        OperationState::Interrupted
+    );
+    assert!(!child.snapshot().messages.is_empty());
+    assert_eq!(fake.count(), 2);
+    manager.close().await.unwrap();
 }

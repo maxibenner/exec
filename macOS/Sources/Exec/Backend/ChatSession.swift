@@ -41,7 +41,7 @@ import CryptoKit
     private var acceptedOperationID: UUID?
     private var snapshot: AgentSnapshot?
     private var operationActive: Bool { snapshot?.operation?.active == true }
-    private var backendBusy: Bool { isRestoringSession || submitting || operationActive || isStopping }
+    private var backendBusy: Bool { isRestoringSession || submitting || operationActive || isStopping || clearTask != nil }
     var busy: Bool { !deletedRemotely && (backendBusy || commandTask != nil) }
     var isWaiting: Bool { !deletedRemotely && !isStopping && snapshot?.operation?.state == "running" && snapshot?.activeToolName == "wait" }
     private var commandTask: Task<Void, Never>?
@@ -89,7 +89,7 @@ import CryptoKit
         commandTask?.cancel()
     }
     var isWorking: Bool { busy }
-    var canEditDraft: Bool { !isRestoringSession && !isStopping }
+    var canEditDraft: Bool { !isRestoringSession }
     var canSelectWorkspace: Bool {
         canRequestCommands && !deletedRemotely && !busy && !isSaving && !hasUnsavedChanges &&
             !workspaceChosen && currentSessionID == nil && messages.isEmpty
@@ -118,7 +118,7 @@ import CryptoKit
     /// unsent draft available for copying rather than discarding another device's work.
     @discardableResult func markDeletedRemotely() -> Bool {
         guard !deletionPending, !hasUnsavedChanges,
-              task == nil, commandTask == nil, stopTask == nil, !isSaving, !isRestoringSession else { return false }
+              task == nil, commandTask == nil, stopTask == nil, clearTask == nil, !isSaving, !isRestoringSession else { return false }
         closePresentation()
         deletedRemotely = true
         isSending = false; isCompacting = false; isStopping = false
@@ -147,6 +147,7 @@ import CryptoKit
     private var settingsDirty = false
     private var configurationUncertain = false
     private var stopTask: Task<Void, Never>?
+    private var clearTask: Task<Void, Never>?
     private var pendingIDs: [String: UUID] = [:]
     private var imageCache: [UUID: ImageAttachment] = [:]
     private var failedImageIDs: Set<UUID> = []
@@ -182,7 +183,7 @@ import CryptoKit
         workspaceChosen = true
         needsInitialWorkspaceSelection = false
     }
-    func waitUntilIdle() async { await task?.value }
+    func waitUntilIdle() async { await task?.value; await clearTask?.value }
     func waitForPendingSave() async { await saveTask?.value }
 
     private var settings: AgentSettings {
@@ -438,7 +439,7 @@ import CryptoKit
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !draftImages.isEmpty || !draftFiles.isEmpty, canEditDraft, !isImportingAttachments, !submitting, !isSaving, commandTask == nil, hasUsableModel else { return }
+        guard !text.isEmpty || !draftImages.isEmpty || !draftFiles.isEmpty, canEditDraft, !isStopping, !isImportingAttachments, !submitting, !isSaving, commandTask == nil, clearTask == nil, hasUsableModel else { return }
         if operationActive && isCompacting {
             error = "Wait for compaction to finish before sending a message."
             return
@@ -522,25 +523,31 @@ import CryptoKit
         }
     }
     var canClear: Bool {
-        canRequestCommands && !deletedRemotely && !deletionPending && !busy && !isSaving &&
+        canRequestCommands && !deletedRemotely && !deletionPending && clearTask == nil && commandTask == nil && !isSaving &&
             !hasUnsavedChanges && currentSessionID != nil
     }
     func clear() {
         guard canClear, let id = currentSessionID else { return }
         let originalDraft = draft
-        submitting = true
-        task = Task {
-            defer { submitting = false; task = nil; updateSleepActivity(); drainCommands() }
+        // Let a single in-flight submission resolve before resetting, so a late
+        // acknowledgement cannot create or restore work after the clear.
+        let pendingSubmission = task
+        let pendingStop = stopTask
+        let clearBeforeSaving = operationActive || pendingSubmission != nil || pendingStop != nil
+        clearTask = Task {
+            defer { clearTask = nil; updateSleepActivity(); drainCommands() }
             do {
+                await pendingSubmission?.value
+                await pendingStop?.value
                 await waitForPendingSave()
-                try await persistConfiguration()
+                if !clearBeforeSaving { try await persistConfiguration() }
                 try Task.checkCancellation()
                 pauseObservation()
                 transcriptReader = nil
                 defer { observe() }
                 do {
                     let value = try await api.request("POST", AgentAPI.path(id, "/clear"), .object([:]))
-                    try apply(value.decoded(AgentSnapshot.self))
+                    try apply(value.decoded(AgentSnapshot.self), preserveSettings: clearBeforeSaving)
                 } catch {
                     // The reset may have committed. Reconcile by reading, never repeat it.
                     configurationUncertain = true
@@ -555,6 +562,7 @@ import CryptoKit
                 failedImageIDs.removeAll()
                 uploadedFiles.removeAll()
                 error = nil
+                if clearBeforeSaving { try await persistConfiguration() }
                 if draft == originalDraft, let command = ComposerCommand(originalDraft),
                    command.page == .clear || (command.page == nil && ComposerCommand.Page.clear.matches(command.query)) {
                     draft = ""
@@ -591,7 +599,7 @@ import CryptoKit
         }
     }
     func stop() {
-        guard stopTask == nil else { return }
+        guard stopTask == nil, clearTask == nil else { return }
         pendingCommands.removeAll()
         commandTask?.cancel()
         // A submit may still be awaiting its receipt. Wait for its single request,
