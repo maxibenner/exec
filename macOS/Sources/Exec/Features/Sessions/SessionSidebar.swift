@@ -24,6 +24,7 @@ struct SessionSidebar: View {
     @State private var renaming = false
     @State private var renameID: UUID?
     @State private var renameTitle = ""
+    @State private var rowBackgroundWidths: [UUID: CGFloat] = [:]
     private var groups: [SidebarSessionGroup] { SidebarSessionGroup.snapshot(store) }
 
     private func activate(_ id: UUID) {
@@ -40,7 +41,7 @@ struct SessionSidebar: View {
                 VStack(alignment: .leading, spacing: 2) {
                     SessionRow(session: session, store: store,
                                rename: {
-                                   guard store.canNavigate, !store.isSessionRunning(session.id) else { return }
+                                   guard store.canRenameSession(session.id) else { return }
                                    renameID = session.id; renameTitle = session.title; renaming = true
                                }, delete: { delete(session) })
                         .onTapGesture { activate(session.id) }
@@ -63,17 +64,21 @@ struct SessionSidebar: View {
                         .font(.caption2).foregroundStyle(.secondary)
                         .padding(.vertical, 3)
                         .contentShape(Rectangle())
-                        .background(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 4))
+                        .background {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear)
+                                .frame(width: rowBackgroundWidths[session.id])
+                        }
                         .onTapGesture { activate(child.id) }
                         .accessibilityAction { activate(child.id) }
                         .accessibilityAction(named: "Delete Sub-agent") {
                             if store.canDeleteSession(child.id) { delete(child) }
                         }
                         .accessibilityAddTraits(store.sidebarSelectionID == child.id ? [.isSelected] : [])
-                        .contextMenu {
-                            Button("Delete Sub-agent", role: .destructive) { delete(child) }
-                                .disabled(!store.canDeleteSession(child.id))
+                        .overlay {
+                            SessionContextMenu(items: [
+                                .action("Delete Sub-agent", enabled: store.canDeleteSession(child.id)) { delete(child) }
+                            ])
                         }
                     }
                     SessionRowMetadata(session: session, shortcut: shortcutIDs.firstIndex(of: session.id).map { $0 + 1 })
@@ -82,14 +87,14 @@ struct SessionSidebar: View {
                         .onTapGesture { activate(session.id) }
                         .accessibilityAction { activate(session.id) }
                 }
-                .padding(.horizontal, 10)
-                .background(
+                .listRowBackground(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(store.sidebarSelectionID == session.id
                               ? Color.primary.opacity(0.08) : Color.clear)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                            rowBackgroundWidths[session.id] = $0
+                        }
                 )
-                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-                .listRowBackground(Color.clear)
                 .moveDisabled(!store.canReorderSessions)
             }
             .onMove { offsets, destination in
@@ -140,7 +145,6 @@ private struct SessionRowMetadata: View {
 struct SessionRow: View {
     let session: SessionSummary
     let store: ChatLibrary
-    private var running: Bool { store.isSessionRunning(session.id) }
     private var needsApproval: Bool { store.needsApproval(session.id) }
     private var needsAttention: Bool { store.needsAttention(session.id) }
     let rename: () -> Void
@@ -170,12 +174,14 @@ struct SessionRow: View {
         }
         .padding(.vertical, 5)
         .contentShape(Rectangle())
-        .contextMenu {
-            Button("Rename…", action: rename).disabled(session.unreadable || store.navigating || running)
-            Divider()
-            Button("Delete Conversation", role: .destructive, action: delete).disabled(!store.canDeleteSession(session.id))
+        .overlay {
+            SessionContextMenu(items: [
+                .action("Rename…", enabled: store.canRenameSession(session.id), perform: rename),
+                .separator,
+                .action("Delete Conversation", enabled: store.canDeleteSession(session.id), perform: delete)
+            ])
         }
-        .accessibilityAction(named: "Rename Conversation") { if !session.unreadable { rename() } }
+        .accessibilityAction(named: "Rename Conversation") { if store.canRenameSession(session.id) { rename() } }
         .accessibilityAction(named: "Delete Conversation") { if store.canDeleteSession(session.id) { delete() } }
     }
 }
