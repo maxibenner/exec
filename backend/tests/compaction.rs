@@ -57,6 +57,44 @@ impl ChatProvider for Provider {
     }
 }
 #[tokio::test]
+async fn sync_proofs_remain_compatible_across_compaction() {
+    use sha2::{Digest, Sha256};
+    let p = Arc::new(Provider::default());
+    let c = support::conversation(p.clone(), vec![]);
+    support::complete(c.submit("first".into()).unwrap()).await;
+    let original = c.sync(SyncCursor::Latest).unwrap();
+    p.hold.store(true, Ordering::SeqCst);
+    let run = c.compact().unwrap();
+    p.entered.cancelled().await;
+    let streaming = c.sync(SyncCursor::Latest).unwrap();
+    let anchor = streaming.snapshot.messages.last().unwrap().id().to_owned();
+    p.release.cancel();
+    support::complete(run).await;
+    let page = c
+        .sync(SyncCursor::After {
+            anchor: &anchor,
+            prefix: streaming.prefix.as_deref().unwrap(),
+        })
+        .unwrap();
+    assert!(!page.reset);
+    assert_eq!(page.snapshot.messages.len(), 2);
+    let snapshot = c.snapshot();
+    assert_eq!(
+        page.prefix.unwrap(),
+        format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&snapshot.messages[..snapshot.messages.len() - 1]).unwrap()
+            )
+        )
+    );
+    assert_eq!(
+        original.snapshot.messages,
+        snapshot.messages[..original.total]
+    );
+}
+
+#[tokio::test]
 async fn automatic_compaction_uses_completed_prefix_keeps_new_input_and_visible_history() {
     let p = Arc::new(Provider::default());
     let c = support::conversation(p.clone(), vec![]);

@@ -7,7 +7,10 @@ struct ControlledAgentTransport: AgentTransport {
     func request(_ method: String, _ path: String, body: Data?) async throws -> Data {
         try await requests.request(method, path, body: body)
     }
-    func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> { channel.stream }
+    func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
+        if path == "/v1/changes" { return requests.events(method, path, body: body) }
+        return channel.stream
+    }
     func emit(_ value: AgentJSON) throws { channel.continuation.yield(try JSONEncoder().encode(value)) }
 }
 

@@ -65,7 +65,7 @@ struct AgentFile: Codable, Sendable, Equatable {
     let byteCount: Int
     let sha256: String
 }
-struct AgentCall: Decodable, Sendable {
+struct AgentCall: Decodable, Sendable, Equatable {
     let id: String
     let name: String
     let arguments: AgentJSON
@@ -75,7 +75,7 @@ struct AgentCall: Decodable, Sendable {
         return ToolCall(id: id, name: name, arguments: String(decoding: try encoder.encode(arguments), as: UTF8.self))
     }
 }
-struct AgentMessage: Decodable, Sendable {
+struct AgentMessage: Decodable, Sendable, Equatable {
     let id: UUID
     let role: String
     let text: String
@@ -87,13 +87,13 @@ struct AgentMessage: Decodable, Sendable {
     let images: [AgentImage]?
     let files: [AgentFile]?
 }
-struct AgentOperation: Decodable, Sendable {
+struct AgentOperation: Decodable, Sendable, Equatable {
     let id: UUID
     let state: String
     let error: String?
     var active: Bool { ["running", "awaiting_approval", "cancelling"].contains(state) }
 }
-struct AgentApproval: Decodable, Sendable {
+struct AgentApproval: Decodable, Sendable, Equatable {
     let id: UUID
     let operationID: UUID
     let call: AgentCall
@@ -101,7 +101,7 @@ struct AgentApproval: Decodable, Sendable {
     let details: AgentJSON?
     let workspace: String
 }
-struct AgentConfiguration: Decodable, Sendable {
+struct AgentConfiguration: Decodable, Sendable, Equatable {
     let settings: AgentSettings
     let instructionsFrozen: Bool
     let workspaceInstructions: String?
@@ -111,20 +111,20 @@ struct AgentSessionParent: Decodable, Equatable, Sendable {
     let operationId: UUID
     let toolCallId: String
 }
-struct AgentMetadata: Decodable, Sendable {
+struct AgentMetadata: Decodable, Sendable, Equatable {
     let disabledTools: [String]?
     let parent: AgentSessionParent?
     let title: String?
     let manuallyNamed: Bool
     let activityAt: Double
 }
-struct AgentSnapshot: Decodable, Sendable {
+struct AgentSnapshot: Decodable, Sendable, Equatable {
     let id: UUID
     let model: String
     let workspace: String
     let configuration: AgentConfiguration
     let metadata: AgentMetadata
-    let messages: [AgentMessage]
+    var messages: [AgentMessage]
     let pendingInput: [AgentMessage]
     let operation: AgentOperation?
     let approval: AgentApproval?

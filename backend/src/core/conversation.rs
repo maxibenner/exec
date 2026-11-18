@@ -67,10 +67,71 @@ struct State {
     storage_error: Option<String>,
     disposed: bool,
     updating: bool,
+    changes: Option<ChangeRegistration>,
+    prefixes: super::sync::PrefixCache,
+    #[cfg(test)]
+    full_snapshots: std::cell::Cell<usize>,
+}
+
+/// Publish while still holding the state lock. A subscriber that reads a revision
+/// and then state cannot miss a mutation between its read and its next wait.
+/// Comparing only the summary keeps catalog revisions independent of token text.
+struct StateGuard<'a> {
+    state: MutexGuard<'a, State>,
+    provider: &'a dyn ChatProvider,
+    dirty: bool,
+    text_only: bool,
+    before: Option<(ConversationSummary, Option<Approval>)>,
+}
+impl std::ops::Deref for StateGuard<'_> {
+    type Target = State;
+    fn deref(&self) -> &State {
+        &self.state
+    }
+}
+impl std::ops::DerefMut for StateGuard<'_> {
+    fn deref_mut(&mut self) -> &mut State {
+        if !self.dirty && !self.text_only && self.state.changes.is_some() {
+            self.before = Some((
+                self.state.summary(self.provider),
+                self.state.pending.as_ref().map(|p| p.approval.clone()),
+            ));
+        }
+        self.dirty = true;
+        &mut self.state
+    }
+}
+impl Drop for StateGuard<'_> {
+    fn drop(&mut self) {
+        if self.dirty
+            && let Some(changes) = &self.state.changes
+        {
+            let catalog = self.before.as_ref().is_some_and(|(summary, approval)| {
+                *summary != self.state.summary(self.provider)
+                    || *approval != self.state.pending.as_ref().map(|p| p.approval.clone())
+            });
+            changes.changed(catalog);
+        }
+    }
 }
 impl State {
     fn snapshot(&self, provider: &dyn ChatProvider) -> ConversationSnapshot {
-        ConversationSnapshot {
+        #[cfg(test)]
+        self.full_snapshots.set(self.full_snapshots.get() + 1);
+        self.snapshot_range(provider, 0..self.record.messages.len())
+    }
+    fn snapshot_range(
+        &self,
+        provider: &dyn ChatProvider,
+        range: std::ops::Range<usize>,
+    ) -> ConversationSnapshot {
+        self.summary(provider).with_messages(
+            self.record.messages[range].to_vec(),
+            self.pending.as_ref().map(|p| p.approval.clone()),
+        )
+    }
+    fn summary(&self, provider: &dyn ChatProvider) -> ConversationSummary {
+        ConversationSummary {
             id: self.record.id.clone(),
             configuration: self
                 .record
@@ -84,7 +145,6 @@ impl State {
                 && !self.updating
                 && !self.disposed
                 && self.storage_error.is_none(),
-            messages: self.record.messages.clone(),
             pending_input: self.record.pending_input.clone(),
             metadata: self.record.metadata.clone(),
             usage: self.record.usage.clone(),
@@ -99,7 +159,6 @@ impl State {
                 .map(|(limit, tokens)| ContextUsage { tokens, limit }),
             resources: self.record.resources.clone(),
             operation: self.record.operation.clone(),
-            approval: self.pending.as_ref().map(|p| p.approval.clone()),
             active_tool_call_id: self.active_tool.clone(),
             active_tool_name: self.active_tool.as_ref().and_then(|id| {
                 self.record.messages.iter().rev().find_map(|message| {
@@ -139,9 +198,7 @@ impl Drop for IdleReservation {
         }
         let mut state = self.0.state();
         state.updating = false;
-        self.0.events.send(Arc::new(ServiceEvent::Snapshot {
-            snapshot: state.snapshot(self.0.provider.as_ref()),
-        }));
+        self.0.publish_snapshot(&state);
     }
 }
 
@@ -207,6 +264,10 @@ impl Conversation {
                 storage_error: None,
                 disposed: false,
                 updating: false,
+                changes: None,
+                prefixes: Default::default(),
+                #[cfg(test)]
+                full_snapshots: Default::default(),
             }),
             provider: options.provider,
             tools,
@@ -218,8 +279,75 @@ impl Conversation {
             input_arrived: Notify::new(),
         }))
     }
-    fn state(&self) -> MutexGuard<'_, State> {
-        self.state.lock().expect("conversation state lock poisoned")
+    fn state(&self) -> StateGuard<'_> {
+        StateGuard {
+            state: self.state.lock().expect("conversation state lock poisoned"),
+            provider: self.provider.as_ref(),
+            dirty: false,
+            text_only: false,
+            before: None,
+        }
+    }
+    fn text_state(&self) -> StateGuard<'_> {
+        let mut state = self.state();
+        state.text_only = true;
+        state
+    }
+    pub(crate) fn attach_changes(&self, hub: &Arc<ChangeHub>) {
+        let mut state = self.state.lock().unwrap();
+        state.changes = Some(hub.attach(&self.id));
+    }
+    pub fn summary(&self) -> ConversationSummary {
+        self.state().summary(self.provider.as_ref())
+    }
+    /// Read and validate a cursor under one lock, cloning only the requested page.
+    pub fn sync(&self, cursor: SyncCursor<'_>) -> Result<ConversationSync> {
+        use super::sync::PAGE_SIZE;
+        let mut state = self.state.lock().unwrap();
+        let State {
+            record, prefixes, ..
+        } = &mut *state;
+        let messages = &record.messages;
+        let total = messages.len();
+        let (offset, end, reset) = match cursor {
+            SyncCursor::Latest => (total.saturating_sub(PAGE_SIZE), total, true),
+            SyncCursor::Before(anchor) => {
+                let index =
+                    messages
+                        .iter()
+                        .position(|m| m.id() == anchor)
+                        .ok_or(Error::Invalid(
+                            "Conversation history changed. Refresh the conversation.",
+                        ))?;
+                (index.saturating_sub(PAGE_SIZE), index, false)
+            }
+            SyncCursor::After { anchor, prefix } => {
+                // Older anchors must reset anyway. Never scan the entire transcript
+                // on the hot tail-poll path, even for a missing/stale anchor.
+                let index = messages
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .take(PAGE_SIZE)
+                    .find_map(|(i, m)| (m.id() == anchor).then_some(i));
+                match index {
+                    Some(index) if prefixes.proof(messages, index) == prefix => {
+                        (index, total, false)
+                    }
+                    _ => (total.saturating_sub(PAGE_SIZE), total, true),
+                }
+            }
+        };
+        let prefix = total
+            .checked_sub(1)
+            .map(|end| prefixes.proof(messages, end));
+        Ok(ConversationSync {
+            snapshot: state.snapshot_range(self.provider.as_ref(), offset..end),
+            offset,
+            total,
+            reset,
+            prefix,
+        })
     }
     pub fn snapshot(&self) -> ConversationSnapshot {
         self.state().snapshot(self.provider.as_ref())
@@ -305,6 +433,7 @@ impl Conversation {
                 });
                 s.record.messages.len() - 1
             });
+            s.prefixes.invalidate(index);
             let Message::Tool {
                 text,
                 details: Some(ToolDetails::Delegation { results, .. }),
@@ -567,6 +696,7 @@ impl Conversation {
                 let mut state = conversation.state();
                 state.updating = false;
                 if saved.is_ok() {
+                    state.prefixes.invalidate(0);
                     state.record = record;
                 } else {
                     state.storage_error = Some(Error::Storage.to_string());
@@ -589,7 +719,17 @@ impl Conversation {
         let receiver = self.events.subscribe();
         (s.snapshot(self.provider.as_ref()), receiver)
     }
+    fn publish_snapshot(&self, state: &State) {
+        if self.events.has_observers() {
+            self.events.send(Arc::new(ServiceEvent::Snapshot {
+                snapshot: state.snapshot(self.provider.as_ref()),
+            }));
+        }
+    }
     fn emit(&self, s: &State, kind: EventKind) {
+        if !self.events.has_observers() {
+            return;
+        }
         let Some(op) = &s.record.operation else {
             return;
         };
@@ -1006,6 +1146,7 @@ impl Conversation {
         }).catch_unwind().await.unwrap_or(Err(Error::Internal));
         {
             let mut s = self.state();
+            s.prefixes.invalidate(index);
             let Message::Assistant { status, .. } = &mut s.record.messages[index] else {
                 unreachable!()
             };
@@ -1191,9 +1332,7 @@ impl Conversation {
             };
             let mut state = conversation.state();
             state.updating = false;
-            conversation.events.send(Arc::new(ServiceEvent::Snapshot {
-                snapshot: state.snapshot(conversation.provider.as_ref()),
-            }));
+            conversation.publish_snapshot(&state);
             result
         })
         .await
@@ -1274,6 +1413,21 @@ impl Conversation {
                 && (!cancel.is_cancelled() || *error == Error::Storage)
             {
                 s.record.operation.as_mut().unwrap().error = Some(match error { Error::Provider(_) | Error::Storage | Error::Invalid("Agent step limit reached. No further request was sent.") => error.to_string(), _ => "Provider operation failed or returned an incomplete response. It was not retried.".into() });
+            }
+            // Invalidate before mutating any incomplete historical messages/results.
+            if let Some(index) = s.record.messages.iter().position(|m| {
+                matches!(
+                    m,
+                    Message::Assistant {
+                        status: MessageStatus::Streaming,
+                        ..
+                    } | Message::Tool {
+                        outcome: ToolOutcome::Running,
+                        ..
+                    }
+                )
+            }) {
+                s.prefixes.invalidate(index);
             }
             // Panics from an embedded provider cannot leave a streaming message in terminal state.
             for m in &mut s.record.messages {
@@ -1441,7 +1595,8 @@ impl Conversation {
                 check_cancel(cancel)?;
                 match event? {
                     ProviderEvent::TextSnapshot(value) => {
-                        let mut s = self.state();
+                        let mut s = self.text_state();
+                        s.prefixes.invalidate(index);
                         let Message::Assistant { text, .. } = &mut s.record.messages[index] else {
                             unreachable!()
                         };
@@ -1450,7 +1605,8 @@ impl Conversation {
                     }
                     ProviderEvent::Text(delta) => {
                         {
-                            let mut s = self.state();
+                            let mut s = self.text_state();
+                            s.prefixes.invalidate(index);
                             let Message::Assistant { id, text, .. } = &mut s.record.messages[index]
                             else {
                                 unreachable!()
@@ -1511,6 +1667,7 @@ impl Conversation {
                     s.record.usage = usage;
                 }
             }
+            s.prefixes.invalidate(index);
             let Message::Assistant { calls, status, .. } = &mut s.record.messages[index] else {
                 unreachable!()
             };
@@ -1773,6 +1930,7 @@ impl Conversation {
                 let index = if let Some(index) = s.record.messages.iter().position(|m| matches!(m,
                     Message::Tool { call_id, outcome: ToolOutcome::Running, .. } if call_id == &call.id
                 )) {
+                    s.prefixes.invalidate(index);
                     let Message::Tool { text: saved_text, outcome: saved_outcome, details: saved_details, .. } = &mut s.record.messages[index] else { unreachable!() };
                     if outcome == ToolOutcome::Completed || *saved_text == text {
                         *saved_text = text;
@@ -1941,6 +2099,129 @@ mod tests {
                 .get("activeToolName")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn sync_cache_bounds_tail_work_and_invalidates_historical_replacement() {
+        use sha2::{Digest, Sha256};
+        let c = Conversation::new(
+            ConversationOptions::new(Arc::new(NoInference), "fake", "/test"),
+            None,
+        )
+        .unwrap();
+        let hub = Arc::new(ChangeHub::default());
+        c.attach_changes(&hub);
+        let mut changes = hub.subscribe();
+        {
+            let mut s = c.state();
+            s.record.configuration.as_mut().unwrap().instructions_frozen = true;
+            s.record.messages = (0..200)
+                .map(|n| Message::User {
+                    id: new_id(),
+                    text: format!("message {n}"),
+                    images: vec![],
+                    files: vec![],
+                })
+                .collect();
+            s.record.operation = Some(Operation {
+                id: new_id(),
+                state: OperationState::Completed,
+                error: None,
+            });
+        }
+        let first = c.sync(SyncCursor::Latest).unwrap();
+        assert_eq!(first.offset, 136);
+        let anchor = first.snapshot.messages.last().unwrap().id().to_owned();
+        let proof = first.prefix.unwrap();
+        let previous = changes.borrow_and_update().clone();
+        for _ in 0..10 {
+            let mut s = c.text_state();
+            s.prefixes.invalidate(199);
+            if let Message::User { text, .. } = &mut s.record.messages[199] {
+                text.push('x');
+            }
+            c.changed(&s, 199);
+            c.publish_snapshot(&s);
+            drop(s);
+            let page = c
+                .sync(SyncCursor::After {
+                    anchor: &anchor,
+                    prefix: &proof,
+                })
+                .unwrap();
+            assert!(!page.reset);
+            assert_eq!(page.snapshot.messages.len(), 1);
+            assert_eq!(page.prefix.as_deref(), Some(proof.as_str()));
+            c.summary();
+        }
+        assert_eq!(c.state().prefixes.serialized, 199);
+        assert_eq!(
+            c.state().full_snapshots.get(),
+            0,
+            "notifications, sync, and summaries never construct full snapshots"
+        );
+        let next = changes.borrow_and_update().clone();
+        assert_eq!(previous.catalog, next.catalog);
+        assert_ne!(previous.conversations, next.conversations);
+        c.mutate_record(|record| {
+            if let Message::User { text, .. } = &mut record.messages[3] {
+                *text = "historical edit".into();
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let reset = c
+            .sync(SyncCursor::After {
+                anchor: &anchor,
+                prefix: &proof,
+            })
+            .unwrap();
+        assert!(reset.reset);
+        let record = c.record();
+        assert_eq!(
+            reset.prefix.unwrap(),
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&record.messages[..199]).unwrap())
+            )
+        );
+        c.mutate_record(|record| {
+            record.messages.clear();
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let empty = c.sync(SyncCursor::Latest).unwrap();
+        assert_eq!(empty.total, 0);
+        assert!(empty.prefix.is_none());
+    }
+
+    #[test]
+    fn replacement_registration_fences_old_handles_and_deletion() {
+        let hub = Arc::new(ChangeHub::default());
+        let old = Conversation::new(
+            ConversationOptions::new(Arc::new(NoInference), "fake", "/test"),
+            None,
+        )
+        .unwrap();
+        old.attach_changes(&hub);
+        let replacement = Conversation::new(
+            ConversationOptions::new(Arc::new(NoInference), "fake", "/test"),
+            Some(old.record()),
+        )
+        .unwrap();
+        replacement.attach_changes(&hub);
+        let mut rx = hub.subscribe();
+        let before = rx.borrow_and_update().clone();
+        old.state().record.metadata.title = Some("stale".into());
+        assert!(!rx.has_changed().unwrap());
+        replacement.state().record.metadata.title = Some("live".into());
+        assert_ne!(rx.borrow_and_update().conversations, before.conversations);
+        hub.remove(&old.id);
+        assert!(rx.borrow_and_update().conversations.is_empty());
+        replacement.state().record.metadata.title = Some("deleted".into());
+        assert!(!rx.has_changed().unwrap());
     }
 
     #[test]

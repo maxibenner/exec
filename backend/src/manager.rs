@@ -26,12 +26,14 @@ struct Catalog {
     files: Option<Arc<crate::files::FileStore>>,
 }
 pub struct AgentManager {
+    changes: Arc<ChangeHub>,
     catalog: Mutex<Catalog>,
     store: Option<Arc<dyn ConversationStore>>,
 }
 impl Default for AgentManager {
     fn default() -> Self {
         Self {
+            changes: Arc::new(ChangeHub::default()),
             catalog: Mutex::new(Catalog::default()),
             store: None,
         }
@@ -54,11 +56,15 @@ async fn canonical_workspace(workspace: String) -> Result<String> {
     Ok(workspace.to_string_lossy().into_owned())
 }
 impl AgentManager {
+    pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<ChangeNotification> {
+        self.changes.subscribe()
+    }
     pub async fn open(
         store: Arc<dyn ConversationStore>,
         configure: impl Fn(&ConversationRecord) -> (Arc<dyn ChatProvider>, Vec<Arc<dyn Tool>>),
     ) -> Result<Arc<Self>> {
         let manager = Arc::new(Self {
+            changes: Arc::new(ChangeHub::default()),
             catalog: Mutex::new(Catalog::default()),
             store: Some(store.clone()),
         });
@@ -91,6 +97,7 @@ impl AgentManager {
                 if active || budget_changed {
                     store.save(conversation.record()).await?;
                 }
+                conversation.attach_changes(&manager.changes);
                 manager
                     .catalog
                     .lock()
@@ -151,6 +158,7 @@ impl AgentManager {
             conversation.dispose()?;
             return Err(error);
         }
+        conversation.attach_changes(&self.changes);
         c.conversations
             .insert(conversation.id.clone(), conversation.clone());
         Ok(conversation)
@@ -187,9 +195,11 @@ impl AgentManager {
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<Vec<ChatModel>> {
         let epoch = self.provider_epoch()?;
-        let result = provider.models(cancel).await?;
+        let result = provider.models(cancel).await;
+        // Provider caches may have changed even if discovery only partly succeeded.
+        self.changes.provider_metadata_changed();
         self.check_provider_epoch(epoch)?;
-        Ok(result)
+        result
     }
     pub async fn search_web(
         &self,
@@ -289,6 +299,7 @@ impl AgentManager {
                 .into();
                 attempt.error = result.err().map(|e| e.to_string());
             }
+            manager.changes.provider_metadata_changed();
         });
         let authorization_url = receiver.await.map_err(|_| {
             Error::Invalid(
@@ -333,6 +344,7 @@ impl AgentManager {
                 let mut catalog = manager.catalog.lock().unwrap();
                 catalog.account_busy = false;
                 catalog.account_epoch = catalog.account_epoch.wrapping_add(1);
+                manager.changes.provider_metadata_changed();
             }
             result?;
             Ok(provider.connections())
@@ -418,9 +430,11 @@ impl AgentManager {
         c.library_busy = false;
         if saved.is_err() {
             c.library_error = true;
+            self.changes.catalog_changed();
             return Err(Error::Storage);
         }
         c.library = library.clone();
+        self.changes.catalog_changed();
         Ok(library)
     }
     fn delegation_tools(
@@ -842,6 +856,17 @@ impl AgentManager {
             .ok_or(Error::Invalid("Conversation not found."))?
             .snapshot())
     }
+    pub fn sync(&self, id: &str, cursor: SyncCursor<'_>) -> Result<ConversationSync> {
+        let catalog = self.catalog.lock().unwrap();
+        if catalog.closed {
+            return Err(Error::Invalid("Agent manager is closed."));
+        }
+        catalog
+            .conversations
+            .get(id)
+            .ok_or(Error::Invalid("Conversation not found."))?
+            .sync(cursor)
+    }
     pub fn observe(&self, id: &str) -> Result<(ConversationSnapshot, EventReceiver)> {
         let catalog = self.catalog.lock().unwrap();
         if catalog.closed {
@@ -1003,6 +1028,24 @@ impl AgentManager {
         let mut ids: Vec<_> = catalog.unreadable.iter().cloned().collect();
         ids.sort();
         ids
+    }
+    pub fn summaries(&self) -> Result<Vec<ConversationSummary>> {
+        let c = self.catalog.lock().unwrap();
+        if c.closed {
+            return Err(Error::Invalid("Agent manager is closed."));
+        }
+        let mut result: Vec<_> = c.conversations.values().map(|c| c.summary()).collect();
+        result.sort_by_key(|s| {
+            (
+                c.library
+                    .order
+                    .iter()
+                    .position(|id| id == &s.id)
+                    .unwrap_or(usize::MAX),
+                s.id.clone(),
+            )
+        });
+        Ok(result)
     }
     pub fn list(&self) -> Result<Vec<ConversationSnapshot>> {
         let c = self.catalog.lock().unwrap();
@@ -1184,6 +1227,7 @@ impl AgentManager {
             catalog.conversations.remove(id);
             catalog.native.remove_session(id);
             catalog.unreadable.remove(id);
+            self.changes.remove(id);
             let referenced: HashSet<_> = catalog
                 .conversations
                 .values()

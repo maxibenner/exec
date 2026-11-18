@@ -534,6 +534,53 @@ pub struct Approval {
     pub details: Option<ToolDetails>,
     pub workspace: String,
 }
+/// Catalog projection: never clones or serializes transcript messages or approvals.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSummary {
+    pub id: String,
+    pub configuration: super::ConversationConfiguration,
+    pub pending_input: Vec<Message>,
+    pub metadata: super::SessionMetadata,
+    pub usage: Option<TokenUsage>,
+    pub context_usage: Option<super::ContextUsage>,
+    pub resources: Vec<ResourceRef>,
+    pub model: String,
+    pub workspace: String,
+    pub can_change_workspace: bool,
+    pub operation: Option<Operation>,
+    #[serde(rename = "activeToolCallID")]
+    pub active_tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_tool_name: Option<String>,
+    pub storage_error: Option<String>,
+}
+impl ConversationSummary {
+    pub(super) fn with_messages(
+        self,
+        messages: Vec<Message>,
+        approval: Option<Approval>,
+    ) -> ConversationSnapshot {
+        ConversationSnapshot {
+            id: self.id,
+            configuration: self.configuration,
+            pending_input: self.pending_input,
+            metadata: self.metadata,
+            usage: self.usage,
+            context_usage: self.context_usage,
+            resources: self.resources,
+            model: self.model,
+            workspace: self.workspace,
+            can_change_workspace: self.can_change_workspace,
+            operation: self.operation,
+            active_tool_call_id: self.active_tool_call_id,
+            active_tool_name: self.active_tool_name,
+            storage_error: self.storage_error,
+            messages,
+            approval,
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSnapshot {

@@ -51,6 +51,11 @@ impl EventReceiver {
 #[derive(Default)]
 pub(super) struct EventHub(Mutex<Vec<Observer>>);
 impl EventHub {
+    pub fn has_observers(&self) -> bool {
+        let mut observers = self.0.lock().unwrap();
+        observers.retain(|observer| !observer.sender.is_closed());
+        !observers.is_empty()
+    }
     pub fn subscribe(&self) -> EventReceiver {
         // The byte budget is the effective bound. Leave room for small delta
         // bursts within it instead of disconnecting otherwise healthy observers.

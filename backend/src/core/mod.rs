@@ -1,3 +1,8 @@
+mod changes;
+pub use changes::ChangeNotification;
+pub(crate) use changes::{ChangeHub, ChangeRegistration};
+mod sync;
+pub use sync::{ConversationSync, SyncCursor};
 mod conversation;
 mod events;
 mod library;

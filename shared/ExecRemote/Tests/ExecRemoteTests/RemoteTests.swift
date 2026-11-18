@@ -80,13 +80,38 @@ final class RemoteTests: XCTestCase, @unchecked Sendable {
         try await client.connect(host)
         let health = try await client.request("GET","/v1/health")
         XCTAssertEqual(health["version"].number,1)
+        // Exercise actual encrypted push frames interleaved with API replies on
+        // the same socket. Bound the fixture if a missing invalidation would hang.
+        let deadline = Task {
+            try await Task.sleep(for: .seconds(15))
+            await client.disconnect()
+        }
+        defer { deadline.cancel() }
+        guard let changes = try await client.changes() else {
+            XCTFail("Current backend did not enable change notifications"); return
+        }
+        var notifications = changes.makeAsyncIterator()
+        let initial = try await notifications.next()
+        XCTAssertNotNil(initial)
+        XCTAssertTrue(initial?.conversations.isEmpty == true)
         let workspace = directory.appendingPathComponent("Workspace")
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories:false)
         let folders = try await client.request("POST","/v1/workspaces/browse",body:.object(["path":.string(directory.path)]))
         XCTAssertTrue(folders["directories"].array.contains { $0["name"].string == "Workspace" })
         let created = try await client.request("POST","/v1/conversations",body:.object(["workspace":.string(workspace.path),"model":.string("deepseek/test")]))
-        let deleted = try await client.request("DELETE","/v1/conversations/\(created["id"].string!)")
+        let createdID = try XCTUnwrap(created["id"].string)
+        var appeared = false
+        while let notice = try await notifications.next() {
+            if notice.conversations[createdID] != nil { appeared = true; break }
+        }
+        XCTAssertTrue(appeared)
+        let deleted = try await client.request("DELETE","/v1/conversations/\(createdID)")
         XCTAssertTrue(deleted["deleted"].bool)
+        var removed = false
+        while let notice = try await notifications.next() {
+            if notice.conversations[createdID] == nil { removed = true; break }
+        }
+        XCTAssertTrue(removed)
         let remaining = try await local("GET","/v1/conversations")
         XCTAssertTrue(remaining.array.isEmpty)
 

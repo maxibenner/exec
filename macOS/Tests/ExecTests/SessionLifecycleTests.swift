@@ -29,7 +29,11 @@ actor LifecycleTransport: AgentTransport {
             return data
         }
         nonisolated func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
-            AsyncThrowingStream { $0.finish(throwing: ExecError("Unexpected lifecycle event stream")) }
+            AsyncThrowingStream { continuation in
+                if path == "/v1/changes" {
+                    continuation.finish(throwing: AgentHTTPError(status: 404, message: "Legacy lifecycle backend"))
+                } else { continuation.finish(throwing: ExecError("Unexpected lifecycle event stream")) }
+            }
         }
     }
     nonisolated let responses = Responses()

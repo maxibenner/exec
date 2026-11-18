@@ -37,6 +37,7 @@ import Observation
     private let residentLimit: Int
     private var restoringDefaults = false
     private var synchronization: Task<Void, Never>?
+    private let synchronizationSleep: @Sendable (Duration) async throws -> Void
     var remoteAPI: AgentAPI { provider.api }
     private struct UsageCache: Codable {
         var accounts: [String: String] = [:]
@@ -69,7 +70,9 @@ import Observation
     var effectiveSearchModel: String { searchModels.first { $0.id == searchModel }?.id ?? searchModels.first?.id ?? "" }
     func setDefaultEffort(_ effort: String?) { defaultEffort = effort }
 
-    init(provider: any ChatProvider, preferences: UserDefaults = .standard, residentLimit: Int = 8) {
+    init(provider: any ChatProvider, preferences: UserDefaults = .standard, residentLimit: Int = 8,
+         synchronizationSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+        self.synchronizationSleep = synchronizationSleep
         self.provider = provider
         self.preferences = preferences
         self.residentLimit = max(1, residentLimit)
@@ -238,21 +241,44 @@ import Observation
     func closePresentations() { synchronization?.cancel(); synchronization = nil; for item in conversations { item.closePresentation() } }
     func startSynchronization() {
         guard synchronization == nil else { return }
+        let changes = provider.api.changes
+        let sleep = synchronizationSleep
         synchronization = Task { [weak self] in
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(2))
-                    try await self?.refreshSharedState()
-                } catch is CancellationError { break }
-                catch { if !Task.isCancelled { self?.connectionError = error.localizedDescription } }
+            let subscription = await changes.subscribe(.catalog)
+            defer { subscription.close() }
+            for await signal in subscription.stream {
+                var delay = 250
+                repeat {
+                    do {
+                        try Task.checkCancellation()
+                        guard let self else { return }
+                        // A guarded/skipped read must not consume the invalidation.
+                        // Retry only this pending catchup, never poll an idle catalog.
+                        if try await !self.catchUpSharedState() {
+                            try await sleep(.milliseconds(100))
+                            continue
+                        }
+                        delay = 250
+                        if case .unsupported = signal { try await sleep(.seconds(2)) }
+                        else { break }
+                    } catch is CancellationError { return }
+                    catch {
+                        guard !Task.isCancelled else { return }
+                        self?.connectionError = error.localizedDescription
+                        do { try await sleep(.milliseconds(delay)) } catch { return }
+                        delay = min(delay * 2, 8_000)
+                    }
+                } while !Task.isCancelled
             }
         }
     }
-    func refreshSharedState() async throws {
-        guard !navigating, defaultsTask == nil else { return }
+    func refreshSharedState() async throws { _ = try await catchUpSharedState() }
+    private func catchUpSharedState() async throws -> Bool {
+        guard !navigating, defaultsTask == nil else { return false }
         let revision = defaultsRevision
         try await sessions.restore()
-        guard defaultsTask == nil, revision == defaultsRevision else { return }
+        try Task.checkCancellation()
+        guard defaultsTask == nil, revision == defaultsRevision else { return false }
         let config = sessions.configuration
         restoringDefaults = true
         defaultModel = config.defaultModel ?? ""
@@ -263,10 +289,11 @@ import Observation
         defaultAutoApproveTools = config.settings.autoApprove
         defaultDisabledTools = Set(config.defaultDisabledTools)
         restoringDefaults = false
-        try await refreshCatalog()
-        guard !navigating else { return }
+        guard try await refreshCatalog() else { return false }
+        guard !navigating else { return false }
         for conversation in openConversations { conversation.reconnectIfNeeded() }
         connectionError = nil
+        return true
     }
     func connect(providerID: String, credential: String? = nil) {
         accountOperation { try await self.provider.connect(id: providerID, credential: credential) }

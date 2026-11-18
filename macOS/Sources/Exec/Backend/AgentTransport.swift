@@ -8,6 +8,12 @@ protocol AgentTransport: Sendable {
     func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error>
 }
 
+struct AgentHTTPError: LocalizedError, Sendable {
+    let status: Int
+    let message: String
+    var errorDescription: String? { message }
+}
+
 struct HTTPAgentTransport: AgentTransport {
     static let defaultPort: UInt16 = 8765
     var host: String = "127.0.0.1"
@@ -50,7 +56,7 @@ struct HTTPAgentTransport: AgentTransport {
         guard (200..<300).contains(status) else {
             struct Failure: Decodable { let error: String }
             let message = (try? JSONDecoder().decode(Failure.self, from: data))?.error
-            throw ExecError(message ?? "The backend request failed (HTTP \(status)).")
+            throw AgentHTTPError(status: status, message: message ?? "The backend request failed (HTTP \(status)).")
         }
     }
 }

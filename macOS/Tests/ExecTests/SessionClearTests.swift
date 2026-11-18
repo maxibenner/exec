@@ -61,7 +61,7 @@ private actor ClearSnapshotTransport: AgentTransport {
         return try JSONEncoder().encode(snapshot)
     }
     nonisolated func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
-        AsyncThrowingStream { _ in }
+        FakeAgentTransport().events(method, path, body: body)
     }
 }
 

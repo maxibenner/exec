@@ -3,7 +3,7 @@ import CryptoKit
 import ExecRemote
 @testable import ExecRemoteStore
 
-private actor FakeTransport: RemoteTransport {
+actor FakeTransport: RemoteTransport {
     var isConnected = false
     var connectionAttempts = 0
     var failConnections = false
@@ -14,12 +14,61 @@ private actor FakeTransport: RemoteTransport {
     private var connectionWaiter: CheckedContinuation<Void, Never>?
     private var heldRequest: String?
     private var requestWaiter: CheckedContinuation<Void, Never>?
+    private var captureHeldResponse = false
+    var supportsChanges = false
+    var subscriptionFailure: String?
+    var subscriptionAttempts = 0
+    var notice = RemoteChangeNotification(epoch: "epoch", catalog: "catalog", conversations: ["session": "1"])
+    private var notices: AsyncThrowingStream<RemoteChangeNotification, Error>.Continuation?
+    func enableChanges() { supportsChanges = true }
+    func rejectChanges(_ reason: String?) { subscriptionFailure = reason }
+    func emit(_ value: RemoteChangeNotification) { notice = value; notices?.yield(value) }
+    var duplicateSubscriptions = 0
+    var disconnections = 0
+    private var holdSubscription = false
+    private var subscriptionWaiter: CheckedContinuation<Void, Never>?
+    private var holdTeardown = false
+    private var teardownWaiter: CheckedContinuation<Void, Never>?
+    var waitingForSubscription: Bool { subscriptionWaiter != nil }
+    var waitingForTeardown: Bool { teardownWaiter != nil }
+    func holdNextSubscription() { holdSubscription = true }
+    func releaseSubscription() { subscriptionWaiter?.resume(); subscriptionWaiter = nil }
+    func holdNextTeardown() { holdTeardown = true }
+    func releaseTeardown() { teardownWaiter?.resume(); teardownWaiter = nil }
+    func changes() async throws -> AsyncThrowingStream<RemoteChangeNotification, Error>? {
+        subscriptionAttempts += 1
+        if let subscriptionFailure { throw RemoteFailure(subscriptionFailure) }
+        guard supportsChanges else { return nil }
+        guard notices == nil else {
+            duplicateSubscriptions += 1
+            throw RemoteFailure("Changes are already being observed.")
+        }
+        let (stream, continuation) = AsyncThrowingStream<RemoteChangeNotification, Error>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        notices = continuation
+        if holdSubscription {
+            holdSubscription = false
+            await withCheckedContinuation { subscriptionWaiter = $0 }
+            try Task.checkCancellation()
+        }
+        continuation.yield(notice)
+        return stream
+    }
+    func stopChanges() async {
+        if holdTeardown {
+            holdTeardown = false
+            await withCheckedContinuation { teardownWaiter = $0 }
+        }
+        endChanges()
+    }
+    func endChanges() { notices?.finish(); notices = nil }
     var sessions: [RemoteJSON] = [.object(["id": .string("session")])]
     func setSessions(_ value: [RemoteJSON]) { sessions = value }
     var resetNextSync = false
     var waitingForConnection: Bool { connectionWaiter != nil }
     var waitingForRequest: Bool { requestWaiter != nil }
-    func holdNextRequest(_ method: String, _ path: String) { heldRequest = method + " " + path }
+    func holdNextRequest(_ method: String, _ path: String, captureResponse: Bool = false) {
+        heldRequest = method + " " + path; captureHeldResponse = captureResponse
+    }
     func releaseRequest() { requestWaiter?.resume(); requestWaiter = nil }
 
     func connect(_ host: PairedHost) async throws {
@@ -31,7 +80,11 @@ private actor FakeTransport: RemoteTransport {
             await withCheckedContinuation { connectionWaiter = $0 }
         }
     }
-    func disconnect() { isConnected = false }
+    func disconnect() {
+        disconnections += 1
+        isConnected = false
+        notices?.finish(throwing: RemoteFailure("Disconnected.")); notices = nil
+    }
     func failNext(_ method: String, _ path: String, disconnect: Bool = true) {
         failure = (method + " " + path, disconnect)
     }
@@ -65,22 +118,30 @@ private actor FakeTransport: RemoteTransport {
         guard isConnected else { throw RemoteFailure("Disconnected.") }
         let key = method + " " + path
         requests.append(key)
+        var captured: RemoteJSON?
         if heldRequest == key {
+            if captureHeldResponse { captured = response(path) }
             heldRequest = nil
             await withCheckedContinuation { requestWaiter = $0 }
-            // Match RelayClient: cancelling an in-flight read closes its socket.
-            if Task.isCancelled { isConnected = false; throw CancellationError() }
+            // Match RelayClient: caller cancellation detaches; it does not close
+            // the shared socket or retry the already-dispatched request.
+            try Task.checkCancellation()
         }
         if failure?.request == key {
             let disconnect = failure!.disconnect
             failure = nil
-            if disconnect { isConnected = false }
+            if disconnect { self.disconnect() }
             throw RemoteFailure(disconnect ? "Interrupted." : "Request rejected.")
         }
+        return captured ?? response(path)
+    }
+    private func response(_ path: String) -> RemoteJSON {
         switch path {
         case "/v1/models": return .array([])
         case "/v1/conversations": return .array(sessions)
         case let path where path.hasPrefix("/v1/conversations/") && path.contains("/sync"): return sync(path)
+        case let path where path.hasSuffix("/turns"):
+            return .object(["operationID": .string("sent-operation")])
         default: return .object([:])
         }
     }

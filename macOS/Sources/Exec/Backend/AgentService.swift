@@ -110,6 +110,7 @@ import Darwin
     /// SIGTERM asks Rust to cancel, reap tools and checkpoint. Never force kill or steal locks.
     func shutdown() async {
         api?.desktop.stop()
+        await api?.changes.close()
         api = nil
         guard let process else { return }
         if process.isRunning { process.terminate() }
@@ -120,8 +121,12 @@ import Darwin
 
 @MainActor final class AgentAPI {
     let transport: any AgentTransport
+    let changes: AgentChangeBroker
     lazy var desktop = AgentDesktop(api: self)
-    init(transport: any AgentTransport) { self.transport = transport }
+    init(transport: any AgentTransport) {
+        self.transport = transport
+        changes = AgentChangeBroker(transport: transport)
+    }
     func get(_ path: String) async throws -> AgentJSON { try await request("GET", path) }
     func request(_ method: String, _ path: String, _ body: AgentJSON? = nil) async throws -> AgentJSON {
         let data = try await transport.request(method, path, body: try body.map { try JSONEncoder().encode($0) })
@@ -133,7 +138,7 @@ import Darwin
         return try JSONDecoder().decode(AgentJSON.self, from: data)
     }
     func transcriptReader(_ id: UUID) -> AgentTranscriptReader {
-        AgentTranscriptReader(transport: transport, id: id, path: Self.path(id, "/sync"))
+        AgentTranscriptReader(transport: transport, id: id, path: Self.path(id, "/sync"), changes: changes)
     }
     func snapshot(_ id: UUID) async throws -> AgentSnapshot {
         try await transcriptReader(id).read()

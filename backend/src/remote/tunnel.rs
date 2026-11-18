@@ -1,6 +1,6 @@
 use super::crypto::{Packet, Receiver, Sender};
 use super::*;
-use crate::service::Host;
+use crate::{core::ChangeNotification, service::Host};
 use axum::{
     body::{Body, to_bytes},
     http::Request,
@@ -35,6 +35,47 @@ struct Command {
     path: String,
     body: Option<Value>,
 }
+// One watch value per opted-in client, not an event/HTTP-body queue. No task owns
+// a second HPKE sender: replies and notices are sealed by the client loop below.
+struct ChangeObserver {
+    changes: watch::Receiver<ChangeNotification>,
+    next_notice: tokio::time::Instant,
+    heartbeat: tokio::time::Instant,
+}
+impl ChangeObserver {
+    fn new(mut changes: watch::Receiver<ChangeNotification>) -> (Self, ChangeNotification) {
+        let initial = changes.borrow_and_update().clone();
+        let now = tokio::time::Instant::now();
+        (
+            Self {
+                changes,
+                next_notice: now + Duration::from_millis(200),
+                heartbeat: now + Duration::from_secs(20),
+            },
+            initial,
+        )
+    }
+    async fn next(&mut self) -> Result<ChangeNotification> {
+        // Cancellation-safe: the watch value is consumed only when this branch wins.
+        tokio::time::sleep_until(self.next_notice).await;
+        tokio::select! {
+            result = self.changes.changed() => { result.map_err(|_| Error::Internal)?; }
+            _ = tokio::time::sleep_until(self.heartbeat) => {}
+        }
+        let value = self.changes.borrow_and_update().clone();
+        let now = tokio::time::Instant::now();
+        self.next_notice = now + Duration::from_millis(200);
+        self.heartbeat = now + Duration::from_secs(20);
+        Ok(value)
+    }
+}
+async fn next_notice(observation: &mut Option<ChangeObserver>) -> Result<ChangeNotification> {
+    match observation {
+        Some(observation) => observation.next().await,
+        None => std::future::pending().await,
+    }
+}
+
 impl RemoteAccess {
     async fn set_connection(&self, revision: u64, connection: ConnectionStatus) {
         let mut state = self.state.lock().await;
@@ -163,6 +204,7 @@ impl RemoteAccess {
         out: &mpsc::Sender<Envelope>,
         mut incoming: mpsc::Receiver<String>,
     ) -> Result<()> {
+        let mut authorization = self.revision.subscribe();
         let challenge = random();
         send(out, id, json!({"challenge":challenge,"version":1})).await?;
         let first = tokio::time::timeout(Duration::from_secs(20), incoming.recv())
@@ -187,7 +229,10 @@ impl RemoteAccess {
         let (enc, mut sender) = crypto::sender(key, &peer, &challenge, "host")?;
         let ready = crypto::seal(
             &mut sender,
-            &serde_json::to_vec(&json!({"ready":true,"deviceID":device})).unwrap(),
+            &serde_json::to_vec(
+                &json!({"ready":true,"deviceID":device,"changeNotifications":true}),
+            )
+            .unwrap(),
         )?;
         send(
             out,
@@ -200,7 +245,30 @@ impl RemoteAccess {
             .unwrap(),
         )
         .await?;
-        while let Some(text) = incoming.recv().await {
+        let mut observation = None;
+        loop {
+            // Discard buffered commands after a peer closes; never start a new mutation.
+            if incoming.is_closed() {
+                break;
+            }
+            let text = tokio::select! { biased;
+                // Revocation/configuration changes close idle observers too.
+                _ = authorization.changed() => return Err(Error::Internal),
+                notice = next_notice(&mut observation) => {
+                    if incoming.is_closed() || !self.device_exists(&device).await { break; }
+                    let value = serde_json::to_vec(&json!({"notification": notice?}))
+                        .map_err(|_| Error::Internal)?;
+                    // Unfragmented notices must fit the relay's 1 MiB frame limit,
+                    // including base64/envelope overhead. Oversize fails closed.
+                    if value.len() > 512 * 1024 { return Err(Error::Internal); }
+                    encrypted(out, id, &mut sender, &value).await?;
+                    continue;
+                }
+                text = incoming.recv() => {
+                    let Some(text) = text else { break; };
+                    text
+                }
+            };
             if text.len() > 300_000 || !self.device_exists(&device).await {
                 return Err(Error::Internal);
             }
@@ -215,39 +283,41 @@ impl RemoteAccess {
                 return Err(Error::Internal);
             }
             let host = host.upgrade().ok_or(Error::Internal)?;
-            let body = command
-                .body
-                .map(|v| serde_json::to_vec(&v).unwrap())
-                .unwrap_or_default();
-            let request = Request::builder()
-                .method(command.method.as_str())
-                .uri(&command.path)
-                .header("content-type", "application/json")
-                .body(Body::from(body))
-                .map_err(|_| Error::Internal)?;
-            let response = crate::service::remote_request(host, request).await;
-            let status = response.status().as_u16();
-            let bytes = to_bytes(response.into_body(), 32 * 1024 * 1024)
-                .await
-                .map_err(|_| Error::Internal)?;
-            // Fragment large snapshots; bound both broker queues and Swift reassembly.
-            if bytes.is_empty() {
-                reply(out, id, &mut sender, &command.id, status, &[], true).await?;
+            let (status, bytes) = if command.method == "GET"
+                && command.path == "/v1/changes/subscribe"
+            {
+                // Register BEFORE reading/responding. A change during the initial
+                // reply remains in the watch slot and cannot fall through a gap.
+                let (observer, initial) = ChangeObserver::new(host.subscribe_changes());
+                observation = Some(observer);
+                (
+                    200,
+                    bytes::Bytes::from(serde_json::to_vec(&initial).map_err(|_| Error::Internal)?),
+                )
             } else {
-                let count = bytes.len().div_ceil(48 * 1024);
-                for (index, chunk) in bytes.chunks(48 * 1024).enumerate() {
-                    reply(
-                        out,
-                        id,
-                        &mut sender,
-                        &command.id,
-                        status,
-                        chunk,
-                        index + 1 == count,
-                    )
-                    .await?;
-                }
+                let body = command
+                    .body
+                    .map(|v| serde_json::to_vec(&v).unwrap())
+                    .unwrap_or_default();
+                let request = Request::builder()
+                    .method(command.method.as_str())
+                    .uri(&command.path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .map_err(|_| Error::Internal)?;
+                // No wait-for-change in the request path. Busy requests simply
+                // coalesce watch updates until their complete reply is sealed.
+                let response = crate::service::remote_request(host, request).await;
+                let status = response.status().as_u16();
+                let bytes = to_bytes(response.into_body(), 32 * 1024 * 1024)
+                    .await
+                    .map_err(|_| Error::Internal)?;
+                (status, bytes)
+            };
+            if incoming.is_closed() || !self.device_exists(&device).await {
+                break;
             }
+            reply_body(out, id, &mut sender, &command.id, status, &bytes).await?;
         }
         Ok(())
     }
@@ -265,6 +335,26 @@ async fn send(out: &mpsc::Sender<Envelope>, client: &str, data: Value) -> Result
     .map_err(|_| Error::Internal)?
     .map_err(|_| Error::Internal)
 }
+async fn reply_body(
+    out: &mpsc::Sender<Envelope>,
+    client: &str,
+    sender: &mut Sender,
+    id: &str,
+    status: u16,
+    bytes: &[u8],
+) -> Result<()> {
+    if bytes.len() > 32 * 1024 * 1024 {
+        return Err(Error::Internal);
+    }
+    if bytes.is_empty() {
+        return reply(out, client, sender, id, status, &[], true).await;
+    }
+    let count = bytes.len().div_ceil(48 * 1024);
+    for (index, chunk) in bytes.chunks(48 * 1024).enumerate() {
+        reply(out, client, sender, id, status, chunk, index + 1 == count).await?;
+    }
+    Ok(())
+}
 async fn reply(
     out: &mpsc::Sender<Envelope>,
     client: &str,
@@ -275,15 +365,232 @@ async fn reply(
     done: bool,
 ) -> Result<()> {
     let value = json!({"id":id,"status":status,"body":crypto::encode(body),"done":done});
+    encrypted(out, client, sender, &serde_json::to_vec(&value).unwrap()).await
+}
+async fn encrypted(
+    out: &mpsc::Sender<Envelope>,
+    client: &str,
+    sender: &mut Sender,
+    plaintext: &[u8],
+) -> Result<()> {
     send(
         out,
         client,
         serde_json::to_value(Packet {
-            ciphertext: crypto::seal(sender, &serde_json::to_vec(&value).unwrap())?,
+            ciphertext: crypto::seal(sender, plaintext)?,
             encapsulated_key: None,
             public_key: None,
         })
         .unwrap(),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn change(revision: &str) -> ChangeNotification {
+        ChangeNotification {
+            epoch: "epoch".into(),
+            catalog: revision.into(),
+            conversations: [("session".into(), revision.into())].into(),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn observation_registers_before_initial_reply_coalesces_and_heartbeats() {
+        let (tx, rx) = watch::channel(change("0"));
+        let (mut observer, initial) = ChangeObserver::new(rx);
+        assert_eq!(initial.catalog, "0");
+        // A burst while the initial/ordinary reply is in progress retains one value.
+        for revision in 1..=100 {
+            tx.send_replace(change(&revision.to_string()));
+        }
+        let start = tokio::time::Instant::now();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(199), observer.next())
+                .await
+                .is_err()
+        );
+        assert_eq!(observer.next().await.unwrap().catalog, "100");
+        assert!(start.elapsed() >= Duration::from_millis(200));
+        tx.send_replace(change("101"));
+        let start = tokio::time::Instant::now();
+        assert_eq!(observer.next().await.unwrap().catalog, "101");
+        assert!(start.elapsed() >= Duration::from_millis(200));
+        let start = tokio::time::Instant::now();
+        assert_eq!(observer.next().await.unwrap().catalog, "101");
+        assert!(start.elapsed() >= Duration::from_secs(20));
+        drop(tx);
+        assert!(observer.next().await.is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn waiting_for_change_does_not_hold_an_ordinary_command() {
+        let (tx, rx) = watch::channel(change("0"));
+        let (observer, _) = ChangeObserver::new(rx);
+        let mut observation = Some(observer);
+        tokio::select! {
+            _ = next_notice(&mut observation) => panic!("notice must not precede command"),
+            _ = tokio::time::sleep(Duration::from_millis(1)) => {},
+        }
+        // Losing the select must not consume a future revision.
+        tx.send_replace(change("1"));
+        assert_eq!(next_notice(&mut observation).await.unwrap().catalog, "1");
+        let mut unregistered = None;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(60), next_notice(&mut unregistered))
+                .await
+                .is_err()
+        );
+        drop(observation);
+        assert_eq!(tx.receiver_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn fragments_errors_and_notices_share_one_ordered_hpke_context() {
+        let (private, public) = crypto::keypair();
+        let (peer_private, peer_public) = crypto::keypair();
+        let (enc, mut sender) =
+            crypto::sender(&private, &peer_public, "challenge", "host").unwrap();
+        let mut receiver =
+            crypto::receiver(&peer_private, &public, &enc, "challenge", "host").unwrap();
+        let (out, mut frames) = mpsc::channel(16);
+        let id = uuid::Uuid::new_v4().to_string();
+        let body = vec![b'x'; 48 * 1024 + 10];
+        reply_body(&out, "client", &mut sender, &id, 200, &body)
+            .await
+            .unwrap();
+        encrypted(
+            &out,
+            "client",
+            &mut sender,
+            &serde_json::to_vec(&json!({"notification": change("1")})).unwrap(),
+        )
+        .await
+        .unwrap();
+        reply_body(&out, "client", &mut sender, &id, 403, b"{}")
+            .await
+            .unwrap();
+        reply_body(&out, "client", &mut sender, &id, 200, b"{}")
+            .await
+            .unwrap();
+        for index in 0..5 {
+            let envelope = frames.recv().await.unwrap();
+            assert_eq!(envelope.client, "client");
+            let packet: Packet = serde_json::from_str(&envelope.data).unwrap();
+            assert!(packet.encapsulated_key.is_none());
+            let value: Value =
+                serde_json::from_slice(&crypto::open(&mut receiver, &packet.ciphertext).unwrap())
+                    .unwrap();
+            if index == 2 {
+                assert_eq!(value, json!({"notification": change("1")}));
+                assert!(value.get("body").is_none());
+            } else {
+                assert_eq!(value["id"], id);
+                assert_eq!(value["done"], index != 0);
+                assert_eq!(value["status"], if index == 3 { 403 } else { 200 });
+                if index == 0 {
+                    assert_eq!(
+                        crypto::decode(value["body"].as_str().unwrap())
+                            .unwrap()
+                            .len(),
+                        48 * 1024
+                    );
+                }
+                if index == 1 {
+                    assert_eq!(
+                        crypto::decode(value["body"].as_str().unwrap())
+                            .unwrap()
+                            .len(),
+                        10
+                    );
+                }
+            }
+        }
+    }
+
+    // Exercise the real authenticated client loop, without a websocket/Host/provider.
+    // Old clients remain silent, and both transport closure and revocation end it.
+    async fn idle_client(revoke: bool) {
+        let directory = tempfile::tempdir().unwrap();
+        let remote = RemoteAccess::load(directory.path()).await.unwrap();
+        let (peer_private, peer_public) = crypto::keypair();
+        let device = uuid::Uuid::new_v4().to_string();
+        let key = {
+            let mut state = remote.state.lock().await;
+            state.config.enabled = true;
+            state.config.devices.push(Device {
+                id: device.clone(),
+                name: "fixture".into(),
+                public_key: peer_public.clone(),
+            });
+            state.config.private_key.clone()
+        };
+        let public = crypto::public_key(&key).unwrap();
+        let (out, mut frames) = mpsc::channel(16);
+        let (input, incoming) = mpsc::channel(4);
+        let task = {
+            let remote = remote.clone();
+            tokio::spawn(async move {
+                remote
+                    .client(Weak::new(), "client", &key, &out, incoming)
+                    .await
+            })
+        };
+        let challenge: Value = serde_json::from_str(&frames.recv().await.unwrap().data).unwrap();
+        assert!(challenge.get("changeNotifications").is_none());
+        let challenge = challenge["challenge"].as_str().unwrap();
+        let (enc, mut sender) =
+            crypto::sender(&peer_private, &public, challenge, "client").unwrap();
+        let hello = crypto::seal(&mut sender, br#"{"name":"fixture"}"#).unwrap();
+        input
+            .send(
+                serde_json::to_string(&Packet {
+                    ciphertext: hello,
+                    encapsulated_key: Some(enc),
+                    public_key: Some(peer_public),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let packet: Packet = serde_json::from_str(&frames.recv().await.unwrap().data).unwrap();
+        let mut receiver = crypto::receiver(
+            &peer_private,
+            &public,
+            packet.encapsulated_key.as_ref().unwrap(),
+            challenge,
+            "host",
+        )
+        .unwrap();
+        let ready: Value =
+            serde_json::from_slice(&crypto::open(&mut receiver, &packet.ciphertext).unwrap())
+                .unwrap();
+        assert_eq!(ready["ready"], true);
+        // Capability is authenticated inside ready, never an unauthenticated
+        // challenge flag. Old clients still receive no unsolicited notices.
+        assert_eq!(ready["changeNotifications"], true);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(21), frames.recv())
+                .await
+                .is_err()
+        );
+        if revoke {
+            remote.revoke(&device).await.unwrap();
+            assert!(task.await.unwrap().is_err());
+        } else {
+            drop(input);
+            assert!(task.await.unwrap().is_ok());
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn old_client_has_no_notices_and_disconnect_ends_observation() {
+        idle_client(false).await;
+    }
+    #[tokio::test(start_paused = true)]
+    async fn revocation_closes_an_idle_authenticated_client() {
+        idle_client(true).await;
+    }
 }

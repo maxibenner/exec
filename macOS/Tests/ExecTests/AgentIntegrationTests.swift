@@ -23,7 +23,11 @@ actor FakeAgentTransport: AgentTransport {
         return replies[path] ?? Data("{}".utf8)
     }
     nonisolated func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
-        AsyncThrowingStream { _ in }
+        AsyncThrowingStream { continuation in
+            if path == "/v1/changes" {
+                continuation.finish(throwing: AgentHTTPError(status: 404, message: "Legacy test backend"))
+            } else { continuation.finish(throwing: ExecError("Unexpected test event stream: \(path)")) }
+        }
     }
 }
 

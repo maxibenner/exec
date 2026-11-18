@@ -153,15 +153,18 @@ import CryptoKit
     private var failedImageIDs: Set<UUID> = []
     private var imageTask: Task<Void, Never>?
     private let sleepPrevention: SessionSleepPrevention
+    private let observationSleep: @Sendable (Duration) async throws -> Void
     private var sleepActivity: NSObjectProtocol?
 
     init(provider: any ChatProvider, workspace: Workspace? = nil, defaultAutoApproveTools: Bool = true, disabledTools: Set<String> = [],
-         sleepPrevention: SessionSleepPrevention = .system) {
+         sleepPrevention: SessionSleepPrevention = .system,
+         observationSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
         self.provider = provider
         self.workspace = workspace
         self.autoApproveTools = defaultAutoApproveTools
         self.disabledTools = disabledTools
         self.sleepPrevention = sleepPrevention
+        self.observationSleep = observationSleep
         tools.resolve = { [weak self] operation, approval, approved in
             guard let self, let id = self.currentSessionID else { return }
             _ = try await self.api.request("POST", AgentAPI.path(id, "/approvals"), .object([
@@ -297,6 +300,9 @@ import CryptoKit
         observerGeneration = UUID()
         observer?.cancel()
         observer = nil
+        // A cancelled consumer owns its old reader until it unwinds. Never let a
+        // replacement observer share that reader's iterator/cancellation cleanup.
+        transcriptReader = nil
     }
     private func resynchronize(_ id: UUID) async throws {
         pauseObservation()
@@ -322,37 +328,48 @@ import CryptoKit
         observationLost = false
         let reader = transcriptReader ?? api.transcriptReader(id)
         transcriptReader = reader
+        let sleep = observationSleep
         observer = Task { [weak self] in
             var reader = reader
-            // Recover only the read-only cursor, once. Never replay a mutation.
-            for attempt in 0..<2 {
-                guard self?.observerGeneration == generation, !Task.isCancelled else { return }
+            var failures = 0
+            var delay = 250
+            // Retry only authoritative reads. A healthy changes connection cannot
+            // recover a lost transcript lease by itself, so keep a bounded-backoff
+            // recovery loop until reads succeed or this presentation is closed.
+            while !Task.isCancelled {
+                guard self?.observerGeneration == generation else { return }
                 do {
                     while true {
                         let snapshot = try await reader.next()
                         guard let self, self.observerGeneration == generation, !Task.isCancelled else { return }
                         try self.apply(snapshot)
+                        self.observationLost = false
+                        if self.error == Self.observationLossMessage { self.error = nil }
+                        failures = 0
+                        delay = 250
                     }
                 } catch {
+                    await reader.close()
                     // Keep the last authoritative operation state during a read failure.
                 }
                 guard let self, self.observerGeneration == generation, !Task.isCancelled else { return }
-                if attempt == 1 {
-                    let reportLoss = await self.confirmObservationLoss?() ?? true
-                    // Catalog reconciliation can close this presentation, or a
-                    // new load/deletion can replace the observer while awaiting it.
-                    guard self.observerGeneration == generation, !Task.isCancelled else { return }
-                    self.observationLost = true
-                    if reportLoss, self.error == nil {
-                        self.error = Self.observationLossMessage
+                failures += 1
+                if failures >= 2 {
+                    if !self.observationLost {
+                        let reportLoss = await self.confirmObservationLoss?() ?? true
+                        // Catalog reconciliation may close or replace this observer.
+                        guard self.observerGeneration == generation, !Task.isCancelled else { return }
+                        self.observationLost = true
+                        if reportLoss, self.error == nil { self.error = Self.observationLossMessage }
                     }
-                    // Keep the last known operation ownership. Disconnection is not completion.
-                } else {
-                    // A stale cursor, partial page read, or rejected snapshot must
-                    // recover from fresh authoritative state, not skip an unchanged page.
-                    reader = self.api.transcriptReader(id)
-                    self.transcriptReader = reader
+                    do { try await sleep(.milliseconds(delay)) } catch { return }
+                    delay = min(delay * 2, 8_000)
                 }
+                guard self.observerGeneration == generation, !Task.isCancelled else { return }
+                // A stale cursor or rejected snapshot requires fresh authoritative
+                // state. Neither reconnecting nor closing a lease replays a mutation.
+                reader = self.api.transcriptReader(id)
+                self.transcriptReader = reader
             }
         }
     }
@@ -648,6 +665,7 @@ import CryptoKit
     func closePresentation() {
         cancelPendingCommands()
         pauseObservation()
+        transcriptReader = nil
         imageTask?.cancel(); imageTask = nil
         if let activity = sleepActivity { sleepPrevention.end(activity); sleepActivity = nil }
     }

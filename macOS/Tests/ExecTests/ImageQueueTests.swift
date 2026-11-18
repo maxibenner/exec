@@ -13,7 +13,7 @@ private actor ImageQueueTransport: AgentTransport {
     }
     func finishUpload() { release?.resume(); release = nil }
     nonisolated func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
-        AsyncThrowingStream { _ in }
+        requests.events(method, path, body: body)
     }
 }
 

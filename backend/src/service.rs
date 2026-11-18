@@ -52,6 +52,11 @@ pub(crate) struct Host {
     stop: CancellationToken,
     handlers: tokio_util::task::TaskTracker,
 }
+impl Host {
+    pub(crate) fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<ChangeNotification> {
+        self.options.manager.subscribe_changes()
+    }
+}
 pub struct Service {
     pub address: SocketAddr,
     stop: CancellationToken,
@@ -209,14 +214,22 @@ async fn serve_connection(
         let host = handler_host.clone();
         let handlers = host.handlers.clone();
         let cancel = host.stop.child_token();
+        let changes_stream = request.method() == "GET" && request.uri().path() == "/v1/changes";
         async move {
             // Cancel discovery when the caller disconnects, but let accepted
             // catalog mutations finish instead of dropping a durable write.
-            let _guard = cancel.clone().drop_guard();
+            let guard = cancel.clone().drop_guard();
             let response = handlers
                 .spawn(async move { dispatch(host, request.map(Body::new), cancel).await })
                 .await
                 .unwrap_or_else(|_| json_response(500, json!({"error":"Service request failed."})));
+            // A streaming request lives until its body is dropped, not merely
+            // until its response headers have been produced.
+            let response = if changes_stream {
+                hold_response_cancel(response, guard)
+            } else {
+                response
+            };
             Ok::<_, std::convert::Infallible>(response)
         }
     });
@@ -416,65 +429,75 @@ struct Resolve {
     approval_id: String,
     approved: bool,
 }
-fn sync_page(
-    mut snapshot: ConversationSnapshot,
-    query: Option<&str>,
-) -> ApiResult<serde_json::Value> {
-    use sha2::{Digest, Sha256};
-    const PAGE_SIZE: usize = 64;
-    fn prefix(messages: &[Message]) -> String {
-        format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(messages).unwrap())
-        )
-    }
-    let total = snapshot.messages.len();
-    let (offset, end, reset) = match query {
-        None => (total.saturating_sub(PAGE_SIZE), total, true),
+fn sync_cursor(query: Option<&str>) -> ApiResult<SyncCursor<'_>> {
+    match query {
+        None => Ok(SyncCursor::Latest),
         Some(query) if query.starts_with("before=") => {
             let anchor = &query["before=".len()..];
             identifier(anchor)?;
-            let index = snapshot
-                .messages
-                .iter()
-                .position(|message| message.id() == anchor)
-                .ok_or(ApiError(
-                    409,
-                    "Conversation history changed. Refresh the conversation.",
-                ))?;
-            (index.saturating_sub(PAGE_SIZE), index, false)
+            Ok(SyncCursor::Before(anchor))
         }
         Some(query) if query.starts_with("after=") => {
-            let (anchor, proof) = query["after=".len()..]
+            let (anchor, prefix) = query["after=".len()..]
                 .split_once("&prefix=")
                 .ok_or(ApiError(400, "Invalid sync cursor."))?;
             identifier(anchor)?;
-            if proof.len() != 64 || !proof.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            if prefix.len() != 64 || !prefix.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err(ApiError(400, "Invalid sync cursor."));
             }
-            match snapshot
-                .messages
-                .iter()
-                .position(|message| message.id() == anchor)
-            {
-                Some(index)
-                    if total - index <= PAGE_SIZE
-                        && prefix(&snapshot.messages[..index]) == proof =>
-                {
-                    (index, total, false)
+            Ok(SyncCursor::After { anchor, prefix })
+        }
+        _ => Err(ApiError(400, "Invalid sync cursor.")),
+    }
+}
+
+fn hold_response_cancel(
+    response: Response<Body>,
+    guard: tokio_util::sync::DropGuard,
+) -> Response<Body> {
+    use futures_util::StreamExt;
+    let (parts, body) = response.into_parts();
+    let stream = async_stream::stream! {
+        let _guard = guard;
+        let mut chunks = body.into_data_stream();
+        while let Some(chunk) = chunks.next().await { yield chunk; }
+    };
+    Response::from_parts(parts, Body::from_stream(stream))
+}
+
+fn change_frames(
+    mut changes: tokio::sync::watch::Receiver<ChangeNotification>,
+    stop: CancellationToken,
+    cancel: CancellationToken,
+) -> impl futures_util::Stream<Item = std::io::Result<String>> + Send {
+    async_stream::stream! {
+        if stop.is_cancelled() || cancel.is_cancelled() { return; }
+        let initial = changes.borrow_and_update().clone();
+        let mut sent = tokio::time::Instant::now();
+        yield Ok(format!("{}\n", serde_json::to_string(&initial).unwrap()));
+        loop {
+            tokio::select! { biased;
+                _ = stop.cancelled() => break,
+                _ = cancel.cancelled() => break,
+                changed = changes.changed() => {
+                    if changed.is_err() { break; }
+                    tokio::select! { biased;
+                        _ = stop.cancelled() => break,
+                        _ = cancel.cancelled() => break,
+                        _ = tokio::time::sleep_until(sent + Duration::from_millis(200)) => {}
+                    }
+                    // Release the watch read lock before yielding or doing any I/O.
+                    let latest = changes.borrow_and_update().clone();
+                    sent = tokio::time::Instant::now();
+                    yield Ok(format!("{}\n", serde_json::to_string(&latest).unwrap()));
                 }
-                _ => (total.saturating_sub(PAGE_SIZE), total, true),
+                _ = tokio::time::sleep_until(sent + Duration::from_secs(20)) => {
+                    sent = tokio::time::Instant::now();
+                    yield Ok("\n".into());
+                }
             }
         }
-        _ => return Err(ApiError(400, "Invalid sync cursor.")),
-    };
-    let proof = total
-        .checked_sub(1)
-        .map(|index| prefix(&snapshot.messages[..index]));
-    snapshot.messages = snapshot.messages[offset..end].to_vec();
-    Ok(
-        json!({"snapshot": snapshot, "offset": offset, "total": total, "reset": reset, "prefix": proof}),
-    )
+    }
 }
 
 async fn handle(
@@ -540,6 +563,19 @@ async fn handle(
             }
             _ => return Err(ApiError(404, "Route not found.")),
         }
+    }
+    if method == "GET" && route == "/v1/changes" {
+        return Ok(Response::builder()
+            .status(200)
+            .header("Content-Type", "application/x-ndjson")
+            .header("Cache-Control", "no-store")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(Body::from_stream(change_frames(
+                host.subscribe_changes(),
+                host.stop.clone(),
+                request_cancel,
+            )))
+            .unwrap());
     }
     let options = &host.options;
     if method == "POST" && route == "/v1/workspaces/browse" {
@@ -778,14 +814,9 @@ async fn handle(
         if method == "GET" {
             let mut summaries: Vec<_> = options
                 .manager
-                .list()?
+                .summaries()?
                 .into_iter()
-                .map(|s| {
-                    let mut v = serde_json::to_value(s).unwrap();
-                    v.as_object_mut().unwrap().remove("messages");
-                    v.as_object_mut().unwrap().remove("approval");
-                    v
-                })
+                .map(|s| serde_json::to_value(s).unwrap())
                 .collect();
             summaries.extend(
                 options
@@ -890,21 +921,33 @@ async fn handle(
         ));
     }
     let action = parts.get(1).copied();
-    if method == "GET" && matches!(action, None | Some("sync") | Some("events")) {
+    if method == "GET" && action == Some("sync") {
+        let page = options
+            .manager
+            .sync(parts[0], sync_cursor(request.uri().query())?)
+            .map_err(|error| match error {
+                Error::Invalid("Conversation not found.") => {
+                    ApiError(404, "Conversation not found.")
+                }
+                Error::Invalid(message) => ApiError(409, message),
+                other => other.into(),
+            })?;
+        return Ok(json_response(200, page));
+    }
+    if method == "GET" && action.is_none() {
+        return Ok(json_response(
+            200,
+            options
+                .manager
+                .snapshot(parts[0])
+                .map_err(|_| ApiError(404, "Conversation not found."))?,
+        ));
+    }
+    if method == "GET" && action == Some("events") {
         let (snapshot, mut receiver) = options
             .manager
             .observe(parts[0])
             .map_err(|_| ApiError(404, "Conversation not found."))?;
-        if action != Some("events") {
-            return if action == Some("sync") {
-                Ok(json_response(
-                    200,
-                    sync_page(snapshot, request.uri().query())?,
-                ))
-            } else {
-                Ok(json_response(200, snapshot))
-            };
-        }
         let stop = host.stop.clone();
         let frames = async_stream::stream! {
             yield Ok::<_,std::io::Error>(format!("{}\n",serde_json::to_string(&ServiceEvent::Snapshot{snapshot}).unwrap()));
@@ -1140,8 +1183,9 @@ async fn handle(
 pub(crate) async fn remote_request(host: Arc<Host>, request: Request<Body>) -> Response<Body> {
     let handlers = host.handlers.clone();
     let cancel = host.stop.child_token();
-    let _guard = cancel.clone().drop_guard();
-    handlers
+    let changes_stream = request.method() == "GET" && request.uri().path() == "/v1/changes";
+    let guard = cancel.clone().drop_guard();
+    let response = handlers
         .spawn(async move {
             match handle(host, request, cancel, true).await {
                 Ok(response) => response,
@@ -1149,5 +1193,187 @@ pub(crate) async fn remote_request(host: Arc<Host>, request: Request<Body>) -> R
             }
         })
         .await
-        .unwrap_or_else(|_| json_response(500, json!({"error":"Remote request failed."})))
+        .unwrap_or_else(|_| json_response(500, json!({"error":"Remote request failed."})));
+    if changes_stream {
+        hold_response_cancel(response, guard)
+    } else {
+        response
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::*;
+    use futures_util::{FutureExt, StreamExt};
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_coalescing_heartbeat_and_cancellation() {
+        let hub = Arc::new(ChangeHub::default());
+        let stop = CancellationToken::new();
+        let cancel = CancellationToken::new();
+        let mut frames = Box::pin(change_frames(hub.subscribe(), stop, cancel.clone()));
+        let initial = frames.next().await.unwrap().unwrap();
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&initial).unwrap()["catalog"].is_string()
+        );
+        assert!(frames.next().now_or_never().is_none());
+        hub.catalog_changed();
+        assert!(frames.next().now_or_never().is_none());
+        tokio::time::advance(Duration::from_millis(199)).await;
+        for _ in 0..100 {
+            hub.catalog_changed();
+        }
+        assert!(frames.next().now_or_never().is_none());
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let next = frames.next().await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&next).unwrap()["catalog"],
+            "101"
+        );
+        assert!(frames.next().now_or_never().is_none());
+        tokio::time::advance(Duration::from_secs(20)).await;
+        assert_eq!(frames.next().await.unwrap().unwrap(), "\n");
+        cancel.cancel();
+        assert!(frames.next().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_interrupts_pending_coalescing_and_subscription_catches_early_change() {
+        let hub = Arc::new(ChangeHub::default());
+        let rx = hub.subscribe();
+        hub.catalog_changed();
+        let stop = CancellationToken::new();
+        let mut frames = Box::pin(change_frames(rx, stop.clone(), CancellationToken::new()));
+        assert!(
+            frames
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .contains("\"catalog\":\"1\"")
+        );
+        hub.catalog_changed();
+        assert!(frames.next().now_or_never().is_none());
+        stop.cancel();
+        assert!(frames.next().await.is_none());
+    }
+
+    struct NoInference;
+    #[async_trait::async_trait]
+    impl ChatProvider for NoInference {
+        fn stream(
+            &self,
+            _: ProviderRequest,
+        ) -> futures_util::stream::BoxStream<'static, Result<ProviderEvent>> {
+            panic!("no inference in read-only tests")
+        }
+    }
+    #[tokio::test]
+    async fn http_change_body_outlives_response_headers_and_service_shutdown() {
+        let manager = Arc::new(AgentManager::default());
+        let service = start_service(ServiceOptions {
+            manager: manager.clone(),
+            provider: Arc::new(NoInference),
+            tools: vec![],
+            address: "127.0.0.1:0".parse().unwrap(),
+            access: HttpAccess::externally_secured(None).unwrap(),
+        })
+        .await
+        .unwrap();
+        // Isolated loopback transport only: no credentials or external providers.
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let response = client
+            .get(format!("http://{}/v1/changes", service.address))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let mut chunks = response.bytes_stream();
+        let first = tokio::time::timeout(Duration::from_secs(3), chunks.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let initial: serde_json::Value = serde_json::from_slice(&first).unwrap();
+        manager
+            .update_library(LibraryConfiguration::default())
+            .await
+            .unwrap();
+        let next = tokio::time::timeout(Duration::from_secs(3), chunks.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let updated: serde_json::Value = serde_json::from_slice(&next).unwrap();
+        assert_ne!(initial["catalog"], updated["catalog"]);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), chunks.next())
+                .await
+                .is_err()
+        );
+        tokio::time::timeout(Duration::from_secs(3), service.close())
+            .await
+            .unwrap()
+            .unwrap();
+        // Shutdown may end HTTP cleanly or close the socket; either must be prompt.
+        let end = tokio::time::timeout(Duration::from_secs(3), chunks.next())
+            .await
+            .unwrap();
+        assert!(end.is_none() || end.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn routes_return_ndjson_and_compatible_summary_without_network() {
+        let manager = Arc::new(AgentManager::default());
+        let provider = Arc::new(NoInference);
+        let conversation = manager
+            .create(ConversationOptions::new(provider.clone(), "test", "/test"))
+            .await
+            .unwrap();
+        let host = Arc::new(Host {
+            options: ServiceOptions {
+                manager,
+                provider,
+                tools: vec![],
+                address: "127.0.0.1:0".parse().unwrap(),
+                access: HttpAccess::externally_secured(None).unwrap(),
+            },
+            remote: None,
+            stop: CancellationToken::new(),
+            handlers: tokio_util::task::TaskTracker::new(),
+        });
+        let cancel = CancellationToken::new();
+        let request = Request::builder()
+            .uri("/v1/changes")
+            .body(Body::empty())
+            .unwrap();
+        let response = handle(host.clone(), request, cancel.clone(), false)
+            .await
+            .ok()
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["Content-Type"], "application/x-ndjson");
+        let mut body = response.into_body().into_data_stream();
+        let initial: serde_json::Value =
+            serde_json::from_slice(&body.next().await.unwrap().unwrap()).unwrap();
+        assert_eq!(initial["conversations"].as_object().unwrap().len(), 1);
+        cancel.cancel();
+        assert!(body.next().await.is_none());
+        let request = Request::builder()
+            .uri("/v1/conversations")
+            .body(Body::empty())
+            .unwrap();
+        let response = handle(host.clone(), request, CancellationToken::new(), false)
+            .await
+            .ok()
+            .unwrap();
+        let actual: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1_000_000).await.unwrap())
+                .unwrap();
+        let mut old = serde_json::to_value(conversation.snapshot()).unwrap();
+        old.as_object_mut().unwrap().remove("messages");
+        old.as_object_mut().unwrap().remove("approval");
+        assert_eq!(actual, json!([old]));
+        host.options.manager.close().await.unwrap();
+    }
 }

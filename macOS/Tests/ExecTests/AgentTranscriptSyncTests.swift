@@ -40,6 +40,45 @@ enum AgentSyncFixture {
         return .object(snapshot)
     }
 
+    func typedStatePreservesProofAndRejectsInvalidPages() throws {
+        let path = AgentAPI.path(AgentIntegrationTests.conversationID, "/sync")
+        let original = try fixture(count: 130)
+        func page(_ snapshot: AgentJSON, _ request: String) throws -> AgentSyncPage {
+            try JSONDecoder().decode(AgentSyncPage.self, from: JSONEncoder().encode(AgentSyncFixture.page(snapshot, path: request)))
+        }
+        let tail = try page(original, path)
+        var state = try AgentTranscriptState.initial(tail)
+        let proof = state.prefix
+        guard case .object(var changed) = original, case .object(var last) = original["messages"].array.last! else {
+            throw CheckFailure(description: "Invalid typed fixture")
+        }
+        last["text"] = .string("changed while backfilling")
+        changed["messages"] = .array(Array(original["messages"].array.dropLast()) + [.object(last), .object([
+            "id": .string(UUID().uuidString.lowercased()), "role": .string("user"), "text": .string("new tail")])])
+        let newer = AgentJSON.object(changed)
+        while let earlier = state.earlierPath(path) {
+            let older = try page(newer, earlier)
+            try expect(older.total == 131 && older.prefix != proof)
+            state = try state.prepending(older)
+        }
+        try expect(state.snapshot.messages.count == 130 && state.total == 130 && state.prefix == proof)
+        try expect(state.refreshPath(path).hasSuffix("prefix=\(proof!)"))
+        let update = try state.refreshed(page(newer, state.refreshPath(path)))
+        try expect(update.changed && update.0.snapshot.messages.count == 131)
+        let unchanged = try update.0.refreshed(page(newer, update.0.refreshPath(path)))
+        try expect(!unchanged.changed)
+        let wrongOffset = AgentSyncPage(snapshot: tail.snapshot, offset: -1, total: tail.total, reset: true, prefix: proof)
+        try expectFailure { _ = try AgentTranscriptState.initial(wrongOffset) }
+        try expectFailure { _ = try state.prepending(tail) } // A reset cannot be an older page.
+        let wrongOverlap = AgentSyncPage(snapshot: tail.snapshot, offset: 0, total: 64, reset: false, prefix: proof)
+        try expectFailure { _ = try state.refreshed(wrongOverlap) }
+        // Structural regression guard: the reader's only wire decoding is a typed
+        // bounded page. In particular no historical snapshot can be re-encoded.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Sources/Exec/Backend/AgentTranscriptReader.swift"), encoding: .utf8)
+        try expect(!source.contains("JSONEncoder(") && !source.contains("decode(AgentJSON.self") && !source.contains(".decoded(AgentSnapshot.self)"))
+    }
+
     func pagesHistoryAndMergesOnlyTheChangedSuffix() async throws {
         let transport = FakeAgentTransport(), id = AgentIntegrationTests.conversationID
         let path = AgentAPI.path(id)
