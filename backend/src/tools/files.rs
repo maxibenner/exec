@@ -38,7 +38,7 @@ impl Tool for FileTool {
         let (name, description, properties, required) = match self {
             Self::List => (
                 "list_files",
-                "List one workspace directory. Symlinks are not followed. Output is bounded.",
+                "List one workspace directory. Use a workspace-relative path with forward slashes, never an absolute path, '..', or backslashes. Use '.' for the workspace root. Symlinks are not followed. Output is bounded.",
                 json!({"path":{"type":"string"}}),
                 vec!["path"],
             ),
@@ -50,7 +50,7 @@ impl Tool for FileTool {
             ),
             Self::Search => (
                 "search_text",
-                "Bounded case-sensitive literal search. Skips hidden entries, node_modules, dist, symlinks, binary and oversized files; reports incomplete searches.",
+                "Bounded case-sensitive literal search within a directory. The path must name a directory, not a file. Use a workspace-relative path with forward slashes, never an absolute path, '..', or backslashes. Use '.' for the workspace root. Skips hidden entries, node_modules, dist, symlinks, binary and oversized files; reports incomplete searches.",
                 json!({"path":{"type":"string"},"query":{"type":"string","minLength":1}}),
                 vec!["path", "query"],
             ),

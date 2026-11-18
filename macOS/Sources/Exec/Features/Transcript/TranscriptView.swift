@@ -622,19 +622,6 @@ private struct VirtualTranscript: NSViewRepresentable {
             navigationAnchor = nil
             state.followsLatest = true
         }
-        // Only newly delivered cards, never virtualized history or status updates.
-        for (index, id) in messages.filter({ arrivingToolIDs.contains($0.id) }).map(\.id).enumerated() {
-            guard let row = rows[id], window != nil,
-                  row.frame.intersects(contentView.bounds),
-                  !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { continue }
-            let animation = CABasicAnimation(keyPath: "opacity")
-            animation.fromValue = 0.55
-            animation.toValue = 1
-            animation.duration = 0.36
-            animation.beginTime = CACurrentMediaTime() + min(Double(index) * 0.03, 0.09)
-            animation.fillMode = .backwards
-            row.layer?.add(animation, forKey: "streamEntrance")
-        }
         arrivingToolIDs.removeAll()
         let growth = contentView.bounds.minY - oldY
         if canAnimateGrowth, growth > 0 {
