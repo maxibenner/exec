@@ -572,10 +572,16 @@ import Observation
         }
     }
 
+    func canRenameSession(_ id: UUID) -> Bool {
+        canModify && sessionList.contains { $0.id == id && !$0.unreadable }
+    }
+
     func renameSession(_ id: UUID, title: String) {
-        guard canModify, !isSessionRunning(id), sessionList.contains(where: { $0.id == id && !$0.unreadable }) else { return }
+        guard canRenameSession(id) else { return }
         navigate {
             // Persist an unsaved idle draft/workspace session before changing its metadata.
+            // Running sessions already exist in Rust; saveIfIdle leaves their runner
+            // and queued configuration untouched while the title is checkpointed there.
             if let conversation = self.conversation(id) {
                 await conversation.waitForPendingSave()
                 try Task.checkCancellation()

@@ -521,13 +521,7 @@ impl AgentManager {
         self.create(options).await
     }
     pub async fn rename(&self, id: &str, title: String) -> Result<ConversationSnapshot> {
-        self.get(id)?
-            .mutate_record(move |record| {
-                record.metadata.title = Some(title);
-                record.metadata.manually_named = true;
-                Ok(())
-            })
-            .await
+        self.get(id)?.rename(title).await
     }
     pub async fn select_model(&self, id: &str, model: String) -> Result<ConversationSnapshot> {
         if !valid_model_id(&model) {

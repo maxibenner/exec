@@ -473,6 +473,49 @@ impl Conversation {
             true,
         )
     }
+    /// Rename live metadata without replacing a concurrently changing transcript.
+    /// Use the runner's checkpoint ordering and own the save if the caller detaches.
+    pub(crate) async fn rename(self: &Arc<Self>, title: String) -> Result<ConversationSnapshot> {
+        {
+            let mut state = self.state();
+            if state.disposed {
+                return Err(Error::Invalid("Conversation is closed."));
+            }
+            if state.storage_error.is_some() {
+                return Err(Error::Storage);
+            }
+            if state.updating {
+                return Err(Error::Busy);
+            }
+            let mut metadata = state.record.metadata.clone();
+            metadata.title = Some(title);
+            metadata.manually_named = true;
+            metadata.validate()?;
+            state.record.metadata = metadata;
+            // Block conflicting idle mutations/deletion, not the active runner.
+            state.updating = true;
+        }
+        let conversation = self.clone();
+        tokio::spawn(async move {
+            let saved = AssertUnwindSafe(conversation.checkpoint(None))
+                .catch_unwind()
+                .await
+                .unwrap_or(Err(Error::Storage));
+            let mut state = conversation.state();
+            state.updating = false;
+            if saved.is_err() {
+                state.storage_error = Some(Error::Storage.to_string());
+            }
+            let snapshot = state.snapshot(conversation.provider.as_ref());
+            conversation.events.send(Arc::new(ServiceEvent::Snapshot {
+                snapshot: snapshot.clone(),
+            }));
+            saved.map_err(|_| Error::Storage)?;
+            Ok(snapshot)
+        })
+        .await
+        .map_err(|_| Error::Internal)?
+    }
     pub(crate) async fn mutate_record(
         self: &Arc<Self>,
         mutate: impl FnOnce(&mut ConversationRecord) -> Result<()>,
