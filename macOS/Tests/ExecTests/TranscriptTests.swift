@@ -169,10 +169,22 @@ import SwiftUI
         messages[2].compaction = nil
         layout.update(messages: messages, width: 400)
         try expect(layout.position(of: anchor) == 212 && layout.totalHeight == 340)
+
+        // Gap-only changes also retain offscreen estimates from the previous width.
+        messages.append(Message(role: .assistant, text: String(repeating: "Unmeasured **history** ", count: 80)))
+        layout.update(messages: messages, width: 700)
+        let retainedHeights = layout.heights
+        messages[2].compaction = .automatic
+        layout.update(messages: messages, width: 400)
+        try expect(layout.heights == retainedHeights)
+        try expect(layout.position(of: anchor) == 260)
     }
 
     func batchedMeasurementsPreserveGeometryAcrossResizeAndEdits() throws {
-        var messages = (0..<100).map { Message(role: .user, text: "Message \($0)") }
+        var messages = (0..<100).map {
+            Message(role: $0.isMultiple(of: 2) ? .user : .assistant,
+                    text: String(repeating: "Message \($0) ", count: 40))
+        }
         var layout = TranscriptLayout()
         layout.update(messages: messages, width: 700)
         let anchor = layout.anchor(at: layout.offsets[50] + 8)!
@@ -192,16 +204,42 @@ import SwiftUI
         // Last-known heights remain estimates until rows are measured at the new
         // width. Do not replace good geometry with rough character-count guesses.
         try expect(layout.width == 400 && layout.offsets == individually.offsets)
+        var fresh = TranscriptLayout()
+        fresh.update(messages: messages, width: 400)
+        try expect(fresh.heights[0] != layout.heights[0] && fresh.heights[1] != layout.heights[1])
         let oldPosition = layout.position(of: anchor)!
         try expect(layout.measure(messages[2].id, height: 250))
         try expect(layout.position(of: anchor) == oldPosition + 50)
         try expect(layout.anchor(at: layout.position(of: anchor)!) == anchor)
-        messages.removeFirst(10)
-        messages.append(Message(role: .assistant, text: "New reply"))
+
+        // Appending only estimates the new streaming, tool and user rows, not history.
+        let previousHeights = layout.heights
+        let additions = [
+            Message(role: .assistant, text: String(repeating: "New **reply** ", count: 60), status: .streaming),
+            Message(role: .tool, text: "", pendingTool: .init(call: ToolCall(id: "new", name: "shell", arguments: "{}"))),
+            Message(role: .user, text: String(repeating: "Next question ", count: 60))
+        ]
+        fresh.update(messages: additions, width: 400)
+        messages.append(contentsOf: additions)
         layout.update(messages: messages, width: 400)
-        try expect(layout.ids == messages.map(\.id) && layout.heights[10] == 300)
+        try expect(layout.heights == previousHeights + fresh.heights)
+        try expect(layout.position(of: anchor) == oldPosition + 50)
+        let retained = Dictionary(uniqueKeysWithValues: zip(layout.ids, layout.heights))
+
+        messages.removeFirst(10)
+        layout.update(messages: messages, width: 400)
+        try expect(layout.ids == messages.map(\.id) && layout.heights == messages.map { retained[$0.id]! })
         try expect(layout.anchor(at: layout.position(of: anchor)!) == anchor)
         try expect(!layout.measure(corrections[0].id, height: 900)) // Deleted ID has no index.
+
+        messages.reverse()
+        layout.update(messages: messages, width: 550)
+        try expect(layout.width == 550 && layout.ids == messages.map(\.id))
+        try expect(layout.heights == messages.map { retained[$0.id]! })
+        try expect(layout.anchor(at: layout.position(of: anchor)!) == anchor)
+        let reorderedPosition = layout.position(of: anchor)!
+        try expect(layout.measure(messages[0].id, height: layout.heights[0] + 50))
+        try expect(layout.position(of: anchor) == reorderedPosition + 50)
     }
 
     func reusesMeasurementsWithoutLosingStreamingOrSelection() async throws {

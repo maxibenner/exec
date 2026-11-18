@@ -30,12 +30,16 @@ struct TranscriptLayout {
             resize(to: width)
             return
         }
+        // Reuse unmeasured estimates too, before replacing the previous ID index.
+        heights = messages.map { message in
+            measured[message.id] ?? indices[message.id].map { heights[$0] }
+                ?? Self.estimate(message, width: width)
+        }
         self.width = width
         self.ids = ids
         self.gaps = gaps
         indices = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($0.element, $0.offset) })
         measured = measured.filter { indices[$0.key] != nil }
-        heights = messages.map { measured[$0.id] ?? Self.estimate($0, width: width) }
         rebuildOffsets()
     }
 
