@@ -6,6 +6,7 @@ struct ChatComposer: View {
     @Environment(SessionWindows.self) private var windows: SessionWindows?
     @Binding var focused: Bool
     var focusRequest: Int? = nil
+    var editingState: ComposerEditingState?
     @State private var attachmentDropTargeted = false
     @State private var dismissedDraft: String?
     @State private var highlighted = 0
@@ -124,7 +125,7 @@ struct ChatComposer: View {
             }
             ComposerTextInput(text: $store.draft, focused: $focused,
                               session: ObjectIdentifier(store.current), request: focusRequest,
-                              enabled: store.canEditDraft,
+                              editingState: editingState, enabled: store.canEditDraft,
                               placeholder: store.isWorking ? "Message or / for commands, esc to cancel" : "Message or / for commands",
                               onSubmit: {
                                   if paletteVisible { chooseHighlighted() }

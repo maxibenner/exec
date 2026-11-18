@@ -14,6 +14,7 @@ import Observation
     @ObservationIgnored var layout = TranscriptLayout()
     @ObservationIgnored var expanded: [UUID: Bool] = [:]
     @ObservationIgnored let markdown = MarkdownCache()
+    @ObservationIgnored let composerEditingState = ComposerEditingState()
     func jumpToLatest() { followsLatest = true; jumpRequest += 1 }
 }
 

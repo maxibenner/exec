@@ -17,3 +17,5 @@ while IFS= read -r file; do sources+=("$file"); done < <(
 )
 swiftc -swift-version 6 -parse-as-library "${sources[@]}" -o .build/exec-checks
 .build/exec-checks
+# Posted mouse events need a separate process running NSApplication.run().
+.build/exec-checks --composer-events

@@ -82,7 +82,8 @@ struct ConversationView: View {
                         .disabled(!panel.canNavigate).layoutPriority(1)
                 }
                 if let error { errorView(error).background(.background) }
-                ChatComposer(store: panel, focused: $composerFocused, focusRequest: composerFocusRequest)
+                ChatComposer(store: panel, focused: $composerFocused, focusRequest: composerFocusRequest,
+                             editingState: presentation.composerEditingState)
                     .disabled(panel.navigating)
             }
             .padding(.trailing, presentation.trailingInset)

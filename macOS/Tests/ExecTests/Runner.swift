@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 struct CheckFailure: Error, CustomStringConvertible {
@@ -15,7 +16,47 @@ func expectFailure(_ operation: () throws -> Void) throws {
 }
 
 @main struct TestRunner {
+    // Keep run() in a synchronous entry point: AppKit marks it noasync. The
+    // default suite is unchanged; only this isolated process owns an app loop.
+    @MainActor private static func runComposerEvents() {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.regular)
+        // A missing mouse-up could otherwise strand AppKit's tracking loop.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 60) {
+            FileHandle.standardError.write(Data("FAIL composer events: 60-second timeout\n".utf8))
+            exit(1)
+        }
+        Task { @MainActor in
+            let checks: [(String, @MainActor () async throws -> Void)] = [
+                ("Composer real-event blur/refocus, subsequent clicks and explicit focus", {
+                    try await ComposerEventTests().realBlurAndRefocusPreserveSelectionAndViewport()
+                }),
+                ("Composer remount restores selection and text-anchored viewport", {
+                    try await ComposerEventTests().remountRestoresSelectionAndViewportAfterLayout()
+                }),
+                ("Composer stale snapshots cannot cross drafts or sessions", {
+                    try await ComposerEventTests().changedDraftAndSessionDoNotReuseSnapshot()
+                })
+            ]
+            var failures = 0
+            for (name, check) in checks {
+                do { try await check(); print("PASS \(name)") }
+                catch {
+                    failures += 1
+                    FileHandle.standardError.write(Data("FAIL \(name): \(error)\n".utf8))
+                }
+            }
+            print("\(checks.count - failures)/\(checks.count) composer event checks passed.")
+            exit(failures == 0 ? 0 : 1)
+        }
+        NSApp.run()
+    }
+
     @MainActor static func main() async {
+        if CommandLine.arguments.contains("--composer-events") {
+            runComposerEvents()
+            return
+        }
         let checks: [(String, @MainActor () async throws -> Void)] = [
             ("Startup counts zero, one and multiple sessions", { try StartupSessionCountTests().countsZeroOneAndMultipleSessions() }),
             ("Startup ignores children and invalid files", { try StartupSessionCountTests().ignoresChildrenAndInvalidFiles() }),
