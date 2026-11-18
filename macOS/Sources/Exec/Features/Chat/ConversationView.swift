@@ -8,18 +8,18 @@ struct ConversationView: View {
     let presentation: TranscriptState
     let showsNavigationError: Bool
     let composerFocusRequest: Int?
-    @FocusState.Binding var composerFocused: Bool
+    @Binding var composerFocused: Bool
     @State private var errorHeight: CGFloat = 20
     @State private var composerHeight: CGFloat = 140
 
     init(library: ChatLibrary, conversation: ChatStore, presentation: TranscriptState,
-         focused: FocusState<Bool>.Binding, showsNavigationError: Bool = false,
+         focused: Binding<Bool>, showsNavigationError: Bool = false,
          composerFocusRequest: Int? = nil) {
         self.init(panel: ChatPanel(library: library, conversation: conversation), presentation: presentation,
                   focused: focused, showsNavigationError: showsNavigationError, composerFocusRequest: composerFocusRequest)
     }
 
-    init(panel: ChatPanel, presentation: TranscriptState, focused: FocusState<Bool>.Binding,
+    init(panel: ChatPanel, presentation: TranscriptState, focused: Binding<Bool>,
          showsNavigationError: Bool = false, composerFocusRequest: Int? = nil) {
         _panel = State(initialValue: panel)
         _composerFocused = focused

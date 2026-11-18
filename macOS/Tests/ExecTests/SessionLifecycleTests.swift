@@ -134,7 +134,7 @@ actor LifecycleTransport: AgentTransport {
 private struct LifecycleFocusHost: View {
     let library: ChatLibrary
     let windows: SessionWindows
-    @FocusState private var focused: Bool
+    @State private var focused = false
     var body: some View {
         ConversationView(library: library, conversation: library.current,
                          presentation: windows.presentation(for: library.current), focused: $focused,

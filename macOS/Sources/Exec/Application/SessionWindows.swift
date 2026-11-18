@@ -181,7 +181,7 @@ private struct DetachedConversationView: View {
     let windows: SessionWindows
     let conversation: ChatStore
     let presentation: TranscriptState
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
 
     var body: some View {
         ConversationView(library: windows.library, conversation: conversation, presentation: presentation,

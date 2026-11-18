@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 struct ChatComposer: View {
     @Bindable var store: ChatPanel
     @Environment(SessionWindows.self) private var windows: SessionWindows?
-    @FocusState.Binding var focused: Bool
+    @Binding var focused: Bool
     var focusRequest: Int? = nil
     @State private var attachmentDropTargeted = false
     @State private var dismissedDraft: String?
@@ -122,18 +122,19 @@ struct ChatComposer: View {
                 .disabled(!store.canNavigate)
                 .anchorPreference(key: ComposerControlBounds.self, value: .bounds) { [$0] }
             }
-            TextField(store.isWorking ? "Message or / for commands, esc to cancel" : "Message or / for commands",
-                      text: $store.draft, axis: .vertical)
-                .lineLimit(1...8).textFieldStyle(.plain).font(.body)
-                .focused($focused)
-                .disabled(!store.canEditDraft).allowsHitTesting(!store.navigating)
-                .accessibilityLabel("Message")
-                .background(ComposerFocus(request: focusRequest, enabled: store.canEditDraft))
-                .onSubmit {
-                    if paletteVisible { chooseHighlighted() }
-                    else if command != nil { dismissedDraft = nil }
-                    else { store.send() }
-                }
+            ComposerTextInput(text: $store.draft, focused: $focused,
+                              session: ObjectIdentifier(store.current), request: focusRequest,
+                              enabled: store.canEditDraft,
+                              placeholder: store.isWorking ? "Message or / for commands, esc to cancel" : "Message or / for commands",
+                              onSubmit: {
+                                  if paletteVisible { chooseHighlighted() }
+                                  else if command != nil { dismissedDraft = nil }
+                                  else { store.send() }
+                              }, onMove: { move($0) == .handled }, onEscape: {
+                                  if paletteVisible { close(); focused = true }
+                                  else if store.isWorking { store.stop() }
+                              })
+                .allowsHitTesting(!store.navigating)
                 .padding(.vertical, 8)
             HStack(spacing: 6) {
                 HStack(spacing: 6) {

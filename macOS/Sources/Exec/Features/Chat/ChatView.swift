@@ -3,7 +3,7 @@ import SwiftUI
 struct ChatView: View {
     @Bindable var store: ChatLibrary
     let windows: SessionWindows
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {

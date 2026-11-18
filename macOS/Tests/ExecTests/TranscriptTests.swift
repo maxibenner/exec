@@ -4,7 +4,7 @@ import SwiftUI
 @MainActor struct TranscriptTests {
     private struct ComposerPreview: View {
         let panel: ChatPanel
-        @FocusState private var focused: Bool
+        @State private var focused = false
 
         var body: some View {
             ChatComposer(store: panel, focused: $focused)
