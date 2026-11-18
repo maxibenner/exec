@@ -66,7 +66,8 @@ private struct VirtualTranscript: NSViewRepresentable {
     let state: TranscriptState
     private var messages: [Message] = []
     private var arrivingToolIDs: Set<UUID> = []
-    private var arrivingTextIDs: Set<UUID> = []
+    private var streamingGrowthPending = false
+    private let growthMotion = TranscriptGrowthMotion()
     private var messagesChanged = true
     private var rows: [UUID: MessageHost] = [:]
     private var reuse: [MessageHost] = []
@@ -116,8 +117,14 @@ private struct VirtualTranscript: NSViewRepresentable {
         verticalScrollElasticity = .allowed
         autohidesScrollers = true
         automaticallyAdjustsContentInsets = false
+        content.wantsLayer = true
         documentView = content
+        growthMotion.layer = content.layer
         contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(selectionChanged(_:)),
+            name: NSTextView.didChangeSelectionNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(motionPolicyChanged),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled),
             name: NSView.boundsDidChangeNotification, object: contentView)
     }
@@ -136,6 +143,8 @@ private struct VirtualTranscript: NSViewRepresentable {
         let filtered = messages.filter {
             $0.compaction != nil || $0.role != .assistant || !$0.text.isEmpty || $0.status == .failed
         }
+        streamingGrowthPending = initialized && Self.isStreamingGrowth(from: self.messages, to: filtered)
+        if self.messages != filtered, !streamingGrowthPending { cancelGrowthMotion() }
         // Look for the latest user row, not the last visible row: the first
         // response chunk may arrive in the same SwiftUI update as the send.
         if hasReceivedMessages, let sent = filtered.last(where: { $0.role == .user }),
@@ -149,9 +158,6 @@ private struct VirtualTranscript: NSViewRepresentable {
         if hasReceivedMessages {
             let previous = Set(self.messages.map(\.id))
             arrivingToolIDs.formUnion(filtered.filter { $0.isToolCard && !previous.contains($0.id) }.map(\.id))
-            arrivingTextIDs.formUnion(filtered.filter {
-                $0.role == .assistant && !$0.isToolCard && $0.status == .streaming && !previous.contains($0.id)
-            }.map(\.id))
         }
         hasReceivedMessages = true
         if let id = state.sentMessageID, !filtered.contains(where: { $0.id == id }) {
@@ -164,6 +170,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         }
         if jumpRequest != self.jumpRequest {
             cancelScrollAnimation()
+            cancelGrowthMotion()
             state.sentMessageID = nil
             state.followsLatest = true
             self.jumpRequest = jumpRequest
@@ -188,10 +195,11 @@ private struct VirtualTranscript: NSViewRepresentable {
         // later animation tick/run-loop turn.
         super.viewWillDraw()
         if refreshNeeded { refresh() }
+        growthMotion.commit()
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil { cancelScrollAnimation() }
+        if window == nil { cancelScrollAnimation(); cancelGrowthMotion() }
         selectionClearing?.stop()
         selectionClearing = nil
         if window != nil, !detached {
@@ -204,6 +212,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     func navigateSentMessage(_ direction: MessageNavigationDirection) {
         guard !detached, !updating, contentSize.width > 0, contentSize.height > 0 else { return }
         cancelScrollAnimation()
+        cancelGrowthMotion()
         // Settle even during rubber-banding so message indices and geometry agree.
         requestedScroll = true
         refresh()
@@ -235,12 +244,14 @@ private struct VirtualTranscript: NSViewRepresentable {
 
     func detach() {
         cancelScrollAnimation()
+        cancelGrowthMotion()
         detached = true
         if state.scrollView === self { state.scrollView = nil }
         selectionClearing?.stop()
         selectionClearing = nil
         rememberAnchor()
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         for row in rows.values { row.didInvalidateSize = nil; row.removeFromSuperview() }
         rows.removeAll()
         reuse.removeAll()
@@ -264,6 +275,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     // Scope native scroller actions and keyboard scrolling, not layout work
     // that happens to produce a bounds notification between reader actions.
     func withReaderScroll(_ action: () -> Void) {
+        cancelGrowthMotion()
         let wasTracking = trackingReaderScroll
         trackingReaderScroll = true
         defer { trackingReaderScroll = wasTracking }
@@ -276,6 +288,7 @@ private struct VirtualTranscript: NSViewRepresentable {
 
     private func readerScrolled(down: Bool) {
         cancelScrollAnimation()
+        cancelGrowthMotion()
         navigationAnchor = nil
         readingAnchor = nil
         if !down {
@@ -289,6 +302,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        cancelGrowthMotion()
         // Momentum keeps the gesture's direction. A spring rebound must not
         // undo upward intent, nor opt a downward gesture out of following.
         if event.momentumPhase.isEmpty, event.scrollingDeltaY != 0 {
@@ -305,6 +319,60 @@ private struct VirtualTranscript: NSViewRepresentable {
         }
     }
 
+    // Only an append to a live tail or newly delivered live rows qualifies.
+    // History replacement/removal, restyling and tool status updates are immediate.
+    private static func isStreamingGrowth(from old: [Message], to new: [Message]) -> Bool {
+        guard new.count >= old.count else { return false }
+        var grew = false
+        for (index, previous) in old.enumerated() {
+            let next = new[index]
+            if previous == next { continue }
+            guard index == old.count - 1, previous.id == next.id,
+                  previous.role == .assistant, !previous.isToolCard,
+                  previous.status == .streaming, next.text.hasPrefix(previous.text),
+                  next.text != previous.text else { return false }
+            grew = true
+        }
+        for next in new.dropFirst(old.count) {
+            guard next.isToolCard || (next.role == .assistant && next.status == .streaming) else { return false }
+            grew = true
+        }
+        return grew
+    }
+
+    private var hasTextSelection: Bool {
+        func selected(_ view: NSView) -> Bool {
+            if let text = view as? NSTextView, text.selectedRanges.contains(where: { $0.rangeValue.length > 0 }) { return true }
+            return view.subviews.contains(where: selected)
+        }
+        return selected(content)
+    }
+
+    func cancelGrowthMotion() {
+        streamingGrowthPending = false
+        growthMotion.cancel()
+    }
+
+    @objc private func selectionChanged(_ notification: Notification) {
+        guard let text = notification.object as? NSTextView, text.isDescendant(of: content),
+              text.selectedRanges.contains(where: { $0.rangeValue.length > 0 }) else { return }
+        cancelGrowthMotion()
+    }
+
+    @objc private func motionPolicyChanged() {
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            cancelGrowthMotion()
+            cancelScrollAnimation()
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Native hit testing ignores presentation transforms. Settle BEFORE
+        // AppKit chooses a text/link/control target, including hover and menus.
+        cancelGrowthMotion()
+        return super.hitTest(point)
+    }
+
     private func cancelScrollAnimation() {
         scrollAnimationTask?.cancel()
         scrollAnimationTask = nil
@@ -313,6 +381,7 @@ private struct VirtualTranscript: NSViewRepresentable {
 
     private func beginSendAnimation() {
         cancelScrollAnimation()
+        cancelGrowthMotion()
         // Initial mounting/reopening and offscreen geometry remain immediate.
         guard initialized, window != nil,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
@@ -362,6 +431,19 @@ private struct VirtualTranscript: NSViewRepresentable {
     func refresh() {
         guard !updating, !detached, contentSize.width > 0, contentSize.height > 0 else { return }
         let size = contentSize
+        let oldY = contentView.bounds.minY
+        let selecting = hasTextSelection
+        let canAnimateGrowth = streamingGrowthPending && initialized && state.followsLatest &&
+            window != nil && !requestedScroll && size == lastSize &&
+            topInset == renderedTopInset && bottomInset == renderedBottomInset &&
+            !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion && !selecting &&
+            NSEvent.pressedMouseButtons == 0
+        streamingGrowthPending = false
+        if !state.followsLatest || requestedScroll || size != lastSize ||
+            topInset != renderedTopInset || bottomInset != renderedBottomInset ||
+            NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || selecting {
+            cancelGrowthMotion()
+        }
         if scrollAnimation != nil, size != lastSize || topInset != renderedTopInset ||
             bottomInset != renderedBottomInset || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             cancelScrollAnimation()
@@ -382,6 +464,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         if initialized, size == lastSize, topInset == renderedTopInset, !requestedScroll,
            bounds.minY < 0 || bounds.maxY > content.bounds.height {
             cancelScrollAnimation()
+            cancelGrowthMotion()
             return
         }
         updating = true
@@ -420,8 +503,11 @@ private struct VirtualTranscript: NSViewRepresentable {
         repeat {
             refreshNeeded = false
             passes += 1
+            // Compensated content can expose pixels just above the logical
+            // viewport. Keep those native rows mounted, including small windows.
+            let overscan = max(size.height * 0.5, TranscriptGrowthMotion.maximumOffset)
             let range = state.layout.visibleRange(y: contentView.bounds.minY - topInset,
-                                                  height: size.height, overscan: size.height * 0.5)
+                                                  height: size.height, overscan: overscan)
             let wanted = Set(range.map { messages[$0].id })
             for id in Array(rows.keys) where !wanted.contains(id) {
                 if let row = rows.removeValue(forKey: id) {
@@ -448,8 +534,7 @@ private struct VirtualTranscript: NSViewRepresentable {
                 if row.rootView.message != message || row.rootView.width != width ||
                     row.rootView.roundsTop != roundsTop || row.rootView.roundsBottom != roundsBottom {
                     row.rootView = TranscriptRow(message: message, state: state, width: width,
-                                                 roundsTop: roundsTop, roundsBottom: roundsBottom,
-                                                 revealsInitialText: arrivingTextIDs.contains(message.id))
+                                                 roundsTop: roundsTop, roundsBottom: roundsBottom)
                 }
                 if let height = row.measureHeightIfNeeded() {
                     rowMeasurementCount += 1
@@ -498,7 +583,14 @@ private struct VirtualTranscript: NSViewRepresentable {
             row.layer?.add(animation, forKey: "streamEntrance")
         }
         arrivingToolIDs.removeAll()
-        arrivingTextIDs.removeAll()
+        let growth = contentView.bounds.minY - oldY
+        if canAnimateGrowth, growth > 0 {
+            growthMotion.add(growth: growth)
+            needsDisplay = true
+        } else if growth != 0 {
+            // Late measurements, reflow and other corrections are not arrivals.
+            cancelGrowthMotion()
+        }
         rememberAnchor()
         if changed { scheduleRefresh() }
     }
@@ -545,13 +637,11 @@ private struct TranscriptRow: View {
     let width: CGFloat
     var roundsTop = true
     var roundsBottom = true
-    var revealsInitialText = false
     var heightDidChange: ((CGFloat) -> Void)?
     var body: some View {
         Group {
             if let message { MessageView(message: message, state: state, roundsTop: roundsTop, roundsBottom: roundsBottom).equatable().id(message.id) }
         }
-        .environment(\.revealsInitialStreamedText, revealsInitialText)
         .frame(width: width, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         // Observe natural content height, before the outer frame accepts the
@@ -680,8 +770,7 @@ private struct MessageView: View, Equatable {
                     Label("Failed", systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.red)
                 }
-                if !message.text.isEmpty { MarkdownView(source: message.text, cache: state.markdown, isStreaming: message.status == .streaming)
-                    .environment(\.animatesStreamedText, message.status == .streaming) }
+                if !message.text.isEmpty { MarkdownView(source: message.text, cache: state.markdown, isStreaming: message.status == .streaming) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityLabel("Assistant reply")

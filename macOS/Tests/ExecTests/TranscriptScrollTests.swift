@@ -1,6 +1,29 @@
 import AppKit
 
 @MainActor struct TranscriptScrollTests {
+    func growthCoalescesWithoutMovingLogicalGeometry() throws {
+        let layer = CALayer()
+        let motion = TranscriptGrowthMotion()
+        motion.layer = layer
+        let frame = layer.frame
+        motion.add(growth: 19)
+        motion.add(growth: 29)
+        try expect(motion.pendingOffset == 48)
+        try expect(layer.animationKeys() == nil && layer.frame == frame)
+        motion.commit()
+        let animation = layer.animation(forKey: TranscriptGrowthMotion.animationKey) as! CABasicAnimation
+        try expect(animation.fromValue as? CGFloat == 48 && animation.toValue as? CGFloat == 0)
+        try expect(animation.duration == 0.18 && layer.transform.m42 == 0)
+        motion.commit() // No new measurement: do not restart.
+        try expect((layer.animation(forKey: TranscriptGrowthMotion.animationKey) as! CABasicAnimation).fromValue as? CGFloat == 48)
+        motion.cancel()
+        motion.add(growth: 1000)
+        try expect(motion.pendingOffset == 72)
+        motion.cancel()
+        motion.commit()
+        try expect(layer.animationKeys() == nil && motion.pendingOffset == nil)
+    }
+
     func pinsEveryMeasuredPassAndRespectsManualOptOut() throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
@@ -166,48 +189,6 @@ import AppKit
     private func wheel(_ delta: Int32) -> NSEvent {
         NSEvent(cgEvent: CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
                                 wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0)!)!
-    }
-
-    func onlyNewLiveRowsRevealOnFirstMount() throws {
-        _ = NSApplication.shared
-        let state = TranscriptState()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
-                              styleMask: [.borderless], backing: .buffered, defer: false)
-        var view = TranscriptScrollView(state: state)
-        window.contentView = view
-        defer { view.detach(); window.contentView = nil }
-        func textViews(in root: NSView) -> [LinkedText.TextView] {
-            if let text = root as? LinkedText.TextView { return [text] }
-            return root.subviews.flatMap { textViews(in: $0) }
-        }
-        func update(_ messages: [Message]) {
-            view.update(messages: messages, jumpRequest: state.jumpRequest)
-            view.layoutSubtreeIfNeeded(); view.viewWillDraw()
-        }
-        let history = Message(role: .assistant, text: "Existing live history", status: .streaming)
-        update([history])
-        try expect(textViews(in: view).allSatisfy { ($0.layoutManager as? StreamedTextLayoutManager)?.fades.entrances.isEmpty == true })
-        var reply = Message(role: .assistant, text: "", status: .streaming)
-        update([history, reply]) // Filtered inference placeholder.
-        reply.text = "First live chunk"
-        update([history, reply])
-        let text = textViews(in: view).first { $0.string == reply.text }!
-        let layout = text.layoutManager as! StreamedTextLayoutManager
-        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            try expect(!layout.fades.entrances.isEmpty)
-            try expect(layout.fades.entrances.allSatisfy { $0.waitingForPaint })
-        }
-        reply.status = .complete
-        let count = layout.fades.entrances.count
-        update([history, reply])
-        try expect(layout.fades.entrances.count == count)
-        view.detach()
-        try expect(layout.fades.entrances.isEmpty)
-        view = TranscriptScrollView(state: state)
-        window.contentView = view
-        reply.status = .streaming
-        update([history, reply])
-        try expect(textViews(in: view).allSatisfy { ($0.layoutManager as? StreamedTextLayoutManager)?.fades.entrances.isEmpty == true })
     }
 
     func headerUnderlapPreservesGeometryAndAnchors() throws {

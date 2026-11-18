@@ -4,8 +4,6 @@ import SwiftUI
 /// TextKit supplies link-only cursor rectangles while retaining normal text selection and wrapping.
 struct LinkedText: NSViewRepresentable {
     let text: NSAttributedString
-    @Environment(\.animatesStreamedText) private var animatesStreamedText
-    @Environment(\.revealsInitialStreamedText) private var revealsInitialStreamedText
     @Environment(\.openURL) private var openURL
 
     init(source: AttributedString, fontSize: CGFloat = NSFont.systemFontSize, weight: NSFont.Weight = .regular,
@@ -21,7 +19,7 @@ struct LinkedText: NSViewRepresentable {
         // Use the same complete-document engine as measurement. Viewport-driven
         // TextKit 2 can leave an unvisited tail estimated even in a full-height row.
         let storage = NSTextStorage()
-        let layout = StreamedTextLayoutManager()
+        let layout = NSLayoutManager()
         let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         storage.addLayoutManager(layout)
         layout.addTextContainer(container)
@@ -45,14 +43,8 @@ struct LinkedText: NSViewRepresentable {
 
     func updateNSView(_ view: TextView, context: Context) {
         context.coordinator.open = { url in openURL(url) }
-        view.animatesStreamedText = animatesStreamedText
-        view.revealsInitialStreamedText = revealsInitialStreamedText
         view.update(text)
         context.coordinator.measurement.update(text)
-    }
-
-    static func dismantleNSView(_ view: TextView, coordinator: Coordinator) {
-        (view.layoutManager as? StreamedTextLayoutManager)?.cancelEntrances()
     }
 
     static func attributed(_ source: AttributedString, fontSize: CGFloat = NSFont.systemFontSize,
@@ -87,23 +79,6 @@ struct LinkedText: NSViewRepresentable {
 
     final class TextView: NSTextView {
         private var changingLayout = false
-        private var hasReceivedText = false
-        var animatesStreamedText = false
-        var revealsInitialStreamedText = false
-        private var wasStreaming = false
-        private var wasDetached = false
-        private var streamedLayout: StreamedTextLayoutManager? { layoutManager as? StreamedTextLayoutManager }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            if window == nil {
-                streamedLayout?.cancelEntrances()
-                hasReceivedText = false
-                wasStreaming = false
-                wasDetached = true
-            }
-        }
-
         override func setFrameSize(_ newSize: NSSize) {
             let wasChanging = changingLayout
             changingLayout = true
@@ -181,20 +156,12 @@ struct LinkedText: NSViewRepresentable {
         }
 
         func update(_ text: NSAttributedString) {
-            // Only the transcript can distinguish a new live row from mounted
-            // history. Queue its first entrance before attachment/first drawing.
-            let canAnimate = hasReceivedText
-                ? (animatesStreamedText || wasStreaming) && window != nil
-                : animatesStreamedText && revealsInitialStreamedText && !wasDetached
-            hasReceivedText = true
-            wasStreaming = animatesStreamedText
             guard attributedString() != text else { return }
             let wasChanging = changingLayout
             changingLayout = true
             defer { changingLayout = wasChanging }
             let selection = selectedRange()
             let edit = RenderedTextEdit(from: string, to: text.string)
-            streamedLayout?.prepareEdit(oldLength: (string as NSString).length, edit: edit, animatesNewText: canAnimate)
             textStorage?.setAttributedString(text)
             completeLayout()
             // Streaming updates must not clear an in-progress selection.
@@ -277,24 +244,6 @@ final class LinkedTextMeasurement {
     }
 }
 
-// Scoped to live assistant text; measurement and other selectable text stay static.
-private struct AnimatesStreamedTextKey: EnvironmentKey {
-    static let defaultValue = false
-}
-private struct RevealsInitialStreamedTextKey: EnvironmentKey {
-    static let defaultValue = false
-}
-extension EnvironmentValues {
-    var revealsInitialStreamedText: Bool {
-        get { self[RevealsInitialStreamedTextKey.self] }
-        set { self[RevealsInitialStreamedTextKey.self] = newValue }
-    }
-    var animatesStreamedText: Bool {
-        get { self[AnimatesStreamedTextKey.self] }
-        set { self[AnimatesStreamedTextKey.self] = newValue }
-    }
-}
-
 /// One contiguous rendered edit, with unchanged prefix/suffix retained. This
 /// also recognizes insertion before a code cell's retained paragraph terminator.
 struct RenderedTextEdit {
@@ -332,173 +281,5 @@ struct RenderedTextEdit {
         if offset <= oldRange.location { return offset }
         if offset >= NSMaxRange(oldRange) { return offset + delta }
         return newRange.location + min(offset - oldRange.location, newRange.length)
-    }
-}
-
-/// Each arrival starts on its first paint, split by actual TextKit visual lines.
-/// Lines fade uniformly, with a bounded ordered delay, never a serial queue.
-struct StreamedLineFades {
-    static let duration: TimeInterval = 0.36
-    static let stagger: TimeInterval = 0.025
-    static let maximumDelay: TimeInterval = 0.1
-
-    struct Entrance {
-        var range: NSRange
-        let batch: Int
-        var started: TimeInterval = 0
-        var waitingForPaint = true
-
-        func opacity(at now: TimeInterval) -> CGFloat {
-            guard !waitingForPaint else { return 0 }
-            return min(1, max(0, (now - started) / StreamedLineFades.duration))
-        }
-    }
-
-    private(set) var entrances: [Entrance] = []
-    private var nextBatch = 0
-
-    mutating func expire(at now: TimeInterval) {
-        entrances.removeAll { !$0.waitingForPaint && now - $0.started >= Self.duration }
-    }
-
-    mutating func reset() { entrances.removeAll(keepingCapacity: true) }
-
-    mutating func beginDrawing(_ range: NSRange, at now: TimeInterval,
-                               lines: (NSRange) -> [NSRange]) {
-        let batches = Set(entrances.filter {
-            $0.waitingForPaint && NSIntersectionRange($0.range, range).length > 0
-        }.map(\.batch))
-        // Start the whole batch on one epoch, even if AppKit draws separate
-        // dirty ranges. Later drawing must not reschedule its remaining lines.
-        for batch in batches {
-            var index = 0
-            entrances = entrances.flatMap { entrance -> [Entrance] in
-                guard entrance.batch == batch else { return [entrance] }
-                return lines(entrance.range).map { range in
-                    defer { index += 1 }
-                    return Entrance(range: range, batch: batch,
-                        started: now + min(Double(index) * Self.stagger, Self.maximumDelay),
-                        waitingForPaint: false)
-                }
-            }
-        }
-    }
-
-    mutating func edit(oldLength: Int, edit: RenderedTextEdit,
-                       animatesNewText: Bool, at now: TimeInterval) {
-        expire(at: now)
-        // Retain prefix/suffix timing through rendered Markdown edits. A new
-        // continuation gets its own fade, not the nearly finished previous one.
-        if edit.oldRange.location != oldLength || edit.oldRange.length != 0 {
-            entrances = entrances.flatMap { entrance -> [Entrance] in
-                let prefix = NSIntersectionRange(entrance.range, NSRange(location: 0, length: edit.oldRange.location))
-                let suffix = NSIntersectionRange(entrance.range,
-                    NSRange(location: NSMaxRange(edit.oldRange), length: oldLength - NSMaxRange(edit.oldRange)))
-                var retained: [Entrance] = []
-                if prefix.length > 0 { var part = entrance; part.range = prefix; retained.append(part) }
-                if suffix.length > 0 {
-                    var part = entrance
-                    part.range = NSRange(location: suffix.location + edit.delta, length: suffix.length)
-                    retained.append(part)
-                }
-                return retained
-            }
-        }
-        if animatesNewText, edit.newRange.length > 0,
-           oldLength == 0 || edit.newRange.location > 0 || NSMaxRange(edit.oldRange) < oldLength {
-            entrances.append(Entrance(range: edit.newRange, batch: nextBatch))
-            nextBatch += 1
-        }
-        entrances.sort { $0.range.location < $1.range.location }
-    }
-}
-
-/// Opacity affects only fresh glyphs. TextKit immediately owns the complete
-/// storage, selection, accessibility, shaping and geometry; no reveal mask.
-final class StreamedTextLayoutManager: NSLayoutManager {
-    private(set) var fades = StreamedLineFades()
-    private var timer: Timer?
-    var hasAnimationClock: Bool { timer != nil }
-
-    func prepareEdit(oldLength: Int, edit: RenderedTextEdit, animatesNewText: Bool) {
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-            cancelEntrances()
-            return
-        }
-        invalidateEntrances()
-        fades.edit(oldLength: oldLength, edit: edit, animatesNewText: animatesNewText,
-                   at: ProcessInfo.processInfo.systemUptime)
-    }
-
-    private func startClockIfNeeded() {
-        guard timer == nil, fades.entrances.contains(where: { !$0.waitingForPaint }) else { return }
-        let clock = Timer(timeInterval: 1.0 / 60, target: self,
-                          selector: #selector(advanceEntrance), userInfo: nil, repeats: true)
-        timer = clock
-        RunLoop.main.add(clock, forMode: .common)
-    }
-
-    func cancelEntrances() {
-        invalidateEntrances()
-        fades.reset()
-        timer?.invalidate()
-        timer = nil
-    }
-
-    private func invalidateEntrances() {
-        // No attributed-string rebuilding or full-document allocation per tick.
-        // Include finishing ranges so their last frame is fully opaque.
-        for entrance in fades.entrances {
-            invalidateDisplay(forCharacterRange: entrance.range)
-        }
-    }
-
-    @MainActor @objc private func advanceEntrance() {
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            cancelEntrances()
-            return
-        }
-        invalidateEntrances()
-        fades.expire(at: ProcessInfo.processInfo.systemUptime)
-        if !fades.entrances.contains(where: { !$0.waitingForPaint }) { timer?.invalidate(); timer = nil }
-    }
-
-    deinit { timer?.invalidate() }
-
-    override func drawGlyphs(forGlyphRange range: NSRange, at origin: NSPoint) {
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { cancelEntrances() }
-        guard !fades.entrances.isEmpty else {
-            super.drawGlyphs(forGlyphRange: range, at: origin)
-            return
-        }
-        var cursor = range.location
-        let now = ProcessInfo.processInfo.systemUptime
-        fades.beginDrawing(characterRange(forGlyphRange: range, actualGlyphRange: nil), at: now) { fresh in
-            var lines: [NSRange] = []
-            let glyphs = self.glyphRange(forCharacterRange: fresh, actualCharacterRange: nil)
-            self.enumerateLineFragments(forGlyphRange: glyphs) { _, _, _, line, _ in
-                let characters = self.characterRange(forGlyphRange: line, actualGlyphRange: nil)
-                let portion = NSIntersectionRange(fresh, characters)
-                if portion.length > 0 { lines.append(portion) }
-            }
-            return lines
-        }
-        startClockIfNeeded()
-        for entrance in fades.entrances {
-            let fresh = NSIntersectionRange(NSRange(location: cursor, length: NSMaxRange(range) - cursor),
-                glyphRange(forCharacterRange: entrance.range, actualCharacterRange: nil))
-            guard fresh.length > 0 else { continue }
-            if fresh.location > cursor {
-                super.drawGlyphs(forGlyphRange: NSRange(location: cursor, length: fresh.location - cursor), at: origin)
-            }
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current?.cgContext.setAlpha(entrance.opacity(at: now))
-            super.drawGlyphs(forGlyphRange: fresh, at: origin)
-            NSGraphicsContext.restoreGraphicsState()
-            cursor = NSMaxRange(fresh)
-        }
-        if cursor < NSMaxRange(range) {
-            super.drawGlyphs(forGlyphRange: NSRange(location: cursor, length: NSMaxRange(range) - cursor), at: origin)
-        }
     }
 }
