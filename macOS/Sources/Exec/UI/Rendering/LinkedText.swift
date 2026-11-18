@@ -79,7 +79,6 @@ struct LinkedText: NSViewRepresentable {
 
     final class TextView: NSTextView {
         private var changingLayout = false
-
         override func setFrameSize(_ newSize: NSSize) {
             let wasChanging = changingLayout
             changingLayout = true
@@ -162,11 +161,13 @@ struct LinkedText: NSViewRepresentable {
             changingLayout = true
             defer { changingLayout = wasChanging }
             let selection = selectedRange()
+            let edit = RenderedTextEdit(from: string, to: text.string)
             textStorage?.setAttributedString(text)
             completeLayout()
             // Streaming updates must not clear an in-progress selection.
-            let start = min(selection.location, text.length)
-            setSelectedRange(NSRange(location: start, length: min(selection.length, text.length - start)))
+            let start = min(edit.map(selection.location, afterInsertion: selection.length > 0), text.length)
+            let end = min(edit.map(NSMaxRange(selection)), text.length)
+            setSelectedRange(NSRange(location: start, length: max(0, end - start)))
             invalidateIntrinsicContentSize()
         }
 
@@ -240,5 +241,45 @@ final class LinkedTextMeasurement {
         if sizes.count >= 8 { sizes.removeAll(keepingCapacity: true) }
         sizes[width] = result
         return result
+    }
+}
+
+/// One contiguous rendered edit, with unchanged prefix/suffix retained. This
+/// also recognizes insertion before a code cell's retained paragraph terminator.
+struct RenderedTextEdit {
+    let oldRange: NSRange
+    let newRange: NSRange
+    var delta: Int { newRange.length - oldRange.length }
+
+    init(from old: String, to new: String) {
+        let before = old as NSString, after = new as NSString
+        // Keep appends inside partial graphemes on the append path.
+        if after.length >= before.length, after.substring(to: before.length) == old {
+            oldRange = NSRange(location: before.length, length: 0)
+            newRange = NSRange(location: before.length, length: after.length - before.length)
+            return
+        }
+        var prefix = 0, suffix = 0
+        for (a, b) in zip(old, new) {
+            guard String(a).utf16.elementsEqual(String(b).utf16) else { break }
+            prefix += String(a).utf16.count
+        }
+        for (a, b) in zip(old.reversed(), new.reversed()) {
+            let length = String(a).utf16.count
+            guard String(a).utf16.elementsEqual(String(b).utf16),
+                  prefix + suffix + length <= min(before.length, after.length) else { break }
+            suffix += length
+        }
+        oldRange = NSRange(location: prefix, length: before.length - prefix - suffix)
+        newRange = NSRange(location: prefix, length: after.length - prefix - suffix)
+    }
+
+    func map(_ offset: Int, afterInsertion: Bool = false) -> Int {
+        // A nonempty selection starts after inserted delimiters, but its end
+        // stays before appended text. A caret keeps its existing affinity.
+        if afterInsertion, oldRange.length == 0, offset == oldRange.location { return NSMaxRange(newRange) }
+        if offset <= oldRange.location { return offset }
+        if offset >= NSMaxRange(oldRange) { return offset + delta }
+        return newRange.location + min(offset - oldRange.location, newRange.length)
     }
 }

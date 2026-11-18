@@ -150,3 +150,63 @@ The lazy alternative is an experiment, not a production renderer. Results do not
 establish real gesture smoothness, GPU/energy use, selection correctness, or behavior
 with large tool cards/images. Compare repeated trials on the same machine and build;
 do not treat historical measurements as current performance guarantees.
+
+## Transcript streaming motion probe
+
+```sh
+./scripts/probe-transcript-streaming.sh .build/transcript-streaming-results
+.build/transcript-streaming-probe --reduce-motion .build/transcript-streaming-reduced
+```
+
+Opens one isolated native transcript at a time with synthetic long Markdown/text,
+never a profile, provider, Keychain or account. Runs light/dark × 430/900pt ×
+fast/slow/bursty cases. The script injects only a test-local Reduce Motion policy
+into a generated transcript copy; it does not change system preferences.
+
+Reports include actual presentation-layer offsets and converted native positions,
+logical scroll positions, current-offset overlap checks, same-frame coalescing,
+upward direction/settling, bounded offset, overscan geometry, tool-card opacity,
+passive/rejected hit-test stability, pre-delivery press/drag/context-menu rebasing,
+manual pause/resume (including the 2pt opt-out),
+resize/insets, Reduce Motion changes, history geometry and remount/navigation.
+Interaction checks compare actual displayed link glyphs with the native character
+and hit view at the same window point, including the old incorrect character,
+unpainted pending growth, selection notifications and a displayed native button.
+They also verify the next committed presentation anchor, reader opt-out and safe
+range clamping. Only this diagnostic interaction phase freezes a sampled layer's
+clock; overlap, settling and status-only completion run on the normal clock.
+Completion checks retain the original animation start/from/duration/deadline with
+a nonzero presentation offset, while final Markdown corrections settle immediately.
+Synthetic events pass through the app's local monitors and stop at the probe window
+before opening links/menus; no system events are posted. `--smoke` runs the first
+matrix case for targeted diagnosis.
+A separate first-paint phase compares **every alpha pixel** in streamed TextKit
+output against an ordinary native text-view/layout-manager reference, including
+partial final text and an unfinished code fence. PNGs are offscreen TextKit renders,
+not desktop/window screenshots. Bitmap work is separate from motion sampling so
+rasterization does not consume the animation being measured. JSON/PNG outputs and
+build products remain under `.build/`; no reports are committed.
+
+Following still pins synchronously. Only actual incoming growth receives a single
+180ms ease-out document-layer translation, incorporating the current presentation
+offset. Arrivals before paint coalesce. The compensation is capped at 72pt; larger
+bursts snap the excess, and sustained arrivals can retain a bounded visual offset.
+There is no text fade, reveal queue or Markdown cross-dissolve. Passive hit testing
+has no motion side effects. Reader presses/drags/menu gestures inside the transcript
+rebase the displayed compensation into native scrolling before target delivery,
+then opt out of following and retain a reading anchor. The presentation viewport,
+not queued compensation/model geometry, is used even before paint. Native selection
+notifications and keyboard/wheel/scroller input use the same rebase. The new origin
+is clamped to the valid scroll range; preservation is necessarily limited at a
+boundary or when content itself reflows. Reduce Motion and detach still cancel
+immediately. Geometry-preserving status-only completion finishes existing motion
+without restarting; changed Markdown structure/styles and layout corrections settle.
+Tool entrances and the separate 200ms send anchor remain independent.
+
+The fixture is deterministic; compositor sampling cadence is not. These checks do
+not establish physical gesture feel, live provider pacing, GPU frame rate or final
+composited pixel/clipping correctness. Overscan geometry and full TextKit pixels
+are checked separately; manual inspection of the final composited viewport,
+physical selection/link/menu gestures, VoiceOver actions and arbitrary bursty
+streams remains necessary. Programmatic selection exercises the shared native
+notification path, not end-to-end assistive-technology interaction.

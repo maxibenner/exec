@@ -1,6 +1,245 @@
 import AppKit
 
 @MainActor struct TranscriptScrollTests {
+    func growthCoalescesWithoutMovingLogicalGeometry() throws {
+        let layer = CALayer()
+        let motion = TranscriptGrowthMotion()
+        motion.layer = layer
+        let frame = layer.frame
+        motion.add(growth: 19)
+        motion.add(growth: 29)
+        try expect(motion.pendingOffset == 48)
+        try expect(layer.animationKeys() == nil && layer.frame == frame)
+        motion.commit()
+        let animation = layer.animation(forKey: TranscriptGrowthMotion.animationKey) as! CABasicAnimation
+        try expect(animation.fromValue as? CGFloat == 48 && animation.toValue as? CGFloat == 0)
+        try expect(animation.duration == 0.18 && layer.transform.m42 == 0)
+        motion.commit() // No new measurement: do not restart.
+        try expect((layer.animation(forKey: TranscriptGrowthMotion.animationKey) as! CABasicAnimation).fromValue as? CGFloat == 48)
+        motion.cancel()
+        motion.add(growth: 1000)
+        try expect(motion.pendingOffset == 72)
+        motion.cancel()
+        motion.commit()
+        try expect(layer.animationKeys() == nil && motion.pendingOffset == nil)
+    }
+
+    func completionPreservesOnlyIdenticalRendering() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        window.contentView = view
+        defer { view.detach(); window.contentView = nil }
+        var messages = [Message(role: .assistant, text: String(repeating: "Paragraph.\n\n", count: 30) + "```swift\nlet code = 1\n```\n\nTail.", status: .streaming)]
+        func update() {
+            view.update(messages: messages, jumpRequest: state.jumpRequest)
+            view.layoutSubtreeIfNeeded(); view.viewWillDraw()
+        }
+        func seedMotion() {
+            // Policy-independent test of cancellation, not live presentation.
+            let animation = CABasicAnimation(keyPath: "transform.translation.y")
+            animation.fromValue = 48; animation.toValue = 0; animation.duration = 0.18
+            view.documentView!.layer!.add(animation, forKey: TranscriptGrowthMotion.animationKey)
+        }
+        func active() -> Bool { view.documentView!.layer!.animation(forKey: TranscriptGrowthMotion.animationKey) != nil }
+        update()
+        seedMotion()
+        _ = view.hitTest(NSPoint(x: 50, y: 50))
+        _ = view.hitTest(NSPoint(x: -50, y: -50))
+        try expect(active()) // Both accepted and rejected passive queries are inert.
+        messages[0].status = .complete
+        update()
+        try expect(active() == !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        // Same source can change rendering on completion: an empty provisional
+        // code block disappears. It must settle immediately, not finish the FLIP.
+        messages[0].text += "\n\n```swift"
+        messages[0].status = .streaming
+        update()
+        let streamingHeight = state.layout.totalHeight
+        seedMotion()
+        messages[0].status = .complete
+        update()
+        try expect(!active() && state.layout.totalHeight != streamingHeight)
+        // Restyling, replacements and removals must not inherit old motion.
+        for change in 0..<3 {
+            seedMotion()
+            if change == 0 { messages[0].text = "**Replacement**" }
+            if change == 1 { messages = [Message(role: .assistant, text: messages[0].text)] }
+            if change == 2 { messages = [] }
+            update()
+            try expect(!active())
+        }
+    }
+
+    func pinsEveryMeasuredPassAndRespectsManualOptOut() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        window.contentView = view
+        defer { view.detach(); window.contentView = nil }
+        var messages = [Message(role: .assistant, text: String(repeating: "Answer paragraph.\n\n", count: 30),
+                                status: .streaming)]
+        func assertPinned() throws {
+            try expect(state.followsLatest && !view.isAnimatingScroll)
+            try expect(view.contentView.bounds.maxY == view.documentView!.bounds.height)
+            for row in view.documentView!.subviews {
+                try expect(abs(row.frame.height - ceil(row.fittingSize.height)) < 1)
+            }
+        }
+        func update(inset: CGFloat = 0) throws {
+            view.update(messages: messages, jumpRequest: state.jumpRequest, bottomInset: inset)
+            try assertPinned() // No timer, Task sleep, or additional refresh allowed.
+            view.layoutSubtreeIfNeeded()
+            try assertPinned()
+            view.viewWillDraw()
+            try assertPinned()
+        }
+        try update()
+        for count in [1, 10, 300] {
+            messages[0].text += String(repeating: "More answer.\n\n", count: count)
+            try update()
+        }
+        // A burst of initially estimated rows must be measured/mounted before
+        // returning to paint, not just pinned to an old document-height estimate.
+        messages += (0..<40).map { Message(role: .assistant, text: "Row \($0) with `code`", status: .streaming) }
+        try update()
+        for inset: CGFloat in [100, 20, 180, 0] { try update(inset: inset) }
+        view.updateHeaderInset(52)
+        try update(inset: 80)
+        for width: CGFloat in [430, 820, 700] {
+            view.frame.size.width = width
+            try update()
+        }
+        // A keyboard/scrollbar movement of only two pixels must not be swallowed
+        // by the old 40pt tolerance, even after no-op bounds notifications.
+        view.withReaderScroll { view.contentView.scroll(to: NSPoint(x: 0, y: view.contentView.bounds.minY - 2)) }
+        try expect(!state.followsLatest)
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: view.contentView)
+        let readingY = view.contentView.bounds.minY
+        messages[0].text += String(repeating: "While reading.\n\n", count: 50)
+        view.update(messages: messages, jumpRequest: state.jumpRequest)
+        view.layoutSubtreeIfNeeded(); view.viewWillDraw()
+        try expect(view.contentView.bounds.minY == readingY && !state.followsLatest)
+        state.jumpToLatest()
+        try update()
+        messages[0].status = .complete
+        try update()
+        messages.append(Message(role: .user, text: "Next question"))
+        view.update(messages: messages, jumpRequest: state.jumpRequest)
+        try expect(!state.followsLatest)
+        try expect(view.isAnimatingScroll == !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        state.jumpToLatest()
+        try update()
+        // Native wheel delivery is local, not posted to the system.
+        let wheel = NSEvent(cgEvent: CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                            wheelCount: 1, wheel1: 1, wheel2: 0, wheel3: 0)!)!
+        view.scrollWheel(with: wheel)
+        try expect(!state.followsLatest && !view.isAnimatingScroll)
+    }
+
+    func bottomFollowSurvivesNativeGeometryAndBounce() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        window.contentView = view
+        defer { view.detach(); window.contentView = nil }
+        var reply = Message(role: .assistant, text: "Short", status: .streaming)
+        func update() throws {
+            view.update(messages: [reply], jumpRequest: state.jumpRequest)
+            view.layoutSubtreeIfNeeded(); view.viewWillDraw()
+            try expect(state.followsLatest && !view.isAnimatingScroll)
+            try expect(view.contentView.bounds.maxY == view.documentView!.bounds.height)
+        }
+        try update()
+        try expect(view.contentView.bounds.minY == 0)
+        for count in [2, 20, 40] {
+            reply.text += String(repeating: "Growing paragraph.\n\n", count: count)
+            try update()
+        }
+        let bottom = view.contentView.bounds.minY
+        try expect(bottom > 100)
+        // A delayed native layout/selection correction outside refresh used to
+        // opt out on just two pixels of upward bounds movement.
+        view.contentView.scroll(to: NSPoint(x: 0, y: bottom - 2))
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: view.contentView)
+        try expect(state.followsLatest)
+        try update()
+        // AppKit rubber-bands, then springs back without new reader input.
+        for y in [bottom + 12, bottom + 6, bottom] {
+            view.contentView.setBoundsOrigin(NSPoint(x: 0, y: y))
+            view.refresh()
+            try expect(state.followsLatest)
+        }
+        reply.text += "After bouncing.\n\n"
+        try update()
+        // Actual upward wheel intent opts out even at the edge. A native
+        // rebound back to bottom cannot opt in on that reader's behalf.
+        view.scrollWheel(with: wheel(1))
+        try expect(!state.followsLatest)
+        let newBottom = view.documentView!.bounds.height - view.contentView.bounds.height
+        view.contentView.setBoundsOrigin(NSPoint(x: 0, y: newBottom))
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: view.contentView)
+        try expect(!state.followsLatest)
+        // Scrollbar/keyboard tracking resumes within a fractional point margin,
+        // not only when it happens to land less than one point from the edge.
+        let target = ScrollerTarget(view: view)
+        target.y = newBottom - 10
+        try expect(view.verticalScroller!.sendAction(#selector(ScrollerTarget.scroll), to: target))
+        try expect(!state.followsLatest)
+        target.y = newBottom - 1.5
+        try expect(view.verticalScroller!.sendAction(#selector(ScrollerTarget.scroll), to: target))
+        try expect(state.followsLatest)
+        reply.text += "Following again.\n\n"
+        try update()
+    }
+
+    func boundaryWheelResumesShortReservedTurn() throws {
+        _ = NSApplication.shared
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        defer { view.detach() }
+        view.frame.size = NSSize(width: 700, height: 500)
+        view.update(messages: [], jumpRequest: 0)
+        let sent = Message(role: .user, text: "Question")
+        var reply = Message(role: .assistant, text: "Short answer", status: .streaming)
+        view.update(messages: [sent, reply], jumpRequest: 0)
+        view.layoutSubtreeIfNeeded(); view.viewWillDraw()
+        let y = view.contentView.bounds.minY
+        try expect(view.contentView.bounds.maxY == view.documentView!.bounds.height)
+        try expect(!state.followsLatest && state.sentMessageID == sent.id)
+        // Merely filling reserved space or delivering a delayed bounds event is
+        // not permission to abandon the new-turn top anchor.
+        reply.text += " More of the short answer."
+        view.update(messages: [sent, reply], jumpRequest: 0)
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: view.contentView)
+        try expect(!state.followsLatest && state.sentMessageID == sent.id)
+        view.scrollWheel(with: wheel(-1)) // Down at the boundary: no bounds movement required.
+        try expect(view.contentView.bounds.minY == y)
+        try expect(state.followsLatest && state.sentMessageID == nil)
+        reply.text += String(repeating: "Now beyond the fold.\n\n", count: 40)
+        view.update(messages: [sent, reply], jumpRequest: 0)
+        view.layoutSubtreeIfNeeded(); view.viewWillDraw()
+        try expect(state.followsLatest && view.contentView.bounds.maxY == view.documentView!.bounds.height)
+    }
+
+    @MainActor private final class ScrollerTarget: NSObject {
+        let view: TranscriptScrollView
+        var y: CGFloat = 0
+        init(view: TranscriptScrollView) { self.view = view }
+        @objc func scroll() { view.contentView.scroll(to: NSPoint(x: 0, y: y)) }
+    }
+
+    private func wheel(_ delta: Int32) -> NSEvent {
+        NSEvent(cgEvent: CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0)!)!
+    }
+
     func headerUnderlapPreservesGeometryAndAnchors() throws {
         _ = NSApplication.shared
         let state = TranscriptState()
@@ -30,7 +269,7 @@ import AppKit
             try expect(state.followsLatest)
         }
         // Keep a manually chosen reading position while the header changes.
-        view.contentView.scroll(to: NSPoint(x: 0, y: 50))
+        view.withReaderScroll { view.contentView.scroll(to: NSPoint(x: 0, y: 50)) }
         view.reflectScrolledClipView(view.contentView)
         view.refresh()
         try expect(!state.followsLatest)

@@ -1,14 +1,17 @@
 import AppKit
 
-/// Clear other text selections on a primary click inside this transcript, without
-/// consuming the click or interfering with selection/shift-click in its target.
+/// Prepare reader interactions before native delivery, then clear other text
+/// selections on primary clicks without consuming or rewriting the event.
 @MainActor final class TranscriptSelectionClearing {
     private weak var transcript: NSView?
     private var monitor: Any?
+    private let prepareInteraction: () -> Void
 
-    init(_ transcript: NSView) {
+    init(_ transcript: NSView, prepareInteraction: @escaping () -> Void = {}) {
         self.transcript = transcript
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+        self.prepareInteraction = prepareInteraction
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown,
+                                                             .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]) { [weak self] event in
             self?.handle(event)
             return event
         }
@@ -20,11 +23,18 @@ import AppKit
     }
 
     func handle(_ event: NSEvent) {
-        guard monitor != nil, event.type == .leftMouseDown, !event.modifierFlags.contains(.control),
+        guard monitor != nil,
+              [.leftMouseDown, .rightMouseDown, .otherMouseDown,
+               .leftMouseDragged, .rightMouseDragged, .otherMouseDragged].contains(event.type),
               let transcript, let window = transcript.window,
               event.window === window, let root = window.contentView else { return }
         let point = root.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
-        guard let hit = root.hitTest(point), contains(transcript, hit) else { return }
+        // This first hit only establishes ownership (excluding covering panels).
+        // Re-hit after rebasing; the old model-space text/control is NOT a target.
+        guard let owner = root.hitTest(point), contains(transcript, owner) else { return }
+        prepareInteraction()
+        guard event.type == .leftMouseDown, !event.modifierFlags.contains(.control),
+              let hit = root.hitTest(point), contains(transcript, hit) else { return }
         clearSelections(in: transcript, except: hit, window: window)
     }
 

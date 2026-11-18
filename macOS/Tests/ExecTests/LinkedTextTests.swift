@@ -2,6 +2,24 @@ import AppKit
 
 @MainActor
 struct LinkedTextTests {
+    func renderedEditsPreserveSelectionAndCodeAppendPositions() throws {
+        let view = LinkedText.TextView(frame: NSRect(x: 0, y: 0, width: 240, height: 1000))
+        view.update(LinkedText.attributed(AttributedString("Before `partial")))
+        view.setSelectedRange(NSRange(location: 8, length: 7))
+        view.update(LinkedText.attributed(AttributedString("Before partial")))
+        try expect(view.selectedRange() == NSRange(location: 7, length: 7))
+        let edit = RenderedTextEdit(from: "swift\nlet val\n", to: "swift\nlet value = 1\n")
+        try expect(edit.oldRange == NSRange(location: 13, length: 0))
+        try expect(edit.map(14) == 20 && edit.map(13) == 13)
+        for (partial, complete) in [("cafe", "cafe\u{301}"), ("👩", "👩🏽‍💻"), ("🇺", "🇺🇳"), ("1", "1️⃣")] {
+            view.update(LinkedText.attributed(AttributedString("History " + partial)))
+            view.setSelectedRange(NSRange(location: 0, length: 7))
+            view.update(LinkedText.attributed(AttributedString("History " + complete)))
+            try expect(view.string == "History " + complete)
+            try expect(view.selectedRange() == NSRange(location: 0, length: 7))
+        }
+    }
+
     func measuresWrappingAcrossWidthsAndUpdates() throws {
         // Markdown must not reserve an extra empty line after ordinary replies.
         let source = "That confirms the fix is the latest commit. One more call below to check whether the placement stays consistent."

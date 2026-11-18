@@ -288,6 +288,12 @@ import SwiftUI
         guard text.selectedRange() == selection && state.layout.heights.last! > narrowHeight else {
             throw CheckFailure(description: "Streaming selection=\(text.selectedRange()), height=\(state.layout.heights.last!), previous=\(narrowHeight), measurements=\(view.rowMeasurementCount)")
         }
+        // Content/layout are immediate; follow-down eases toward the final bottom.
+        // Bound the wait rather than relying on the short layout-settling helper.
+        for _ in 0..<40 {
+            if abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 1 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
         try expect(abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 1)
         let settledCount = view.rowMeasurementCount
         try await settle(view)
@@ -334,7 +340,7 @@ import SwiftUI
         }
         // Rows outside the viewport must still be measured when revisited after
         // a width change, rather than treating retained estimates as final sizes.
-        view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[10] + 8))
+        view.withReaderScroll { view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[10] + 8)) }
         view.refresh()
         try await settle(view)
         try expect(!state.followsLatest)
@@ -565,12 +571,11 @@ import SwiftUI
         view.update(messages: messages, jumpRequest: 0)
         view.layoutSubtreeIfNeeded(); view.refresh()
         let bottom = view.documentView!.bounds.height - view.contentView.bounds.height
-        // Being near the bottom should enable following future content without
-        // snapping the current gesture to the edge.
-        view.contentView.setBoundsOrigin(NSPoint(x: 0, y: bottom - 15))
+        // Even a small upward move opts out; refresh must not undo that intent.
+        view.withReaderScroll { view.contentView.setBoundsOrigin(NSPoint(x: 0, y: bottom - 15)) }
         view.refresh()
         let remaining = view.documentView!.bounds.height - view.contentView.bounds.maxY
-        try expect(state.followsLatest && abs(remaining - 15) < 1)
+        try expect(!state.followsLatest && abs(remaining - 15) < 1)
         // Explicit navigation must still reach the edge after a user scroll.
         state.jumpToLatest()
         view.update(messages: messages, jumpRequest: state.jumpRequest)
@@ -703,7 +708,7 @@ import SwiftUI
         view.layoutSubtreeIfNeeded(); view.refresh()
         try expect(view.mountedRowCount > 0 && view.mountedRowCount < 40)
         try expect(abs(view.contentView.bounds.maxY - view.documentView!.bounds.height) < 2)
-        view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[500] + 8))
+        view.withReaderScroll { view.contentView.scroll(to: NSPoint(x: 0, y: state.layout.offsets[500] + 8)) }
         view.refresh()
         try expect(!state.followsLatest)
         let anchor = state.layout.anchor(at: view.contentView.bounds.minY)!

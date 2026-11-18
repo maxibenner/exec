@@ -4,10 +4,11 @@ import SwiftUI
 struct MarkdownView: View {
     private let text: NSAttributedString
 
-    init(source: String, cache: MarkdownCache? = nil) {
+    init(source: String, cache: MarkdownCache? = nil, isStreaming: Bool = false) {
         // Only mounted rows render. Measure actual Markdown on the first layout,
         // not literal source whose soft breaks may subsequently collapse away.
-        text = cache?.initialText(for: source) ?? MarkdownText.render(MarkdownDocument.parse(source))
+        text = cache?.initialText(for: source, isStreaming: isStreaming)
+            ?? MarkdownText.render(isStreaming ? StreamingMarkdown.parse(source) : MarkdownDocument.parse(source))
     }
 
     var body: some View {
@@ -23,10 +24,20 @@ struct MarkdownView: View {
 /// offscreen messages still have only estimates and do not populate this cache.
 @MainActor final class MarkdownCache {
     private let entries = NSCache<NSString, NSAttributedString>()
-    init() { entries.countLimit = 64; entries.totalCostLimit = 2 * 1024 * 1024 }
+    private let streamingEntries = NSCache<NSString, NSAttributedString>()
+    init() {
+        entries.countLimit = 64; entries.totalCostLimit = 2 * 1024 * 1024
+        streamingEntries.countLimit = 8; streamingEntries.totalCostLimit = 2 * 1024 * 1024
+    }
 
-    func initialText(for source: String) -> NSAttributedString {
-        renderedText(for: source) ?? insert(MarkdownDocument.parse(source), for: source)
+    func initialText(for source: String, isStreaming: Bool = false) -> NSAttributedString {
+        guard isStreaming else { return renderedText(for: source) ?? insert(MarkdownDocument.parse(source), for: source) }
+        // Separate provisional and canonical entries, even for identical source.
+        let key = ("stream:" + source) as NSString
+        if let cached = streamingEntries.object(forKey: key) { return cached }
+        let text = NSAttributedString(attributedString: MarkdownText.render(StreamingMarkdown.parse(source)))
+        streamingEntries.setObject(text, forKey: key, cost: source.utf8.count + text.length * 2)
+        return text
     }
 
     func renderedText(for source: String) -> NSAttributedString? {

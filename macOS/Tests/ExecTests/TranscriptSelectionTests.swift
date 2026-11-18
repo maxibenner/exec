@@ -20,7 +20,8 @@ import SwiftUI
         }
         let first = text(at: 20)
         let second = text(at: 120)
-        let clearing = TranscriptSelectionClearing(transcript)
+        var preparations = 0
+        let clearing = TranscriptSelectionClearing(transcript) { preparations += 1 }
         defer { clearing.stop(); window.contentView = nil }
         func click(_ point: NSPoint, type: NSEvent.EventType = .leftMouseDown,
                    modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
@@ -40,6 +41,8 @@ import SwiftUI
         first.setSelectedRange(selected)
         clearing.handle(click(NSPoint(x: 500, y: 400), type: .rightMouseDown))
         clearing.handle(click(NSPoint(x: 500, y: 400), modifiers: .control))
+        let beforeRejected = preparations
+        clearing.handle(click(NSPoint(x: 40, y: 40), type: .mouseMoved))
         clearing.handle(click(NSPoint(x: 700, y: 400))) // Sidebar / composer outside the transcript.
         let otherWindow = NSWindow(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         let foreign = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 500, y: 400),
@@ -51,7 +54,10 @@ import SwiftUI
         root.addSubview(overlay)
         clearing.handle(click(NSPoint(x: 40, y: 40)))
         try expect(first.selectedRange() == selected) // Overlapping approval panels are not chat clicks.
+        try expect(preparations == beforeRejected)
         overlay.removeFromSuperview()
+        clearing.handle(click(NSPoint(x: 40, y: 40), type: .leftMouseDragged))
+        try expect(preparations == beforeRejected + 1 && first.selectedRange() == selected)
 
         // A button still receives the original click; clearing doesn't consume events.
         let button = NSButton(title: "Tool disclosure", target: nil, action: nil)
