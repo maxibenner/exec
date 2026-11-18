@@ -82,6 +82,8 @@ struct SessionSidebar: View {
                         .onTapGesture { activate(session.id) }
                         .accessibilityAction { activate(session.id) }
                 }
+                .padding(.horizontal, 10)
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
                 .listRowBackground(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(store.sidebarSelectionID == session.id
