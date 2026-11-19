@@ -14,12 +14,41 @@ use tokio_tungstenite::{
 };
 use tokio_util::sync::CancellationToken;
 
+const MAX_FRAME: usize = 1024 * 1024;
+
 #[derive(Serialize, Deserialize)]
 struct Envelope {
     kind: String,
     client: String,
     #[serde(default)]
     data: String,
+}
+impl Envelope {
+    fn close(client: String) -> Self {
+        Self {
+            kind: "close".into(),
+            client,
+            data: String::new(),
+        }
+    }
+    fn text(&self) -> Result<String> {
+        let text = serde_json::to_string(self).map_err(|_| Error::Internal)?;
+        if text.len() > MAX_FRAME {
+            return Err(Error::Invalid("Remote frame is too large."));
+        }
+        Ok(text)
+    }
+}
+struct Client {
+    incoming: mpsc::Sender<String>,
+    task: tokio::task::AbortHandle,
+}
+impl Drop for Client {
+    fn drop(&mut self) {
+        // Stop buffered commands/handshakes immediately, but not separately
+        // tracked accepted API or pairing transactions.
+        self.task.abort();
+    }
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -119,6 +148,10 @@ impl RemoteAccess {
                 }
             }
         }
+        // The connection future (and its JoinSet) has been dropped before this
+        // drain. Accepted pairing writes keep their lock until memory settles.
+        self.transactions.close();
+        self.transactions.wait().await;
         self.state.lock().await.connection = ConnectionStatus::Disconnected;
     }
     async fn connection(
@@ -137,8 +170,8 @@ impl RemoteAccess {
                 .map_err(|_| Error::Internal)?,
         );
         let limits = WebSocketConfig::default()
-            .max_message_size(Some(1024 * 1024))
-            .max_frame_size(Some(1024 * 1024));
+            .max_message_size(Some(MAX_FRAME))
+            .max_frame_size(Some(MAX_FRAME));
         let (socket, _) = tokio::time::timeout(
             Duration::from_secs(15),
             connect_async_with_config(request, Some(limits), false),
@@ -150,7 +183,7 @@ impl RemoteAccess {
             .await;
         let (mut sink, mut source) = socket.split();
         let (out, mut outgoing) = mpsc::channel::<Envelope>(16);
-        let mut clients = HashMap::<String, mpsc::Sender<String>>::new();
+        let mut clients = HashMap::<String, Client>::new();
         let mut tasks = tokio::task::JoinSet::new();
         let mut ping = tokio::time::interval(Duration::from_secs(20));
         let mut seen = tokio::time::Instant::now();
@@ -159,8 +192,14 @@ impl RemoteAccess {
                 Some(_) = tasks.join_next() => {},
                 Some(frame) = outgoing.recv() => {
                     if frame.kind == "close" { clients.remove(&frame.client); }
-                    let text = serde_json::to_string(&frame).map_err(|_| Error::Internal)?;
-                    tokio::time::timeout(Duration::from_secs(10), sink.send(Message::Text(text.into()))).await.map_err(|_| Error::Internal)?.map_err(|_| Error::Internal)?;
+                    let text = match frame.text() {
+                        Ok(text) => text,
+                        Err(_) => {
+                            clients.remove(&frame.client);
+                            Envelope::close(frame.client).text()?
+                        }
+                    };
+                    write(&mut sink, Message::Text(text.into())).await?;
                 }
                 _ = ping.tick() => {
                     if seen.elapsed() > Duration::from_secs(70) { return Err(Error::Internal); }
@@ -174,15 +213,30 @@ impl RemoteAccess {
                             if frame.client.len() > 64 { return Err(Error::Internal); }
                             match frame.kind.as_str() {
                                 "open" if clients.len() < 4 && !clients.contains_key(&frame.client) => {
-                                    let (tx, rx) = mpsc::channel(4); clients.insert(frame.client.clone(), tx);
+                                    let (tx, rx) = mpsc::channel(4);
                                     let remote = self.clone(); let host = host.clone(); let out = out.clone(); let key = config.private_key.clone();
-                                    tasks.spawn(async move {
-                                        let _ = remote.client(host, &frame.client, &key, &out, rx).await;
-                                        let _ = out.send(Envelope { kind:"close".into(), client:frame.client, data:String::new() }).await;
+                                    let id = frame.client.clone();
+                                    let task = tasks.spawn(async move {
+                                        let _ = remote.client(host, &id, &key, &out, rx).await;
+                                        let _ = out.send(Envelope::close(id)).await;
                                     });
+                                    clients.insert(frame.client, Client { incoming: tx, task });
                                 }
-                                "data" => { if let Some(client) = clients.get(&frame.client) && client.try_send(frame.data).is_err() { return Err(Error::Busy); } }
+                                "data" => {
+                                    if let Some(client) = clients.get(&frame.client)
+                                        && client.incoming.try_send(frame.data).is_err()
+                                    {
+                                        // Backpressure belongs to this peer, not to the
+                                        // shared host socket and all its other clients.
+                                        clients.remove(&frame.client);
+                                        write(&mut sink, Message::Text(Envelope::close(frame.client).text()?.into())).await?;
+                                    }
+                                }
                                 "close" => { clients.remove(&frame.client); }
+                                "open" => {
+                                    clients.remove(&frame.client);
+                                    write(&mut sink, Message::Text(Envelope::close(frame.client).text()?.into())).await?;
+                                }
                                 _ => return Err(Error::Internal),
                             }
                         }
@@ -193,11 +247,11 @@ impl RemoteAccess {
                 }
             }
         }
-        // Dropping JoinSet aborts observers/handshakes. Accepted API mutations are
-        // separately tracked by Host and settle even if the caller disappears.
+        // Dropping JoinSet aborts observers/handshakes. Accepted API and pairing
+        // mutations are separately tracked and settle if the socket disappears.
     }
     async fn client(
-        &self,
+        self: &Arc<Self>,
         host: Weak<Host>,
         id: &str,
         key: &str,
@@ -206,31 +260,33 @@ impl RemoteAccess {
     ) -> Result<()> {
         let mut authorization = self.revision.subscribe();
         let challenge = random();
-        send(out, id, json!({"challenge":challenge,"version":1})).await?;
+        send(
+            out,
+            id,
+            json!({"challenge":challenge,"version":crypto::VERSION}),
+        )
+        .await?;
         let first = tokio::time::timeout(Duration::from_secs(20), incoming.recv())
             .await
             .map_err(|_| Error::Internal)?
             .ok_or(Error::Internal)?;
         let packet: Packet = serde_json::from_str(&first).map_err(|_| Error::Internal)?;
         let peer = packet.public_key.ok_or(Error::Internal)?;
-        let mut receiver: Receiver = crypto::receiver(
-            key,
-            &peer,
-            &packet.encapsulated_key.ok_or(Error::Internal)?,
-            &challenge,
-            "client",
-        )?;
+        let client_encapsulated = packet.encapsulated_key.ok_or(Error::Internal)?;
+        let mut receiver: Receiver =
+            crypto::receiver(key, &peer, &client_encapsulated, &challenge, "client")?;
         let hello: Hello =
             serde_json::from_slice(&crypto::open(&mut receiver, &packet.ciphertext)?)
                 .map_err(|_| Error::Internal)?;
         let device = self
             .authorize_device(&peer, hello.invitation.as_deref(), &hello.name)
             .await?;
-        let (enc, mut sender) = crypto::sender(key, &peer, &challenge, "host")?;
+        let response_context = crypto::response_context(&challenge, &client_encapsulated);
+        let (enc, mut sender) = crypto::sender(key, &peer, &response_context, "host")?;
         let ready = crypto::seal(
             &mut sender,
             &serde_json::to_vec(
-                &json!({"ready":true,"deviceID":device,"changeNotifications":true}),
+                &json!({"ready":true,"version":crypto::VERSION,"deviceID":device,"changeNotifications":true}),
             )
             .unwrap(),
         )?;
@@ -322,18 +378,27 @@ impl RemoteAccess {
         Ok(())
     }
 }
+async fn write<S>(sink: &mut S, message: Message) -> Result<()>
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    tokio::time::timeout(Duration::from_secs(10), sink.send(message))
+        .await
+        .map_err(|_| Error::Internal)?
+        .map_err(|_| Error::Internal)
+}
 async fn send(out: &mpsc::Sender<Envelope>, client: &str, data: Value) -> Result<()> {
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        out.send(Envelope {
-            kind: "data".into(),
-            client: client.into(),
-            data: data.to_string(),
-        }),
-    )
-    .await
-    .map_err(|_| Error::Internal)?
-    .map_err(|_| Error::Internal)
+    let frame = Envelope {
+        kind: "data".into(),
+        client: client.into(),
+        data: data.to_string(),
+    };
+    // Fail this client's loop before queueing an oversized serialized envelope.
+    frame.text()?;
+    tokio::time::timeout(Duration::from_secs(10), out.send(frame))
+        .await
+        .map_err(|_| Error::Internal)?
+        .map_err(|_| Error::Internal)
 }
 async fn reply_body(
     out: &mpsc::Sender<Envelope>,
@@ -385,6 +450,10 @@ async fn encrypted(
     )
     .await
 }
+
+#[cfg(test)]
+#[path = "tunnel_tests.rs"]
+mod connection_tests;
 
 #[cfg(test)]
 mod tests {
@@ -511,8 +580,8 @@ mod tests {
         }
     }
 
-    // Exercise the real authenticated client loop, without a websocket/Host/provider.
-    // Old clients remain silent, and both transport closure and revocation end it.
+    // Exercise the real authenticated client loop without a websocket/Host/provider.
+    // Unsubscribed v2 clients remain silent; closure and revocation end the loop.
     async fn idle_client(revoke: bool) {
         let directory = tempfile::tempdir().unwrap();
         let remote = RemoteAccess::load(directory.path()).await.unwrap();
@@ -544,6 +613,7 @@ mod tests {
         let challenge = challenge["challenge"].as_str().unwrap();
         let (enc, mut sender) =
             crypto::sender(&peer_private, &public, challenge, "client").unwrap();
+        let response_context = crypto::response_context(challenge, &enc);
         let hello = crypto::seal(&mut sender, br#"{"name":"fixture"}"#).unwrap();
         input
             .send(
@@ -561,7 +631,7 @@ mod tests {
             &peer_private,
             &public,
             packet.encapsulated_key.as_ref().unwrap(),
-            challenge,
+            &response_context,
             "host",
         )
         .unwrap();
@@ -570,7 +640,7 @@ mod tests {
                 .unwrap();
         assert_eq!(ready["ready"], true);
         // Capability is authenticated inside ready, never an unauthenticated
-        // challenge flag. Old clients still receive no unsolicited notices.
+        // challenge flag. Unsubscribed clients receive no unsolicited notices.
         assert_eq!(ready["changeNotifications"], true);
         assert!(
             tokio::time::timeout(Duration::from_secs(21), frames.recv())
@@ -586,7 +656,7 @@ mod tests {
         }
     }
     #[tokio::test(start_paused = true)]
-    async fn old_client_has_no_notices_and_disconnect_ends_observation() {
+    async fn unsubscribed_client_has_no_notices_and_disconnect_ends_observation() {
         idle_client(false).await;
     }
     #[tokio::test(start_paused = true)]
