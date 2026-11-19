@@ -33,6 +33,7 @@ struct ModelsAndToolsSettingsView: View {
                         ModelPickerOptions(groups: store.modelGroups)
                     }
                     .disabled(store.models.isEmpty)
+                    .tint(.secondary).accentColor(.secondary)
                     if store.defaultSessionModel?.efforts.isEmpty == false {
                         Picker("Default reasoning", selection: Binding(
                             get: { store.effectiveDefaultEffort }, set: { store.setDefaultEffort($0) }
@@ -42,6 +43,7 @@ struct ModelsAndToolsSettingsView: View {
                                 Text(effort.name).tag(Optional(effort.id))
                             }
                         }
+                        .tint(.secondary).accentColor(.secondary)
                     }
                 }
                 Toggle("Auto mode", isOn: $settings.defaultAutoApproveTools)

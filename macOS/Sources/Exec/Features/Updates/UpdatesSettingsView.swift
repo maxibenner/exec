@@ -11,9 +11,9 @@ struct UpdatesSettingsView: View {
             } footer: {
                 Button("Check for Updates…", action: checkForUpdates)
                     .buttonStyle(.bordered)
+                    .foregroundStyle(.primary)
                     .disabled(!canCheckForUpdates)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.top, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .formStyle(.grouped)

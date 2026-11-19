@@ -109,6 +109,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Detached deletion uses the same confirmation", { try await SessionDeletionTests().detachedWindowCommandUsesTheSameConfirmation() }),
             ("Automatic cleanup reconciles both catalog/poll orders without warnings", { try await SessionLifecycleTests().cleanupOrdersNeverPublishConnectionWarnings() }),
             ("Cleanup preserves unsent drafts and genuine observation failures", { try await SessionLifecycleTests().cleanupPreservesDraftsAndRealFailures() }),
+            ("Intentional child stops never flash attention during automatic cleanup", { try await ChildStopAttentionTests().intentionalStopNeverFlashesAttentionDuringChildCleanup() }),
+            ("Child stops preserve genuine failures, storage warnings and approval", { try await ChildStopAttentionTests().childStopKeepsRealFailuresStorageAndApprovalActionable() }),
             ("Cleanup settles remote cancellation without hiding real errors", { try await SessionLifecycleTests().cleanupSettlesRemoteCancellationWithoutHidingRealErrors() }),
             ("Stale catalogs and observer generations cannot remove new residents", { try await SessionLifecycleTests().staleCatalogsAndObserverGenerationsCannotRemoveNewResidents() }),
             ("Creation and registration survive older catalog absence", { try await SessionLifecycleTests().creationAndRegistrationSurviveOlderAbsence() }),

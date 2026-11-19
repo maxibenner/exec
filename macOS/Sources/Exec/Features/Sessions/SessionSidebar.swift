@@ -152,10 +152,34 @@ private struct SessionStatusIndicator: View {
                 Image(systemName: symbol).resizable().scaledToFit()
             } else {
                 // The native small spinner is 16 pt; a frame alone does not resize it.
-                ProgressView().controlSize(.small).fixedSize().scaleEffect(size / 16)
+                SidebarProgressSpinner().frame(width: 16, height: 16).scaleEffect(size / 16)
             }
         }
         .frame(width: size, height: size)
+    }
+}
+
+/// Give AppKit the resolved appearance explicitly: SwiftUI's sidebar spinner
+/// otherwise retains its light-appearance gray when the surrounding row is dark.
+private struct SidebarProgressSpinner: NSViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeNSView(context: Context) -> NSProgressIndicator {
+        let indicator = NSProgressIndicator()
+        indicator.style = .spinning
+        indicator.controlSize = .small
+        indicator.isIndeterminate = true
+        indicator.isDisplayedWhenStopped = false
+        indicator.startAnimation(nil)
+        return indicator
+    }
+
+    func updateNSView(_ indicator: NSProgressIndicator, context: Context) {
+        indicator.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
+    }
+
+    static func dismantleNSView(_ indicator: NSProgressIndicator, coordinator: ()) {
+        indicator.stopAnimation(nil)
     }
 }
 
