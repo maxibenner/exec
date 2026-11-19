@@ -757,15 +757,15 @@ import UIKit
         // Scrolling can collapse the native navigation bar. Compare recovery
         // with the settled post-scroll layout, not the initial expanded bar.
         var endTargets = targets
-        endTargets["new-session-tool-wait"] = .switch
+        endTargets["new-session-tool-shell"] = .switch
         let offlineEnd = try stableLayout(app, matching: endTargets)
-        let offlineLastRow = try frame("new-session-tool-wait", in: offlineEnd)
-        XCTAssertTrue(app.switches["new-session-tool-wait"].isHittable)
+        let offlineLastRow = try frame("new-session-tool-shell", in: offlineEnd)
+        XCTAssertTrue(app.switches["new-session-tool-shell"].isHittable)
         XCTAssertTrue(connectionBanner(app).exists)
 
         wait(NSPredicate(format: "exists == false"), on: connectionBanner(app), timeout: 40)
         let onlineEnd = try stableLayout(app, matching: endTargets)
-        assertSameFrame(try frame("new-session-tool-wait", in: onlineEnd), offlineLastRow)
+        assertSameFrame(try frame("new-session-tool-shell", in: onlineEnd), offlineLastRow)
         for name in targets.keys { assertSameFrame(try frame(name, in: onlineEnd), try frame(name, in: offlineEnd)) }
         wait(NSPredicate(format: "enabled == true"), on: app.buttons["Create"])
         XCTAssertTrue(app.buttons["Cancel"].isHittable)
@@ -786,6 +786,45 @@ import UIKit
         for index in 4...6 {
             XCTAssertFalse(app.activityIndicators["session-active-fixture-\(index)"].exists)
         }
+    }
+
+    func testNewSessionToolsFollowVisibleMacOrderWithoutOrchestrationOrGroupHeadings() throws {
+        let app = launch()
+        app.buttons["New Session"].tap()
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        let form = element("new-session-form", in: app)
+        var identifiers: [String] = []
+        for scroll in 0..<3 {
+            let toggles = descendants(try form.snapshot()).filter {
+                $0.elementType == .switch && $0.identifier.hasPrefix("new-session-tool-")
+            }
+            for toggle in toggles where !identifiers.contains(toggle.identifier) {
+                identifiers.append(toggle.identifier)
+            }
+            for name in ["delegate", "wait"] {
+                XCTAssertFalse(app.switches["new-session-tool-\(name)"].exists)
+            }
+            for heading in ["Inspect", "Modify", "Execute"] {
+                XCTAssertFalse(app.staticTexts[heading].exists)
+            }
+            if scroll < 2 { form.swipeUp() }
+        }
+        XCTAssertEqual(identifiers, [
+            "list_files", "read_file", "search_text", "web_search", "fetch_content", "take_screenshot",
+            "edit_file", "generate_image", "shell"
+        ].map { "new-session-tool-\($0)" })
+        XCTAssertTrue(app.switches["new-session-tool-shell"].isHittable)
+    }
+
+    func testNewSessionCreationForcesOrchestrationActiveWithUntouchedHostDefaults() {
+        let app = launch(["--orchestration-defaults-fixture"])
+        app.buttons["New Session"].tap()
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Create"].isEnabled)
+        app.buttons["Create"].tap()
+        // The fake host rejects omission, disabled orchestration, lost inherited
+        // unavailable names, or changes to the shared settings in this fixture.
+        XCTAssertTrue(app.navigationBars["New Session 1"].waitForExistence(timeout: 10), app.debugDescription)
     }
 
     func testNewSessionToolsStaySelectedWhenChoosingDuringFolderRead() {

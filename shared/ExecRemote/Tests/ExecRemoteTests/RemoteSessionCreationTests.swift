@@ -3,12 +3,13 @@ import ExecTranscript
 @testable import ExecRemote
 
 final class RemoteSessionCreationTests: XCTestCase {
-    func testToolSelectionUsesSharedMacAndTranscriptDisplayMetadata() {
+    func testCreationToolsFollowVisibleMacOrderWithSharedLabelsAndIcons() {
         XCTAssertEqual(RemoteSessionCreation.tools.map(\.id), [
-            "list_files", "read_file", "search_text", "edit_file", "shell",
-            "web_search", "fetch_content", "generate_image", "take_screenshot", "delegate", "wait"
+            "list_files", "read_file", "search_text", "web_search", "fetch_content", "take_screenshot",
+            "edit_file", "generate_image", "shell"
         ])
-        XCTAssertEqual(RemoteSessionCreation.tools, ToolDisplayMetadata.all)
+        XCTAssertEqual(RemoteSessionCreation.tools.count, 9)
+        XCTAssertFalse(RemoteSessionCreation.tools.contains { ["delegate", "wait"].contains($0.id) })
         for tool in RemoteSessionCreation.tools {
             // The iOS approval disclosure looks up this same metadata by wire name.
             let approval = ToolDisplayMetadata(name: tool.id)
@@ -44,15 +45,63 @@ final class RemoteSessionCreationTests: XCTestCase {
         XCTAssertNil(fields["disabledTools"], "Inheritance requires omission, not null or []", file: file, line: line)
     }
 
-    func testMissingLegacyDefaultsDisableOnlyShellAndKeepBackendInheritance() {
-        let tools = RemoteSessionCreation.ToolSelection(library: .object([:]))
-        XCTAssertEqual(tools.disabledTools, ["shell"])
-        for tool in RemoteSessionCreation.tools {
-            XCTAssertEqual(tools.isEnabled(tool.id), tool.id != "shell")
+    func testMissingOrNullLegacyDefaultsDisableOnlyShellAndKeepBackendInheritance() {
+        let libraries: [RemoteJSON] = [.null, .object([:]), .object(["defaultDisabledTools": .null])]
+        for library in libraries {
+            let tools = RemoteSessionCreation.ToolSelection(library: library)
+            XCTAssertEqual(tools.disabledTools, ["shell"])
+            for tool in RemoteSessionCreation.tools {
+                XCTAssertEqual(tools.isEnabled(tool.id), tool.id != "shell")
+            }
+            assertInherits(body(tools))
         }
-        assertInherits(body(tools))
         assertInherits(RemoteSessionCreation.body(workspace: "/Fixture/Workspace", model: model,
-                                                  effort: "high", settings: settings))
+                                                  effort: "high", settings: settings, tools: nil))
+    }
+
+    func testOrchestrationCannotBeDisabledEvenWhenExplicitlySupportedAndDisabledByHost() {
+        let defaults = library(["delegate", "wait"])
+        for supported in [RemoteSessionCreation.tools.map(\.id), ["delegate", "wait", "shell"]] {
+            var tools = RemoteSessionCreation.ToolSelection(library: defaults, supportedTools: supported)
+            for name in ["delegate", "wait"] {
+                XCTAssertTrue(tools.isEnabled(name))
+                tools.setEnabled(name, false)
+                XCTAssertTrue(tools.isEnabled(name))
+                tools.setEnabled(name, true)
+            }
+            XCTAssertEqual(tools.disabledTools, [])
+            XCTAssertEqual(body(tools)["disabledTools"], .array([]))
+            XCTAssertEqual(body(tools)["settings"], settings)
+        }
+        XCTAssertEqual(defaults, library(["delegate", "wait"]))
+    }
+
+    func testUntouchedOrchestrationOverridePreservesOtherInheritedNamesAndSettings() {
+        let defaults = library(["wait", "temporarily_unavailable", "shell", "delegate", "future_tool", "read_file"])
+        var tools = RemoteSessionCreation.ToolSelection(library: defaults, supportedTools: ["shell", "read_file"])
+        let expected: RemoteJSON = .array(["future_tool", "read_file", "shell", "temporarily_unavailable"].map(RemoteJSON.string))
+        XCTAssertEqual(tools.disabledTools, ["read_file", "shell"])
+        XCTAssertEqual(body(tools)["disabledTools"], expected)
+        XCTAssertEqual(body(tools)["settings"], defaults["settings"])
+        for name in ["delegate", "wait", "future_tool", "temporarily_unavailable", "unknown"] {
+            tools.setEnabled(name, false)
+        }
+        XCTAssertEqual(body(tools)["disabledTools"], expected, "Hidden and unavailable edits cannot change the draft.")
+        XCTAssertEqual(defaults, library(["wait", "temporarily_unavailable", "shell", "delegate", "future_tool", "read_file"]))
+    }
+
+    func testVisibleEditsAfterOrchestrationOverrideSendOnlySupportedNamesIncludingEmptyArray() {
+        var tools = RemoteSessionCreation.ToolSelection(library: library(["delegate", "wait", "shell", "future_tool"]))
+        tools.setEnabled("read_file", false)
+        XCTAssertEqual(body(tools)["disabledTools"], .array([.string("read_file"), .string("shell")]))
+        tools.setEnabled("shell", true)
+        XCTAssertEqual(body(tools)["disabledTools"], .array([.string("read_file")]))
+        tools.setEnabled("read_file", true)
+        XCTAssertEqual(body(tools)["disabledTools"], .array([]))
+        tools.setEnabled("shell", false)
+        XCTAssertEqual(body(tools)["disabledTools"], .array([.string("future_tool"), .string("shell")]),
+                       "Reverting visible edits restores the sanitized inheritance override, not omission.")
+        XCTAssertEqual(body(tools)["settings"], settings)
     }
 
     func testExplicitEmptyDefaultsEnableAllAndCanDisableOneToolPerSession() {

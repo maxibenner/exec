@@ -7,17 +7,23 @@ import ExecTranscript
 public enum RemoteSessionCreation {
     public typealias Tool = ToolDisplayMetadata
 
-    /// The bundled host's catalog, matching macOS SessionTool. Selection does not
-    /// grant runtime capabilities or bypass tool approvals.
-    public static let tools: [Tool] = ToolDisplayMetadata.all
+    /// Flat configuration order matching macOS's visible Inspect/Modify/Execute
+    /// groups. Display metadata does not grant capabilities or bypass approvals.
+    public static let tools: [Tool] = [
+        "list_files", "read_file", "search_text", "web_search", "fetch_content", "take_screenshot",
+        "edit_file", "generate_image", "shell"
+    ].map { ToolDisplayMetadata(name: $0) }
+
+    private static let alwaysEnabledTools: Set<String> = ["delegate", "wait"]
 
     public struct ToolSelection: Sendable {
         private let supported: Set<String>
         private let initialDisabled: Set<String>
+        private let orchestrationOverride: [String]?
         public private(set) var disabledTools: Set<String>
 
         public init(library: RemoteJSON, supportedTools: [String] = RemoteSessionCreation.tools.map(\.id)) {
-            supported = Set(supportedTools)
+            supported = Set(supportedTools).subtracting(RemoteSessionCreation.alwaysEnabledTools)
             // Missing legacy defaults disable shell; an explicit [] enables all.
             let defaults: [String]
             if case .array(let names) = library["defaultDisabledTools"] {
@@ -25,12 +31,18 @@ public enum RemoteSessionCreation {
             } else {
                 defaults = ["shell"]
             }
-            initialDisabled = Set(defaults).intersection(supported)
+            let inherited = Set(defaults)
+            let sessionDefaults = inherited.subtracting(RemoteSessionCreation.alwaysEnabledTools)
+            initialDisabled = sessionDefaults.intersection(supported)
             disabledTools = initialDisabled
+            // Untouched drafts must override disabled orchestration without
+            // dropping other inherited names, including unavailable tools.
+            orchestrationOverride = inherited == sessionDefaults ? nil : sessionDefaults.sorted()
         }
 
         public func isEnabled(_ name: String) -> Bool {
-            supported.contains(name) && !disabledTools.contains(name)
+            RemoteSessionCreation.alwaysEnabledTools.contains(name)
+                || (supported.contains(name) && !disabledTools.contains(name))
         }
 
         public mutating func setEnabled(_ name: String, _ enabled: Bool) {
@@ -39,11 +51,11 @@ public enum RemoteSessionCreation {
             else { disabledTools.insert(name) }
         }
 
-        /// Omission preserves backend inheritance, including unavailable default
-        /// names. Edited selections must contain only supported names; [] is
+        /// Unchanged selections inherit defaults unless orchestration needs an
+        /// override. Edited selections contain only supported names; [] is
         /// intentional and must not become null or omission.
         public var creationDisabledTools: [String]? {
-            disabledTools == initialDisabled ? nil : disabledTools.sorted()
+            disabledTools == initialDisabled ? orchestrationOverride : disabledTools.sorted()
         }
     }
 
