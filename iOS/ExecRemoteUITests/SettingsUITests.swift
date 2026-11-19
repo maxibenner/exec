@@ -148,15 +148,21 @@ import XCTest
         app.navigationBars["Settings"].swipeDown()
         XCTAssertTrue(app.navigationBars["Settings"].exists, "Interactive dismissal must not discard a dirty prompt.")
         XCTAssertEqual(app.textViews["settings-system-prompt"].value as? String, draft)
-        let notice = app.descendants(matching: .any).matching(identifier: "session-notice").firstMatch
-        XCTAssertTrue(notice.exists)
+        let notices = app.descendants(matching: .any).matching(identifier: "session-notice")
+        let notice = notices.firstMatch
+        XCTAssertEqual(notices.count, 1, "The reopened sheet must own one action notice.")
+        XCTAssertTrue(notice.isHittable)
         XCTAssertFalse(notice.buttons.firstMatch.exists)
-        let start = notice.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.3))
+        // This multiline notice has empty space below its short warning icon.
+        // Swiping that padding must hit the notice, not the form or sheet pan.
+        let start = notice.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.6))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 80)))
         wait(NSPredicate(format: "exists == false"), on: notice)
+        XCTAssertFalse(error.exists, "Dismissing must clear the visible save error, not reveal a fallback notice.")
         XCTAssertTrue(app.navigationBars["Settings"].exists, "Dismissing the error must not dismiss its sheet.")
         XCTAssertEqual(app.textViews["settings-system-prompt"].value as? String, draft)
         XCTAssertEqual(done.label, "Apply", "Dismissing the error must not retry or accept the failed save.")
+        XCTAssertTrue(done.isEnabled)
     }
 
     func testFastSaveFailureReopensAfterDismissalWithVisibleErrorAndDraft() {

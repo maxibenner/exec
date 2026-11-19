@@ -31,39 +31,69 @@ import XCTest
         XCTAssertTrue(app.buttons["New Session"].isEnabled)
         return app
     }
-    private func stableFrame(_ element: XCUIElement) -> CGRect {
-        var previous = CGRect.null
+    private func descendants(_ snapshot: XCUIElementSnapshot) -> [XCUIElementSnapshot] {
+        [snapshot] + snapshot.children.flatMap { descendants($0) }
+    }
+    private func stableLayout(_ app: XCUIApplication, matching targets: [String: XCUIElement.ElementType]) throws -> [String: XCUIElementSnapshot] {
+        var previous: [String: CGRect] = [:]
         var unchangedSince = Date()
+        var captured: [String: XCUIElementSnapshot]?
         wait(NSPredicate { _, _ in
-            guard element.exists else { return false }
-            let frame = element.frame
-            guard !frame.isEmpty else { return false }
-            if frame != previous {
-                previous = frame
+            // One accessibility snapshot per sample: never mix pre/post-retry
+            // frames by waiting for every element to settle sequentially.
+            guard let snapshot = try? app.snapshot() else { return false }
+            let elements = self.descendants(snapshot)
+            var sample: [String: XCUIElementSnapshot] = [:]
+            for (name, type) in targets {
+                let candidates = elements.filter { type == .any || $0.elementType == type }
+                // The frontmost sheet is last; prefer identifiers over labels.
+                guard let element = candidates.last(where: { $0.identifier == name })
+                    ?? candidates.last(where: { $0.label == name }), !element.frame.isEmpty else { return false }
+                sample[name] = element
+            }
+            let frames = sample.mapValues(\.frame)
+            if frames != previous {
+                previous = frames
                 unchangedSince = Date()
                 return false
             }
-            return Date().timeIntervalSince(unchangedSince) >= 0.5
-        }, on: element)
-        return element.frame
+            guard Date().timeIntervalSince(unchangedSince) >= 0.5 else { return false }
+            captured = sample
+            return true
+        }, on: app)
+        return try XCTUnwrap(captured, "The complete layout must settle in one snapshot.")
+    }
+    private func frame(_ name: String, in layout: [String: XCUIElementSnapshot]) throws -> CGRect {
+        try XCTUnwrap(layout[name], "Missing layout element: \(name)").frame
     }
     @discardableResult
-    private func assertOfflineBanner(_ app: XCUIApplication, below content: [XCUIElement]) -> CGRect {
+    private func assertOfflineBanner(_ app: XCUIApplication, below content: [String: XCUIElement.ElementType]) throws -> [String: XCUIElementSnapshot] {
         let banner = connectionBanner(app)
         XCTAssertTrue(banner.waitForExistence(timeout: 5))
         XCTAssertEqual(banner.label, "Host connection lost")
         XCTAssertFalse(app.buttons["Dismiss"].exists, "Connection loss must not have a dismiss action.")
         XCTAssertFalse(element("session-notice", in: app).exists,
                        "Connection loss belongs in the layout banner, not a toast.")
-        let bannerFrame = stableFrame(banner)
+        var targets = content
+        targets["host-connection-banner"] = .any
+        let layout = try stableLayout(app, matching: targets)
+        let bannerFrame = try frame("host-connection-banner", in: layout)
         XCTAssertGreaterThan(bannerFrame.height, 0)
         XCTAssertGreaterThan(bannerFrame.minY, app.frame.midY, "Connection loss belongs at the bottom of the screen.")
-        for element in content {
-            let frame = stableFrame(element)
-            XCTAssertLessThanOrEqual(frame.maxY, bannerFrame.minY + 1,
+        for name in content.keys {
+            XCTAssertLessThanOrEqual(try frame(name, in: layout).maxY, bannerFrame.minY + 1,
                                      "The banner must reserve space below lists, forms and controls, not cover them.")
         }
-        return bannerFrame
+        XCTAssertTrue(banner.exists, "Automatic recovery must not precede the offline layout sample.")
+        return layout
+    }
+    private func assertReclaimedViewport(offline: CGRect, online: CGRect, banner: CGRect, app: XCUIApplication) {
+        XCTAssertEqual(offline.maxY, banner.minY, accuracy: 1)
+        XCTAssertLessThanOrEqual(online.maxY, app.frame.maxY + 1)
+        // Native lists/forms extend under the home indicator again when the
+        // banner is gone. Compare usable space, excluding that system inset;
+        // the banner's measured bottom is the original safe-area boundary.
+        XCTAssertEqual(min(online.maxY, banner.maxY) - offline.maxY, banner.height, accuracy: 2)
     }
     private func capture(_ name: String, app: XCUIApplication) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
@@ -188,11 +218,12 @@ import XCTest
         capture("floating-session-controls", app: app)
     }
 
-    func testOfflineHostBannerKeepsSettingsNewSessionAndFolderAvailable() {
+    func testOfflineHostBannerKeepsSettingsNewSessionAndFolderAvailable() throws {
         let app = launch(["--offline-actions-fixture"])
         let options = app.buttons["Session Options"]
         let newSession = app.buttons["New Session"]
-        assertOfflineBanner(app, below: [app.navigationBars["All Sessions"], element("session-list", in: app), options, newSession])
+        try assertOfflineBanner(app, below: ["All Sessions": .navigationBar, "session-list": .any,
+                                            "Session Options": .button, "New Session": .button])
         let banner = connectionBanner(app)
         banner.tap()
         banner.swipeDown()
@@ -207,7 +238,7 @@ import XCTest
         XCTAssertTrue(app.buttons["Forget Host"].isEnabled)
         app.buttons["Settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
-        assertOfflineBanner(app, below: [element("settings-form", in: app), app.buttons["settings-done"]])
+        try assertOfflineBanner(app, below: ["settings-form": .any, "settings-done": .button])
         let local = app.switches["descriptive-shell-titles"]
         XCTAssertTrue(local.isEnabled)
         XCTAssertEqual(local.value as? String, "0")
@@ -223,14 +254,14 @@ import XCTest
 
         newSession.tap()
         XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
-        assertOfflineBanner(app, below: [element("new-session-form", in: app), app.buttons["Create"], app.buttons["Cancel"]])
+        try assertOfflineBanner(app, below: ["new-session-form": .any, "Create": .button, "Cancel": .button])
         XCTAssertTrue(app.buttons["new-session-workspace"].label.contains("/Fixture/Workspace"))
         XCTAssertFalse(app.buttons["Create"].isEnabled, "A cached valid draft still requires a connected host.")
         XCTAssertTrue(app.buttons["Cancel"].isEnabled)
         app.buttons["new-session-workspace"].tap()
         let folderBar = app.navigationBars["Choose Folder"]
         XCTAssertTrue(folderBar.waitForExistence(timeout: 5))
-        assertOfflineBanner(app, below: [element("host-folder-list", in: app), folderBar.buttons["Choose"], folderBar.buttons["Cancel"]])
+        try assertOfflineBanner(app, below: ["host-folder-list": .any, "Choose": .button, "Cancel": .button])
         XCTAssertTrue(folderBar.buttons["Cancel"].isEnabled)
         folderBar.buttons["Cancel"].tap()
         wait(NSPredicate(format: "exists == false"), on: folderBar)
@@ -289,52 +320,70 @@ import XCTest
         wait(NSPredicate(format: "value == %@", restored), on: composer)
     }
 
-    func testAutomaticReconnectReclaimsBottomSpaceBelowRootListAndControls() {
+    func testAutomaticReconnectReclaimsBottomSpaceBelowRootListAndControls() throws {
         let app = launch(["--recovering-host-fixture"])
-        let rootBar = app.navigationBars["All Sessions"]
-        let list = element("session-list", in: app)
-        let newSession = app.buttons["New Session"]
-        let bannerFrame = assertOfflineBanner(app, below: [list, newSession, app.buttons["Session Options"]])
-        let offlineNavigation = stableFrame(rootBar)
-        let offlineList = stableFrame(list)
-        let offlineControls = stableFrame(newSession)
-        let row = app.buttons["session-fixture-1"]
-        let offlineRow = stableFrame(row)
+        let targets: [String: XCUIElement.ElementType] = [
+            "All Sessions": .navigationBar, "session-list": .any, "New Session": .button,
+            "Session Options": .button, "session-fixture-1": .button
+        ]
+        let offline = try assertOfflineBanner(app, below: targets)
+        let bannerFrame = try frame("host-connection-banner", in: offline)
+        let offlineNavigation = try frame("All Sessions", in: offline)
+        let offlineList = try frame("session-list", in: offline)
+        let offlineControls = try frame("New Session", in: offline)
+        let offlineRow = try frame("session-fixture-1", in: offline)
+        print("ROOT OFFLINE FRAMES", offline.mapValues(\.frame))
         capture("host-offline-bottom-layout", app: app)
+        XCTAssertTrue(connectionBanner(app).exists, "The offline screenshot must still show the banner.")
 
         // No Reconnect tap, pull-to-refresh or scene transition may be needed.
-        wait(NSPredicate(format: "exists == false"), on: connectionBanner(app), timeout: 30)
-        let onlineNavigation = stableFrame(rootBar)
-        let onlineList = stableFrame(list)
-        let onlineControls = stableFrame(newSession)
-        let onlineRow = stableFrame(row)
+        wait(NSPredicate(format: "exists == false"), on: connectionBanner(app), timeout: 40)
+        let online = try stableLayout(app, matching: targets)
+        let onlineNavigation = try frame("All Sessions", in: online)
+        let onlineList = try frame("session-list", in: online)
+        let onlineControls = try frame("New Session", in: online)
+        let onlineRow = try frame("session-fixture-1", in: online)
+        print("ROOT ONLINE FRAMES", online.mapValues(\.frame))
+        XCTAssertFalse(connectionBanner(app).exists)
         XCTAssertEqual(onlineNavigation.minY, offlineNavigation.minY, accuracy: 1)
         XCTAssertEqual(onlineRow.minY, offlineRow.minY, accuracy: 1,
                        "A bottom banner must not shift the navigation bar or the first session row.")
-        XCTAssertEqual(onlineList.maxY - offlineList.maxY, bannerFrame.height, accuracy: 2)
+        assertReclaimedViewport(offline: offlineList, online: onlineList, banner: bannerFrame, app: app)
         XCTAssertEqual(onlineControls.minY - offlineControls.minY, bannerFrame.height, accuracy: 2,
                        "Controls must reclaim actual layout space, not remain underneath an overlay.")
+        let offlineOptions = try frame("Session Options", in: offline)
+        let onlineOptions = try frame("Session Options", in: online)
+        XCTAssertEqual(onlineOptions.minY - offlineOptions.minY, bannerFrame.height, accuracy: 2)
         XCTAssertFalse(element("session-notice", in: app).exists)
         capture("host-recovered-bottom-layout", app: app)
     }
 
-    func testAutomaticReconnectReclaimsNewSessionSheetBottomSpace() {
+    func testAutomaticReconnectReclaimsNewSessionSheetBottomSpace() throws {
         let app = launch(["--recovering-host-fixture"])
         app.buttons["New Session"].tap()
-        let navigation = app.navigationBars["New Session"]
-        XCTAssertTrue(navigation.waitForExistence(timeout: 5))
-        let form = element("new-session-form", in: app)
-        let bannerFrame = assertOfflineBanner(app, below: [form, app.buttons["Create"], app.buttons["Cancel"]])
-        let offlineNavigation = stableFrame(navigation)
-        let offlineForm = stableFrame(form)
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        let targets: [String: XCUIElement.ElementType] = [
+            "New Session": .navigationBar, "new-session-form": .any, "Create": .button, "Cancel": .button
+        ]
+        let offline = try assertOfflineBanner(app, below: targets)
+        let bannerFrame = try frame("host-connection-banner", in: offline)
+        let offlineNavigation = try frame("New Session", in: offline)
+        let offlineForm = try frame("new-session-form", in: offline)
+        XCTAssertFalse(try XCTUnwrap(offline["Create"]).isEnabled)
+        print("SHEET OFFLINE FRAMES", offline.mapValues(\.frame))
+        capture("host-offline-sheet-bottom-layout", app: app)
+        XCTAssertTrue(connectionBanner(app).exists, "The offline screenshot must still show the banner.")
         XCTAssertFalse(app.buttons["Create"].isEnabled)
 
-        wait(NSPredicate(format: "exists == false"), on: connectionBanner(app), timeout: 30)
-        let onlineNavigation = stableFrame(navigation)
-        let onlineForm = stableFrame(form)
+        wait(NSPredicate(format: "exists == false"), on: connectionBanner(app), timeout: 40)
+        let online = try stableLayout(app, matching: targets)
+        let onlineNavigation = try frame("New Session", in: online)
+        let onlineForm = try frame("new-session-form", in: online)
+        print("SHEET ONLINE FRAMES", online.mapValues(\.frame))
+        XCTAssertFalse(connectionBanner(app).exists)
         XCTAssertEqual(onlineNavigation.minY, offlineNavigation.minY, accuracy: 1)
         XCTAssertEqual(onlineForm.minY, offlineForm.minY, accuracy: 1)
-        XCTAssertEqual(onlineForm.maxY - offlineForm.maxY, bannerFrame.height, accuracy: 2)
+        assertReclaimedViewport(offline: offlineForm, online: onlineForm, banner: bannerFrame, app: app)
         wait(NSPredicate(format: "enabled == true"), on: app.buttons["Create"])
         XCTAssertTrue(app.buttons["Cancel"].isEnabled)
         capture("host-recovered-sheet-bottom-layout", app: app)

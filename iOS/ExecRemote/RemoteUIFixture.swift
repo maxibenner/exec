@@ -19,10 +19,11 @@ import ExecRemote
         let recovering = ProcessInfo.processInfo.arguments.contains("--recovering-host-fixture")
         let transport = FixtureTransport()
         let store = RemoteStore(client: transport, loadHost: { unpaired ? nil : host }, saveHost: { _ in }, forgetHost: {}, sleep: { delay in
-            // Leave time to inspect offline layout, then let the real observer
-            // retry automatically. No UI action may be needed for recovery.
+            // Allow one batched offline layout sample (including a sheet
+            // presentation), then exercise the real observer's automatic retry.
+            // Tests must still verify the banner survived their offline sample.
             let connected = await transport.isConnected
-            let interval = recovering && !connected ? 15 : delay
+            let interval = recovering && !connected ? 30 : delay
             try await Task.sleep(for: .seconds(interval))
         }, bufferSleep: {
             // Explicit-cancel checks must not race the normal 30-second expiry.
