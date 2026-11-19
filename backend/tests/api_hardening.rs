@@ -7,7 +7,10 @@ use exec_agent::{
 use serde_json::json;
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 use support::{FakeProvider, client::AgentClient};
@@ -41,10 +44,17 @@ impl Gate {
 struct GatedStore {
     records: Mutex<BTreeMap<String, ConversationRecord>>,
     delete_gate: Mutex<Option<Arc<Gate>>>,
+    save_gate: Mutex<Option<Arc<Gate>>>,
+    saves: AtomicUsize,
 }
 #[async_trait]
 impl Checkpoint for GatedStore {
     async fn save(&self, record: ConversationRecord) -> Result<()> {
+        self.saves.fetch_add(1, Ordering::SeqCst);
+        let gate = self.save_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.hold().await;
+        }
         self.records
             .lock()
             .unwrap()
@@ -174,6 +184,93 @@ async fn pending_deletion_is_conflict_not_absence_and_readers_still_work() {
     );
     assert_eq!(provider.count(), 0);
     service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn disconnected_writes_keep_admission_until_storage_settles_and_shutdown_waits() {
+    use tokio::io::AsyncWriteExt;
+    let store = Arc::new(GatedStore::default());
+    let provider = FakeProvider::new(vec![]);
+    let manager = AgentManager::open(store.clone(), |_| (provider.clone(), vec![]))
+        .await
+        .unwrap();
+    let mut sessions = Vec::new();
+    for _ in 0..65 {
+        sessions.push(
+            manager
+                .create(support::options(provider.clone(), vec![]))
+                .await
+                .unwrap(),
+        );
+    }
+    let service = serve(manager, provider.clone()).await;
+    let client = AgentClient::new(service.address).unwrap();
+    let gate = Gate::new();
+    *store.save_gate.lock().unwrap() = Some(gate.clone());
+    let initial_saves = store.saves.load(Ordering::SeqCst);
+    for (index, conversation) in sessions[..64].iter().enumerate() {
+        let body = json!({"title":format!("accepted {index}")}).to_string();
+        let request = format!(
+            "PUT /v1/conversations/{}/title HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            conversation.id,
+            support::API_TOKEN,
+            body.len()
+        );
+        let mut socket = tokio::net::TcpStream::connect(service.address)
+            .await
+            .unwrap();
+        socket.write_all(request.as_bytes()).await.unwrap();
+        gate.wait(1).await;
+        // The complete body was accepted. Losing TCP ownership must not release
+        // admission or cancel the in-flight save. No mutation is ever replayed.
+        drop(socket);
+    }
+    let spare = &sessions[64];
+    for _ in 0..8 {
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                client.call(
+                    "PUT",
+                    &format!("/v1/conversations/{}/title", spare.id),
+                    Some(json!({"title":"must not queue"}))
+                )
+            )
+            .await
+            .unwrap()
+            .unwrap_err(),
+            Error::Api(503)
+        );
+    }
+    assert_eq!(store.saves.load(Ordering::SeqCst), initial_saves + 64);
+    assert_eq!(
+        client.call("GET", "/v1/health", None).await.unwrap()["version"],
+        1
+    );
+    assert_eq!(client.get(&spare.id).await.unwrap().metadata.title, None);
+    let mut closing = tokio::spawn(service.close());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), &mut closing)
+            .await
+            .is_err()
+    );
+    gate.release.cancel();
+    tokio::time::timeout(Duration::from_secs(5), closing)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let records = store.records.lock().unwrap();
+    assert_eq!(records.len(), 65);
+    for (index, conversation) in sessions[..64].iter().enumerate() {
+        assert_eq!(
+            records[&conversation.id].metadata.title,
+            Some(format!("accepted {index}"))
+        );
+    }
+    assert_eq!(records[&spare.id].metadata.title, None);
+    assert_eq!(store.saves.load(Ordering::SeqCst), initial_saves + 64);
+    assert_eq!(provider.count(), 0);
 }
 
 fn png() -> Vec<u8> {

@@ -143,6 +143,8 @@ to an explicitly authorized frontend's machine, not automatically the backend ho
 
 Bodies require `Content-Type: application/json` and reject unknown fields. Request bodies are bounded to 12 MiB (for encoded images), text to 128 Ki UTF-16 code units with an additional 128 KiB UTF-8 turn bound, model IDs to 128 code units, and workspace paths to 4,096 code units. Workspaces must be existing absolute directories and are canonicalized. Approval/cancellation IDs are UUIDs. Errors are an HTTP status plus `{"error":"safe message"}`, never raw provider exceptions. Exact diagnostic wording is not a machine-readable error code; oversized/interrupted bodies can also reset the connection.
 
+The server bounds TCP connections to 64 and separately admits at most 64 non-GET command handlers across HTTP and remote transport, including body reads. Excess commands return 503 before body parsing or effects; there is no admission wait queue. A tracked handler owns its admission permit until it finishes, even after the caller disconnects. Incomplete body reads are cancelled on disconnect/shutdown, but accepted mutations are never aborted to free capacity. GET reads remain outside the command budget. Shutdown waits for accepted writes; stalled storage can therefore delay shutdown indefinitely. A lost response is not permission to retry a mutation automatically.
+
 | Method | Path | Body / response |
 |---|---|---|
 | GET | `/v1/health` | `{version:1, toolsEnabled:boolean}` |
