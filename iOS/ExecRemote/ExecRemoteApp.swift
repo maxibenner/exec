@@ -41,7 +41,6 @@ enum ToolDisplayPreferences {
 struct RootView: View {
     @Bindable var store: RemoteStore
     @State private var scanning = false
-    @State private var settings = false
     @State private var creating = false
     @State private var createdSession: String?
     var body: some View {
@@ -94,7 +93,7 @@ struct RootView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if store.host != nil {
                     SessionControls(busy: store.busy, connected: store.connected,
-                                    settings: { settings = true },
+                                    settings: store.showSettings,
                                     reconnect: { Task { await store.connect() } },
                                     forget: { Task { await store.forget() } },
                                     create: { creating = true })
@@ -112,7 +111,9 @@ struct RootView: View {
                     Task { await store.pair(text) }
                 }
             }
-            .sheet(isPresented: $settings) { SharedSettingsScreen(store: store) }
+            .sheet(isPresented: $store.settings.isPresented, onDismiss: { store.settings.didDismiss() }) {
+                SharedSettingsScreen(store: store)
+            }
             .sheet(isPresented: $creating, onDismiss: {
                 if let id = createdSession { createdSession = nil; store.selected = id }
             }) {
@@ -120,7 +121,7 @@ struct RootView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if !settings && !creating && !scanning {
+            if !store.settings.isPresented && !creating && !scanning {
                 SessionNotice(message: $store.error).padding(.bottom, 72)
             }
         }
@@ -536,14 +537,9 @@ struct NewChatScreen: View {
 }
 
 struct SharedSettingsScreen: View {
-    let store: RemoteStore
-    @Environment(\.dismiss) private var dismiss
+    @Bindable var store: RemoteStore
     @AppStorage(ToolDisplayPreferences.descriptiveShellTitlesKey) private var descriptiveShellTitles = false
-    @State private var prompt = ""
-    @State private var savedPrompt: String?
-    @State private var savingPrompt = false
     @FocusState private var editingPrompt: Bool
-    private var promptChanged: Bool { savedPrompt.map { prompt != $0 } ?? false }
     var body: some View {
         NavigationStack {
             Form {
@@ -561,44 +557,34 @@ struct SharedSettingsScreen: View {
                     .disabled(store.busy || !store.connected)
                 }
                 Section("System Prompt") {
-                    TextEditor(text: $prompt).frame(minHeight: 120).focused($editingPrompt)
+                    TextEditor(text: $store.settings.prompt).frame(minHeight: 120).focused($editingPrompt)
                         .accessibilityIdentifier("settings-system-prompt")
                 }
-                .disabled(savingPrompt || store.busy || !store.connected)
+                .disabled(store.busy || !store.connected)
             }
             .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", action: done)
-                        .modifier(PrimaryActionButtonStyle())
-                        .disabled(savingPrompt || (promptChanged && (store.busy || !store.connected)))
+                    Button(store.settings.actionTitle) {
+                        editingPrompt = false
+                        store.finishSettings()
+                    }
+                    .accessibilityIdentifier("settings-done")
+                    .modifier(PrimaryActionButtonStyle())
+                    .disabled(store.settings.hasUnsavedChanges && (store.busy || !store.connected))
                 }
             }
-            .onAppear(perform: refreshPrompt)
-            .onChange(of: store.library["settings"]["systemPrompt"]) { _, _ in refreshPrompt() }
+            .onAppear { store.settings.refresh(store.library) }
+            .onChange(of: store.library["settings"]["systemPrompt"]) { _, _ in
+                store.settings.refresh(store.library, editing: editingPrompt)
+            }
         }
-        .interactiveDismissDisabled(promptChanged || savingPrompt)
+        .interactiveDismissDisabled(store.settings.hasUnsavedChanges)
         .overlay(alignment: .bottom) {
-            SessionNotice(message: Binding(get: { store.error }, set: { store.error = $0 }))
-        }
-    }
-    private func refreshPrompt() {
-        // A background library read must not replace a draft, even after focus
-        // leaves the editor or a save fails.
-        guard savedPrompt == nil || (!promptChanged && !editingPrompt) else { return }
-        prompt = store.library["settings"]["systemPrompt"].string ?? ""
-        savedPrompt = prompt
-    }
-    private func done() {
-        editingPrompt = false
-        guard promptChanged else { dismiss(); return }
-        guard !savingPrompt, !store.busy, store.connected else { return }
-        savingPrompt = true
-        let body: RemoteJSON = .object(["settings": .object(["systemPrompt": .string(prompt)])])
-        Task {
-            // Acceptance, not the follow-up refresh, decides whether to dismiss.
-            await store.mutate("PATCH", "/v1/library", body) { _ in dismiss() }
-            savingPrompt = false
+            SessionNotice(message: Binding(get: { store.settings.error ?? store.error }, set: {
+                if store.settings.error != nil { store.settings.error = $0 }
+                else { store.error = $0 }
+            }))
         }
     }
     private func patch(_ value: [String:RemoteJSON]) { Task { await store.mutate("PATCH", "/v1/library", .object(value)) } }
