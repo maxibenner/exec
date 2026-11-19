@@ -567,7 +567,19 @@ struct SharedSettingsScreen: View {
             .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", action: done)
+                    Button(action: done) {
+                        Text("Done")
+                            .opacity(savingPrompt ? 0 : 1)
+                            .overlay {
+                                if savingPrompt {
+                                    ProgressView()
+                                        .tint(.white)
+                                        .accessibilityHidden(true)
+                                }
+                            }
+                    }
+                        .accessibilityLabel(savingPrompt ? "Saving" : "Done")
+                        .accessibilityIdentifier("settings-done")
                         .modifier(PrimaryActionButtonStyle())
                         .disabled(savingPrompt || (promptChanged && (store.busy || !store.connected)))
                 }

@@ -27,7 +27,7 @@ import XCTest
     private func closeSettings(_ app: XCUIApplication) {
         let dismiss = app.buttons["Dismiss"]
         if dismiss.exists && dismiss.isHittable { dismiss.tap() }
-        app.buttons["Done"].tap()
+        app.buttons["settings-done"].tap()
         wait(NSPredicate(format: "exists == false"), on: app.navigationBars["Settings"])
     }
     private func toggleSwitch(_ element: XCUIElement) {
@@ -85,7 +85,7 @@ import XCTest
         XCTAssertFalse(app.switches["Automatic session titles"].isEnabled)
         XCTAssertFalse(app.textViews["settings-system-prompt"].isEnabled)
         toggleSwitch(local)
-        XCTAssertTrue(app.buttons["Done"].isEnabled)
+        XCTAssertTrue(app.buttons["settings-done"].isEnabled)
         closeSettings(app)
         openSettings(app)
         XCTAssertEqual(local.value as? String, "1")
@@ -97,9 +97,13 @@ import XCTest
         openSettings(app)
         XCTAssertFalse(app.buttons["Save System Prompt"].exists)
         let draft = editPrompt(app)
-        app.buttons["Done"].tap()
+        let done = app.buttons["settings-done"]
+        XCTAssertEqual(done.label, "Done")
+        let width = done.frame.width
+        done.tap()
+        wait(NSPredicate(format: "label == 'Saving' AND enabled == false"), on: done)
         XCTAssertTrue(app.navigationBars["Settings"].exists, "Do not dismiss an unacknowledged save.")
-        XCTAssertFalse(app.buttons["Done"].isEnabled)
+        XCTAssertEqual(done.frame.width, width, accuracy: 1, "The spinner must not resize Done.")
         wait(NSPredicate(format: "exists == false"), on: app.navigationBars["Settings"])
         openSettings(app)
         XCTAssertEqual(app.textViews["settings-system-prompt"].value as? String, draft)
@@ -120,8 +124,11 @@ import XCTest
         let app = launch(["--settings-save-fails", "--slow-settings-save"])
         openSettings(app)
         let draft = editPrompt(app)
-        app.buttons["Done"].tap()
-        wait(NSPredicate(format: "enabled == true"), on: app.buttons["Done"])
+        let done = app.buttons["settings-done"]
+        // A repeated tap during the pending save must not issue a second PATCH.
+        done.tap(withNumberOfTaps: 2, numberOfTouches: 1)
+        wait(NSPredicate(format: "label == 'Saving' AND enabled == false"), on: done)
+        wait(NSPredicate(format: "label == 'Done' AND enabled == true"), on: done)
         wait(NSPredicate(format: "value == %@", "0"), on: app.switches["Automatic session titles"])
         XCTAssertTrue(app.navigationBars["Settings"].exists)
         XCTAssertEqual(app.textViews["settings-system-prompt"].value as? String, draft,
