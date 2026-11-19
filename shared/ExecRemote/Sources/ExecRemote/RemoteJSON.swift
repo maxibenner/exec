@@ -31,7 +31,17 @@ public enum RemoteJSON: Codable, Sendable, Equatable {
     public static func optional(_ value: String?) -> Self { value.map(Self.string) ?? .null }
 }
 public struct RemoteFailure: LocalizedError, Sendable {
+    /// Delivery evidence supplied by the transport, never inferred from copy or
+    /// connection state. Unclassified errors conservatively remain uncertain.
+    public enum Kind: Equatable, Sendable {
+        case notDispatched
+        case rejected
+        case uncertain
+    }
     public let message: String
-    public init(_ message: String) { self.message = message }
+    public let kind: Kind
+    public init(_ message: String, kind: Kind = .uncertain) {
+        self.message = message; self.kind = kind
+    }
     public var errorDescription: String? { message }
 }

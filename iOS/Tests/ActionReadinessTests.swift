@@ -17,15 +17,16 @@ private actor ActionReadinessTransport: RemoteTransport {
     private(set) var requests: [Request] = []
     var commands: [Request] { requests.filter { $0.method != "GET" } }
     private var failConnections = false
-    private var failures: [String: Bool] = [:]
+    private var failures: [String: (disconnect: Bool, failure: RemoteFailure)] = [:]
     private var snapshots: [String: RemoteJSON] = [:]
     private var held: Set<String> = []
     private var waiters: [String: [UUID: CheckedContinuation<Void, Error>]] = [:]
 
     func setFailConnections(_ value: Bool) { failConnections = value }
     func setSnapshot(_ value: RemoteJSON) { snapshots[value["id"].string!] = value }
-    func failNext(_ method: String, _ path: String, disconnect: Bool = true) {
-        failures[method + " " + path] = disconnect
+    func failNext(_ method: String, _ path: String, disconnect: Bool = true,
+                  kind: RemoteFailure.Kind = .uncertain, message: String? = nil) {
+        failures[method + " " + path] = (disconnect, RemoteFailure(message ?? (disconnect ? "Interrupted." : "Request rejected."), kind: kind))
     }
     func hold(_ method: String, _ path: String) { held.insert(method + " " + path) }
     func waiting(_ method: String, _ path: String) -> Bool {
@@ -71,9 +72,9 @@ private actor ActionReadinessTransport: RemoteTransport {
         requests.append(Request(method: method, path: path, body: body))
         let key = method + " " + path
         try await waitIfHeld(key)
-        if let disconnect = failures.removeValue(forKey: key) {
-            if disconnect { isConnected = false }
-            throw RemoteFailure(disconnect ? "Interrupted." : "Request rejected.")
+        if let failure = failures.removeValue(forKey: key) {
+            if failure.disconnect { isConnected = false }
+            throw failure.failure
         }
         guard isConnected else { throw RemoteFailure("Disconnected.") }
         switch (method, path) {
@@ -617,6 +618,69 @@ private actor ActionBufferClock {
         XCTAssertEqual(commands.last?.body?["text"].string, "Second")
         XCTAssertEqual(store.drafts["session"], "Newest")
         XCTAssertNil(store.pendingMessage)
+    }
+
+    func testDefiniteSendFailuresRestoreDraftsAndRemainEditableWithoutARevisionOrRead() async throws {
+        let cases: [(RemoteFailure.Kind, String)] = [
+            (.notDispatched, "The request is too large."), (.rejected, "The operation is no longer active.")
+        ]
+        for (kind, message) in cases {
+            let transport = ActionReadinessTransport(), store = try makeStore(transport)
+            await ready(store, transport)
+            let before = await transport.requests.count
+            await transport.hold("POST", turns)
+            await transport.failNext("POST", turns, disconnect: false, kind: kind, message: message)
+            store.drafts["session"] = "First"
+            let send = Task { await store.send() }; defer { send.cancel() }
+            try await until { await transport.waiting("POST", self.turns) }
+            store.drafts["session"] = "Dependent"
+            await store.send()
+            store.drafts["session"] = "Newest"
+            await transport.release("POST", turns)
+            await send.value
+            XCTAssertTrue(store.canSend, "Definite failures must not wait for an unrelated revision")
+            XCTAssertFalse(store.awaitingSendSnapshot)
+            XCTAssertNil(store.pendingMessage)
+            XCTAssertEqual(store.drafts["session"], "First\n\nDependent\n\nNewest")
+            XCTAssertTrue(store.visibleError?.contains(message) == true)
+            XCTAssertTrue(store.visibleError?.contains("back in the draft") == true)
+            XCTAssertFalse(store.visibleError?.contains("could not be confirmed") == true)
+            let attempts = await Array(transport.requests.dropFirst(before))
+            XCTAssertEqual(attempts.map(\.key), ["POST " + turns], "No read is needed to establish definite rejection")
+            await store.poll()
+            let commands = await transport.commands
+            XCTAssertEqual(commands.map(\.path), [turns], "Recovery must never replay a rejected command")
+        }
+    }
+
+    func testUncertainHealthySendPerformsOneReadWithoutWaitingForRevisionOrReplaying() async throws {
+        let transport = ActionReadinessTransport(), store = try makeStore(transport)
+        await ready(store, transport)
+        let before = await transport.requests.count
+        // An unclassified error remains uncertain even when the socket stays open.
+        await transport.failNext("POST", turns, disconnect: false, message: "Acknowledgement lost.")
+        await transport.hold("GET", sync)
+        store.drafts["session"] = "Possibly delivered"
+        let send = Task { await store.send() }; defer { send.cancel() }
+        try await until { await transport.waiting("GET", self.sync) }
+        XCTAssertFalse(store.canSend)
+        XCTAssertFalse(store.hasPendingCommands)
+        XCTAssertTrue(store.visibleError?.contains("Message delivery could not be confirmed") == true)
+        XCTAssertTrue(store.visibleError?.contains("Acknowledgement lost.") == true)
+        var canonical = snapshot(operation: "possibly-accepted", state: "completed")
+        if case .object(var fields) = canonical {
+            fields["messages"] = .array([.object(["id": .string("accepted"), "role": .string("user"), "text": .string("Possibly delivered")])])
+            canonical = .object(fields)
+        }
+        await transport.setSnapshot(canonical)
+        await transport.release("GET", sync)
+        await send.value
+        XCTAssertTrue(store.canSend, "One authoritative read must unblock even without a change stream/revision")
+        XCTAssertEqual(store.snapshot, canonical)
+        XCTAssertEqual(store.drafts["session"], "Possibly delivered")
+        XCTAssertNotNil(store.visibleError, "The user still needs to inspect delivery before resubmitting the restored draft")
+        let attempts = await Array(transport.requests.dropFirst(before))
+        XCTAssertEqual(attempts.map(\.key), ["POST " + turns, "GET " + sync])
     }
 
     func testUncertainPrecedingSendRestoresDependentBufferAndNeverReplays() async throws {

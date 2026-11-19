@@ -409,6 +409,32 @@ private actor ObservationClock {
         observer.cancel(); await observer.value
     }
 
+    func testUncertainSendWithFailedReadStaysDirtyForIdenticalHeartbeatWithoutReplay() async throws {
+        let transport = FakeTransport(), clock = ObservationClock()
+        let store = try makeStore(transport, clock)
+        await configure(transport); await store.connect(); await store.open("session").value
+        let observer = Task { await store.observe() }; defer { observer.cancel() }
+        try await until { store.lastChangeNotification == self.notice() }
+        let before = await transport.requests.count
+        await transport.failNext("POST", "/v1/conversations/session/turns", disconnect: false)
+        await transport.failNext("GET", "/v1/conversations/session/sync", disconnect: false)
+        store.drafts["session"] = "Do not replay"
+        await store.send()
+        XCTAssertTrue(store.connected)
+        XCTAssertFalse(store.canSend, "A failed read cannot resolve uncertain delivery")
+        let warning = store.visibleError
+        XCTAssertTrue(warning?.contains("Message delivery could not be confirmed") == true)
+        let failedAttempts = await Array(transport.requests.dropFirst(before))
+        XCTAssertEqual(failedAttempts, ["POST /v1/conversations/session/turns", "GET /v1/conversations/session/sync"])
+        await transport.emit(notice()) // No revision change; only the dirty mark admits this read.
+        try await until { store.canSend }
+        XCTAssertEqual(store.visibleError, warning, "Read recovery must preserve the actionable delivery warning")
+        XCTAssertEqual(store.drafts["session"], "Do not replay")
+        let attempts = await Array(transport.requests.dropFirst(before))
+        XCTAssertEqual(attempts, ["POST /v1/conversations/session/turns", "GET /v1/conversations/session/sync", "GET /v1/conversations/session/sync"])
+        observer.cancel(); await observer.value
+    }
+
     func testPendingDeletionDoesNotReadDeletedHistoryOrInterruptCommand() async throws {
         let transport = FakeTransport(), clock = ObservationClock()
         let store = try makeStore(transport, clock)

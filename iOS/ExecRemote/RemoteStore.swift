@@ -7,6 +7,8 @@ protocol RemoteTransport: Sendable {
     func disconnect() async
     func changes() async throws -> AsyncThrowingStream<RemoteChangeNotification, Error>?
     func stopChanges() async
+    /// Command errors should carry RemoteFailure.kind when the transport can
+    /// prove non-dispatch or API rejection. Unknown/cancelled delivery is uncertain.
     func request(_ method: String, _ path: String, body: RemoteJSON?) async throws -> RemoteJSON
 }
 extension RemoteTransport {
@@ -93,8 +95,8 @@ extension RelayClient: RemoteTransport {}
     var drafts: [String:String] = [:]
     private var optimisticMessages: [String: RemoteOptimisticMessages] = [:]
     private var deletions = RemoteSessionDeletions()
-    // A notice can be acknowledged globally while a pending DELETE defers a
-    // resident history. Keep that history dirty until a read applies or it leaves cache.
+    // A notice can be acknowledged while a DELETE defers a resident history or
+    // a send loses its acknowledgement. Keep it dirty until a read applies or it leaves cache.
     private var deferredHistoryRefreshes: Set<String> = []
     // Invalidate reads spanning local sends/deletions so they cannot roll back UI state.
     private var snapshotGeneration = 0
@@ -369,6 +371,7 @@ extension RelayClient: RemoteTransport {}
         syncStates[id] = state
         conversationConnections[id] = connection
         uncertainSends.remove(id)
+        deferredHistoryRefreshes.remove(id)
         acceptedOperations.removeValue(forKey: id)
         if sending[id] == nil {
             if cancellingOperations[id] != state.snapshot["operation"]["id"].string
@@ -706,7 +709,7 @@ extension RelayClient: RemoteTransport {}
     }
     private func performSend(_ id: String, text: String, target: MessageTarget,
                              rowID: String = "local-\(UUID().uuidString)") async {
-        guard connected, sending[id] == nil, !isUpdatingConversation(id), !isCancelling(id) else {
+        guard !Task.isCancelled, connected, sending[id] == nil, !isUpdatingConversation(id), !isCancelling(id) else {
             restoreDraft(text, for: id); return
         }
         let path: String, body: RemoteJSON
@@ -736,13 +739,29 @@ extension RelayClient: RemoteTransport {}
         } catch {
             guard generation == hostGeneration else { return }
             sending.removeValue(forKey: id)
+            snapshotGeneration += 1
             optimisticMessages[id]?.remove(localID)
-            // The dependent input is unsent; the dispatched input is uncertain.
+            // The dependent input is definitely unsent. Restore both drafts in
+            // order, but never replay the command that crossed dispatch.
             if pendingMessage?.conversationID == id { cancelPendingMessage() }
             restoreDraft(text, for: id)
-            uncertainSends.insert(id)
-            self.error = "Message delivery could not be confirmed. Check the refreshed conversation before sending again."
+            let kind = (error as? RemoteFailure)?.kind ?? .uncertain
+            switch kind {
+            case .notDispatched, .rejected:
+                self.error = "\(error.localizedDescription) Your message is back in the draft."
+            case .uncertain:
+                uncertainSends.insert(id)
+                deferredHistoryRefreshes.insert(id)
+                self.error = "Message delivery could not be confirmed. \(error.localizedDescription) Check the refreshed conversation before sending again."
+            }
             await recordDisconnectedFailure(error, connection: connection)
+            guard kind == .uncertain, generation == hostGeneration, connection == connectionGeneration,
+                  connected, !Task.isCancelled else { return }
+            // One read-only recovery attempt, even if the host emits no revision
+            // after a lost reply. A failed read stays dirty for the next notice or
+            // foreground catch-up; it must not replace the delivery warning.
+            do { try await refreshConversation(id) }
+            catch { await recordDisconnectedFailure(error, connection: connection) }
             return
         }
         do { try await refreshConversation(id) }

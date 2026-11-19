@@ -9,7 +9,7 @@ actor FakeTransport: RemoteTransport {
     var failConnections = false
     var requests: [String] = []
     var conversation: RemoteJSON = .object(["id": .string("session"), "messages": .array([])])
-    private var failure: (request: String, disconnect: Bool, cancelled: Bool)?
+    private var failures: [String: (disconnect: Bool, cancelled: Bool)] = [:]
     private var holdConnection = false
     private var connectionWaiter: CheckedContinuation<Void, Never>?
     private var heldRequest: String?
@@ -87,7 +87,7 @@ actor FakeTransport: RemoteTransport {
         notices?.finish(throwing: RemoteFailure("Disconnected.")); notices = nil
     }
     func failNext(_ method: String, _ path: String, disconnect: Bool = true, cancelled: Bool = false) {
-        failure = (method + " " + path, disconnect, cancelled)
+        failures[method + " " + path] = (disconnect, cancelled)
     }
     func setFailConnections(_ value: Bool) { failConnections = value }
     func holdNextConnection() { holdConnection = true }
@@ -128,8 +128,7 @@ actor FakeTransport: RemoteTransport {
             // the shared socket or retry the already-dispatched request.
             try Task.checkCancellation()
         }
-        if let failure, failure.request == key {
-            self.failure = nil
+        if let failure = failures.removeValue(forKey: key) {
             if failure.disconnect { self.disconnect() }
             if failure.cancelled { throw CancellationError() }
             throw RemoteFailure(failure.disconnect ? "Interrupted." : "Request rejected.")
