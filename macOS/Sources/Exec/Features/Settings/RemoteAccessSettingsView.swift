@@ -41,7 +41,7 @@ struct RemoteAccessSettingsView: View {
                         HStack {
                             Text(device["name"].string ?? "Device")
                             Spacer()
-                            Button("Revoke", role: .destructive) { revoking = device["id"].string }
+                            Button("Revoke") { revoking = device["id"].string }
                         }
                     }
                 } header: {
@@ -54,7 +54,6 @@ struct RemoteAccessSettingsView: View {
                                 invitation = try PairingQRCode(response)
                             } }
                             .buttonStyle(.bordered)
-                            .foregroundStyle(.primary)
                             .disabled(!status["connected"].bool)
                         }
                     }
@@ -73,33 +72,7 @@ struct RemoteAccessSettingsView: View {
                         .onTapGesture { invitation = nil }
                         .accessibilityHidden(true)
 
-                    VStack(spacing: 16) {
-                        HStack {
-                            Text("Pairing QR Code").font(.headline)
-                            Spacer()
-                            Button { invitation = nil } label: {
-                                Image(systemName: "xmark")
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Close pairing QR code")
-                        }
-                        Image(nsImage: code.image)
-                            .interpolation(.none)
-                            .resizable()
-                            .frame(width: 220, height: 220)
-                            .padding(12)
-                            .accessibilityLabel("Pairing QR code")
-                        Button("Copy to clipboard") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(code.text, forType: .string)
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                    .padding(24)
-                    .frame(width: 320)
-                    .background(.white, in: RoundedRectangle(cornerRadius: 20))
-                    .environment(\.colorScheme, .light)
-                    .onExitCommand { invitation = nil }
+                    PairingQRCodePopup(code: code) { invitation = nil }
                 }
             }
         }

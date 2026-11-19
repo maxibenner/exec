@@ -167,6 +167,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Stale remote polls cannot replace toggle acknowledgements", { try await RemoteAccessSettingsCacheTests().stalePollDoesNotReplaceToggleAcknowledgement() }),
             ("Remote toggles use acknowledgements and reconcile without replay", { try await RemoteAccessSettingsCacheTests().toggleUsesAcknowledgementAndReconcilesWithoutRetry() }),
             ("Pairing QR prepares stable scan and copy content", { try RemoteAccessSettingsTests().pairingQRCodePreparesStableScanAndCopyContent() }),
+            ("Pairing popup keeps a white QR container and stable clipboard content in both appearances", { try PairingQRCodePopupTests().readableCodeAndStableCopyInBothAppearances() }),
             ("Remote settings commit once and disable with an invalid draft", { try await RemoteAccessSettingsTests().savesOnCommitAndDisablesWithInvalidDraft() }),
             ("Remote toggle failures revert without replay", { try await RemoteAccessSettingsTests().failedToggleRevertsWithoutRetry() }),
             ("Account usage fits settings widths", { try AccountUsageLabelTests().fitsAvailableWidths() }),
