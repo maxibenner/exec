@@ -604,13 +604,13 @@ struct SharedSettingsScreen: View {
                             ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
                         }
                     }
-                    .disabled(store.isSavingLibrary || !store.connected)
+                    .disabled(!store.canEditSharedSettings)
                 }
                 Section("System Prompt") {
                     TextEditor(text: $store.settings.prompt).frame(minHeight: 120).focused($editingPrompt)
                         .accessibilityIdentifier("settings-system-prompt")
                 }
-                .disabled(store.isSavingLibrary || !store.connected)
+                .disabled(!store.canEditSharedSettings)
             }
             .accessibilityIdentifier("settings-form")
             .navigationTitle("Settings")
@@ -622,12 +622,13 @@ struct SharedSettingsScreen: View {
                     }
                     .accessibilityIdentifier("settings-done")
                     .modifier(PrimaryActionButtonStyle())
-                    .disabled(store.settings.hasUnsavedChanges && (store.isSavingLibrary || !store.connected))
+                    .disabled(store.settings.hasUnsavedChanges && store.hasLoadedLibrary && !store.canEditSharedSettings)
                 }
             }
-            .onAppear { store.settings.refresh(store.library) }
+            .onAppear { store.refreshSettings() }
+            .onChange(of: store.hasLoadedLibrary) { _, _ in store.refreshSettings(editing: editingPrompt) }
             .onChange(of: store.library["settings"]["systemPrompt"]) { _, _ in
-                store.settings.refresh(store.library, editing: editingPrompt)
+                store.refreshSettings(editing: editingPrompt)
             }
             .overlay(alignment: .bottom) {
                 SessionNotice(message: Binding(get: { store.settings.error ?? store.visibleError }, set: {

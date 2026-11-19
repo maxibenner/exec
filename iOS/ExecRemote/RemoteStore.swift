@@ -48,6 +48,7 @@ extension RelayClient: RemoteTransport {}
     var canForget: Bool { !hasPendingCommands }
     var isCreatingSession: Bool { mutations.contains(.creation) }
     var isSavingLibrary: Bool { mutations.contains(.library) }
+    var canEditSharedSettings: Bool { connected && hasLoadedLibrary && !isSavingLibrary }
     func isUpdatingConversation(_ id: String) -> Bool { mutations.contains(.conversation(id)) }
 
     struct PendingMessage: Identifiable {
@@ -339,6 +340,7 @@ extension RelayClient: RemoteTransport {}
         }
         guard generation == hostGeneration, connection == connectionGeneration, !Task.isCancelled,
               readGeneration == snapshotGeneration, ticket == catalogReadTicket else { return false }
+        guard case .object = settings else { throw RemoteFailure("Invalid shared settings response. Refresh the library before editing.") }
         conversations = deletions.reconcile(list); library = settings
         hasLoadedConversations = true; hasLoadedLibrary = true
         let ids = Set(conversations.compactMap { $0["id"].string }).union(deletions.pendingIDs)
@@ -580,14 +582,18 @@ extension RelayClient: RemoteTransport {}
             }
         }
     }
+    func refreshSettings(editing: Bool = false) {
+        guard hasLoadedLibrary else { return }
+        settings.refresh(library, editing: editing)
+    }
     func showSettings() {
-        settings.refresh(library)
+        refreshSettings()
         settings.isPresented = true
     }
     @discardableResult func finishSettings() -> Task<Void, Never>? {
         guard settings.isPresented else { return nil }
-        guard settings.hasUnsavedChanges else { settings.dismiss(); return nil }
-        guard connected, !isSavingLibrary, settingsSaveTask == nil else { return nil }
+        guard hasLoadedLibrary, settings.hasUnsavedChanges else { settings.dismiss(); return nil }
+        guard canEditSharedSettings, settingsSaveTask == nil else { return nil }
         let prompt = settings.prompt, generation = hostGeneration, connection = connectionGeneration
         let body: RemoteJSON = .object(["settings": .object(["systemPrompt": .string(prompt)])])
         mutations.insert(.library); error = nil; settings.error = nil
@@ -616,6 +622,7 @@ extension RelayClient: RemoteTransport {}
     func mutate(_ method: String, _ path: String, _ body: RemoteJSON, onSuccess: ((RemoteJSON) -> Void)? = nil) async {
         let scope = scope(for: path), generation = hostGeneration, connection = connectionGeneration
         guard connected, !mutations.contains(scope) else { return }
+        if scope == .library, !canEditSharedSettings { return }
         if case .conversation(let id) = scope, sending[id] != nil { return }
         mutations.insert(scope); error = nil
         do {
