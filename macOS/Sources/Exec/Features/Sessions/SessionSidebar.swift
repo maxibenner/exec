@@ -185,8 +185,8 @@ private struct SessionChildConnector: View {
         .stroke(style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
         .frame(width: width, height: capHeight)
         .alignmentGuide(.firstTextBaseline) { _ in capHeight }
-        // Lower only the drawing by two screen pixels, preserving the row's layout.
-        .offset(y: 2 / displayScale)
+        // Adjust only the drawing by screen pixels, preserving the row's layout.
+        .offset(x: 2 / displayScale, y: 1 / displayScale)
         .accessibilityHidden(true)
     }
 }
@@ -286,7 +286,8 @@ struct SessionRow: View {
             }
             .frame(width: 16, height: 20)
         }
-        .padding(.vertical, 5)
+        .padding(.top, 5)
+        .padding(.bottom, 3)
         .contentShape(Rectangle())
         .overlay {
             SessionContextMenu(items: [
