@@ -13,7 +13,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    net::IpAddr,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -28,9 +29,59 @@ struct Host {
     sender: Option<Outbox>,
     clients: HashMap<String, Outbox>,
 }
-#[derive(Default)]
+/// Registration policy is independent of possession of a self-issued host token.
+/// Only an explicitly selected loopback development listener may admit any route.
+pub struct HostAdmission {
+    allowed_routes: HashSet<String>,
+    local_development: bool,
+}
+impl HostAdmission {
+    pub fn from_config(
+        bind: IpAddr,
+        routes: Option<&str>,
+        local_development: bool,
+    ) -> Result<Self, &'static str> {
+        if local_development {
+            if !bind.is_loopback() || routes.is_some() {
+                return Err(
+                    "Development admission requires a loopback bind and no route allowlist.",
+                );
+            }
+            return Ok(Self {
+                allowed_routes: HashSet::new(),
+                local_development: true,
+            });
+        }
+        let routes = routes
+            .ok_or("Set EXEC_RELAY_ALLOWED_ROUTES, or explicitly enable loopback development.")?;
+        let mut allowed_routes = HashSet::new();
+        for route in routes.split(',').map(str::trim) {
+            if route.len() != 64
+                || !route
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return Err(
+                    "EXEC_RELAY_ALLOWED_ROUTES must contain comma-separated lowercase SHA-256 route hashes.",
+                );
+            }
+            allowed_routes.insert(route.to_owned());
+        }
+        if allowed_routes.len() > MAX_HOSTS {
+            return Err("The route allowlist exceeds the host limit.");
+        }
+        Ok(Self {
+            allowed_routes,
+            local_development: false,
+        })
+    }
+    fn permits(&self, route: &str) -> bool {
+        self.local_development || self.allowed_routes.contains(route)
+    }
+}
 pub struct Broker {
     hosts: Mutex<HashMap<String, Host>>,
+    admission: HostAdmission,
 }
 #[derive(Serialize, Deserialize)]
 struct Envelope {
@@ -39,23 +90,29 @@ struct Envelope {
     #[serde(default)]
     data: String,
 }
-fn envelope(kind: &str, client: &str, data: String) -> Message {
-    Message::Text(
-        serde_json::to_string(&Envelope {
-            kind: kind.into(),
-            client: client.into(),
-            data,
-        })
-        .unwrap()
-        .into(),
-    )
+fn envelope(kind: &str, client: &str, data: String) -> Result<Message, ()> {
+    let text = serde_json::to_string(&Envelope {
+        kind: kind.into(),
+        client: client.into(),
+        data,
+    })
+    .map_err(|_| ())?;
+    // The receiver's limit applies to the serialized envelope, not its opaque
+    // payload. JSON escaping can expand a legal client message up to sixfold.
+    if text.len() > MAX_FRAME {
+        return Err(());
+    }
+    Ok(Message::Text(text.into()))
 }
-pub fn router() -> Router {
+pub fn router(admission: HostAdmission) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/v1/host", get(host_upgrade))
         .route("/v1/client/{route}", get(client_upgrade))
-        .with_state(Arc::new(Broker::default()))
+        .with_state(Arc::new(Broker {
+            hosts: Mutex::new(HashMap::new()),
+            admission,
+        }))
 }
 async fn host_upgrade(
     State(state): State<Arc<Broker>>,
@@ -75,6 +132,9 @@ async fn host_upgrade(
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let route = format!("{:x}", Sha256::digest(token.as_bytes()));
+    if !state.admission.permits(&route) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     {
         let mut hosts = state.hosts.lock().unwrap();
         if hosts.contains_key(&route) {
@@ -147,8 +207,10 @@ async fn host_socket(state: Arc<Broker>, route: String, socket: WebSocket) {
                         let Some(host) = hosts.get_mut(&route) else { break };
                         if frame.kind == "close" { host.clients.remove(&frame.client); }
                         else if frame.kind == "data" {
-                            if let Some(client) = host.clients.get(&frame.client) {
-                                if client.try_send(Message::Text(frame.data.into())).is_err() { host.clients.remove(&frame.client); }
+                            if let Some(client) = host.clients.get(&frame.client)
+                                && client.try_send(Message::Text(frame.data.into())).is_err()
+                            {
+                                host.clients.remove(&frame.client);
                             }
                         } else { break; }
                     }
@@ -176,7 +238,10 @@ async fn client_socket(
         .get(&route)
         .and_then(|h| h.sender.clone());
     let Some(host) = host else { return };
-    if host.try_send(envelope("open", &id, String::new())).is_err() {
+    if host
+        .try_send(envelope("open", &id, String::new()).expect("bounded control envelope"))
+        .is_err()
+    {
         if let Some(h) = state.hosts.lock().unwrap().get_mut(&route) {
             h.clients.remove(&id);
         }
@@ -194,7 +259,10 @@ async fn client_socket(
             msg = source.next() => {
                 let Some(Ok(msg)) = msg else { break }; last_seen = tokio::time::Instant::now();
                 match msg {
-                    Message::Text(text) => { if host.try_send(envelope("data", &id, text.to_string())).is_err() { break; } }
+                    Message::Text(text) => {
+                        let Ok(message) = envelope("data", &id, text.to_string()) else { break };
+                        if host.try_send(message).is_err() { break; }
+                    }
                     Message::Close(_) => break,
                     Message::Ping(_) | Message::Pong(_) => {},
                     _ => break,
@@ -205,7 +273,7 @@ async fn client_socket(
     if let Some(h) = state.hosts.lock().unwrap().get_mut(&route) {
         h.clients.remove(&id);
     }
-    let _ = host.try_send(envelope("close", &id, String::new()));
+    let _ = host.try_send(envelope("close", &id, String::new()).expect("bounded control envelope"));
     let _ = send(&mut sink, Message::Close(None)).await;
 }
 async fn send<S>(sink: &mut S, message: Message) -> Result<(), ()>
