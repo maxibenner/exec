@@ -269,10 +269,10 @@ struct SessionRow: View {
             SessionContextMenu(items: [
                 .action("Rename…", enabled: store.canRenameSession(session.id), perform: rename),
                 .separator,
-                .action("Delete Conversation", enabled: store.canDeleteSession(session.id), perform: delete)
+                .action("Delete Session", enabled: store.canDeleteSession(session.id), perform: delete)
             ])
         }
         .accessibilityAction(named: "Rename Conversation") { if store.canRenameSession(session.id) { rename() } }
-        .accessibilityAction(named: "Delete Conversation") { if store.canDeleteSession(session.id) { delete() } }
+        .accessibilityAction(named: "Delete Session") { if store.canDeleteSession(session.id) { delete() } }
     }
 }
