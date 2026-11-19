@@ -798,11 +798,11 @@ private struct MessageView: View, Equatable {
                         FileAttachmentStrip(files: message.files, scrollsWithTranscript: true)
                     }
                     if !message.text.isEmpty {
-                        LinkedText(source: AttributedString(message.text), foregroundColor: AppColors.systemAccentText)
+                        LinkedText(source: AttributedString(message.text), foregroundColor: .white)
                     }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
-                .foregroundStyle(Color(nsColor: AppColors.systemAccentText))
+                .foregroundStyle(.white)
                 .background(AppColors.systemAccent, in: RoundedRectangle(cornerRadius: 10))
                 .frame(maxWidth: 600, alignment: .trailing)
                 .accessibilityElement(children: .contain)
