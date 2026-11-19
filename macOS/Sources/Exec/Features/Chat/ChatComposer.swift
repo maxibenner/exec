@@ -146,7 +146,7 @@ struct ChatComposer: View {
                         Text(effortName).accessibilityLabel("Reasoning: \(effortName)")
                     }
                     Text(store.autoApproveTools ? "Auto on" : "Auto off")
-                        .foregroundStyle(store.autoApproveTools ? AppColors.blue : Color.secondary)
+                        .foregroundStyle(store.autoApproveTools ? AppColors.systemAccent : Color.secondary)
                         .layoutPriority(1)
                 }
                 .allowsHitTesting(false)
@@ -169,7 +169,7 @@ struct ChatComposer: View {
         }
         .overlay {
             composerShape
-                .strokeBorder(attachmentDropTargeted || focused ? AppColors.blue : Color.clear, lineWidth: attachmentDropTargeted ? 4 : 1)
+                .strokeBorder(attachmentDropTargeted || focused ? AppColors.systemAccent : Color.clear, lineWidth: attachmentDropTargeted ? 4 : 1)
                 .allowsHitTesting(false)
                 .animation(.easeOut(duration: 0.18), value: focused)
         }
