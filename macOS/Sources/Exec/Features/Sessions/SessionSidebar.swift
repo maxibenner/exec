@@ -148,6 +148,8 @@ struct SessionChildRowContent: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            Image(systemName: "arrow.turn.down.right")
+                .accessibilityHidden(true)
             Text(verbatim: child.title).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 0)
             if store.needsApproval(child.id) {
