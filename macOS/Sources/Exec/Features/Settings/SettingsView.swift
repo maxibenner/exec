@@ -47,7 +47,7 @@ struct SettingsView: View {
         case .accounts:
             ProviderSettingsView(store: store)
         case .remoteAccess:
-            RemoteAccessSettingsView(api: store.remoteAPI)
+            RemoteAccessSettingsView(settings: store.remoteAccessSettings)
         case .usage:
             UsageSettingsView(store: store)
         case .updates:

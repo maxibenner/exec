@@ -2,18 +2,14 @@ import SwiftUI
 import CoreImage.CIFilterBuiltins
 
 struct RemoteAccessSettingsView: View {
-    let api: AgentAPI
-    @State private var settings: RemoteAccessSettings
+    @Bindable var settings: RemoteAccessSettings
     @FocusState private var relayFocused: Bool
     @State private var invitation: PairingQRCode?
     @State private var error: String?
     @State private var busy = false
     @State private var revoking: String?
+    private var api: AgentAPI { settings.api }
     private var status: AgentJSON { settings.status }
-    init(api: AgentAPI) {
-        self.api = api
-        _settings = State(initialValue: RemoteAccessSettings(api: api))
-    }
     var body: some View {
         Form {
             Section {
