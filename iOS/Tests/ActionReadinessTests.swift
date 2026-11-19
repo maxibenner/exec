@@ -89,7 +89,8 @@ private actor ActionReadinessTransport: RemoteTransport {
                             "total": .number(Double(messages.count)), "reset": .bool(true),
                             "prefix": messages.isEmpty ? .null : .string(String(repeating: "a", count: 64))])
         case ("POST", let path) where path.hasSuffix("/turns") || path.hasSuffix("/steer"):
-            return .object(["operationID": .string(body?["operationID"].string ?? "sent-operation")])
+            return .object(["operationID": .string(body?["operationID"].string ?? "sent-operation"),
+                            "messageID": path.hasSuffix("/steer") ? .string("sent-message") : .null])
         case ("POST", "/v1/conversations"): return .object(["id": .string("created")])
         default: return .object([:])
         }
@@ -305,6 +306,145 @@ private actor ActionBufferClock {
         XCTAssertTrue(commands.isEmpty)
     }
 
+    func testQueuedBubbleProjectionIsTransientForColdAndCachedCancelAndExpiry() async throws {
+        for cached in [false, true] {
+            for expires in [false, true] {
+                let transport = ActionReadinessTransport(), clock = ActionBufferClock()
+                let store = try makeStore(transport, clock: clock)
+                if cached {
+                    await ready(store, transport)
+                    await transport.disconnect()
+                } else { store.selected = "session" }
+                store.connected = false
+                var presentation = ConversationPresentation(conversationID: "session", catalog: store.conversations,
+                                                            snapshot: store.displaySnapshot)
+                let baseline = presentation.snapshot
+                store.drafts["session"] = "**Literal queued text**"
+                await store.send()
+                let queued = try XCTUnwrap(store.pendingMessage)
+                presentation.update(store.displaySnapshot)
+                let items = TranscriptItem.project(presentation.snapshot, queuedMessage: queued.transcriptMessage)
+                XCTAssertEqual(items.count, 1)
+                XCTAssertEqual(items[0].id, queued.rowID)
+                XCTAssertTrue(queued.rowID.hasPrefix("local-"))
+                XCTAssertTrue(items[0].isQueued)
+                XCTAssertFalse(items[0].isToolGroup)
+                XCTAssertEqual(items[0].rows[0].message["role"].string, "user")
+                XCTAssertEqual(items[0].rows[0].message["text"].string, queued.text)
+                XCTAssertEqual(presentation.snapshot, baseline, "Never retain a fake cold snapshot or queued row")
+                XCTAssertEqual(store.snapshot, baseline)
+                XCTAssertFalse(store.active)
+                XCTAssertFalse(store.canStop)
+                XCTAssertFalse(store.awaitingSendSnapshot)
+                XCTAssertFalse(RemoteMessageSubmission.showsStop(snapshot: store.displaySnapshot, draft: ""))
+                store.drafts["session"] = "Newer"
+                if expires {
+                    try await until { await clock.waiting }
+                    await clock.advance()
+                    try await until { store.pendingMessage == nil }
+                } else { store.cancelPendingMessage(rowID: queued.rowID) }
+                presentation.update(store.displaySnapshot)
+                XCTAssertTrue(TranscriptItem.project(presentation.snapshot).isEmpty, "No cold or cached ghost bubble")
+                XCTAssertEqual(store.drafts["session"], queued.text + "\n\nNewer")
+                XCTAssertNil(store.error, "Cancel and expiry restore input without a new error")
+                XCTAssertNil(store.visibleError, "Returning queued input must not display a draft notice")
+                store.selected = nil; store.selected = "session"
+                XCTAssertEqual(store.snapshot, baseline, "The recent cache must never contain the queue")
+                await store.send()
+                let replacement = try XCTUnwrap(store.pendingMessage)
+                XCTAssertNotEqual(replacement.rowID, queued.rowID)
+                store.cancelPendingMessage(rowID: queued.rowID)
+                XCTAssertEqual(store.pendingMessage?.id, replacement.id, "A stale menu cannot cancel a newer queue")
+                store.cancelPendingMessage(rowID: replacement.rowID)
+                let commands = await transport.commands
+                XCTAssertTrue(commands.isEmpty)
+            }
+        }
+    }
+
+    func testQueuedDispatchKeepsOneRowThroughAcknowledgementReadbackAndReconciliation() async throws {
+        for steering in [false, true] {
+            let transport = ActionReadinessTransport(), store = try makeStore(transport)
+            if steering {
+                await ready(store, transport, snapshot: snapshot(operation: "original"))
+                await transport.disconnect()
+            } else { store.selected = "session" }
+            store.connected = false
+            store.drafts["session"] = "Queued input"
+            await store.send()
+            let queued = try XCTUnwrap(store.pendingMessage)
+            let path = steering ? steer : turns
+            await transport.setSnapshot(snapshot(operation: steering ? "original" : nil))
+            await transport.hold("GET", sync)
+            await transport.hold("POST", path)
+            let reconnect = Task { await store.connect() }; defer { reconnect.cancel() }
+            try await until { await transport.waiting("GET", self.sync) }
+            XCTAssertEqual(store.pendingMessage?.id, queued.id)
+            let beforeValidation = await transport.commands
+            XCTAssertTrue(beforeValidation.isEmpty)
+            await transport.release("GET", sync)
+            await reconnect.value
+            try await until { await transport.waiting("POST", path) }
+            XCTAssertNil(store.pendingMessage)
+            var rows = TranscriptItem.project(store.displaySnapshot)
+            XCTAssertEqual(rows.map(\.id), [queued.rowID])
+            XCTAssertFalse(rows[0].isQueued, "Dispatch, not acknowledgement, makes the same bubble opaque")
+            XCTAssertFalse(store.canStop, "No actual operation is known before the acknowledgement")
+            await transport.hold("GET", sync)
+            await transport.release("POST", path)
+            try await until { await transport.waiting("GET", self.sync) }
+            XCTAssertTrue(store.canStop)
+            XCTAssertTrue(store.awaitingSendSnapshot)
+            XCTAssertEqual(TranscriptItem.project(store.displaySnapshot).map(\.id), [queued.rowID])
+            // A still-open menu from the accepted row must not touch a dependent queue.
+            store.connected = false
+            store.drafts["session"] = "Dependent"
+            await store.send()
+            let next = try XCTUnwrap(store.pendingMessage)
+            store.cancelPendingMessage(rowID: queued.rowID)
+            XCTAssertEqual(store.pendingMessage?.id, next.id)
+            store.cancelPendingMessage(rowID: next.rowID)
+            store.connected = true
+            var acknowledged = snapshot(operation: steering ? "original" : "sent-operation")
+            if case .object(var fields) = acknowledged {
+                fields["messages"] = .array([.object(["id": .string("sent-message"), "role": .string("user"),
+                                                     "text": .string(queued.text)])])
+                acknowledged = .object(fields)
+            }
+            await transport.setSnapshot(acknowledged)
+            await transport.release("GET", sync)
+            await store.poll()
+            try await until { !store.awaitingSendSnapshot }
+            rows = TranscriptItem.project(store.displaySnapshot)
+            XCTAssertEqual(rows.map(\.id), [queued.rowID])
+            XCTAssertFalse(rows[0].isQueued)
+            XCTAssertEqual(store.snapshot["messages"].array.first?["id"].string, "sent-message")
+            let commands = await transport.commands
+            XCTAssertEqual(commands.map(\.path), [path], "Reads and reconnect must never replay a mutation")
+            XCTAssertEqual(commands[0].body?["text"].string, queued.text)
+            if steering { XCTAssertEqual(commands[0].body?["operationID"].string, "original") }
+        }
+    }
+
+    func testRejectedQueueValidationRestoresColdDraftWithoutHiddenRow() async throws {
+        let transport = ActionReadinessTransport(), store = try makeStore(transport)
+        await store.connect()
+        store.selected = "session" // Authenticated, but no session snapshot yet.
+        var presentation = ConversationPresentation(conversationID: "session", catalog: store.conversations, snapshot: store.displaySnapshot)
+        await transport.failNext("GET", sync, disconnect: false)
+        store.drafts["session"] = "Not verified"
+        await store.send()
+        try await until { store.pendingMessage == nil }
+        presentation.update(store.displaySnapshot)
+        XCTAssertEqual(store.drafts["session"], "Not verified")
+        XCTAssertEqual(presentation.snapshot, .null)
+        XCTAssertTrue(TranscriptItem.project(presentation.snapshot).isEmpty)
+        XCTAssertFalse(store.awaitingSendSnapshot)
+        await store.poll()
+        let commands = await transport.commands
+        XCTAssertTrue(commands.isEmpty)
+    }
+
     func testNavigationAndSuspensionCancelBufferWithoutRetargeting() async throws {
         for destination in ["other", "all", "suspend"] {
             let transport = ActionReadinessTransport(), store = try makeStore(transport)
@@ -470,23 +610,33 @@ private actor ActionBufferClock {
         XCTAssertEqual(commands.first?.body?["text"].string, "First")
     }
 
-    func testExpiryRestoresBufferedTextBeforeNewerDraftWithoutDispatch() async throws {
-        let transport = ActionReadinessTransport(), clock = ActionBufferClock()
-        let store = try makeStore(transport, clock: clock)
-        await transport.setFailConnections(true)
-        store.selected = "session"
-        store.drafts["session"] = "Expired input"
-        await store.send()
-        XCTAssertNotNil(store.pendingMessage)
-        try await until { await clock.waiting }
-        store.drafts["session"] = "Newer"
-        await clock.advance()
-        try await until { store.pendingMessage == nil }
-        XCTAssertEqual(store.drafts["session"], "Expired input\n\nNewer")
-        await transport.setFailConnections(false)
-        await store.poll()
-        let commands = await transport.commands
-        XCTAssertTrue(commands.isEmpty, "Expired input must not autoplay on the next connection")
+    func testExpiryRestoresBeforeNewerDraftWithoutDispatchOrChangingErrors() async throws {
+        let cases: [(error: String?, connectionFailure: Bool)] = [
+            (nil, false), ("An unrelated action failed.", false), (nil, true)
+        ]
+        for value in cases {
+            let transport = ActionReadinessTransport(), clock = ActionBufferClock()
+            let store = try makeStore(transport, clock: clock)
+            await transport.setFailConnections(true)
+            if value.connectionFailure { await store.poll() }
+            else { store.error = value.error }
+            let previousError = store.error, previousVisibleError = store.visibleError
+            store.selected = "session"
+            store.drafts["session"] = "Expired input"
+            await store.send()
+            XCTAssertNotNil(store.pendingMessage)
+            try await until { await clock.waiting }
+            store.drafts["session"] = "Newer"
+            await clock.advance()
+            try await until { store.pendingMessage == nil }
+            XCTAssertEqual(store.drafts["session"], "Expired input\n\nNewer")
+            XCTAssertEqual(store.error, previousError, "Expiry must not replace or clear an unrelated error")
+            XCTAssertEqual(store.visibleError, previousVisibleError, "Expiry must not create a notice or expose a connection-only error")
+            await transport.setFailConnections(false)
+            await store.poll()
+            let commands = await transport.commands
+            XCTAssertTrue(commands.isEmpty, "Expired input must not autoplay on the next connection")
+        }
     }
 
     func testApprovalLockAndCancellingOperationPreventSteering() async throws {

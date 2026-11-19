@@ -8,6 +8,8 @@ import ExecTranscript
 struct NativeTranscript: UIViewControllerRepresentable {
     let conversationID: String?
     let snapshot: RemoteJSON
+    let queuedMessage: RemoteJSON
+    let cancelQueuedMessage: (String) -> Void
     let descriptiveShellTitles: Bool
     let viewState: TranscriptViewState?
     let saveViewState: (String, TranscriptViewState) -> Void
@@ -45,6 +47,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
         table.hasEarlier = hasEarlier
         table.loadEarlier = loadEarlier
         context.coordinator.update(conversationID: conversationID, snapshot: snapshot,
+                                   queuedMessage: queuedMessage, cancelQueuedMessage: cancelQueuedMessage,
                                    descriptiveShellTitles: descriptiveShellTitles, viewState: viewState, table: table)
     }
     static func dismantleUIViewController(_ controller: UITableViewController, coordinator: Coordinator) {
@@ -54,6 +57,8 @@ struct NativeTranscript: UIViewControllerRepresentable {
         private struct Update {
             let conversationID: String?
             let snapshot: RemoteJSON
+            let queuedMessage: RemoteJSON
+            let cancelQueuedMessage: (String) -> Void
             let descriptiveShellTitles: Bool
             let viewState: TranscriptViewState?
         }
@@ -154,7 +159,8 @@ struct NativeTranscript: UIViewControllerRepresentable {
                 }
                 guard let cell = table.dequeueReusableCell(withIdentifier: "message", for: path) as? MessageCell else { return UITableViewCell() }
                 cell.accessibilityIdentifier = "transcript-message-\(id)"
-                cell.configure(item.rows[0].message, width: max(100, table.bounds.width - 32))
+                cell.configure(item.rows[0].message, width: max(100, table.bounds.width - 32),
+                               cancelQueuedMessage: item.isQueued ? { [weak self] in self?.currentUpdate?.cancelQueuedMessage(id) } : nil)
                 return cell
             }
         }
@@ -166,9 +172,11 @@ struct NativeTranscript: UIViewControllerRepresentable {
                 self.scheduleUpdate(table)
             })
         }
-        func update(conversationID: String?, snapshot: RemoteJSON, descriptiveShellTitles: Bool,
+        func update(conversationID: String?, snapshot: RemoteJSON, queuedMessage: RemoteJSON,
+                    cancelQueuedMessage: @escaping (String) -> Void, descriptiveShellTitles: Bool,
                     viewState: TranscriptViewState?, table: TranscriptTableView) {
-            pendingUpdate = Update(conversationID: conversationID, snapshot: snapshot,
+            pendingUpdate = Update(conversationID: conversationID, snapshot: snapshot, queuedMessage: queuedMessage,
+                                   cancelQueuedMessage: cancelQueuedMessage,
                                    descriptiveShellTitles: descriptiveShellTitles, viewState: viewState)
             scheduleUpdate(table)
         }
@@ -188,7 +196,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
             pendingUpdate = nil
             let changedConversation = conversationID != update.conversationID || presentation?.generation != update.viewState?.generation
             let changedDisplay = descriptiveShellTitles != update.descriptiveShellTitles
-            let projected = TranscriptItem.project(update.snapshot)
+            let projected = TranscriptItem.project(update.snapshot, queuedMessage: update.queuedMessage)
             let next = Dictionary(uniqueKeysWithValues: projected.map { ($0.id, $0) })
             let dirty = dirtyGroups
             dirtyGroups.removeAll()
@@ -201,27 +209,32 @@ struct NativeTranscript: UIViewControllerRepresentable {
                 expansion.removeAll(); toolFrames.removeAll(); measuredHeights.removeAll(); hasSnapshot = false
                 presentation = update.viewState
             }
+            let initial = changedConversation || currentUpdate == nil
+            let opening = changedConversation || !table.hasPresentedContent
+            let previousQueuedID = changedConversation ? nil : currentUpdate?.queuedMessage["id"].string
             currentUpdate = update
             table.beginContentUpdate()
-            let initial = !hasSnapshot
-            // Opening/reopening establishes a baseline, not a newly sent turn.
-            // Keep cached reading intent even when hidden sessions received updates.
-            if validSnapshot {
-                let rows = projected.flatMap(\.rows)
-                if initial {
-                    presentation = update.viewState
-                    expansion = presentation?.expansion ?? [:]
-                    measuredHeights = presentation?.rowHeights ?? [:]
-                    measuredWidth = presentation?.layoutWidth ?? 0
-                    measuredCategory = presentation.flatMap {
-                        $0.contentSizeCategory.isEmpty ? nil : UIContentSizeCategory(rawValue: $0.contentSizeCategory)
-                    }
-                    table.restorePresentation(presentation, rows: rows)
-                } else {
-                    _ = table.scrollState.update(rows: rows)
+            let rows = projected.flatMap(\.rows)
+            if initial {
+                presentation = update.viewState
+                expansion = presentation?.expansion ?? [:]
+                measuredHeights = presentation?.rowHeights ?? [:]
+                measuredWidth = presentation?.layoutWidth ?? 0
+                measuredCategory = presentation.flatMap {
+                    $0.contentSizeCategory.isEmpty ? nil : UIContentSizeCategory(rawValue: $0.contentSizeCategory)
                 }
-                hasSnapshot = true
+                table.restorePresentation(presentation, rows: rows)
+            } else if validSnapshot && !hasSnapshot {
+                // The first real history is a loading baseline, even after a cold
+                // queue was displayed. Keep a still-present local turn pinned.
+                table.scrollState.restoreRows(rows)
+            } else {
+                _ = table.scrollState.update(rows: rows)
             }
+            if let queuedID = update.queuedMessage["id"].string, queuedID != previousQueuedID {
+                table.scrollState.submitted(queuedID)
+            }
+            hasSnapshot = hasSnapshot || validSnapshot
             let previousIDs = Set(source.snapshot().itemIdentifiers)
             let changed = projected.filter {
                 previousIDs.contains($0.id) && ($0 != items[$0.id] || dirty.contains($0.id) || (changedDisplay && $0.isToolGroup))
@@ -239,7 +252,10 @@ struct NativeTranscript: UIViewControllerRepresentable {
             source.apply(snapshot, animatingDifferences: false) { [weak self, weak table] in
                 guard let self, let table, self.attached else { return }
                 self.applying = false
-                table.finishContentUpdate(initial: changedConversation || initial, ready: self.hasSnapshot)
+                // After a cold queue disappears, an empty table is still a ready
+                // projection. Lay it out and clear its old turn reservation too.
+                table.finishContentUpdate(initial: opening,
+                    ready: self.hasSnapshot || update.queuedMessage != .null || table.hasPresentedContent)
                 if self.pendingUpdate != nil || !self.dirtyGroups.isEmpty { self.scheduleUpdate(table) }
             }
         }
@@ -683,6 +699,7 @@ private struct MobileToolCard: View {
     private var isUser = false
     private var blocks: [MarkdownBlock] = []
     private var renderedWidth: CGFloat = 0
+    private var cancelQueuedMessage: (() -> Void)?
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         text.isEditable = false; text.isSelectable = true; text.isScrollEnabled = false
@@ -715,6 +732,7 @@ private struct MobileToolCard: View {
     override func prepareForReuse() {
         super.prepareForReuse()
         sourceText = nil; blocks = []
+        setQueuedAction(nil)
         text.attributedText = nil; text.selectedRange = NSRange(location: 0, length: 0)
         markdownBody.reset()
     }
@@ -727,7 +745,10 @@ private struct MobileToolCard: View {
         }
         super.layoutSubviews()
     }
-    func configure(_ message: RemoteJSON, width: CGFloat) {
+    func configure(_ message: RemoteJSON, width: CGFloat, cancelQueuedMessage: (() -> Void)? = nil) {
+        // Acceptance can change only queue state, not text. Update before the
+        // rendering fast path; dim just the bubble, never its reusable cell.
+        setQueuedAction(message["role"].string == "user" ? cancelQueuedMessage : nil)
         var content = message["text"].string ?? ""
         if !message["images"].array.isEmpty { content += "\n[Image attachment]" }
         let useMarkdown = message["role"].string == "assistant"
@@ -754,6 +775,22 @@ private struct MobileToolCard: View {
                 .foregroundColor: isUser ? UIColor.white : UIColor.label
             ])
         }
+    }
+    private func setQueuedAction(_ action: (() -> Void)?) {
+        cancelQueuedMessage = action
+        text.alpha = action == nil ? 1 : 0.68
+        text.accessibilityCustomActions = action.map { cancel in
+            [UIAccessibilityCustomAction(name: "Cancel Queued Message") { _ in cancel(); return true }]
+        }
+    }
+    func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
+                  suggestedActions: [UIMenuElement]) -> UIMenu? {
+        guard let cancelQueuedMessage else { return UIMenu(children: suggestedActions) }
+        let cancel = UIAction(title: "Cancel Queued Message", image: UIImage(systemName: "xmark"), attributes: .destructive) { _ in
+            cancelQueuedMessage()
+        }
+        // Preserve TextKit selection and every native Copy/selection action.
+        return UIMenu(children: suggestedActions + [cancel])
     }
     func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
         MarkdownDocument.allowsLink(URL)

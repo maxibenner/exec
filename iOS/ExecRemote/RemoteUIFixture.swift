@@ -17,6 +17,9 @@ import ExecRemote
         let unpaired = ProcessInfo.processInfo.arguments.contains("--unpaired-fixture")
         let offlineActions = ProcessInfo.processInfo.arguments.contains("--offline-actions-fixture")
         let recovering = ProcessInfo.processInfo.arguments.contains("--recovering-host-fixture")
+        let queuedRecovery = ProcessInfo.processInfo.arguments.contains("--offline-reconnect-fixture")
+        let shortDeadline = ProcessInfo.processInfo.arguments.contains("--offline-expiry-fixture")
+        let coldOffline = ProcessInfo.processInfo.arguments.contains("--cold-offline-fixture")
         let delayedStartup = ProcessInfo.processInfo.arguments.contains("--delayed-startup-fixture")
         let transport = FixtureTransport()
         let store = RemoteStore(client: transport, loadHost: { unpaired ? nil : host }, saveHost: { _ in }, forgetHost: {}, sleep: { delay in
@@ -24,18 +27,19 @@ import ExecRemote
             // presentation), then exercise the real observer's automatic retry.
             // Tests must still verify the banner survived their offline sample.
             let connected = await transport.isConnected
-            let interval = recovering && !connected ? 30 : delay
+            let interval = recovering && !connected ? (queuedRecovery ? 20.0 : 30.0) : delay
             try await Task.sleep(for: .seconds(interval))
         }, bufferSleep: {
+            // Short deadlines are injected only in explicit expiry UI fixtures.
             // Explicit-cancel checks must not race the normal 30-second expiry.
-            try await Task.sleep(for: .seconds(offlineActions ? 300 : 30))
+            try await Task.sleep(for: .seconds(shortDeadline ? 12 : offlineActions ? 300 : 30))
         })
         if !delayedStartup {
             store.conversations = unpaired ? [] : conversations
             store.library = library
             store.models = models
         }
-        if offlineActions, case .object(var cached) = snapshot("fixture-1") {
+        if offlineActions, !coldOffline, case .object(var cached) = snapshot("fixture-1") {
             // Keep a completed transcript resident, as after losing a previously
             // connected host, so offline checks exercise real scroll content.
             cached["operation"] = conversations[0]["operation"]

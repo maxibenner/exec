@@ -17,8 +17,7 @@ public struct RemoteOptimisticMessages {
     public init() {}
 
     @discardableResult
-    public mutating func begin(text: String, snapshot: RemoteJSON) -> String {
-        let id = "local-\(UUID().uuidString)"
+    public mutating func begin(text: String, snapshot: RemoteJSON, id: String = "local-\(UUID().uuidString)") -> String {
         pending.append(Pending(id: id, text: text,
                                previousMessageIDs: Set(Self.messages(snapshot).compactMap { $0["id"].string }),
                                previousOperationID: snapshot["operation"]["id"].string))

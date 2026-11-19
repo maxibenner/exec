@@ -374,12 +374,18 @@ struct ConversationScreen: View {
 
     var body: some View {
         let current = currentPresentation
+        let queued = store.pendingMessage.flatMap { $0.conversationID == conversationID ? $0.transcriptMessage : nil } ?? .null
         NativeTranscript(conversationID: conversationID, snapshot: current.snapshot,
+                         queuedMessage: queued, cancelQueuedMessage: { store.cancelPendingMessage(rowID: $0) },
                          descriptiveShellTitles: descriptiveShellTitles,
                          viewState: store.transcriptViewState(for: conversationID),
                          saveViewState: { id, value in store.saveTranscriptViewState(value, for: id) },
                          bottomPadding: composerHeight, hasEarlier: store.selected == conversationID && store.hasEarlierMessages,
                          loadEarlier: { Task { if store.selected == conversationID { await store.loadEarlier() } } })
+        // A cold empty page has no retained transcript. Release its UIKit/AX
+        // container too; queue -> dispatch -> reconciliation keeps the same
+        // controller and local row identity throughout.
+        .id(current.snapshot == .null && queued == .null)
         .ignoresSafeArea(.container, edges: [.top, .bottom])
         .navigationTitle(current.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -416,16 +422,6 @@ struct ConversationScreen: View {
                     }
                     .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
                     .disabled(!store.canApprove)
-                }
-                if let pending = store.pendingMessage, pending.conversationID == conversationID {
-                    HStack(spacing: 12) {
-                        Image(systemName: "clock").foregroundStyle(.secondary).accessibilityHidden(true)
-                        Text(pending.text).font(.callout).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-                            .accessibilityIdentifier("pending-message")
-                        Button("Cancel Queued Message", systemImage: "xmark") { store.cancelPendingMessage() }
-                            .labelStyle(.iconOnly).accessibilityIdentifier("cancel-pending-message")
-                    }
-                    .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
                 }
                 RemoteChatComposer(store: store)
             }

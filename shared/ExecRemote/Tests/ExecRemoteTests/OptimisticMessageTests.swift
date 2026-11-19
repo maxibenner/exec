@@ -16,7 +16,8 @@ final class OptimisticMessageTests: XCTestCase {
     func testSendShowsMessageAndSpinnerBeforeAnyResponseAndKeepsRowIdentity() {
         let initial = snapshot(messages: [user("earlier")])
         var display = RemoteOptimisticMessages()
-        let localID = display.begin(text: "Hello", snapshot: initial)
+        let localID = display.begin(text: "Hello", snapshot: initial, id: "local-already-visible-queue")
+        XCTAssertEqual(localID, "local-already-visible-queue")
         XCTAssertTrue(RemoteMessageSubmission.isActive(display.project(initial)))
         XCTAssertEqual(RemoteTranscriptRow.project(display.project(initial)).map(\.id), ["earlier", localID])
         display.accept(localID, response: acceptance())

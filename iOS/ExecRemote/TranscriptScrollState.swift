@@ -5,19 +5,25 @@ import ExecRemote
 /// their own identities even though UIKit measures the entire run in one host.
 struct TranscriptItem: Equatable {
     let rows: [RemoteTranscriptRow]
+    var isQueued = false
     var id: String { rows[0].id }
     var isToolGroup: Bool { rows[0].call != nil }
 
-    static func project(_ snapshot: RemoteJSON) -> [Self] {
+    // Queue projection lives here, not in ConversationPresentation or a cache.
+    // It works without a snapshot and disappears immediately on expiry/cancel.
+    static func project(_ snapshot: RemoteJSON, queuedMessage: RemoteJSON = .null) -> [Self] {
+        let queuedID = queuedMessage["id"].string
+        let rows = RemoteTranscriptRow.project(snapshot) + RemoteTranscriptRow.project(
+            .object(["pendingInput": .array(queuedID == nil ? [] : [queuedMessage])]))
         var items: [Self] = []
         var tools: [RemoteTranscriptRow] = []
         var seen: Set<String> = []
-        for row in RemoteTranscriptRow.project(snapshot) where !row.id.isEmpty && seen.insert(row.id).inserted {
+        for row in rows where !row.id.isEmpty && seen.insert(row.id).inserted {
             if row.call != nil {
                 tools.append(row)
             } else {
                 if !tools.isEmpty { items.append(Self(rows: tools)); tools = [] }
-                items.append(Self(rows: [row]))
+                items.append(Self(rows: [row], isQueued: row.id == queuedID))
             }
         }
         if !tools.isEmpty { items.append(Self(rows: tools)) }
@@ -54,6 +60,12 @@ struct TranscriptScrollState {
         lastUserID = user?.id
         initialized = true
         return shouldFollow
+    }
+
+    /// Explicit local input also pins when a cold page has no history baseline.
+    mutating func submitted(_ rowID: String) {
+        intent = .turn(rowID)
+        reservedTurnID = rowID
     }
 
     /// Reopening adopts the current cached history without replaying messages

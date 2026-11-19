@@ -44,6 +44,32 @@ final class TranscriptScrollTests: XCTestCase {
         XCTAssertEqual(cached.intent, .latest)
     }
 
+    func testColdQueuePinsAndFirstRealHistoryIsOnlyABaseline() {
+        var state = TranscriptScrollState()
+        state.restoreRows([]) // Mounted while snapshot is null.
+        let queued = rows([message("local-queue")])
+        _ = state.update(rows: queued)
+        state.submitted("local-queue")
+        XCTAssertEqual(state.intent, .turn("local-queue"))
+        let history = rows([message("old-user"), message("old-answer", "assistant")])
+        state.restoreRows(history + queued) // First successful read, queue still visible.
+        XCTAssertEqual(state.intent, .turn("local-queue"))
+        XCTAssertFalse(state.update(rows: history + queued), "Dispatch/reconciliation must not replay the pin")
+        _ = state.update(rows: history) // Cancel/expiry drops its response reservation.
+        XCTAssertEqual(state.intent, .latest)
+        XCTAssertNil(state.reservedTurnID)
+
+        var cancelledCold = TranscriptScrollState()
+        cancelledCold.restoreRows(queued)
+        cancelledCold.submitted("local-queue")
+        _ = cancelledCold.update(rows: [])
+        cancelledCold.restoreRows(history)
+        XCTAssertFalse(cancelledCold.update(rows: history))
+        XCTAssertEqual(cancelledCold.intent, .latest, "Loading old user messages is not a new submission")
+        cancelledCold.submitted("local-next")
+        XCTAssertEqual(cancelledCold.reservedTurnID, "local-next")
+    }
+
     func testSendAnchorsEvenWhenFirstResponseArrivesInSameUpdate() {
         var state = TranscriptScrollState()
         XCTAssertFalse(state.update(rows: []))

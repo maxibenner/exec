@@ -327,6 +327,56 @@ import UIKit
         XCTAssertTrue(newSession.isEnabled)
     }
 
+    private func localBubbles(_ app: XCUIApplication) -> XCUIElementQuery {
+        app.tables["native-transcript"].cells.matching(NSPredicate(format: "identifier BEGINSWITH %@", "transcript-message-local-"))
+    }
+    private func cancelQueuedBubble(_ bubble: XCUIElement, app: XCUIApplication) {
+        // Use TextKit's selection menu, not a competing context-menu recognizer.
+        bubble.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 30, dy: 16)).press(forDuration: 1)
+        let cancel = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Cancel Queued Message")).firstMatch
+        XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 2), "Native text selection must retain Copy")
+        for _ in 0..<5 {
+            if cancel.exists { break }
+            // Native edit menus page actions with Forward on this iOS version.
+            let forward = app.buttons["Forward"]
+            guard forward.exists else { break }
+            forward.tap()
+        }
+        guard cancel.waitForExistence(timeout: 2) else {
+            XCTFail("Missing queued-message selection action:\n\(app.debugDescription)")
+            return
+        }
+        capture("queued-bubble-native-selection-menu", app: app)
+        cancel.tap()
+    }
+    private func assertBubbleOpacity(_ app: XCUIApplication, bubble: XCUIElement, opacity: CGFloat) throws {
+        try assertBubbleOpacity(app, frame: bubble.frame, opacity: opacity)
+    }
+    private func assertBubbleOpacity(_ app: XCUIApplication, frame rect: CGRect, opacity: CGFloat) throws {
+        let image = try XCTUnwrap(app.screenshot().image.cgImage)
+        let scale = CGFloat(image.width) / app.frame.width
+        let colorSpace = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        func rgb(_ point: CGPoint) throws -> [CGFloat] {
+            let pixel = try XCTUnwrap(image.cropping(to: CGRect(x: (point.x * scale).rounded(.down),
+                                                               y: (point.y * scale).rounded(.down), width: 1, height: 1)))
+            var bytes = [UInt8](repeating: 0, count: 4)
+            try bytes.withUnsafeMutableBytes { buffer in
+                let context = try XCTUnwrap(CGContext(data: buffer.baseAddress, width: 1, height: 1,
+                    bitsPerComponent: 8, bytesPerRow: 4, space: colorSpace,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                context.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            return bytes.prefix(3).map(CGFloat.init)
+        }
+        // Sample the bubble's right padding, never a glyph or rounded corner.
+        let actual = try rgb(CGPoint(x: rect.maxX - 5, y: rect.midY))
+        let background = try rgb(CGPoint(x: rect.minX - 8, y: rect.midY))
+        for (index, blue) in [CGFloat(0), 122, 255].enumerated() {
+            XCTAssertEqual(actual[index], opacity * blue + (1 - opacity) * background[index], accuracy: 7,
+                           "Only the blue/text bubble should be dimmed while queued; RGB=\(actual), background=\(background)")
+        }
+    }
+
     func testOfflineSendBuffersOnceAndCancelRestoresBeforeNewerDraft() throws {
         let app = launch(["--offline-actions-fixture"])
         app.buttons["session-fixture-1"].tap()
@@ -347,40 +397,135 @@ import UIKit
         composer.tap()
         composer.typeText(original)
         wait(NSPredicate(format: "enabled == true"), on: app.buttons["Send"])
+        let controls = element("chat-composer-controls", in: app)
+        let originalHeight = controls.frame.height
         app.buttons["Send"].tap()
 
-        let pending = app.descendants(matching: .any).matching(identifier: "pending-message").firstMatch
+        let pending = localBubbles(app).firstMatch
         XCTAssertTrue(pending.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts[original].exists)
-        let cancel = app.buttons["cancel-pending-message"]
-        XCTAssertEqual(cancel.label, "Cancel Queued Message")
-        XCTAssertTrue(cancel.isEnabled)
+        let firstID = pending.identifier
+        let bubble = pending.textViews.firstMatch
+        XCTAssertEqual(bubble.value as? String, original)
+        let queuedLayout = try stableLayout(app, matching: [firstID: .cell, "chat-composer-controls": .any])
+        XCTAssertEqual(try frame("chat-composer-controls", in: queuedLayout).height, originalHeight, accuracy: 1,
+                       "A queued bubble must not add a composer card or change its height")
+        XCTAssertEqual(bubble.frame.minY, app.navigationBars["Session 1"].frame.maxY + 8, accuracy: 3)
+        XCTAssertFalse(element("pending-message", in: app).exists)
+        XCTAssertFalse(app.buttons["cancel-pending-message"].exists)
+        XCTAssertFalse(app.buttons["Stop"].exists, "Unsent display must not invent a running operation")
+        try assertBubbleOpacity(app, bubble: bubble, opacity: 0.68)
         composer.tap()
         composer.typeText(newer)
         wait(NSPredicate(format: "value == %@", newer), on: composer)
-        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", original)).count, 1)
+        XCTAssertEqual(localBubbles(app).count, 1)
         XCTAssertFalse(app.buttons["Send"].isEnabled, "Only one unsent message may be buffered.")
         capture("offline-queued-message", app: app)
-        cancel.tap()
+        cancelQueuedBubble(bubble, app: app)
         wait(NSPredicate(format: "exists == false"), on: pending)
         let restored = original + "\n\n" + newer
         wait(NSPredicate(format: "value == %@", restored), on: composer)
         XCTAssertTrue(app.buttons["Send"].isEnabled)
-        XCTAssertEqual(app.tables["native-transcript"].cells.matching(
-            NSPredicate(format: "identifier BEGINSWITH %@", "transcript-message-local-")).count, 0,
-                       "The offline buffer must not appear as a dispatched transcript message.")
+        XCTAssertEqual(localBubbles(app).count, 0)
         XCTAssertTrue(connectionBanner(app).exists)
-        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "session-notice").firstMatch.exists)
+        XCTAssertFalse(element("session-notice", in: app).exists)
+        _ = try stableLayout(app, matching: ["transcript-message-message-40": .cell])
+        try assertBubbleOpacity(app, bubble: lastMessage, opacity: 1)
 
-        // Leaving the session also returns an unsent buffer to that session's draft.
+        // Leaving the session also returns a NEW unsent bubble to that session's draft.
         app.buttons["Send"].tap()
-        XCTAssertTrue(pending.waitForExistence(timeout: 5))
+        let next = localBubbles(app).firstMatch
+        XCTAssertTrue(next.waitForExistence(timeout: 5))
+        XCTAssertNotEqual(next.identifier, firstID)
         app.navigationBars["Session 1"].buttons.firstMatch.tap()
         XCTAssertTrue(app.navigationBars["All Sessions"].waitForExistence(timeout: 5))
-        XCTAssertFalse(pending.exists)
+        XCTAssertFalse(next.exists)
         app.buttons["session-fixture-1"].tap()
         XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 5))
         wait(NSPredicate(format: "value == %@", restored), on: composer)
+        XCTAssertEqual(localBubbles(app).count, 0)
+    }
+
+    func testColdOfflineQueuedBubbleExpiresAndNewQueueCanBeCancelled() throws {
+        try checkQueuedExpiry(cold: true)
+    }
+    func testCachedOfflineQueuedBubbleExpiresAndNewQueueCanBeCancelled() throws {
+        try checkQueuedExpiry(cold: false)
+    }
+    private func checkQueuedExpiry(cold: Bool) throws {
+        let app = launch(["--offline-actions-fixture", "--offline-expiry-fixture"] + (cold ? ["--cold-offline-fixture"] : []))
+        app.buttons["session-fixture-1"].tap()
+        let composer = element("message-composer", in: app)
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        if cold { XCTAssertEqual(app.tables["native-transcript"].cells.count, 0) }
+        XCTAssertFalse(element("session-notice", in: app).exists)
+        composer.tap(); composer.typeText("Expiry fixture")
+        let originalHeight = element("chat-composer-controls", in: app).frame.height
+        app.buttons["Send"].tap()
+        let pending = localBubbles(app).firstMatch
+        XCTAssertTrue(pending.waitForExistence(timeout: 3))
+        let firstID = pending.identifier
+        let queuedLayout = try stableLayout(app, matching: [firstID: .cell, "chat-composer-controls": .any])
+        XCTAssertEqual(try frame("chat-composer-controls", in: queuedLayout).height, originalHeight, accuracy: 1,
+                       "Queuing must not add a composer card, even without a cached transcript")
+        let bubble = pending.textViews.firstMatch
+        XCTAssertEqual(bubble.frame.minY, app.navigationBars["Session 1"].frame.maxY + 8, accuracy: 3,
+                       "A cold queued bubble must pin just like a normal new user turn")
+        try assertBubbleOpacity(app, bubble: bubble, opacity: 0.68)
+        let queuedFrame = bubble.frame
+        composer.tap(); composer.typeText("Newer")
+        wait(NSPredicate(format: "value == %@", "Expiry fixture\n\nNewer"), on: composer, timeout: 20)
+        wait(NSPredicate(format: "exists == false"), on: app.tables["native-transcript"].cells[firstID])
+        XCTAssertEqual(localBubbles(app).count, 0, "Expiry must remove the transient row, including a null-snapshot page")
+        XCTAssertFalse(element("session-notice", in: app).exists, "Expiry returns text to the composer without a red notice or toast")
+        XCTAssertTrue(app.buttons["Send"].isEnabled)
+        XCTAssertTrue(connectionBanner(app).exists)
+        if cold {
+            XCTAssertEqual(app.tables["native-transcript"].cells.count, 0, "No retained fake snapshot ghost")
+            try assertBubbleOpacity(app, frame: queuedFrame, opacity: 0)
+        }
+        capture(cold ? "cold-queue-expired-no-ghost" : "cached-queue-expired", app: app)
+        app.buttons["Send"].tap()
+        let next = localBubbles(app).firstMatch
+        XCTAssertTrue(next.waitForExistence(timeout: 3))
+        XCTAssertNotEqual(next.identifier, firstID)
+        cancelQueuedBubble(next.textViews.firstMatch, app: app)
+        wait(NSPredicate(format: "value == %@", "Expiry fixture\n\nNewer"), on: composer)
+        XCTAssertEqual(localBubbles(app).count, 0)
+        XCTAssertFalse(element("session-notice", in: app).exists, "Native-menu cancellation must also stay silent")
+        if cold { XCTAssertEqual(app.tables["native-transcript"].cells.count, 0) }
+    }
+
+    func testRecoveringHostDispatchesQueuedBubbleWithSameIdentityAndFullOpacity() throws {
+        let app = launch(["--recovering-host-fixture", "--offline-reconnect-fixture", "--transcript-fixture"])
+        app.buttons["session-fixture-1"].tap()
+        let composer = element("message-composer", in: app)
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap(); composer.typeText("Recover queued input")
+        app.buttons["Send"].tap()
+        let pending = localBubbles(app).firstMatch
+        XCTAssertTrue(pending.waitForExistence(timeout: 3))
+        let id = pending.identifier
+        _ = try stableLayout(app, matching: [id: .cell])
+        XCTAssertTrue(connectionBanner(app).exists)
+        try assertBubbleOpacity(app, bubble: pending.textViews.firstMatch, opacity: 0.68)
+        XCTAssertFalse(app.buttons["Stop"].exists)
+        wait(NSPredicate(format: "exists == false"), on: connectionBanner(app), timeout: 25)
+        let answer = app.tables["native-transcript"].cells["transcript-message-streaming-answer"]
+        XCTAssertTrue(answer.waitForExistence(timeout: 10), "Fresh validation must automatically drain the unsent message")
+        let accepted = app.tables["native-transcript"].cells[id]
+        XCTAssertTrue(accepted.exists)
+        XCTAssertEqual(localBubbles(app).count, 1)
+        XCTAssertEqual(accepted.textViews.firstMatch.value as? String, "Recover queued input")
+        // Streaming intentionally changes other row frames on every read; sample
+        // the pinned user bubble rather than waiting for a static whole table.
+        wait(NSPredicate { _, _ in
+            abs(accepted.textViews.firstMatch.frame.minY - app.navigationBars["Session 1"].frame.maxY - 8) < 3
+        }, on: accepted)
+        try assertBubbleOpacity(app, bubble: accepted.textViews.firstMatch, opacity: 1)
+        XCTAssertEqual(accepted.textViews.firstMatch.frame.minY, app.navigationBars["Session 1"].frame.maxY + 8, accuracy: 3)
+        XCTAssertFalse(app.tables["native-transcript"].cells["transcript-message-submitted-user"].exists,
+                       "Server reconciliation must preserve the local row instead of duplicating it")
+        capture("queued-bubble-auto-dispatched-same-row", app: app)
     }
 
     func testDelayedFirstStartupConnectsWithoutShowingFailureBanner() {

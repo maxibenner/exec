@@ -53,6 +53,11 @@ extension RelayClient: RemoteTransport {}
         let conversationID: String
         let text: String
         fileprivate var target: MessageTarget
+        var rowID: String { "local-\(id.uuidString)" }
+        // Transient transcript input only; never an authoritative snapshot.
+        var transcriptMessage: RemoteJSON {
+            .object(["id": .string(rowID), "role": .string("user"), "text": .string(text)])
+        }
     }
     fileprivate enum MessageTarget: Equatable {
         case unresolved, newTurn, operation(String), afterSend(UUID)
@@ -670,12 +675,12 @@ extension RelayClient: RemoteTransport {}
                 do { try await bufferSleep() } catch { return }
                 guard let self, pendingMessage?.id == message.id else { return }
                 cancelPendingMessage()
-                error = "The queued message expired and was returned to your draft."
             }
             scheduleBufferedMessage()
         }
     }
-    private func performSend(_ id: String, text: String, target: MessageTarget) async {
+    private func performSend(_ id: String, text: String, target: MessageTarget,
+                             rowID: String = "local-\(UUID().uuidString)") async {
         guard connected, sending[id] == nil, !isUpdatingConversation(id), !isCancelling(id) else {
             restoreDraft(text, for: id); return
         }
@@ -689,7 +694,8 @@ extension RelayClient: RemoteTransport {}
         }
         let flight = UUID(), generation = hostGeneration, connection = connectionGeneration
         sending[id] = flight; error = nil; snapshotGeneration += 1
-        let localID = optimisticMessages[id, default: RemoteOptimisticMessages()].begin(text: text, snapshot: syncStates[id]?.snapshot ?? snapshot)
+        let localID = optimisticMessages[id, default: RemoteOptimisticMessages()].begin(
+            text: text, snapshot: syncStates[id]?.snapshot ?? snapshot, id: rowID)
         do {
             let response = try await client.request("POST", path, body: body)
             guard generation == hostGeneration else { return }
@@ -719,6 +725,11 @@ extension RelayClient: RemoteTransport {}
     private func restoreDraft(_ text: String, for id: String) {
         let newer = drafts[id] ?? ""
         drafts[id] = newer.isEmpty ? text : text + "\n\n" + newer
+    }
+    // Menus can outlive their row or its acceptance. Never cancel a replacement.
+    func cancelPendingMessage(rowID: String) {
+        guard pendingMessage?.rowID == rowID else { return }
+        cancelPendingMessage()
     }
     func cancelPendingMessage() {
         guard let message = pendingMessage else { return }
@@ -768,7 +779,7 @@ extension RelayClient: RemoteTransport {}
                     pendingMessage = nil
                     bufferDeadline?.cancel(); bufferDeadline = nil
                     bufferTask = nil; bufferTaskID = nil
-                    await performSend(pending.conversationID, text: pending.text, target: target)
+                    await performSend(pending.conversationID, text: pending.text, target: target, rowID: pending.rowID)
                     return
                 }
             } catch {
