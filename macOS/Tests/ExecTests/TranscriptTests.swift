@@ -452,7 +452,7 @@ import SwiftUI
                     let texts = textViews(in: row)
                     try expect(texts.map(\.string) == (message.text.isEmpty ? [] : [message.text]))
                     var accent = NSColor.controlAccentColor
-                    var foreground = AppColors.systemAccentText
+                    var foreground = NSColor.white
                     window.effectiveAppearance.performAsCurrentDrawingAppearance {
                         accent = accent.usingColorSpace(.sRGB)!
                         foreground = foreground.usingColorSpace(.sRGB)!
