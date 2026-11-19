@@ -277,7 +277,28 @@ private actor SessionReorderTransport: AgentTransport {
         guard let table = findTable(host) else { throw CheckFailure(description: "Missing sidebar table") }
         let initialHeight = table.rect(ofRow: 0).height
         let initialNeighborY = table.rect(ofRow: 1).minY
-        let parentRow = table.rowView(atRow: 0, makeIfNecessary: true)
+        guard let parentRow = table.rowView(atRow: 0, makeIfNecessary: true) else {
+            throw CheckFailure(description: "Missing native parent row")
+        }
+        func menus(in view: NSView) -> [SessionContextMenu.MenuView] {
+            (view as? SessionContextMenu.MenuView).map { [$0] } ?? view.subviews.flatMap { menus(in: $0) }
+        }
+        func isParentMenu(_ menu: SessionContextMenu.MenuView) -> Bool {
+            menu.items.contains { item in
+                if case .action("Rename…", _, _) = item { return true }
+                return false
+            }
+        }
+        func frame(_ view: NSView) -> CGRect { view.convert(view.bounds, to: host) }
+        guard let initialParentMenu = menus(in: parentRow).first(where: isParentMenu) else {
+            throw CheckFailure(description: "Missing native parent menu")
+        }
+        let initialParentHitFrame = frame(initialParentMenu)
+        func topInParentRow(_ view: NSView) -> CGFloat {
+            let rect = view.convert(view.bounds, to: parentRow)
+            return parentRow.isFlipped ? rect.minY : parentRow.bounds.maxY - rect.maxY
+        }
+        let initialParentTop = topInParentRow(initialParentMenu)
         let children = try (0..<2).map { index -> AgentJSON in
             guard case .object(var fields) = try AgentIntegrationTests.fixture(state: "running"),
                   case .object(var metadata) = fields["metadata"] else { throw CheckFailure(description: "Invalid fixture") }
@@ -319,6 +340,28 @@ private actor SessionReorderTransport: AgentTransport {
             try expect(abs(heightDelta - CGFloat(count) * (childHeight ?? 0)) < 1)
             try expect(abs(table.rect(ofRow: 1).minY - initialNeighborY - heightDelta) < 1)
             try expect(library.sidebarSelectionID == parentID)
+            let rowMenus = menus(in: parentRow)
+            try expect(rowMenus.count == count + 1)
+            guard let parentMenu = rowMenus.first(where: isParentMenu) else {
+                throw CheckFailure(description: "Missing parent hit area")
+            }
+            let parentHitFrame = frame(parentMenu)
+            try expect(abs(parentHitFrame.minX - initialParentHitFrame.minX) < 0.1)
+            // Compare row-local top edges, not screen Y (List can scroll to keep
+            // its contents in view as the native family's height changes).
+            guard abs(topInParentRow(parentMenu) - initialParentTop) < 0.5 else {
+                throw CheckFailure(description: "Parent top inset changed from \(initialParentTop) to \(topInParentRow(parentMenu)) with \(count) children")
+            }
+            try expect(abs(parentHitFrame.width - initialParentHitFrame.width) < 0.1)
+            // Native subview order is not SwiftUI row order; identify menus by
+            // their actions rather than mistaking the last child for its parent.
+            for childMenu in rowMenus where !isParentMenu(childMenu) {
+                let hitFrame = frame(childMenu)
+                // Padding belongs inside the child's full-width native menu/click
+                // area, not on the family or outside the selection background.
+                try expect(abs(hitFrame.minX - parentHitFrame.minX) < 0.1)
+                try expect(abs(hitFrame.width - parentHitFrame.width) < 0.1)
+            }
         }
     }
 
