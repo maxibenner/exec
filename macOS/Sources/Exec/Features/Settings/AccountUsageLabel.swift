@@ -26,7 +26,7 @@ struct AccountUsageLabel: View {
                             ProgressView(value: Double(window.remainingPercent), total: 100)
                                 .progressViewStyle(.linear)
                                 .controlSize(.mini)
-                                .tint(.secondary)
+                                .tint(.green)
                                 .frame(maxWidth: .infinity)
                             Text("\(window.remainingPercent)%")
                                 .monospacedDigit()

@@ -10,10 +10,10 @@ struct ModelsAndToolsSettingsView: View {
         Form {
             Section("Generated Titles") {
                 Toggle("Descriptive shell titles", isOn: $descriptiveShellTitles)
-                    .tint(.blue).accentColor(.blue)
+                    .tint(AppColors.systemAccent).accentColor(AppColors.systemAccent)
                 Toggle("Automatic session titles", isOn: $settings.automaticTitles)
                     .disabled(store.authenticating || connected.isEmpty)
-                    .tint(.blue).accentColor(.blue)
+                    .tint(AppColors.systemAccent).accentColor(AppColors.systemAccent)
             }
             providerSettings
         }
@@ -49,7 +49,7 @@ struct ModelsAndToolsSettingsView: View {
                     }
                 }
                 Toggle("Auto mode", isOn: $settings.defaultAutoApproveTools)
-                    .tint(.blue).accentColor(.blue)
+                    .tint(AppColors.systemAccent).accentColor(AppColors.systemAccent)
             } header: {
                 Text("New Chats")
             }

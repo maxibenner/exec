@@ -46,6 +46,7 @@ struct SessionToolMenu: View {
                 get: { !conversation.disabledTools.contains(tool.name) },
                 set: { conversation.setToolEnabled(tool.name, $0) }))
                 .toggleStyle(.checkbox)
+                .tint(AppColors.systemAccent).accentColor(AppColors.systemAccent)
                 .labelsHidden()
                 .accessibilityIdentifier(tool.name)
         }
