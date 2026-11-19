@@ -475,10 +475,19 @@ import SwiftUI
                         try expect(text.selectedRange() == range)
                         text.setSelectedRange(NSRange(location: 0, length: 0))
                     }
-                    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                    // AppKit's suggested cache format can be an extended/pattern
+                    // colorspace that colorAt cannot sample. Use a known RGB buffer.
+                    let scale = window.backingScaleFactor
+                    let width = Int(ceil(view.bounds.width * scale)), height = Int(ceil(view.bounds.height * scale))
+                    guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                        colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32) else {
                         throw CheckFailure(description: "Could not render user bubble")
                     }
-                    view.cacheDisplay(in: view.bounds, to: bitmap)
+                    bitmap.size = view.bounds.size
+                    window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                        view.cacheDisplay(in: view.bounds, to: bitmap)
+                    }
                     // Cached surfaces can shift profiles; check accent coverage here,
                     // including image-only rows. The color tests check exact contrast.
                     var accentPixels = 0
