@@ -195,6 +195,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Rendered edits preserve selection and code append positions", { try LinkedTextTests().renderedEditsPreserveSelectionAndCodeAppendPositions() }),
             ("Linked text wrapping, resizing and updates", { try LinkedTextTests().measuresWrappingAcrossWidthsAndUpdates() }),
             ("Streaming Markdown stabilizes unfinished tails and finishes canonically", { try StreamingMarkdownTests().projectsOnlyUnfinishedTails() }),
+            ("Markdown native code and table surfaces have whole-block rounded corners", { try MarkdownBlockBackgroundTests().roundsNativeCodeAndTableSurfaces() }),
             ("Markdown selection across blocks and streaming updates", { try MarkdownSelectionTests().selectsAndCopiesAcrossBlocksWithoutLosingFormatting() }),
             ("Markdown blocks and streaming code", { try MarkdownTests().preservesBlocksAndStreamingCode() }),
             ("Markdown link and image safety", { try MarkdownTests().stripsActiveContentAndUnsafeLinks() }),

@@ -1,8 +1,61 @@
 import AppKit
+import SwiftUI
 
 /// Render a reply into one TextKit document so selection can cross every block.
 @MainActor enum MarkdownText {
     static let codeSnippet = NSAttributedString.Key("ExecCodeSnippet")
+    nonisolated private static let blockSpacing: CGFloat = 12
+
+    /// Keep TextKit's cells, padding and hit geometry; only replace their paint.
+    /// Every cell clips against the same table envelope, not its own corners.
+    private final class RoundedTable: NSTextTable {
+        override func drawBackground(for block: NSTextTableBlock, withFrame frameRect: NSRect,
+                                     in controlView: NSView, characterRange charRange: NSRange,
+                                     layoutManager: NSLayoutManager) {
+            let glyph = layoutManager.glyphIndexForCharacter(at: charRange.location)
+            let cellBounds = layoutManager.boundsRect(for: block, at: glyph, effectiveRange: nil)
+            var surface = layoutManager.boundsRect(for: self, at: glyph, effectiveRange: nil)
+            // Layout bounds are in container coordinates; the callback frame
+            // includes the drawing origin (including text-container insets).
+            surface.origin.x += frameRect.minX - cellBounds.minX
+            surface.origin.y += frameRect.minY - cellBounds.minY
+            // The last row's margin participates in layout, never in the fill.
+            surface.size.height -= MarkdownText.blockSpacing
+            guard !surface.isEmpty else { return }
+            // Reuse ToolCard's 8-point continuous shape as native path geometry;
+            // no SwiftUI views or layers participate in TextKit drawing.
+            let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+            let outline = NSBezierPath(cgPath: shape.path(in: surface).cgPath)
+            var cell = frameRect
+            cell.size.height -= block.width(for: .margin, edge: .maxY)
+
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            outline.addClip()
+            // Draw each piece once, even along shared translucent borders.
+            NSBezierPath(rect: cell).addClip()
+            if let background = block.backgroundColor {
+                background.setFill()
+                cell.fill(using: .sourceOver)
+            }
+            let borderWidth = block.width(for: .border, edge: .minX)
+            guard borderWidth > 0 else { return } // Code panels have no stroke.
+            let borderColor = block.borderColor(for: .minX) ?? .separatorColor
+            borderColor.setFill()
+            if block.startingColumn > 0 {
+                NSRect(x: cell.minX, y: cell.minY, width: borderWidth, height: cell.height).fill(using: .sourceOver)
+            }
+            if block.startingRow > 0 {
+                NSRect(x: cell.minX, y: cell.minY, width: cell.width,
+                       height: block.width(for: .border, edge: .minY)).fill(using: .sourceOver)
+            }
+            // A clipped square border would leave the rounded arcs unstroked.
+            let border = NSBezierPath(cgPath: shape.inset(by: borderWidth / 2).path(in: surface).cgPath)
+            borderColor.setStroke()
+            border.lineWidth = borderWidth
+            border.stroke()
+        }
+    }
 
     static func render(_ blocks: [MarkdownBlock]) -> NSAttributedString {
         let renderer = Renderer()
@@ -52,7 +105,7 @@ import AppKit
             case .codeBlock(let language):
                 // AppKit lays out table cells but ignores standalone text-block
                 // padding/backgrounds. A single cell keeps code native/selectable.
-                let table = NSTextTable()
+                let table = RoundedTable()
                 table.numberOfColumns = 1
                 table.layoutAlgorithm = .fixedLayoutAlgorithm
                 table.setContentWidth(100, type: .percentageValueType)
@@ -61,7 +114,7 @@ import AppKit
                                              startingColumn: 0, columnSpan: 1)
                 panel.backgroundColor = .quaternarySystemFill
                 panel.setWidth(10, type: .absoluteValueType, for: .padding)
-                panel.setWidth(12, type: .absoluteValueType, for: .margin, edge: .maxY)
+                panel.setWidth(MarkdownText.blockSpacing, type: .absoluteValueType, for: .margin, edge: .maxY)
                 if let language, !language.isEmpty {
                     paragraph(AttributedString(language), indent: indent, containers: containers + [panel], size: 11)
                 }
@@ -73,7 +126,7 @@ import AppKit
                 paragraph(AttributedString(), indent: indent, containers: containers + [rule], size: 2)
             case .table(let columns):
                 guard !columns.isEmpty else { return }
-                let table = NSTextTable()
+                let table = RoundedTable()
                 table.numberOfColumns = columns.count
                 table.layoutAlgorithm = .fixedLayoutAlgorithm
                 table.setContentWidth(100, type: .percentageValueType)
@@ -91,7 +144,7 @@ import AppKit
                         cell.setWidth(8, type: .absoluteValueType, for: .padding)
                         // TextKit applies outer spacing to cells, not the table.
                         if rowIndex == block.children.count - 1 {
-                            cell.setWidth(12, type: .absoluteValueType, for: .margin, edge: .maxY)
+                            cell.setWidth(MarkdownText.blockSpacing, type: .absoluteValueType, for: .margin, edge: .maxY)
                         }
                         cell.verticalAlignment = .top
                         if row.kind == .tableHeaderRow {
