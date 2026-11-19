@@ -825,12 +825,7 @@ impl AgentManager {
         name: String,
         bytes: Vec<u8>,
     ) -> Result<FileRef> {
-        if !valid_file_name(&name) || bytes.len() > MAX_FILE_BYTES {
-            return Err(Error::Invalid(
-                "Use a valid filename and a file no larger than 8 MiB.",
-            ));
-        }
-        let conversation = self.get(id)?;
+        self.get(id)?;
         let files = {
             let c = self.catalog.lock().unwrap();
             if c.closed || c.account_busy || c.mutating.contains(id) {
@@ -841,16 +836,17 @@ impl AgentManager {
                 .ok_or(Error::Invalid("File storage is unavailable."))?
         };
         let asset_id = new_id();
+        let prepared = files
+            .prepare(id.to_owned(), asset_id.clone(), name, bytes)
+            .await?;
+        let conversation = self.get(id)?;
         let resource = ResourceRef {
-            id: asset_id.clone(),
+            id: asset_id,
             call_id: String::new(),
             kind: ResourceKind::File,
         };
-        let session = id.to_owned();
         conversation
-            .store_resource(resource, async move {
-                files.put(session, asset_id, name, bytes).await
-            })
+            .store_resource(resource, async move { files.put_prepared(prepared).await })
             .await
     }
     pub async fn update_settings(
@@ -941,7 +937,7 @@ impl AgentManager {
         name: String,
         bytes: Vec<u8>,
     ) -> Result<ImageRef> {
-        let conversation = self.get(id)?;
+        self.get(id)?;
         let images = {
             let c = self.catalog.lock().unwrap();
             if c.closed || c.account_busy || c.mutating.contains(id) {
@@ -952,18 +948,17 @@ impl AgentManager {
                 .ok_or(Error::Invalid("Image storage is unavailable."))?
         };
         let asset_id = new_id();
+        let prepared = images.prepare(asset_id.clone(), name, bytes).await?;
+        let conversation = self.get(id)?;
         let resource = ResourceRef {
-            id: asset_id.clone(),
+            id: asset_id,
             call_id: String::new(),
             kind: ResourceKind::Image,
         };
-        // Conversation ownership blocks deletion until storage settles, but leaves
-        // reads and explicit cancellation available during an active upload.
+        // Validate before checkpointing ownership. Once storage starts, retain the
+        // reservation on uncertain failures and keep deletion blocked until it settles.
         conversation
-            .store_resource(
-                resource,
-                async move { images.put(asset_id, name, bytes).await },
-            )
+            .store_resource(resource, async move { images.put_prepared(prepared).await })
             .await
     }
     pub async fn release_image(self: &Arc<Self>, id: &str, asset: &str) -> Result<()> {

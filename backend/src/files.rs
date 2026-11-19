@@ -14,6 +14,12 @@ pub struct FileStore {
     root: PathBuf,
     identity: Arc<Metadata>,
 }
+/// Input and reference validation must finish before durable ownership is reserved.
+pub(crate) struct PreparedFile {
+    session: String,
+    reference: FileRef,
+    bytes: Vec<u8>,
+}
 fn invalid() -> Error {
     Error::Invalid("File attachment storage is unavailable or invalid.")
 }
@@ -115,6 +121,41 @@ impl FileStore {
         .await
         .map_err(|_| Error::Internal)?
     }
+    pub(crate) async fn prepare(
+        &self,
+        session: String,
+        id: String,
+        name: String,
+        bytes: Vec<u8>,
+    ) -> Result<PreparedFile> {
+        if !valid_id(&session)
+            || !valid_id(&id)
+            || !valid_file_name(&name)
+            || bytes.len() > MAX_FILE_BYTES
+        {
+            return Err(Error::Invalid(
+                "Use a valid filename and a file no larger than 8 MiB.",
+            ));
+        }
+        let path = self.root.join(&session).join(&id).join(&name);
+        tokio::task::spawn_blocking(move || {
+            let reference = FileRef {
+                id,
+                name,
+                path: path.to_str().ok_or_else(invalid)?.into(),
+                byte_count: bytes.len(),
+                sha256: format!("{:x}", Sha256::digest(&bytes)),
+            };
+            reference.validate()?;
+            Ok(PreparedFile {
+                session,
+                reference,
+                bytes,
+            })
+        })
+        .await
+        .map_err(|_| Error::Internal)?
+    }
     pub async fn put(
         &self,
         session: String,
@@ -122,30 +163,24 @@ impl FileStore {
         name: String,
         bytes: Vec<u8>,
     ) -> Result<FileRef> {
+        self.put_prepared(self.prepare(session, id, name, bytes).await?)
+            .await
+    }
+    pub(crate) async fn put_prepared(&self, prepared: PreparedFile) -> Result<FileRef> {
         let store = self.clone();
-        tokio::task::spawn_blocking(move || {
-            if !valid_id(&session)
-                || !valid_id(&id)
-                || !valid_file_name(&name)
-                || bytes.len() > MAX_FILE_BYTES
-            {
-                return Err(invalid());
-            }
+        tokio::task::spawn_blocking(move || -> Result<FileRef> {
+            let PreparedFile {
+                session,
+                reference,
+                bytes,
+            } = prepared;
             store.check()?;
             let session = store.root.join(session);
             private_dir(&session)?;
-            let directory = session.join(&id);
+            let directory = session.join(&reference.id);
             // Never reuse an asset directory, including interrupted uploads.
             fs::DirBuilder::new().mode(0o700).create(&directory)?;
-            let path = directory.join(&name);
-            let reference = FileRef {
-                id: id.clone(),
-                name,
-                path: path.to_str().ok_or_else(invalid)?.into(),
-                byte_count: bytes.len(),
-                sha256: format!("{:x}", Sha256::digest(&bytes)),
-            };
-            reference.validate()?;
+            let path = directory.join(&reference.name);
             let staging = store.root.join(format!(".{}.tmp", new_id()));
             let mut published = false;
             let result = (|| -> Result<FileRef> {
@@ -167,7 +202,7 @@ impl FileStore {
                 index.sync_all()?;
                 store.check()?;
                 // A complete manifest is published once, without overwriting another asset.
-                fs::hard_link(&staging, store.index(&id)?)?;
+                fs::hard_link(&staging, store.index(&reference.id)?)?;
                 published = true;
                 File::open(&store.root)?.sync_all()?;
                 Ok(reference)
@@ -182,7 +217,8 @@ impl FileStore {
             result
         })
         .await
-        .map_err(|_| Error::Internal)?
+        .map_err(|_| Error::Storage)?
+        .map_err(|_| Error::Storage)
     }
     pub async fn delete(&self, ids: Vec<String>) -> Result<()> {
         let store = self.clone();

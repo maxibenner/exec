@@ -175,3 +175,156 @@ async fn pending_deletion_is_conflict_not_absence_and_readers_still_work() {
     assert_eq!(provider.count(), 0);
     service.close().await.unwrap();
 }
+
+fn png() -> Vec<u8> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(1, 1)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    bytes.into_inner()
+}
+
+#[tokio::test]
+async fn invalid_uploads_do_not_checkpoint_ownership_or_create_assets() {
+    use base64::{Engine, engine::general_purpose::STANDARD as B64};
+    let profile = support::directory();
+    let workspace = support::directory();
+    let provider = FakeProvider::new(vec![]);
+    let service = start_persistent_service(
+        profile.path(),
+        provider.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+        support::http_access(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
+    let c = client
+        .create("fake", workspace.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let path = format!("/v1/conversations/{}", c.id);
+    let record = profile
+        .path()
+        .join("conversations")
+        .join(format!("{}.json", c.id));
+    let before = std::fs::read(&record).unwrap();
+    let modified = std::fs::metadata(&record).unwrap().modified().unwrap();
+    for (kind, name, data) in [
+        ("images", "empty.png".to_owned(), String::new()),
+        ("images", "broken.png".into(), B64.encode(b"not an image")),
+        ("images", "truncated.png".into(), B64.encode(&png()[..24])),
+        ("images", String::new(), B64.encode(png())),
+        ("images", "bad\nname".into(), B64.encode(png())),
+        ("images", "x".repeat(257), B64.encode(png())),
+        ("images", "bad-base64.png".into(), "%%%".into()),
+        ("files", "../escape".into(), B64.encode(b"data")),
+        ("files", String::new(), B64.encode(b"data")),
+    ] {
+        assert_eq!(
+            client
+                .call(
+                    "POST",
+                    &format!("{path}/{kind}"),
+                    Some(json!({"name":name,"base64":data}))
+                )
+                .await
+                .unwrap_err(),
+            Error::Api(400)
+        );
+        assert_eq!(std::fs::read(&record).unwrap(), before);
+        assert_eq!(
+            std::fs::metadata(&record).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(client.get(&c.id).await.unwrap(), c);
+        for directory in ["images", "session-files"] {
+            assert_eq!(
+                std::fs::read_dir(profile.path().join(directory))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+    }
+    service.close().await.unwrap();
+    let service = start_persistent_service(
+        profile.path(),
+        provider.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+        support::http_access(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
+    assert!(client.get(&c.id).await.unwrap().resources.is_empty());
+    client
+        .upload_image(&c.id, "valid.png", &png())
+        .await
+        .unwrap();
+    assert_eq!(client.get(&c.id).await.unwrap().resources.len(), 1);
+    assert_eq!(provider.count(), 0);
+    service.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn storage_failures_keep_reserved_uploads_and_are_not_bad_requests() {
+    use base64::{Engine, engine::general_purpose::STANDARD as B64};
+    use std::os::unix::fs::PermissionsExt;
+    let profile = support::directory();
+    let workspace = support::directory();
+    let provider = FakeProvider::new(vec![]);
+    let service = start_persistent_service(
+        profile.path(),
+        provider.clone(),
+        false,
+        "127.0.0.1:0".parse().unwrap(),
+        support::http_access(),
+    )
+    .await
+    .unwrap();
+    let client = AgentClient::new(service.address).unwrap();
+    let c = client
+        .create("fake", workspace.path().to_str().unwrap())
+        .await
+        .unwrap();
+    for (kind, directory, name, bytes) in [
+        ("images", "images", "valid.png", png()),
+        ("files", "session-files", "valid.txt", b"data".to_vec()),
+    ] {
+        // Break store identity in this isolated profile before publication. The
+        // write boundary still must conservatively retain checkpointed ownership.
+        let root = profile.path().join(directory);
+        std::fs::rename(&root, profile.path().join(format!("{directory}-original"))).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            client
+                .call(
+                    "POST",
+                    &format!("/v1/conversations/{}/{kind}", c.id),
+                    Some(json!({"name":name,"base64":B64.encode(bytes)}))
+                )
+                .await
+                .unwrap_err(),
+            Error::Api(500)
+        );
+    }
+    let snapshot = client.get(&c.id).await.unwrap();
+    assert_eq!(snapshot.resources.len(), 2);
+    let durable: ConversationRecord = serde_json::from_slice(
+        &std::fs::read(
+            profile
+                .path()
+                .join("conversations")
+                .join(format!("{}.json", c.id)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(durable.resources, snapshot.resources);
+    assert_eq!(provider.count(), 0);
+    service.close().await.unwrap();
+}
