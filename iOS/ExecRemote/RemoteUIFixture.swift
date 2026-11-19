@@ -274,7 +274,8 @@ private actor FixtureTransport: RemoteTransport {
     func connect(_ host: PairedHost) async throws {
         connectionAttempts += 1
         let arguments = ProcessInfo.processInfo.arguments
-        if arguments.contains("--delayed-startup-fixture"), connectionAttempts == 1 {
+        if connectionAttempts == 1, arguments.contains("--delayed-startup-fixture")
+            || arguments.contains("--delayed-host-failure-fixture") {
             try await Task.sleep(for: .seconds(10))
         }
         if arguments.contains("--settings-offline") || arguments.contains("--offline-actions-fixture")
@@ -285,6 +286,12 @@ private actor FixtureTransport: RemoteTransport {
     }
     func disconnect() { isConnected = false }
     func request(_ method: String, _ path: String, body: RemoteJSON?) async throws -> RemoteJSON {
+        // Opening a cold session issues a read too. Hold its synthetic failure
+        // until after the pending first handshake, so focus can be tested before
+        // any actual failure without changing the store's failure latch.
+        if ProcessInfo.processInfo.arguments.contains("--delayed-host-failure-fixture"), !isConnected {
+            try await Task.sleep(for: .seconds(10))
+        }
         if ProcessInfo.processInfo.arguments.contains("--offline-actions-fixture") {
             // An offline Send must stay buffered, never even attempt a fake command.
             precondition(method == "GET", "Offline actions must not dispatch host mutations.")
