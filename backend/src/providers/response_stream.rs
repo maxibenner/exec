@@ -7,11 +7,12 @@ fn invalid() -> Error {
 }
 /// Bounded framing only. No reconnection, inference retry, or EOF completion.
 pub fn read_sse(bytes: ByteStream) -> BoxStream<'static, Result<String>> {
-    read_sse_bounded(bytes, 256 * 1024)
+    read_sse_bounded(bytes, 256 * 1024, ProviderFailure::Response)
 }
 pub fn read_sse_bounded(
     mut bytes: ByteStream,
     event_limit: usize,
+    utf8_failure: ProviderFailure,
 ) -> BoxStream<'static, Result<String>> {
     Box::pin(async_stream::try_stream! {
         let mut line=Vec::new();let mut data=Vec::new();let mut event_bytes=0;let mut total=0;let mut skip_lf=false;let mut first=true;
@@ -19,14 +20,14 @@ pub fn read_sse_bounded(
             for byte in chunk{if skip_lf{skip_lf=false;if byte==b'\n'{continue;}}
                 event_bytes+=1;if event_bytes>event_limit{Err(invalid())?;}
                 if byte!=b'\r'&&byte!=b'\n'{line.push(byte);continue;}
-                skip_lf=byte==b'\r';let mut text=std::str::from_utf8(&line).map_err(|_|invalid())?;
+                skip_lf=byte==b'\r';let mut text=std::str::from_utf8(&line).map_err(|_|Error::Provider(utf8_failure))?;
                 if first{first=false;text=text.strip_prefix('\u{feff}').unwrap_or(text);}
                 if text.is_empty(){if !data.is_empty(){yield data.join("\n");}data.clear();event_bytes=0;}
                 else{let (field,value)=text.split_once(':').unwrap_or((text,""));if field=="data"{data.push(value.strip_prefix(' ').unwrap_or(value).to_owned());}}
                 line.clear();
             }
         }
-        std::str::from_utf8(&line).map_err(|_|invalid())?;
+        std::str::from_utf8(&line).map_err(|_|Error::Provider(utf8_failure))?;
     })
 }
 pub async fn read_json(mut bytes: ByteStream) -> Result<serde_json::Value> {

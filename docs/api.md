@@ -47,7 +47,23 @@ profile/                    owned private directory, mode 0700
   conversations/
     .lock/                  exclusive store ownership
     <conversation-id>.json  versioned durable record, mode 0600
+    <conversation-id>/     session-owned diagnostics directory, mode 0700
+      diagnostics.jsonl    current diagnostic JSONL, mode 0600, at most 1 MiB
+      diagnostics.previous.jsonl  optional previous diagnostic JSONL, same limit/mode
 ```
+
+Transcripts remain flat `<conversation-id>.json` files; there is no transcript migration.
+Diagnostic records contain only timestamps, UUID conversation/operation/message IDs,
+allowlisted lifecycle events and typed failure categories/statuses—not prompts, responses,
+tool arguments, raw errors, credentials or account details. Appends are best-effort,
+serialized with session saves/deletion, and retained across restart. Before an append
+would exceed 1 MiB, the current log replaces the previous log; at most two diagnostic
+files are retained per session. These logs are troubleshooting aids, not a complete audit
+trail or durable operation receipts. Writes require an existing session record and never
+recreate deleted sessions. Session deletion removes both diagnostic files and their
+folder before removing the transcript, including for unreadable transcripts and old
+sessions without a diagnostic folder. Unsafe targets or unexpected folder contents
+are refused rather than followed or recursively removed.
 
 Insecure/symlinked profile directories are refused, never silently made private.
 

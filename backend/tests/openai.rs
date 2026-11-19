@@ -61,10 +61,13 @@ fn wire(events: Vec<Value>) -> HttpResponse {
         .into_iter()
         .map(|v| format!("data: {v}\n\n"))
         .collect::<String>();
+    raw_wire(text)
+}
+fn raw_wire(body: impl Into<bytes::Bytes>) -> HttpResponse {
     HttpResponse {
         status: 200,
         content_type: Some("text/event-stream".into()),
-        body: Box::pin(stream::iter([Ok(bytes::Bytes::from(text))])),
+        body: Box::pin(stream::iter([Ok(body.into())])),
     }
 }
 fn access(account: &str) -> String {
@@ -392,6 +395,172 @@ async fn responses_keep_encrypted_context_private_and_failures_never_release_cal
     );
     assert!(support::outcomes(&conversation).is_empty());
 }
+async fn assert_response_failure(
+    reply: HttpResponse,
+    failure: ProviderFailure,
+    partial_text: Option<&str>,
+) {
+    use futures_util::StreamExt;
+    let root = support::directory();
+    let path = root.path().join("credentials.json");
+    save(&path, &session(false));
+    let reply = Mutex::new(Some(reply));
+    let transport = Fake::new(move |request| {
+        assert!(matches!(request.endpoint, Endpoint::Responses));
+        let reply = reply
+            .lock()
+            .unwrap()
+            .take()
+            .expect("Responses must not retry");
+        async move { Ok(reply) }
+    });
+    let auth = Authentication::open(path, None, transport.clone())
+        .await
+        .unwrap();
+    let provider = OpenAIProvider::new(auth, transport.clone());
+    let request = ProviderRequest {
+        model: "test".into(),
+        message_ids: vec![new_id()],
+        incomplete_message_ids: Default::default(),
+        messages: vec![ContextMessage::User {
+            text: "synthetic user content".into(),
+        }],
+        images: Default::default(),
+        instructions: String::new(),
+        effort: None,
+        provider_state: None,
+        tools: vec![],
+        cancel: CancellationToken::new(),
+    };
+    let events: Vec<_> = provider.stream(request).collect().await;
+    // Only incremental text may escape a failed response, never calls, final
+    // snapshots, opaque metadata, or Done. The error itself contains no wire text.
+    let mut expected = Vec::new();
+    if let Some(text) = partial_text {
+        expected.push(Ok(ProviderEvent::Text(text.into())));
+    }
+    expected.push(Err(Error::Provider(failure)));
+    assert_eq!(events, expected);
+    assert_eq!(transport.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn completed_empty_and_reasoning_only_responses_are_failures_not_noops() {
+    for event_type in ["response.completed", "response.done"] {
+        for output in [
+            json!([]),
+            json!([{"type":"reasoning","encrypted_content":"synthetic opaque reasoning"}]),
+        ] {
+            assert_response_failure(
+                wire(vec![json!({"type":event_type,"response":{
+                    "status":"completed","output":output,
+                    "usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}
+                }})]),
+                ProviderFailure::EmptyResponse,
+                None,
+            )
+            .await;
+        }
+    }
+    // A streamed delta does not make an explicitly empty final output complete.
+    assert_response_failure(
+        wire(vec![
+            json!({"type":"response.output_text.delta","delta":"synthetic partial"}),
+            json!({"type":"response.completed","response":{"status":"completed","output":[]}}),
+        ]),
+        ProviderFailure::EmptyResponse,
+        Some("synthetic partial"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn response_failure_events_withhold_staged_calls_and_metadata() {
+    for (event_type, status, failure) in [
+        (
+            "response.incomplete",
+            "incomplete",
+            ProviderFailure::IncompleteResponse,
+        ),
+        ("response.failed", "failed", ProviderFailure::FailedResponse),
+        ("error", "failed", ProviderFailure::FailedResponse),
+        (
+            "response.done",
+            "incomplete",
+            ProviderFailure::IncompleteResponse,
+        ),
+        ("response.done", "failed", ProviderFailure::FailedResponse),
+    ] {
+        assert_response_failure(
+            wire(vec![
+                json!({"type":"response.output_text.delta","delta":"synthetic partial"}),
+                json!({"type":"response.output_item.done","output_index":0,"item":{
+                    "type":"function_call","call_id":"never-release","name":"shell","arguments":"{}"
+                }}),
+                json!({"type":event_type,"response":{
+                    "status":status,
+                    "incomplete_details":{"reason":"synthetic private reason"},
+                    "error":{"code":"rate_limit_exceeded","message":"synthetic private provider text"}
+                },"message":"synthetic private provider text"}),
+            ]),
+            failure,
+            Some("synthetic partial"),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn response_eof_framing_and_content_type_failures_are_distinct() {
+    assert_response_failure(wire(vec![]), ProviderFailure::StreamEnded, None).await;
+    assert_response_failure(
+        wire(vec![
+            json!({"type":"response.output_text.delta","delta":"synthetic partial"}),
+            json!({"type":"response.output_item.done","output_index":0,"item":{
+                "type":"function_call","call_id":"never-release","name":"shell","arguments":"{}"
+            }}),
+        ]),
+        ProviderFailure::StreamEnded,
+        Some("synthetic partial"),
+    )
+    .await;
+    // An unterminated SSE event is not dispatched or treated as EOF completion.
+    assert_response_failure(
+        raw_wire("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n"),
+        ProviderFailure::StreamEnded,
+        None,
+    )
+    .await;
+    for body in [
+        b"data: {synthetic malformed JSON}\n\n".as_slice(),
+        b"data: \xff\n\n".as_slice(),
+        b"data: \xff".as_slice(),
+    ] {
+        assert_response_failure(raw_wire(body), ProviderFailure::MalformedResponse, None).await;
+    }
+    assert_response_failure(
+        response(json!({"error":{"message":"synthetic private provider text"}})),
+        ProviderFailure::UnexpectedContentType,
+        None,
+    )
+    .await;
+    // Keep size limits and ordinary shape validation generic.
+    assert_response_failure(
+        raw_wire(format!("data: {}\n\n", "x".repeat(5 * 1024 * 1024))),
+        ProviderFailure::Response,
+        None,
+    )
+    .await;
+    assert_response_failure(
+        wire(vec![json!({"type":"response.completed","response":{
+            "status":"completed","output":{}
+        }})]),
+        ProviderFailure::Response,
+        None,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn missing_response_content_type_still_requires_a_valid_completed_stream() {
     for (content_type, completed, expected) in [

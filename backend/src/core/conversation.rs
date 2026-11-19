@@ -15,6 +15,10 @@ use tokio_util::sync::CancellationToken;
 #[async_trait]
 pub trait Checkpoint: Send + Sync {
     async fn save(&self, record: ConversationRecord) -> Result<()>;
+    /// Optional, best-effort diagnostics; never a prerequisite for durable state.
+    async fn diagnostic(&self, _entry: SessionDiagnostic) -> Result<()> {
+        Ok(())
+    }
 }
 pub struct ConversationOptions {
     pub provider: Arc<dyn ChatProvider>,
@@ -1120,6 +1124,7 @@ impl Conversation {
         let result = AssertUnwindSafe(async {
             // Persist the activity before starting effectful provider work.
             self.checkpoint(None).await?;
+            self.diagnostic(DiagnosticEvent::CompactionStarted, Some(index), None).await;
             let history = self.state().record.messages.clone();
             self.resolve_images(&mut request, &history).await?;
             let mut compaction = Box::pin(self.provider.compact(request));
@@ -1171,6 +1176,16 @@ impl Conversation {
             self.changed(&s, index);
             self.changed(&s, s.record.messages.len() - 1);
         }
+        self.diagnostic(
+            match &result {
+                Ok(()) => DiagnosticEvent::CompactionCompleted,
+                Err(_) if cancel.is_cancelled() => DiagnosticEvent::CompactionInterrupted,
+                Err(_) => DiagnosticEvent::CompactionFailed,
+            },
+            Some(index),
+            result.as_ref().err(),
+        )
+        .await;
         result
     }
     /// In-memory acceptance, like submit. The runner checkpoints pending input;
@@ -1338,6 +1353,34 @@ impl Conversation {
         .await
         .map_err(|_| Error::Internal)?
     }
+    async fn diagnostic(
+        &self,
+        event: DiagnosticEvent,
+        index: Option<usize>,
+        error: Option<&Error>,
+    ) {
+        let Some(persist) = &self.persist else {
+            return;
+        };
+        let entry = {
+            let s = self.state();
+            let Some(operation) = &s.record.operation else {
+                return;
+            };
+            SessionDiagnostic::new(
+                self.id.clone(),
+                operation.id.clone(),
+                index.map(|index| s.record.messages[index].id().to_owned()),
+                event,
+                error,
+            )
+        };
+        // Diagnostics must never turn a successful action into a failure or retry.
+        // Await before settling the operation so deletion cannot race a late append.
+        let _ = AssertUnwindSafe(async { persist.diagnostic(entry).await })
+            .catch_unwind()
+            .await;
+    }
     async fn checkpoint(&self, terminal: Option<OperationState>) -> Result<()> {
         // Upload ownership and the runner share ordered, fresh snapshots.
         let _checkpoint = self.checkpoint_lock.lock().await;
@@ -1374,8 +1417,10 @@ impl Conversation {
         title_input: Option<(String, String)>,
     ) -> Operation {
         let result = AssertUnwindSafe(async {
+            self.checkpoint(None).await?;
+            self.diagnostic(DiagnosticEvent::OperationStarted, None, None)
+                .await;
             if compact_only {
-                self.checkpoint(None).await?;
                 self.compact_history(&cancel, false).await?;
                 let respond = {
                     let mut s = self.state();
@@ -1395,7 +1440,6 @@ impl Conversation {
                     Ok(())
                 }
             } else {
-                self.checkpoint(None).await?;
                 if let Some((title, message)) = title_input {
                     let model = self.state().record.model.clone();
                     if let Some(title) = super::titles::generate(
@@ -1490,6 +1534,22 @@ impl Conversation {
         if self.state().storage_error.is_none() {
             let _ = self.checkpoint(Some(terminal)).await;
         }
+        let diagnostic_error = if self.state().storage_error.is_some() {
+            terminal = OperationState::Failed;
+            Some(Error::Storage)
+        } else {
+            result.as_ref().err().cloned()
+        };
+        self.diagnostic(
+            match terminal {
+                OperationState::Completed => DiagnosticEvent::OperationCompleted,
+                OperationState::Interrupted => DiagnosticEvent::OperationInterrupted,
+                _ => DiagnosticEvent::OperationFailed,
+            },
+            None,
+            diagnostic_error.as_ref(),
+        )
+        .await;
         let mut s = self.state();
         if s.storage_error.is_some() {
             terminal = OperationState::Failed;
@@ -1595,6 +1655,8 @@ impl Conversation {
         let response: Result<Vec<ToolCall>> = async {
             self.checkpoint(None).await?;
             check_cancel(cancel)?;
+            self.diagnostic(DiagnosticEvent::ResponseStarted, Some(index), None)
+                .await;
             let history = self.state().record.messages[..index].to_vec();
             self.resolve_images(&mut request, &history).await?;
             let mut stream = self.provider.stream(request);
@@ -1703,6 +1765,16 @@ impl Conversation {
             }
             self.changed(&s, index);
         }
+        self.diagnostic(
+            match &response {
+                Ok(_) => DiagnosticEvent::ResponseCompleted,
+                Err(_) if cancel.is_cancelled() => DiagnosticEvent::ResponseInterrupted,
+                Err(_) => DiagnosticEvent::ResponseFailed,
+            },
+            Some(index),
+            response.as_ref().err(),
+        )
+        .await;
         response
     }
     async fn resolve_images(
