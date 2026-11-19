@@ -339,7 +339,7 @@ import UIKit
         capture("floating-session-controls", app: app)
     }
 
-    func testOneTopConnectionPillPersistsAcrossNavigationAndNestedSheets() throws {
+    func testOneTopConnectionPillPersistsAcrossNavigationAndOfflineSheets() throws {
         let app = launch(["--offline-actions-fixture"])
         let options = app.buttons["Session Options"]
         let newSession = app.buttons["New Session"]
@@ -386,21 +386,48 @@ import UIKit
         newSession.tap()
         XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
         try assertOfflineBanner(app, over: ["new-session-form": .any, "Create": .button, "Cancel": .button], fixedFrame: pill)
-        XCTAssertTrue(app.buttons["new-session-workspace"].label.contains("/Fixture/Workspace"))
+        let workspace = app.buttons["new-session-workspace"]
+        XCTAssertTrue(workspace.label.contains("/Fixture/Workspace"))
+        XCTAssertFalse(workspace.isEnabled, "Host folder browsing must use the native disabled state while offline.")
         XCTAssertFalse(app.buttons["Create"].isEnabled, "A cached valid draft still requires a connected host.")
-        app.buttons["new-session-workspace"].tap()
-        let folderBar = app.navigationBars["Choose Folder"]
-        XCTAssertTrue(folderBar.waitForExistence(timeout: 5))
-        try assertOfflineBanner(app, over: ["host-folder-list": .any, "Choose": .button, "Cancel": .button], fixedFrame: pill)
-        XCTAssertTrue(folderBar.buttons["Cancel"].isEnabled)
-        folderBar.buttons["Cancel"].tap()
-        wait(NSPredicate(format: "exists == false"), on: folderBar)
+        workspace.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertFalse(app.navigationBars["Choose Folder"].exists, "A disabled selector must not open an offline picker.")
+        XCTAssertFalse(element("session-notice", in: app).exists)
+        XCTAssertTrue(app.navigationBars["New Session"].exists)
         app.navigationBars["New Session"].buttons["Cancel"].tap()
         wait(NSPredicate(format: "exists == false"), on: app.navigationBars["New Session"])
         let returned = try assertOfflineBanner(app, over: targets, fixedFrame: pill)
         for name in targets.keys { assertSameFrame(try frame(name, in: returned), try frame(name, in: root)) }
         XCTAssertTrue(options.isHittable)
         XCTAssertTrue(newSession.isHittable)
+    }
+
+    func testAlreadyOpenFolderPickerUsesACenteredOfflineMessage() throws {
+        let app = launch(["--folder-disconnect-fixture"])
+        app.buttons["New Session"].tap()
+        let workspace = app.buttons["new-session-workspace"]
+        XCTAssertTrue(workspace.waitForExistence(timeout: 5))
+        XCTAssertTrue(workspace.isEnabled)
+        workspace.tap()
+        let folderBar = app.navigationBars["Choose Folder"]
+        XCTAssertTrue(folderBar.waitForExistence(timeout: 5))
+        let child = app.buttons["host-folder-/Fixture/Workspace/Sources"]
+        XCTAssertTrue(child.waitForExistence(timeout: 5))
+        child.tap()
+        let message = element("host-folder-offline", in: app)
+        XCTAssertTrue(message.waitForExistence(timeout: 5))
+        XCTAssertEqual(message.label, "Connect to the host first.")
+        XCTAssertEqual(message.frame.midX, app.frame.midX, accuracy: 3)
+        XCTAssertGreaterThan(message.frame.midY, folderBar.frame.maxY + 80)
+        XCTAssertLessThan(message.frame.midY, app.frame.maxY - 80)
+        XCTAssertFalse(app.tables["host-folder-list"].exists, "Offline guidance must not appear in a white error row.")
+        XCTAssertFalse(app.staticTexts["Fixture folder connection lost."].exists)
+        XCTAssertTrue(folderBar.buttons["Cancel"].isEnabled)
+        XCTAssertTrue(folderBar.buttons["Choose"].isEnabled, "Keep the last valid folder choice available after a failed read.")
+        capture("folder-picker-centered-offline-message", app: app)
+        folderBar.buttons["Cancel"].tap()
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        XCTAssertFalse(workspace.isEnabled)
     }
 
     private func localBubbles(_ app: XCUIApplication) -> XCUIElementQuery {
@@ -752,6 +779,8 @@ import UIKit
         ]
         try assertOfflineBanner(app, over: targets)
         XCTAssertFalse(app.buttons["Create"].isEnabled)
+        let workspace = app.buttons["new-session-workspace"]
+        XCTAssertFalse(workspace.isEnabled)
         let form = element("new-session-form", in: app)
         scrollToBottom(form)
         // Scrolling can collapse the native navigation bar. Compare recovery
@@ -770,7 +799,16 @@ import UIKit
         wait(NSPredicate(format: "enabled == true"), on: app.buttons["Create"])
         XCTAssertTrue(app.buttons["Cancel"].isHittable)
         capture("host-recovered-unchanged-sheet-layout", app: app)
-        app.buttons["Cancel"].tap()
+        form.swipeDown()
+        form.swipeDown()
+        wait(NSPredicate(format: "enabled == true"), on: workspace)
+        workspace.tap()
+        let folderBar = app.navigationBars["Choose Folder"]
+        XCTAssertTrue(folderBar.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["host-folder-/Fixture/Workspace/Sources"].waitForExistence(timeout: 5),
+                      "Automatic recovery must re-enable normal host-folder browsing.")
+        folderBar.buttons["Cancel"].tap()
+        app.navigationBars["New Session"].buttons["Cancel"].tap()
     }
 
     func testActiveSessionIndicatorsIncludeApprovalAndCancellation() {
@@ -831,8 +869,9 @@ import UIKit
         let app = launch(["--slow-folders"])
         app.buttons["New Session"].tap()
         XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        let form = element("new-session-form", in: app)
         let shell = app.switches["new-session-tool-shell"]
-        if !shell.isHittable { app.swipeUp() }
+        scrollToBottom(form)
         XCTAssertTrue(shell.waitForExistence(timeout: 5))
         XCTAssertEqual(shell.value as? String, "0")
         shell.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
@@ -848,6 +887,8 @@ import UIKit
         capture("folder-read-pending", app: app)
         choose.tap()
         XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        scrollToBottom(form)
+        XCTAssertTrue(shell.waitForExistence(timeout: 5))
         XCTAssertEqual(shell.value as? String, "1", "Returning from the picker must not reset the draft.")
         XCTAssertTrue(app.buttons["Create"].isEnabled)
         app.buttons["Create"].tap()

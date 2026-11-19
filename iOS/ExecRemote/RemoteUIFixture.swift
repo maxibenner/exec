@@ -287,6 +287,7 @@ import ExecRemote
 private actor FixtureTransport: RemoteTransport {
     var isConnected = false
     private var connectionAttempts = 0
+    private var folderConnectionLost = false
     func connect(_ host: PairedHost) async throws {
         connectionAttempts += 1
         let arguments = ProcessInfo.processInfo.arguments
@@ -294,7 +295,7 @@ private actor FixtureTransport: RemoteTransport {
             || arguments.contains("--delayed-host-failure-fixture") {
             try await Task.sleep(for: .seconds(10))
         }
-        if arguments.contains("--settings-offline") || arguments.contains("--offline-actions-fixture")
+        if folderConnectionLost || arguments.contains("--settings-offline") || arguments.contains("--offline-actions-fixture")
             || (arguments.contains("--recovering-host-fixture") && connectionAttempts == 1) {
             throw RemoteFailure("Fixture host is offline.")
         }
@@ -313,6 +314,12 @@ private actor FixtureTransport: RemoteTransport {
             precondition(method == "GET", "Offline actions must not dispatch host mutations.")
         }
         guard isConnected else { throw RemoteFailure("Fixture is disconnected.") }
+        if ProcessInfo.processInfo.arguments.contains("--folder-disconnect-fixture"),
+           method == "POST", path == "/v1/workspaces/browse", body?["path"].string == "/Fixture/Workspace/Sources" {
+            folderConnectionLost = true
+            isConnected = false
+            throw RemoteFailure("Fixture folder connection lost.")
+        }
         return try await RemoteUIFixture.request(method, path, body: body)
     }
 }

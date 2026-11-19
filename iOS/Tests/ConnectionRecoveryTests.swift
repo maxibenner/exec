@@ -253,6 +253,19 @@ actor FakeTransport: RemoteTransport {
         XCTAssertTrue(store.connected)
     }
 
+    func testOfflineFolderBrowseRequiresTheHostWithoutIssuingARequest() async throws {
+        let transport = FakeTransport(), store = try makeStore(transport)
+        do {
+            _ = try await store.browseFolders(nil, showHidden: false)
+            XCTFail("Offline folder browsing must not issue a host request.")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "Connect to the host first.")
+        }
+        let requests = await transport.requests
+        XCTAssertTrue(requests.isEmpty)
+        XCTAssertFalse(store.showsConnectionFailure, "A local admission guard is not a failed connection attempt.")
+    }
+
     func testDisconnectedSettingsDeletionAndFolderFailuresPresentConnectionState() async throws {
         for action in ["settings", "deletion", "folders"] {
             let transport = FakeTransport(), store = try makeStore(transport)
