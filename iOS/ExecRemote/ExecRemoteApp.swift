@@ -346,17 +346,18 @@ struct ConversationScreen: View {
     var body: some View {
         let current = currentPresentation
         let queued = store.pendingMessage.flatMap { $0.conversationID == conversationID ? $0.transcriptMessage : nil } ?? .null
-        NativeTranscript(conversationID: conversationID, snapshot: current.snapshot,
-                         queuedMessage: queued, cancelQueuedMessage: { store.cancelPendingMessage(rowID: $0) },
-                         descriptiveShellTitles: descriptiveShellTitles,
-                         viewState: store.transcriptViewState(for: conversationID),
-                         saveViewState: { id, value in store.saveTranscriptViewState(value, for: id) },
-                         bottomPadding: composerHeight, hasEarlier: store.selected == conversationID && store.hasEarlierMessages,
-                         loadEarlier: { Task { if store.selected == conversationID { await store.loadEarlier() } } })
-        // A cold empty page has no retained transcript. Release its UIKit/AX
-        // container too; queue -> dispatch -> reconciliation keeps the same
-        // controller and local row identity throughout.
-        .id(current.snapshot == .null && queued == .null)
+        ZStack {
+            NativeTranscript(conversationID: conversationID, snapshot: current.snapshot,
+                             queuedMessage: queued, cancelQueuedMessage: { store.cancelPendingMessage(rowID: $0) },
+                             descriptiveShellTitles: descriptiveShellTitles,
+                             viewState: store.transcriptViewState(for: conversationID),
+                             saveViewState: { id, value in store.saveTranscriptViewState(value, for: id) },
+                             bottomPadding: composerHeight, hasEarlier: store.selected == conversationID && store.hasEarlierMessages,
+                             loadEarlier: { Task { if store.selected == conversationID { await store.loadEarlier() } } })
+                // Replace only the empty UIKit transcript, not the composer's
+                // focus-owning overlay, when a cold session receives history.
+                .id(current.snapshot == .null && queued == .null)
+        }
         .ignoresSafeArea(.container, edges: [.top, .bottom])
         .navigationTitle(current.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -398,22 +399,13 @@ struct ConversationScreen: View {
             }
             .disabled(store.selected != conversationID)
             .padding(.horizontal, 12).padding(.vertical, 8)
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(key: ComposerHeightKey.self, value: geometry.size.height)
-                }
-            }
+            // Restored multiline drafts must update the transcript's scroll clearance.
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
         }
-        .onPreferenceChange(ComposerHeightKey.self) { composerHeight = $0 }
         .overlay(alignment: .bottom) {
             SessionNotice(message: Binding(get: { store.visibleError }, set: { store.error = $0 })).padding(.bottom, 72)
         }
     }
-}
-
-private struct ComposerHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 68
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 private struct RemoteChatComposer: View {

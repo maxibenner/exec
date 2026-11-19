@@ -261,6 +261,10 @@ import ExecRemote
                          "text": .string("Exit code: 0\n/Fixture/Workspace"), "outcome": .string("completed")])
             ]
         }
+        if ProcessInfo.processInfo.arguments.contains("--expiry-scroll-fixture") {
+            messages.append(.object(["id": .string("expiry-tail"), "role": .string("assistant"),
+                                     "text": .string("Latest assistant reply."), "status": .string("completed")]))
+        }
         let titlePrefix = ProcessInfo.processInfo.arguments.contains("--session-title-fixture") ? "Loaded Session" : "Session"
         return .object(["id": .string(id), "metadata": .object(["title": .string("\(titlePrefix) \(id.split(separator: "-").last ?? "")")]),
                         "messages": .array(messages),

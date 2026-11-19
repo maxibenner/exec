@@ -106,9 +106,11 @@ private struct HostConnectionPill: View {
             if presentation.isVisible {
                 Label("Host connection lost", systemImage: "wifi.slash")
                     .font(.footnote.weight(.medium))
+                    .foregroundStyle(.red)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
+                    .background(Color.red.opacity(0.12), in: Capsule())
+                    .background(Color(uiColor: .systemBackground), in: Capsule())
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Host connection lost")
                     .accessibilityIdentifier("host-connection-banner")
@@ -116,9 +118,9 @@ private struct HostConnectionPill: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        // Stay just below the primary navigation-button row, not over its back
-        // button. Never chase a sheet's safe area, scroll position or keyboard.
-        .padding(.top, 44 + 8)
+        // Use the scene's safe top below the Dynamic Island/status area, not
+        // a page's navigation bar, sheet, scroll position or keyboard.
+        .padding(.top, 6)
         .padding(.horizontal, 16)
         .ignoresSafeArea(.keyboard)
         .allowsHitTesting(false)
