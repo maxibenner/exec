@@ -941,14 +941,7 @@ impl Conversation {
             );
         }
         if s.record.metadata.title.is_none() {
-            s.record.metadata.title = Some(
-                text.split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .chars()
-                    .take(80)
-                    .collect(),
-            );
+            s.record.metadata.title = Some(super::titles::fallback(&text));
         }
         let operation_id = new_id();
         let cancel = CancellationToken::new();
@@ -1784,7 +1777,8 @@ impl Conversation {
     ) -> Result<()> {
         let reader = self.images.lock().unwrap().clone();
         let mut total_bytes = 0usize;
-        for (index, id) in request.message_ids.iter().enumerate() {
+        for index in self.provider.image_context_indices(request)? {
+            let id = request.message_ids.get(index).ok_or(Error::Internal)?;
             let refs = match history.iter().find(|m| m.id() == id) {
                 Some(Message::User { images, .. }) => images.clone(),
                 Some(Message::Tool {
@@ -1976,7 +1970,9 @@ impl Conversation {
                                 }
                             }
                         };
-                        let result = result.unwrap_or(Err(Error::Internal))?; check_cancel(cancel)?;
+                        // A known successful effect stays completed even if cancellation
+                        // raced its return. The runner stops subsequent work separately.
+                        let result = result.unwrap_or(Err(Error::Internal))?;
                         details = result.details;
                         Ok((ToolOutcome::Completed,result.text))
                     }).catch_unwind().await.unwrap_or(Err(Error::Internal));

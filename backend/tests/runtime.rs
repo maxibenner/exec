@@ -229,7 +229,7 @@ async fn duplicate_call_ids_fail_before_execution() {
     assert!(outcomes(&c).is_empty());
 }
 #[tokio::test]
-async fn running_tool_cancellation_waits_for_cleanup_and_records_possible_effects() {
+async fn running_tool_cancellation_waits_for_cleanup_and_preserves_successful_result() {
     let release = CancellationToken::new();
     let held = release.clone();
     let p = FakeProvider::new(vec![response(vec![
@@ -257,13 +257,9 @@ async fn running_tool_cancellation_waits_for_cleanup_and_records_possible_effect
     assert_eq!(p.count(), 1);
     assert_eq!(
         outcomes(&c),
-        [ToolOutcome::Interrupted, ToolOutcome::NotExecuted]
+        [ToolOutcome::Completed, ToolOutcome::NotExecuted]
     );
-    assert!(
-        c.snapshot().messages[2]
-            .text()
-            .contains("may have had effects")
-    );
+    assert_eq!(c.snapshot().messages[2].text(), "Possibly changed");
 }
 #[tokio::test]
 async fn provider_errors_are_safe_and_not_retried() {

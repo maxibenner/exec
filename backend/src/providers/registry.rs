@@ -256,6 +256,14 @@ impl ChatProvider for ProviderRegistry {
         }
         Ok(())
     }
+    fn image_context_indices(&self, request: &ProviderRequest) -> Result<Vec<usize>> {
+        let (id, model, provider) = self.route(&request.model)?;
+        let contexts = self.contexts(request.provider_state.clone())?;
+        let mut request = request.clone();
+        request.model = model;
+        request.provider_state = contexts.contexts.get(&id).cloned();
+        provider.image_context_indices(&request)
+    }
     async fn accepts_images(&self, model: &str, cancel: CancellationToken) -> Result<bool> {
         let (id, bare, provider) = self.route(model)?;
         if let Some(accepts) = self

@@ -1283,7 +1283,7 @@ async fn api_tool_entry_reconnect_cancel_acceptance_and_settled_results() {
                         finishes += 1;
                         assert!(snapshot.active_tool_call_id.is_none());
                         assert_eq!(call_id, "effect-1");
-                        assert_eq!(*outcome, ToolOutcome::Interrupted);
+                        assert_eq!(*outcome, ToolOutcome::Completed);
                         assert!(snapshot.messages.iter().any(|m| m.id() == message_id));
                         assert_eq!(event.operation_id, op);
                     }
@@ -1304,6 +1304,7 @@ async fn api_tool_entry_reconnect_cancel_acceptance_and_settled_results() {
     assert_eq!(starts, 1);
     assert_eq!(finishes, 1);
     assert!(final_state.active_tool_call_id.is_none());
+    assert_eq!(final_state.messages.last().unwrap().text(), "settled");
     assert_eq!(p.count(), 1);
     assert_eq!(
         f.client.cancel(&c.id, &op).await.unwrap_err(),

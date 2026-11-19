@@ -614,14 +614,8 @@ async fn cancel_boundary(executor: bool) {
             .count(),
         1
     );
-    assert_eq!(
-        outcomes(&c),
-        [if executor {
-            ToolOutcome::Interrupted
-        } else {
-            ToolOutcome::Completed
-        }]
-    );
+    assert_eq!(outcomes(&c), [ToolOutcome::Completed]);
+    assert!(c.snapshot().messages[2].text().starts_with("Exit code: 0"));
     assert!(!c.busy());
     assert!(!c.cancel(&id));
     assert!(c.snapshot().active_tool_call_id.is_none());

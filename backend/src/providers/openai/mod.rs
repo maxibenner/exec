@@ -45,16 +45,25 @@ fn identity(session: &auth::Session) -> String {
     )
 }
 fn restore(state: Option<Value>, session: &auth::Session) -> Result<Context> {
-    let state: Context = state
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|_| invalid())?
+    let state = state
+        .map(decode_context)
+        .transpose()?
         .unwrap_or_else(|| Context {
             version: 1,
             identity: identity(session),
             ..Context::default()
         });
-    if state.version != 1 || state.identity != identity(session) || state.outputs.len() > 4096 {
+    if state.identity != identity(session) {
+        return Err(Error::Invalid(
+            "Saved OpenAI context belongs to a different account or is invalid. Start a new conversation.",
+        ));
+    }
+    Ok(state)
+}
+/// Local structural validation; account ownership is checked before provider work.
+fn decode_context(value: Value) -> Result<Context> {
+    let state: Context = serde_json::from_value(value).map_err(|_| invalid())?;
+    if state.version != 1 || state.outputs.len() > 4096 {
         return Err(Error::Invalid(
             "Saved OpenAI context belongs to a different account or is invalid. Start a new conversation.",
         ));
@@ -80,7 +89,7 @@ fn restore(state: Option<Value>, session: &auth::Session) -> Result<Context> {
     }
     Ok(state)
 }
-fn input(request: &ProviderRequest, state: &Context) -> Result<Vec<Value>> {
+fn context_indices(request: &ProviderRequest, state: &Context) -> Result<Vec<usize>> {
     if request.messages.len() != request.message_ids.len()
         || request.message_ids.iter().any(|id| !valid_id(id))
         || request.message_ids.iter().collect::<HashSet<_>>().len() != request.message_ids.len()
@@ -101,27 +110,38 @@ fn input(request: &ProviderRequest, state: &Context) -> Result<Vec<Value>> {
     } else {
         0
     };
-    let mut items = state
-        .prefix
-        .as_ref()
-        .map(|p| p.output.clone())
-        .unwrap_or_default();
     // Compaction is opaque and must not be the authority for current tool policy.
     // Replay only the latest covered availability as a trusted instruction, then
     // any later append-only updates in their original positions.
     let availability = request.messages[..start]
         .iter()
         .rposition(|m| matches!(m, ContextMessage::ToolAvailability { .. }));
-    for (index, message) in request.messages.iter().enumerate() {
+    Ok((0..request.messages.len())
+        .filter(|&index| {
+            index >= start
+                || Some(index) == availability
+                || (request
+                    .incomplete_message_ids
+                    .contains(&request.message_ids[index])
+                    && state
+                        .prefix
+                        .as_ref()
+                        .is_some_and(|p| !p.includes_incomplete))
+        })
+        .collect())
+}
+fn input(request: &ProviderRequest, state: &Context) -> Result<Vec<Value>> {
+    let indices = context_indices(request, state)?;
+    let mut items = state
+        .prefix
+        .as_ref()
+        .map(|p| p.output.clone())
+        .unwrap_or_default();
+    for index in indices {
+        let message = &request.messages[index];
         let incomplete = request
             .incomplete_message_ids
             .contains(&request.message_ids[index]);
-        if index < start
-            && Some(index) != availability
-            && (!incomplete || state.prefix.as_ref().is_some_and(|p| p.includes_incomplete))
-        {
-            continue;
-        }
         match message {
             ContextMessage::ToolAvailability { enabled } => {
                 items.push(
@@ -488,6 +508,15 @@ impl ChatProvider for OpenAIProvider {
             ));
         }
         Ok(())
+    }
+    fn image_context_indices(&self, request: &ProviderRequest) -> Result<Vec<usize>> {
+        let state = request
+            .provider_state
+            .clone()
+            .map(decode_context)
+            .transpose()?
+            .unwrap_or_default();
+        context_indices(request, &state)
     }
     async fn accepts_images(&self, model: &str, cancel: CancellationToken) -> Result<bool> {
         if self.cached_model(model).is_none() {
