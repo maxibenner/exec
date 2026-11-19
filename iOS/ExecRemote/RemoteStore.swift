@@ -151,10 +151,28 @@ extension RelayClient: RemoteTransport {}
         guard connected, let id = selected, currentOperationID != nil, sending[id] == nil else { return false }
         return !isUpdatingConversation(id) && !isCancelling(id)
     }
+    /// The immutable approval the user actually saw, never a lookup at task entry.
+    struct ApprovalTarget: Equatable, Sendable {
+        let conversationID: String
+        let operationID: String
+        let approvalID: String
+
+        init?(snapshot: RemoteJSON) {
+            guard let conversation = snapshot["id"].string, !conversation.isEmpty,
+                  let operation = snapshot["approval"]["operationID"].string, !operation.isEmpty,
+                  let approval = snapshot["approval"]["id"].string, !approval.isEmpty else { return nil }
+            conversationID = conversation; operationID = operation; approvalID = approval
+        }
+    }
     var canApprove: Bool {
-        guard connected, let id = selected, sending[id] == nil else { return false }
-        return !isUpdatingConversation(id) && !isCancelling(id)
-            && snapshot["approval"]["id"].string != nil && snapshot["approval"]["operationID"].string != nil
+        ApprovalTarget(snapshot: snapshot).map { canApprove($0) } ?? false
+    }
+    func canApprove(_ target: ApprovalTarget) -> Bool {
+        guard connected, selected == target.conversationID, sending[target.conversationID] == nil,
+              ApprovalTarget(snapshot: snapshot) == target,
+              snapshot["operation"]["id"].string == target.operationID,
+              snapshot["operation"]["state"].string == "awaiting_approval" else { return false }
+        return !isUpdatingConversation(target.conversationID) && !isCancelling(target.conversationID)
     }
     func canDeleteConversation(_ value: RemoteJSON) -> Bool {
         connected && !isUpdatingConversation(value.id) && sending[value.id] == nil
@@ -812,10 +830,11 @@ extension RelayClient: RemoteTransport {}
             self.cancellingOperations[id] = operation
         }
     }
-    func approve(_ approved: Bool) async {
-        guard canApprove, let id = selected, let approval = snapshot["approval"]["id"].string,
-              let operation = snapshot["approval"]["operationID"].string else { return }
-        await mutate("POST", "/v1/conversations/\(id)/approvals", .object(["approvalID": .string(approval), "operationID": .string(operation), "approved": .bool(approved)]))
+    func approve(_ target: ApprovalTarget, approved: Bool) async {
+        guard canApprove(target) else { return }
+        await mutate("POST", "/v1/conversations/\(target.conversationID)/approvals", .object([
+            "approvalID": .string(target.approvalID), "operationID": .string(target.operationID), "approved": .bool(approved)
+        ]))
     }
 }
 

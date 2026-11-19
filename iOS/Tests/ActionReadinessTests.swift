@@ -639,6 +639,47 @@ private actor ActionBufferClock {
         }
     }
 
+    func testApprovalUsesOnlyTheDisplayedTripleAcrossReplacementAndNavigation() async throws {
+        let transport = ActionReadinessTransport(), store = try makeStore(transport)
+        let original = snapshot(operation: "operation", state: "awaiting_approval", approval: true)
+        await ready(store, transport, snapshot: original)
+        let displayed = try XCTUnwrap(RemoteStore.ApprovalTarget(snapshot: store.displaySnapshot))
+        let replacements: [RemoteJSON] = [
+            snapshot(operation: "replacement", state: "awaiting_approval", approval: true),
+            .object(["id": .string("session"),
+                     "operation": original["operation"],
+                     "approval": .object(["id": .string("replacement"), "operationID": .string("operation")])]),
+            snapshot(operation: "operation", state: "completed"),
+            .object(["id": .string("other"), "operation": original["operation"], "approval": original["approval"]]),
+            // An internally inconsistent approval must not authorize a different operation.
+            .object(["id": .string("session"), "operation": snapshot(operation: "replacement")["operation"],
+                     "approval": original["approval"]])
+        ]
+        for replacement in replacements {
+            store.snapshot = original
+            store.selected = "session"
+            // This task cannot enter until after the displayed value has changed.
+            let tap = Task { await store.approve(displayed, approved: true) }
+            store.snapshot = replacement
+            await tap.value
+        }
+        store.snapshot = original
+        let navigatingTap = Task { await store.approve(displayed, approved: false) }
+        store.selected = "other"
+        store.snapshot = .object(["id": .string("other"), "operation": original["operation"], "approval": original["approval"]])
+        await navigatingTap.value
+        let rejectedCommands = await transport.commands
+        XCTAssertTrue(rejectedCommands.isEmpty, "Stale approval intent must never be rebound")
+
+        store.selected = "session"; store.snapshot = original
+        await store.approve(displayed, approved: false)
+        let commands = await transport.commands
+        XCTAssertEqual(commands.map(\.path), ["/v1/conversations/session/approvals"])
+        XCTAssertEqual(commands.first?.body, .object([
+            "approvalID": .string("approval"), "operationID": .string("operation"), "approved": .bool(false)
+        ]))
+    }
+
     func testApprovalLockAndCancellingOperationPreventSteering() async throws {
         let transport = ActionReadinessTransport(), store = try makeStore(transport)
         await ready(store, transport, snapshot: snapshot(operation: "operation", state: "awaiting_approval", approval: true))
@@ -647,7 +688,8 @@ private actor ActionBufferClock {
         XCTAssertTrue(store.canStop)
         let approvals = "/v1/conversations/session/approvals"
         await transport.hold("POST", approvals)
-        let approving = Task { await store.approve(true) }; defer { approving.cancel() }
+        let target = try XCTUnwrap(RemoteStore.ApprovalTarget(snapshot: store.displaySnapshot))
+        let approving = Task { await store.approve(target, approved: true) }; defer { approving.cancel() }
         try await until { await transport.waiting("POST", approvals) }
         XCTAssertTrue(store.isUpdatingConversation("session"))
         XCTAssertFalse(store.canApprove)
@@ -659,7 +701,7 @@ private actor ActionBufferClock {
         XCTAssertFalse(store.canSend)
         XCTAssertFalse(store.canStop)
         XCTAssertFalse(store.canApprove)
-        await store.send(); await store.stop(); await store.approve(true)
+        await store.send(); await store.stop(); await store.approve(target, approved: true)
         XCTAssertNil(store.pendingMessage)
         XCTAssertEqual(store.drafts["session"], "Do not steer while cancelling")
         let commands = await transport.commands
