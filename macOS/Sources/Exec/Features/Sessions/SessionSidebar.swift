@@ -18,6 +18,7 @@ private struct SidebarSessionGroup: Identifiable, Equatable {
 }
 
 struct SessionSidebar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var store: ChatLibrary
     let open: (UUID) -> Void
     let delete: (SessionSummary) -> Void
@@ -25,7 +26,24 @@ struct SessionSidebar: View {
     @State private var renameID: UUID?
     @State private var renameTitle = ""
     @State private var rowBackgroundWidths: [UUID: CGFloat] = [:]
+    private var rowAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.25) }
     private var groups: [SidebarSessionGroup] { SidebarSessionGroup.snapshot(store) }
+
+    // Give asynchronous catalog changes a transaction before List reconciles its
+    // native rows. The family keeps its parent ID when children come and go.
+    @State private var displayedGroups: [SidebarSessionGroup]
+    // List recycles rows; an existing child must not fade again when scrolled back.
+    @State private var revealedChildIDs: Set<UUID>
+
+    init(store: ChatLibrary, open: @escaping (UUID) -> Void,
+         delete: @escaping (SessionSummary) -> Void) {
+        self.store = store
+        self.open = open
+        self.delete = delete
+        let initial = SidebarSessionGroup.snapshot(store)
+        _displayedGroups = State(initialValue: initial)
+        _revealedChildIDs = State(initialValue: Set(initial.flatMap { $0.children.map(\.id) }))
+    }
 
     private func activate(_ id: UUID) {
         guard store.canNavigate else { return }
@@ -34,9 +52,10 @@ struct SessionSidebar: View {
 
     var body: some View {
         let sessions = groups
-        let shortcutIDs = sessions.prefix(9).map(\.id)
+        let shortcutIDs = displayedGroups.prefix(9).map(\.id)
+        // The library paints grey selection; native table selection stays empty.
         List {
-            ForEach(sessions) { group in
+            ForEach(displayedGroups) { group in
                 let session = group.session
                 VStack(alignment: .leading, spacing: 2) {
                     SessionRow(session: session, store: store,
@@ -48,38 +67,28 @@ struct SessionSidebar: View {
                         .accessibilityAction { activate(session.id) }
                         .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
                     ForEach(group.children) { child in
-                        HStack(spacing: 6) {
-                            Text(verbatim: child.title).lineLimit(1).truncationMode(.tail)
-                            Spacer(minLength: 0)
-                            if store.needsApproval(child.id) {
-                                SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
-                                    .accessibilityLabel("Approval required")
-                            } else if store.needsAttention(child.id) {
-                                SessionStatusIndicator(symbol: "exclamationmark.circle").foregroundStyle(.orange)
-                            } else if store.isSessionWaiting(child.id) {
-                                SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
-                                    .accessibilityLabel("Waiting")
+                        SessionChildRowContent(child: child, store: store)
+                            .contentShape(Rectangle())
+                            .background {
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear)
+                                    .frame(width: rowBackgroundWidths[session.id])
                             }
-                        }
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .padding(.vertical, 3)
-                        .contentShape(Rectangle())
-                        .background {
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear)
-                                .frame(width: rowBackgroundWidths[session.id])
-                        }
-                        .onTapGesture { activate(child.id) }
-                        .accessibilityAction { activate(child.id) }
-                        .accessibilityAction(named: "Delete Sub-agent") {
-                            if store.canDeleteSession(child.id) { delete(child) }
-                        }
-                        .accessibilityAddTraits(store.sidebarSelectionID == child.id ? [.isSelected] : [])
-                        .overlay {
-                            SessionContextMenu(items: [
-                                .action("Delete Sub-agent", enabled: store.canDeleteSession(child.id)) { delete(child) }
-                            ])
-                        }
+                            .modifier(SidebarChildAppearance(visible: revealedChildIDs.contains(child.id), animation: rowAnimation) {
+                                revealedChildIDs.insert(child.id)
+                            })
+                            .transition(.opacity)
+                            .onTapGesture { activate(child.id) }
+                            .accessibilityAction { activate(child.id) }
+                            .accessibilityAction(named: "Delete Sub-agent") {
+                                if store.canDeleteSession(child.id) { delete(child) }
+                            }
+                            .accessibilityAddTraits(store.sidebarSelectionID == child.id ? [.isSelected] : [])
+                            .overlay {
+                                SessionContextMenu(items: [
+                                    .action("Delete Sub-agent", enabled: store.canDeleteSession(child.id)) { delete(child) }
+                                ])
+                            }
                     }
                     SessionRowMetadata(session: session, shortcut: shortcutIDs.firstIndex(of: session.id).map { $0 + 1 })
                         .padding(.top, 3).padding(.bottom, 5)
@@ -87,6 +96,9 @@ struct SessionSidebar: View {
                         .onTapGesture { activate(session.id) }
                         .accessibilityAction { activate(session.id) }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .modifier(SidebarAnimatedHeight(animation: rowAnimation))
                 .listRowBackground(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(store.sidebarSelectionID == session.id
@@ -98,14 +110,25 @@ struct SessionSidebar: View {
                 .moveDisabled(!store.canReorderSessions)
             }
             .onMove { offsets, destination in
-                withAnimation {
-                    store.moveSidebarSessions(from: offsets, to: destination)
-                }
+                guard displayedGroups.map(\.id) == store.sidebarSessions.map(\.id) else { return }
+                store.moveSidebarSessions(from: offsets, to: destination)
+                // Publish synchronously in the native drop transaction.
+                displayedGroups = groups
+                revealedChildIDs.formIntersection(displayedGroups.flatMap { $0.children.map(\.id) })
             }
         }
         .listStyle(.sidebar)
         .padding(.horizontal, 10)
-        .animation(.default, value: sessions)
+        .focusable(false)
+        .onChange(of: sessions) { _, updated in
+            guard displayedGroups != updated else { return }
+            let previousStructure = displayedGroups.map { [$0.id] + $0.children.map(\.id) }
+            let nextStructure = updated.map { [$0.id] + $0.children.map(\.id) }
+            withAnimation(previousStructure != nextStructure ? rowAnimation : nil) {
+                revealedChildIDs.formIntersection(updated.flatMap { $0.children.map(\.id) })
+                displayedGroups = updated
+            }
+        }
         .alert("Rename Conversation", isPresented: $renaming) {
             TextField("Name", text: $renameTitle)
             Button("Rename") {
@@ -115,6 +138,32 @@ struct SessionSidebar: View {
             .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) {}
         }
+    }
+}
+
+/// Content padding stays inside the selection background and native menu overlay.
+struct SessionChildRowContent: View {
+    let child: SessionSummary
+    let store: ChatLibrary
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(verbatim: child.title).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 0)
+            if store.needsApproval(child.id) {
+                SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
+                    .accessibilityLabel("Approval required")
+            } else if store.needsAttention(child.id) {
+                SessionStatusIndicator(symbol: "exclamationmark.circle").foregroundStyle(.orange)
+            } else if store.isSessionWaiting(child.id) {
+                SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
+                    .accessibilityLabel("Waiting")
+            }
+        }
+        .font(.caption2).foregroundStyle(.secondary)
+        // Status symbols must not change the child's layout height.
+        .frame(height: 22, alignment: .center)
+        .padding(.horizontal, 6)
     }
 }
 
