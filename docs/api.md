@@ -23,6 +23,44 @@ The file can contain `{"deepseek":{"apiKey":"YOUR_DEEPSEEK_API_KEY"},"openai":{.
 
 Keep profiles and credential files **outside all model workspaces**. Approved shells are not sandboxed; same-user code can still read same-user files. Environment or external-file changes require restart. API JSON changes take effect without restart. Startup performs no model discovery or inference. SIGINT/SIGTERM take the cancellation/checkpoint/close path; repeated signals do not forcibly abandon tools.
 
+## Token files, containers and local administration
+
+`exec-agent-admin` administers the local service at `127.0.0.1` using
+`EXEC_AGENT_PORT` (default `8765`). It uses the **same token resolver** as the server:
+
+- Set either `EXEC_AGENT_TOKEN` (64 hex characters) or `EXEC_AGENT_TOKEN_FILE`
+  (an absolute path), never both. Even an empty explicit setting is an error; it
+  does not unset that source or enable fallback.
+- `EXEC_AGENT_DEFAULT_TOKEN_FILE` supplies a fallback **location**, used only when
+  neither explicit source is set. Invalid explicit values never fall back.
+- `exec-agent-admin init-token` validates the selected token or creates a missing
+  selected file privately, once, without output. It never repairs permissions or
+  rotates existing credentials. The file must be owned, regular, private (`0600`),
+  and not a final-component symlink; creation requires an owned private parent.
+  Server startup, health and other admin commands only read provisioned tokens.
+
+The Docker image sets `EXEC_AGENT_DEFAULT_TOKEN_FILE=/var/lib/exec/profile/admin-token`,
+not an explicit file source. Its entrypoint runs `init-token`, then the server with
+workspace tools enabled. Both `docker exec` administration and health checks resolve
+credentials independently using that same image/container environment—not a PID 1
+shell workaround. A valid injected `EXEC_AGENT_TOKEN` takes precedence without
+reading or changing the default file. To select a different file, set
+`EXEC_AGENT_TOKEN_FILE` and leave `EXEC_AGENT_TOKEN` unset (not empty).
+
+From the repository root, the supplied `compose.yaml` persists the private profile
+and workspaces in separate volumes and exposes only the relay's TLS reverse proxy:
+
+```sh
+# Set EXEC_RELAY_DOMAIN to your public relay DNS hostname first.
+docker compose up -d --build
+docker compose exec agent exec-agent-admin health
+docker compose exec agent exec-agent-admin providers list
+```
+
+Keep transport/provider secrets out of command arguments and source control.
+The local admin CLI does not run chat, inference or model-discovery commands.
+Run `exec-agent-admin --help` for provider and remote administration commands.
+
 ## Embedded startup
 
 `service::start_persistent_service(profile, provider, workspace_tools, address, access)` accepts an absolute profile path, `Arc<dyn ChatProvider>`, an explicit tool opt-in, a `SocketAddr`, and an explicit `HttpAccess` policy. The execution runtime itself does not depend on HTTP authentication. `providers::credentials::configured_deepseek_provider` provides the same JSON/environment setup; alternatively construct `DeepSeekProvider` with a host-owned async `CredentialSource`.
@@ -69,8 +107,8 @@ Insecure/symlinked profile directories are refused, never silently made private.
 
 ## Backend launcher
 
-The executable only hosts the backend; there is no CLI client, interactive terminal, or
-chat/list/watch command. Options are `--profile PATH`, `--credentials PATH`,
+The `exec-agent` executable only hosts the backend; use the separate local-only
+`exec-agent-admin` for administration, not chat/list/watch. Server options are `--profile PATH`, `--credentials PATH`,
 `--workspace-tools`, `--host IP`, `--port PORT`, and the deliberate `--insecure-no-auth` opt-out.
 The default profile is `~/.exec-agent`, and the default bind is **`127.0.0.1:8765`**.
 `EXEC_AGENT_HOST` and `EXEC_AGENT_PORT` also configure binding; explicit flags take precedence.
@@ -92,10 +130,11 @@ cancel and await work, checkpoint, release the listener and close the store.
 ## HTTP API v1: authentication and deployment
 
 One HTTP/1.1 TCP server dispatches directly to the existing manager/runtime. There is no
-Unix-socket alternative, proxy API, second runner, or production CLI/SDK implementation.
+Unix-socket alternative, proxy API or second runner. The local admin CLI uses this API.
 
-- **Default authentication:** set `EXEC_AGENT_TOKEN` to 32 cryptographically random bytes
-  encoded as **64 hex characters**. Standalone startup without a valid token fails closed.
+- **Default authentication:** provision 32 cryptographically random bytes encoded as
+  **64 hex characters** through `EXEC_AGENT_TOKEN` or a private token file (see above).
+  Standalone startup without a valid token fails closed.
   Send `Authorization: Bearer <token>` on **every** request, including health, reads and NDJSON
   subscriptions. Missing/wrong/ambiguous credentials return 401 with `WWW-Authenticate: Bearer`,
   before parsing bodies or calling the manager. Authentication failures close the connection.

@@ -30,7 +30,8 @@ Usage:
   exec-agent-admin remote revoke DEVICE_ID
 
 The HTTP endpoint is always 127.0.0.1 (EXEC_AGENT_PORT, default 8765).
-Authentication uses EXEC_AGENT_TOKEN or EXEC_AGENT_TOKEN_FILE, never both.
+Authentication uses EXEC_AGENT_TOKEN or EXEC_AGENT_TOKEN_FILE, never both (even empty).
+EXEC_AGENT_DEFAULT_TOKEN_FILE is used only when neither explicit source is set.
 init-token uses the shared server token initializer and prints nothing.
 Provider IDs: deepseek, openai. No secrets are accepted as command arguments.
 DeepSeek prompts without echo; --key-stdin explicitly reads a pipe/file (8192 bytes, 60s).
