@@ -287,7 +287,7 @@ struct SessionRow: View {
             .frame(width: 16, height: 20)
         }
         .padding(.top, 5)
-        .padding(.bottom, 3)
+        .padding(.bottom, 2)
         .contentShape(Rectangle())
         .overlay {
             SessionContextMenu(items: [
