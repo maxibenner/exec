@@ -21,6 +21,7 @@ struct RemoteAccessSettingsView: View {
                     relayFocused = false
                     Task { await settings.save(enabled: value); invitation = nil }
                 }))
+                .tint(.blue).accentColor(.blue)
                 TextField("Relay address", text: $settings.relay, prompt: Text(RemoteAccessSettings.defaultRelay))
                     .focused($relayFocused)
                     .background(RelayFocusDismissal(isFocused: relayFocused) { relayFocused = false })

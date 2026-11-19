@@ -14,6 +14,7 @@ struct ToolsSettingsView: View {
                         Label(tool.label, systemImage: tool.icon)
                     }
                     .toggleStyle(.checkbox)
+                    .tint(.blue).accentColor(.blue)
                     .accessibilityIdentifier("default-tool-\(tool.name)")
                 }
             } header: {
