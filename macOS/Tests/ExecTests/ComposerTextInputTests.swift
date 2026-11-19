@@ -172,13 +172,15 @@ struct ComposerTextInputTests {
         try expect(submitted == 1)
     }
 
-    func drawsConsistentBlueCaret() throws {
+    func usesSystemAccentAndDrawsConsistentCaret() throws {
         _ = NSApplication.shared
         let view = ComposerTextInput.EditorScrollView()
-        try expect(view.editor.insertionPointColor == AppColors.nativeBlue)
+        try expect(view.editor.insertionPointColor == NSColor.controlAccentColor)
         // Draw offscreen without depending on the active app or blink phase.
         let editor = CaretDrawingEditor(usingTextLayoutManager: false)
-        editor.insertionPointColor = view.editor.insertionPointColor
+        // Use deterministic test ink, independent of the user's system accent.
+        // The production editor above must still select the dynamic accent color.
+        editor.insertionPointColor = AppColors.nativeBlue
         editor.frame = NSRect(x: 0, y: 0, width: 100, height: 30)
         for scale in [1, 2] {
             for x: CGFloat in [-0.5, 24.5] {

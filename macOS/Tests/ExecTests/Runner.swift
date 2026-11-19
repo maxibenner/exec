@@ -178,7 +178,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Composer cursor excludes controls", { try ComposerCursorTests().excludesControlsWithoutLeavingGaps() }),
             ("Composer bridges focus state and preserves marked text through updates", { try await ComposerTextInputTests().bridgesFocusAndPreservesComposition() }),
             ("Composer preserves its viewport and selection across focus changes", { try await ComposerTextInputTests().preservesViewportAcrossFocusChanges() }),
-            ("Composer renders a consistent blue caret at line starts and ends", { try ComposerTextInputTests().drawsConsistentBlueCaret() }),
+            ("Composer uses the system accent and draws a consistent caret at line starts and ends", { try ComposerTextInputTests().usesSystemAccentAndDrawsConsistentCaret() }),
             ("Submitted attachments forward vertical scrolling to the transcript", { try AttachmentScrollTests().submittedAttachmentsForwardVerticalScrolling() }),
             ("Composer sizes wrapped drafts and routes editing commands", { try ComposerTextInputTests().sizesAndRoutesEditingCommands() }),
             ("New sends reserve response space without following streaming content", { try TranscriptTurnScrollTests().anchorsNewSendsWhileResponsesFillSpace() }),
