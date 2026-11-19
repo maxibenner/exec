@@ -1,0 +1,85 @@
+services:
+  agent:
+    build: ./backend
+    init: true
+    read_only: true
+    working_dir: /workspaces
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    stop_grace_period: 2m
+    volumes:
+      - agent_profile:/var/lib/exec/profile
+      - workspaces:/workspaces
+    healthcheck:
+      test: ["CMD", "exec-agent-admin", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      proxy:
+        condition: service_started
+    networks: [egress]
+    # Remote access is opt-in via exec-agent-admin using wss://<EXEC_RELAY_DOMAIN>.
+
+  relay:
+    build: ./relay
+    environment:
+      EXEC_RELAY_BIND: 0.0.0.0:8787
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    stop_grace_period: 2m
+    networks: [relay_private]
+
+  proxy:
+    image: caddy:2-alpine
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    stop_grace_period: 2m
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    depends_on:
+      relay:
+        condition: service_started
+    networks: [egress, relay_private]
+
+configs:
+  caddyfile:
+    content: |
+      https://${EXEC_RELAY_DOMAIN:?Set EXEC_RELAY_DOMAIN to the public relay DNS hostname} {
+          reverse_proxy relay:8787 {
+              lb_try_duration 0s
+              flush_interval -1
+          }
+      }
+
+networks:
+  egress:
+  relay_private:
+    internal: true
+
+volumes:
+  agent_profile:
+  workspaces:
+  caddy_data:
+  caddy_config:

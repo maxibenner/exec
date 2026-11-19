@@ -1,0 +1,9 @@
+**
+!Cargo.toml
+!Cargo.lock
+!Dockerfile
+!.dockerignore
+!docker-entrypoint.sh
+!src/
+!src/**/
+!src/**/*.rs

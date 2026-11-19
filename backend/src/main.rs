@@ -96,7 +96,7 @@ async fn run() -> Result<()> {
             .ok_or(Error::Invalid("Port must be from 1 to 65535."))?;
         address.set_port(port);
     }
-    let token = setting(None, "EXEC_AGENT_TOKEN")?;
+    let token = exec_agent::server_config::api_token()?;
     let native_token = setting(None, "EXEC_AGENT_NATIVE_TOKEN")?;
     let access = match (insecure, token.as_deref()) {
         (false, Some(token)) => HttpAccess::bearer(token, native_token.as_deref())?,
@@ -108,7 +108,7 @@ async fn run() -> Result<()> {
         }
         (false, None) => {
             return Err(Error::Invalid(
-                "Set EXEC_AGENT_TOKEN to 32 random bytes encoded as 64 hex characters, or explicitly use --insecure-no-auth behind an enforced external access boundary.",
+                "Set EXEC_AGENT_TOKEN or EXEC_AGENT_TOKEN_FILE to 32 random bytes encoded as 64 hex characters, or explicitly use --insecure-no-auth behind an enforced external access boundary.",
             ));
         }
     };

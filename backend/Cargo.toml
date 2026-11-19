@@ -3,6 +3,7 @@ name = "exec-agent"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.93"
+default-run = "exec-agent"
 
 [dependencies]
 async-stream = "0.3"
