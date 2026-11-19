@@ -202,7 +202,7 @@ private struct LifecycleFocusHost: View {
         try await draft.removeChild()
         try await Self.wait("deleted draft") { child.deletedRemotely }
         try expect(draft.library.current === child && child.draft == "Do not discard this input")
-        try expect(child.error?.contains("Copy your unsent draft") == true)
+        try expect(child.error == "This conversation was deleted. Copy your unsent draft before closing it.")
         try expect(child.summary?.title == "Unsent draft" && !child.busy)
         child.draft = ""
         try await draft.library.refreshSharedState()

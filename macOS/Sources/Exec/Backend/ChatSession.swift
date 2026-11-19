@@ -113,7 +113,7 @@ import CryptoKit
         return summary
     }
     private static let observationLossMessage = "Lost connection to this conversation. Reopen it to reconnect; work may still be running."
-    private static let deletedDraftMessage = "This conversation was deleted on another device. Copy your unsent draft before closing it."
+    private static let deletedDraftMessage = "This conversation was deleted. Copy your unsent draft before closing it."
 
     /// A deleted remote conversation never resumes or resaves. Keep any local
     /// unsent draft available for copying rather than discarding another device's work.
@@ -224,7 +224,7 @@ import CryptoKit
         try await persistConfiguration(allowInheritedWorkspace: force)
     }
     private func persistConfiguration(allowInheritedWorkspace: Bool = false) async throws {
-        guard !deletedRemotely else { throw ExecError("This conversation was deleted on another device.") }
+        guard !deletedRemotely else { throw ExecError("This conversation was deleted.") }
         guard !configurationUncertain else { throw ExecError("The previous configuration request could not be confirmed. Reopen the conversation before making further changes.") }
         guard let workspace, !selectedModel.isEmpty else { return }
         // An inherited workspace can be saved before sending; the backend keeps it
