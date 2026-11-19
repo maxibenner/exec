@@ -23,6 +23,8 @@ struct SettingsView: View {
             .toolbar(removing: .sidebarToggle)
         } detail: {
             settingsDetail
+                .tint(.secondary)
+                .accentColor(.secondary)
                 .contentMargins(.top, 0, for: .scrollContent)
                 .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .background(.background)
