@@ -32,15 +32,20 @@ import SwiftUI
     }
     func refresh() async throws {
         guard !saving else { return }
+        revision += 1
         let version = revision
         let value = try await api.get("/v1/remote")
+        try Task.checkCancellation()
         guard version == revision, !saving else { return }
-        status = value
-        if !loaded {
-            relay = Self.address(value)
-            enabled = value["enabled"].bool
-            loaded = true
-        }
+        apply(value, preservingRelayDraft: true)
+    }
+    private func apply(_ value: AgentJSON, preservingRelayDraft: Bool = false) {
+        let updateRelay = !preservingRelayDraft || !loaded || relay == Self.address(status)
+        if status != value { status = value }
+        if enabled != value["enabled"].bool { enabled = value["enabled"].bool }
+        let address = Self.address(value)
+        if updateRelay, relay != address { relay = address }
+        if !loaded { loaded = true }
     }
     private static func address(_ value: AgentJSON) -> String {
         let saved = value["relay"].string ?? ""
@@ -62,18 +67,16 @@ import SwiftUI
         error = nil
         defer { saving = false }
         do {
-            status = try await api.request("PUT", "/v1/remote", .object([
+            let value = try await api.request("PUT", "/v1/remote", .object([
                 "relay": .string(targetRelay), "enabled": .bool(targetEnabled),
                 "localDevelopment": .bool(status["localDevelopment"].bool)
             ]))
-            enabled = status["enabled"].bool
-            relay = Self.address(status)
+            apply(value)
         } catch {
             // No mutation retry: reconcile an uncertain acknowledgement by reading state.
             self.error = error.localizedDescription
-            if let current = try? await api.get("/v1/remote") { status = current }
-            enabled = status["enabled"].bool
-            relay = Self.address(status)
+            let current = (try? await api.get("/v1/remote")) ?? status
+            apply(current)
         }
     }
 }

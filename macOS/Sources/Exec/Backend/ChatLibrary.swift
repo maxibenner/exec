@@ -38,7 +38,9 @@ import Observation
     private var restoringDefaults = false
     private var synchronization: Task<Void, Never>?
     private let synchronizationSleep: @Sendable (Duration) async throws -> Void
-    var remoteAPI: AgentAPI { provider.api }
+    // Keep the last acknowledged remote state across settings presentations, scoped
+    // to this library's backend. Pairing QR content remains local to the view.
+    let remoteAccessSettings: RemoteAccessSettings
     private struct UsageCache: Codable {
         var accounts: [String: String] = [:]
         var usage: CachedAccountUsage?
@@ -77,6 +79,7 @@ import Observation
         self.preferences = preferences
         self.residentLimit = max(1, residentLimit)
         sessions = SessionCatalog(api: provider.api, preferences: preferences)
+        remoteAccessSettings = RemoteAccessSettings(api: provider.api)
         current = ChatStore(provider: provider, disabledTools: ["shell"])
         if let data = preferences.data(forKey: Self.modelCacheKey),
            let cached = try? JSONDecoder().decode([ChatModel].self, from: data) {
