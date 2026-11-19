@@ -15,6 +15,7 @@ struct Provider {
     compactions: Mutex<Vec<ProviderRequest>>,
     hold: AtomicBool,
     fail: AtomicBool,
+    ignore_cancel: AtomicBool,
     entered: CancellationToken,
     release: CancellationToken,
 }
@@ -46,7 +47,7 @@ impl ChatProvider for Provider {
         self.entered.cancel();
         if self.hold.load(Ordering::SeqCst) {
             tokio::select! {
-                _ = r.cancel.cancelled() => return Err(Error::Cancelled),
+                _ = r.cancel.cancelled(), if !self.ignore_cancel.load(Ordering::SeqCst) => return Err(Error::Cancelled),
                 _ = self.release.cancelled() => {},
             }
         }
@@ -221,13 +222,7 @@ async fn manual_compaction_is_exclusive_cancellable_and_keeps_original_on_failur
     ));
     assert_eq!(recovered.provider_state, original);
     assert_eq!(recovered.messages[history.len()].id(), pending_call.id());
-    assert!(
-        c.steer(
-            &run.operation_id,
-            "cannot steer a maintenance operation".into()
-        )
-        .is_err()
-    );
+    assert!(c.steer("stale-operation", "must not queue".into()).is_err());
     assert!(c.cancel(&run.operation_id));
     assert_eq!(
         support::complete(run).await.state,
@@ -355,6 +350,158 @@ async fn steering_during_compaction_reaches_the_immediately_following_response()
         requests[1].messages.last(),
         Some(ContextMessage::User { text }) if text == "adjust before responding"
     ));
+}
+
+#[tokio::test]
+async fn manual_compaction_consumes_queued_input_once_with_incomplete_context() {
+    let failed = support::conversation(
+        support::FakeProvider::new(vec![support::response(vec![ProviderEvent::Text(
+            "Partial attempt".into(),
+        )])]),
+        vec![],
+    );
+    support::complete(failed.submit("first".into()).unwrap()).await;
+    let original = failed.snapshot().messages;
+    let p = Arc::new(Provider::default());
+    p.hold.store(true, Ordering::SeqCst);
+    let saved = Arc::new(Mutex::new(Vec::new()));
+    let capture = saved.clone();
+    let mut options = support::options(p.clone(), vec![]);
+    options.checkpoint = Some(support::checkpoint(move |record| {
+        let capture = capture.clone();
+        async move {
+            capture.lock().unwrap().push(record);
+            Ok(())
+        }
+    }));
+    let c = Conversation::new(options, Some(failed.record())).unwrap();
+    let run = c.compact().unwrap();
+    let operation_id = run.operation_id.clone();
+    p.entered.cancelled().await;
+    let id = c
+        .steer(&operation_id, "respond after compaction".into())
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if saved
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.pending_input.iter().any(|m| m.id() == id))
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(p.requests.lock().unwrap().is_empty());
+    p.release.cancel();
+    let operation = support::complete(run).await;
+    assert_eq!(operation.id, operation_id);
+    assert_eq!(operation.state, OperationState::Completed);
+    assert!(c.snapshot().pending_input.is_empty());
+    assert_eq!(&c.snapshot().messages[..original.len()], &original);
+    assert_eq!(
+        c.snapshot()
+            .messages
+            .iter()
+            .filter(|m| m.id() == id)
+            .count(),
+        1
+    );
+    assert!(c.steer(&operation_id, "too late".into()).is_err());
+    let requests = p.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].incomplete_message_ids.len(), 1);
+    assert!(
+        requests[0]
+            .incomplete_message_ids
+            .contains(original[1].id())
+    );
+    assert!(requests[0].messages.starts_with(&context(&original)));
+    assert!(
+        matches!(requests[0].messages.last(), Some(ContextMessage::User { text }) if text == "respond after compaction")
+    );
+    assert!(
+        requests[0]
+            .provider_state
+            .as_ref()
+            .unwrap()
+            .get("compacted")
+            .is_some()
+    );
+    assert_eq!(p.compactions.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn manual_compaction_cancel_or_failure_retains_queued_input_without_inference() {
+    for outcome in ["cancel", "provider", "storage"] {
+        let p = Arc::new(Provider::default());
+        let mut options = support::options(p.clone(), vec![]);
+        if outcome == "storage" {
+            options.checkpoint = Some(support::checkpoint(|record| async move {
+                if record
+                    .provider_state
+                    .as_ref()
+                    .is_some_and(|s| s.get("compacted").is_some())
+                {
+                    Err(Error::Storage)
+                } else {
+                    Ok(())
+                }
+            }));
+        }
+        let c = Conversation::new(options, None).unwrap();
+        support::complete(c.submit("first".into()).unwrap()).await;
+        let original = c.record().provider_state;
+        let history = c.snapshot().messages;
+        p.hold.store(true, Ordering::SeqCst);
+        // Even a provider returning success after cancellation cannot resume the queue.
+        p.ignore_cancel.store(true, Ordering::SeqCst);
+        let run = c.compact().unwrap();
+        p.entered.cancelled().await;
+        let id = c.steer(&run.operation_id, "keep queued".into()).unwrap();
+        if outcome == "cancel" {
+            assert!(c.cancel(&run.operation_id));
+            assert!(
+                c.steer(&run.operation_id, "after cancellation".into())
+                    .is_err()
+            );
+        } else if outcome == "provider" {
+            p.fail.store(true, Ordering::SeqCst);
+        }
+        p.release.cancel();
+        assert_eq!(
+            support::complete(run).await.state,
+            if outcome == "cancel" {
+                OperationState::Interrupted
+            } else {
+                OperationState::Failed
+            }
+        );
+        let snapshot = c.snapshot();
+        assert_eq!(snapshot.pending_input.len(), 1);
+        assert_eq!(snapshot.pending_input[0].id(), id);
+        assert_eq!(&snapshot.messages[..history.len()], &history);
+        assert!(
+            matches!(snapshot.messages.last(), Some(Message::Tool { outcome: result, .. }) if *result == if outcome == "cancel" { ToolOutcome::Interrupted } else { ToolOutcome::Failed })
+        );
+        assert_eq!(p.requests.lock().unwrap().len(), 1);
+        assert_eq!(p.compactions.lock().unwrap().len(), 1);
+        if outcome == "storage" {
+            assert!(snapshot.storage_error.is_some());
+            assert!(c.submit("unsafe".into()).is_err());
+        } else {
+            assert_eq!(c.record().provider_state, original);
+            let recovered = c.record().recover().unwrap();
+            let restored =
+                Conversation::new(support::options(p.clone(), vec![]), Some(recovered)).unwrap();
+            assert_eq!(restored.snapshot().pending_input, snapshot.pending_input);
+            assert_eq!(p.requests.lock().unwrap().len(), 1);
+        }
+    }
 }
 
 #[tokio::test]

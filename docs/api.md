@@ -819,8 +819,12 @@ disables further cache writes until restart; it does not retry or block conversa
 `POST /v1/conversations/:id/compact` with `{}` returns `202 {operationID}`.
 This starts an exclusive runner operation, not a manager/provider side loop. The same
 operation-targeted cancellation and terminal durability guarantees apply. Manual compaction
-rejects pending input/busy sessions and models without compaction support. Steering is for
-turn operations, not manual maintenance operations.
+rejects pending input/busy sessions and models without compaction support. Once accepted,
+manual compaction accepts `/steer` input through the same operation-targeted queue as a turn.
+After successful, durable compaction, queued input starts a response within that operation;
+without queued input it finishes without inference. Failure or cancellation retains pending
+input without resuming inference. A rejected or uncertain queue request is never retried as
+a new turn.
 
 The OpenAI provider supports manual compaction and automatic compaction at 95% of the
 last completed measured context window. Before inference the runner prepares required

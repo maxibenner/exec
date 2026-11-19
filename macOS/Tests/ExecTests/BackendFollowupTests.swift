@@ -341,6 +341,8 @@ import Foundation
         let terminal = try snapshot("completed")
         let terminalJSON = try snapshotJSON("completed")
         try await transport.reply(AgentAPI.path(terminal.id), terminalJSON)
+        try await transport.reply(AgentAPI.path(terminal.id, "/compact"), .object([
+            "operationID": .string(AgentIntegrationTests.operationID.uuidString)]))
         try store.apply(snapshot("running"))
         store.compact(); store.compact()
         let before = await transport.requests
