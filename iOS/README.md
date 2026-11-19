@@ -54,7 +54,7 @@ Session cards show a one-line title and grey spinner at the top, then workspace 
 
 Primary action buttons use blue glass backgrounds with white labels on supported iOS versions. Blue-tinted connection/error notices float above the bottom controls rather than changing layout. They are in-app notices, not system completion notifications.
 
-The conversation header and grouped-list swipe actions use native automatic appearances, including the system top scroll-edge blur/fade. No custom swipe backgrounds or navigation-bar color overrides are applied. New sends reserve response space and anchor the visible user bubble eight points below the navigation bar; streaming changes coalesce instead of jumping per layout. Reading history keeps its viewport and only an explicit downward scroll to the bottom resumes following. Reduce Motion uses immediate alignment.
+The conversation header and grouped-list swipe actions use native automatic appearances, including the system top scroll-edge blur/fade. No custom swipe backgrounds or navigation-bar color overrides are applied. New sends reserve response space and anchor the visible user bubble eight points below the navigation bar; streaming changes coalesce instead of jumping per layout. Reading history keeps its viewport and only an explicit downward scroll to the bottom resumes following. On opening, the transcript is positioned without animated scrolling, then fades in over 0.2 seconds. Subsequent streaming, keyboard and disclosure updates do not restart that fade. Reduce Motion reveals content and aligns immediately.
 
 ## Foreground synchronization
 
