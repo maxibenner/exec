@@ -71,6 +71,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Intervening catalog changes cannot trigger a second-session reveal", { try await SidebarCreationTests().interveningCatalogChangesDoNotMasqueradeAsSecondCreation() }),
             ("Settings use an aligned native header and permanent sidebar", { try await SettingsWindowLayoutTests().nativeHeaderKeepsSidebarVisibleAcrossSections() }),
             ("Library initial and legacy tool defaults disable shell", { try await DefaultToolSettingsTests().initialAndLegacyDefaultsDisableShell() }),
+            ("Rejected catalog writes allow corrected explicit changes", { try await SessionCatalogRecoveryTests().rejectedWritesDoNotPoisonQueuedOrFutureExplicitChanges() }),
+            ("Ambiguous catalog writes recover by reading without replay", { try await SessionCatalogRecoveryTests().ambiguousWritesRequireAuthoritativeReadWithoutReplayingChanges() }),
             ("Explicit all-enabled defaults persist and restore", { try await DefaultToolSettingsTests().explicitAllEnabledPersistsAndRestores() }),
             ("Shared tool defaults only affect future conversations", { try await DefaultToolSettingsTests().sharedDefaultsOnlyAffectFutureConversations() }),
             ("Session tools default enabled and accept all selections", { try await SessionToolSelectionTests().defaultsAndAllToolNames() }),
