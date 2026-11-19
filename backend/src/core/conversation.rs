@@ -1205,7 +1205,7 @@ impl Conversation {
                 .is_none_or(|op| op.id != operation_id)
             || s.active
                 .as_ref()
-                .is_none_or(|a| a.finishing || a.compact_only || a.cancel.is_cancelled())
+                .is_none_or(|a| a.finishing || a.cancel.is_cancelled())
         {
             return Err(Error::Busy);
         }
@@ -1376,7 +1376,24 @@ impl Conversation {
         let result = AssertUnwindSafe(async {
             if compact_only {
                 self.checkpoint(None).await?;
-                self.compact_history(&cancel, false).await
+                self.compact_history(&cancel, false).await?;
+                let respond = {
+                    let mut s = self.state();
+                    check_cancel(&cancel)?;
+                    if s.record.pending_input.is_empty() {
+                        // Settle against steering/cancellation under the same lock.
+                        s.active.as_mut().unwrap().finishing = true;
+                        false
+                    } else {
+                        s.active.as_mut().unwrap().compact_only = false;
+                        true
+                    }
+                };
+                if respond {
+                    self.steps(&cancel).await
+                } else {
+                    Ok(())
+                }
             } else {
                 self.checkpoint(None).await?;
                 if let Some((title, message)) = title_input {

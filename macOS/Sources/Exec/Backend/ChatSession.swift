@@ -41,9 +41,10 @@ import CryptoKit
     private var acceptedOperationID: UUID?
     private var snapshot: AgentSnapshot?
     private var operationActive: Bool { snapshot?.operation?.active == true }
-    private var backendBusy: Bool { isRestoringSession || submitting || operationActive || isStopping || clearTask != nil }
+    private var backendBusy: Bool { isRestoringSession || submitting || compactionTask != nil || operationActive || isStopping || clearTask != nil }
     var busy: Bool { !deletedRemotely && (backendBusy || commandTask != nil) }
     var isWaiting: Bool { !deletedRemotely && !isStopping && snapshot?.operation?.state == "running" && snapshot?.activeToolName == "wait" }
+    private var compactionTask: Task<UUID?, Never>?
     private var commandTask: Task<Void, Never>?
     private var pendingCommands: [(key: String, action: @MainActor () async throws -> Void)] = []
     private var commandsClosed = false
@@ -118,7 +119,7 @@ import CryptoKit
     /// unsent draft available for copying rather than discarding another device's work.
     @discardableResult func markDeletedRemotely() -> Bool {
         guard !deletionPending, !hasUnsavedChanges,
-              task == nil, commandTask == nil, stopTask == nil, clearTask == nil, !isSaving, !isRestoringSession else { return false }
+              task == nil, compactionTask == nil, commandTask == nil, stopTask == nil, clearTask == nil, !isSaving, !isRestoringSession else { return false }
         closePresentation()
         deletedRemotely = true
         isSending = false; isCompacting = false; isStopping = false
@@ -186,7 +187,7 @@ import CryptoKit
         workspaceChosen = true
         needsInitialWorkspaceSelection = false
     }
-    func waitUntilIdle() async { await task?.value; await clearTask?.value }
+    func waitUntilIdle() async { _ = await compactionTask?.value; await task?.value; await clearTask?.value }
     func waitForPendingSave() async { await saveTask?.value }
 
     private var settings: AgentSettings {
@@ -289,7 +290,7 @@ import CryptoKit
         observe()
     }
     func reconnectIfNeeded() {
-        guard !deletedRemotely, !deletionPending, observationLost || configurationUncertain, let id = currentSessionID, task == nil else { return }
+        guard !deletedRemotely, !deletionPending, observationLost || configurationUncertain, let id = currentSessionID, task == nil, compactionTask == nil else { return }
         task = Task {
             defer { task = nil }
             do { try await loadSession(id); error = snapshot?.storageError ?? snapshot?.operation?.error }
@@ -456,23 +457,27 @@ import CryptoKit
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !draftImages.isEmpty || !draftFiles.isEmpty, canEditDraft, !isStopping, !isImportingAttachments, !submitting, !isSaving, commandTask == nil, clearTask == nil, hasUsableModel else { return }
-        if operationActive && isCompacting {
-            error = "Wait for compaction to finish before sending a message."
-            return
-        }
+        let pendingCompaction = compactionTask
+        guard !text.isEmpty || !draftImages.isEmpty || !draftFiles.isEmpty, canEditDraft, !isStopping, !isImportingAttachments, !submitting, !isSaving, commandTask == nil || pendingCompaction != nil, clearTask == nil, hasUsableModel else { return }
         let steeringOperationID = operationActive ? snapshot?.operation?.id : nil
         let inputImages = draftImages
         let inputFiles = draftFiles
         let originalDraft = draft
         submitting = true
-        acceptedOperationID = nil
+        if pendingCompaction == nil { acceptedOperationID = nil }
         error = nil
         task = Task {
             defer { submitting = false; task = nil; updateSleepActivity(); drainCommands() }
             do {
                 await waitForPendingSave()
                 var steeringOperationID = steeringOperationID
+                if let pendingCompaction {
+                    // Wait only for acceptance, not completion. Bind this single send to
+                    // that operation; a failed/uncertain compaction must not start a turn.
+                    guard let operationID = await pendingCompaction.value,
+                          !isStopping, !commandsClosed, !hasUnsavedChanges else { return }
+                    steeringOperationID = operationID
+                }
                 if snapshot?.metadata.parent != nil, steeringOperationID == nil,
                    let id = currentSessionID {
                     // A child can be opened between creation and its first turn.
@@ -598,21 +603,28 @@ import CryptoKit
                 throw ExecError("Compaction is unavailable for the selected model or pending input.")
             }
             self.compactNow()
-            await self.task?.value
+            _ = await self.compactionTask?.value
         }
     }
     private func compactNow() {
         guard !backendBusy, !isSaving, let id = currentSessionID else { return }
-        submitting = true
         acceptedOperationID = nil
         isCompacting = true
-        task = Task {
-            defer { submitting = false; task = nil; drainCommands() }
+        compactionTask = Task {
+            defer { compactionTask = nil; updateSleepActivity(); drainCommands() }
             do {
                 let receipt = try await api.request("POST", AgentAPI.path(id, "/compact"), .object([:]))
-                acceptedOperationID = receipt["operationID"].string.flatMap(UUID.init(uuidString:))
+                guard let operationID = receipt["operationID"].string.flatMap(UUID.init(uuidString:)) else {
+                    throw ExecError("The backend did not confirm the compaction operation.")
+                }
+                acceptedOperationID = operationID
                 try await resynchronize(id)
-            } catch { self.error = error.localizedDescription; isCompacting = operationActive }
+                return operationID
+            } catch {
+                self.error = error.localizedDescription
+                isCompacting = operationActive
+                return nil
+            }
         }
     }
     func stop() {
@@ -622,9 +634,11 @@ import CryptoKit
         // A submit may still be awaiting its receipt. Wait for its single request,
         // then target the operation actually accepted; never cancel by session alone.
         let pending = task
+        let pendingCompaction = compactionTask
         let requestedID = operationActive ? snapshot?.operation?.id : nil
         isStopping = true
         stopTask = Task {
+            _ = await pendingCompaction?.value
             await pending?.value
             defer { stopTask = nil; isStopping = operationActive && snapshot?.operation?.state == "cancelling"; updateSleepActivity(); drainCommands() }
             guard let id = currentSessionID else { return }
@@ -636,7 +650,7 @@ import CryptoKit
                 transcriptReader = reader
                 try apply(current)
                 guard let operation = current.operation, operation.active else { return }
-                guard let target = requestedID ?? (pending != nil ? acceptedOperationID : nil), operation.id == target else {
+                guard let target = requestedID ?? (pending != nil || pendingCompaction != nil ? acceptedOperationID : nil), operation.id == target else {
                     throw ExecError("The active operation changed or its acceptance could not be confirmed. Inspect the conversation before stopping it.")
                 }
                 _ = try await api.request("POST", AgentAPI.path(id, "/cancel"), .object(["operationID": .string(operation.id.uuidString.lowercased())]))
