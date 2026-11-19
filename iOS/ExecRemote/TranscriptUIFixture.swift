@@ -26,7 +26,8 @@ import ExecRemote
             turns[id] = Turn(text: "Synthetic existing response", started: Date())
         }
         let tools = ProcessInfo.processInfo.arguments.contains("--transcript-tools")
-        let messages = tools ? toolMessages : scrollMessages(id)
+        let markdown = ProcessInfo.processInfo.arguments.contains("--transcript-markdown")
+        let messages = tools ? toolMessages : markdown ? markdownMessages : scrollMessages(id)
         let query = URLComponents(string: "https://fixture.invalid\(path)")?.queryItems ?? []
         let before = query.first { $0.name == "before" }?.value
         let after = query.first { $0.name == "after" }?.value
@@ -66,6 +67,30 @@ import ExecRemote
                          .object(["id": .string("streaming-answer"), "role": .string("assistant"), "text": .string(text)])]
         }
         return messages
+    }
+    private static var markdownMessages: [RemoteJSON] {
+        let answer = """
+        Before native blocks.
+
+        ```swift
+        let first = 1
+        let second = 2
+        print("A_long_unbroken_code_line_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz")
+        ```
+
+        Between native blocks.
+
+        | Name | Center | Count | Details | Rightmost |
+        | :--- | :---: | ---: | --- | ---: |
+        | Native table | Middle | 12345 | Full_width_\(String(repeating: "column_", count: 28)) | Last column |
+        | Second row | Aligned | 67890 | Selectable text | Final value |
+
+        After native blocks.
+        """
+        return [.object(["id": .string("markdown-user"), "role": .string("user"),
+                         "text": .string("**Literal user text** and `inline code`"), "status": .string("completed")]),
+                .object(["id": .string("markdown-answer"), "role": .string("assistant"),
+                         "text": .string(answer), "status": .string("completed")])]
     }
     private static var toolMessages: [RemoteJSON] {
         let calls: [RemoteJSON] = ["first", "second", "active"].map { id in

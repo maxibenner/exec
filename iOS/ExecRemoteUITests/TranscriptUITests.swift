@@ -26,6 +26,38 @@ import XCTest
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "printf '\(name)'")).firstMatch
     }
 
+    func testMarkdownUsesOneMultilineCodeSurfaceAndFullSizeScrollableTable() {
+        let app = launch(["--transcript-markdown"])
+        let transcript = app.tables["native-transcript"]
+        let codeBlocks = app.descendants(matching: .any).matching(identifier: "markdown-code-block")
+        XCTAssertTrue(codeBlocks.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(codeBlocks.count, 1, "One fence must not become an inline-code view for every line.")
+        let code = app.textViews["markdown-code-text"]
+        XCTAssertTrue((code.value as? String)?.contains("let first = 1\nlet second = 2\nprint(") == true)
+        XCTAssertGreaterThan(code.frame.height, 35)
+        XCTAssertEqual(transcript.cells.count, 2, "Block views stay inside one virtualized assistant message cell.")
+        let user = transcript.cells["transcript-message-markdown-user"].textViews.firstMatch
+        XCTAssertEqual(user.value as? String, "**Literal user text** and `inline code`")
+
+        let scroll = app.scrollViews["markdown-table-scroll"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        let first = app.textViews["markdown-table-cell-1-0"]
+        let last = app.textViews["markdown-table-cell-0-4"]
+        let x = first.frame.minX, height = first.frame.height, tableHeight = scroll.frame.height, y = scroll.frame.minY
+        for _ in 0..<16 {
+            if last.isHittable { break }
+            scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5))
+                .press(forDuration: 0.05, thenDragTo: scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)))
+        }
+        XCTAssertTrue(last.isHittable, "Horizontal dragging must expose the final header/column, not clip it.")
+        XCTAssertLessThan(first.frame.minX, x - 30)
+        XCTAssertEqual(first.frame.height, height, accuracy: 0.5, "Dragging must not scale down table text.")
+        XCTAssertEqual(scroll.frame.height, tableHeight, accuracy: 0.5)
+        XCTAssertEqual(scroll.frame.minY, y, accuracy: 2, "A horizontal block drag must not move the transcript's reading anchor.")
+        XCTAssertEqual(last.value as? String, "Rightmost")
+        capture("native-markdown-blocks-last-column", app: app)
+    }
+
     func testJoinedToolsUseOneCellWithIndependentDisclosuresAndSpinner() {
         let app = launch(["--transcript-tools"])
         let table = app.tables["native-transcript"]
