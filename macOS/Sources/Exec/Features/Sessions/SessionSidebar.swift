@@ -25,7 +25,7 @@ struct SessionSidebar: View {
     @State private var renaming = false
     @State private var renameID: UUID?
     @State private var renameTitle = ""
-    @State private var rowBackgroundWidths: [UUID: CGFloat] = [:]
+    @State private var childRowFrames: [UUID: CGRect] = [:]
     private var rowAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.25) }
     private var groups: [SidebarSessionGroup] { SidebarSessionGroup.snapshot(store) }
 
@@ -69,10 +69,8 @@ struct SessionSidebar: View {
                     ForEach(group.children) { child in
                         SessionChildRowContent(child: child, store: store)
                             .contentShape(Rectangle())
-                            .background {
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear)
-                                    .frame(width: rowBackgroundWidths[session.id])
+                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                                childRowFrames[child.id] = $0
                             }
                             .modifier(SidebarChildAppearance(visible: revealedChildIDs.contains(child.id), animation: rowAnimation) {
                                 revealedChildIDs.insert(child.id)
@@ -100,12 +98,20 @@ struct SessionSidebar: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .modifier(SidebarAnimatedHeight(animation: rowAnimation))
                 .listRowBackground(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(store.sidebarSelectionID == session.id
-                              ? Color.primary.opacity(0.08) : Color.clear)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
-                            rowBackgroundWidths[session.id] = $0
+                    GeometryReader { geometry in
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(store.sidebarSelectionID == session.id
+                                  ? Color.primary.opacity(0.08) : Color.clear)
+                        if let child = group.children.first(where: { $0.id == store.sidebarSelectionID }),
+                           let frame = childRowFrames[child.id] {
+                            // Paint outside the native content inset, just like the parent.
+                            // Only the background moves; the connector and text stay put.
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.primary.opacity(0.08))
+                                .frame(height: frame.height)
+                                .offset(y: frame.minY - geometry.frame(in: .global).minY)
                         }
+                    }
                 )
                 .moveDisabled(!store.canReorderSessions)
             }
@@ -125,7 +131,9 @@ struct SessionSidebar: View {
             let previousStructure = displayedGroups.map { [$0.id] + $0.children.map(\.id) }
             let nextStructure = updated.map { [$0.id] + $0.children.map(\.id) }
             withAnimation(previousStructure != nextStructure ? rowAnimation : nil) {
-                revealedChildIDs.formIntersection(updated.flatMap { $0.children.map(\.id) })
+                let childIDs = Set(updated.flatMap { $0.children.map(\.id) })
+                revealedChildIDs.formIntersection(childIDs)
+                childRowFrames = childRowFrames.filter { childIDs.contains($0.key) }
                 displayedGroups = updated
             }
         }
@@ -268,26 +276,26 @@ struct SessionRow: View {
         HStack(spacing: 8) {
             Text(verbatim: session.title).font(.body.weight(.regular)).lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Group {
-                if needsApproval {
-                    SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
-                        .help("Approval required").accessibilityLabel("Approval required")
-                } else if needsAttention {
-                    SessionStatusIndicator(symbol: "exclamationmark.circle").foregroundStyle(.orange)
-                        .help("Conversation needs attention").accessibilityLabel("Conversation needs attention")
-                } else if store.isSessionWaiting(session.id) {
-                    SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
-                        .accessibilityLabel("Waiting")
-                } else if store.isSessionResponding(session.id) {
-                    SessionStatusIndicator().accessibilityLabel("Running")
-                } else {
-                    Color.clear
+            // Reserve horizontal space only. Indicators may overflow vertically,
+            // but must never increase a single-line title's layout height.
+            Color.clear.frame(width: 16, height: 0)
+                .overlay {
+                    if needsApproval {
+                        SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
+                            .help("Approval required").accessibilityLabel("Approval required")
+                    } else if needsAttention {
+                        SessionStatusIndicator(symbol: "exclamationmark.circle").foregroundStyle(.orange)
+                            .help("Conversation needs attention").accessibilityLabel("Conversation needs attention")
+                    } else if store.isSessionWaiting(session.id) {
+                        SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
+                            .accessibilityLabel("Waiting")
+                    } else if store.isSessionResponding(session.id) {
+                        SessionStatusIndicator().accessibilityLabel("Running")
+                    }
                 }
-            }
-            .frame(width: 16, height: 20)
         }
         .padding(.top, 5)
-        .padding(.bottom, 2)
+        .padding(.bottom, 4)
         .contentShape(Rectangle())
         .overlay {
             SessionContextMenu(items: [
