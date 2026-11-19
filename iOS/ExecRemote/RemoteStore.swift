@@ -22,8 +22,44 @@ extension RelayClient: RemoteTransport {}
 @MainActor @Observable final class RemoteStore {
     var host: PairedHost?
     var connected = false
-    var busy = false
-    var error: String?
+    private(set) var isConnecting = false
+    private(set) var hasLoadedLibrary = false
+    // This aggregate is for diagnostics/tests, never for admitting UI actions.
+    var busy: Bool { isConnecting || hasPendingCommands }
+    var error: String? { didSet { connectionError = false } }
+    private var connectionError = false
+    var visibleError: String? { connectionError ? nil : error }
+    private enum MutationScope: Hashable {
+        case library, creation, conversation(String), request(String)
+    }
+    private var mutations: Set<MutationScope> = []
+    private var sending: [String: UUID] = [:]
+    private var acceptedOperations: [String: String] = [:]
+    private var cancellingOperations: [String: String] = [:]
+    private var uncertainSends: Set<String> = []
+    private var conversationConnections: [String: Int] = [:]
+    var hasPendingCommands: Bool { !mutations.isEmpty || !sending.isEmpty }
+    var canReconnect: Bool { !isConnecting && !hasPendingCommands }
+    var canForget: Bool { !hasPendingCommands }
+    var isCreatingSession: Bool { mutations.contains(.creation) }
+    var isSavingLibrary: Bool { mutations.contains(.library) }
+    func isUpdatingConversation(_ id: String) -> Bool { mutations.contains(.conversation(id)) }
+
+    struct PendingMessage: Identifiable {
+        let id = UUID()
+        let conversationID: String
+        let text: String
+        fileprivate var target: MessageTarget
+    }
+    fileprivate enum MessageTarget: Equatable {
+        case unresolved, newTurn, operation(String), afterSend(UUID)
+    }
+    private(set) var pendingMessage: PendingMessage?
+    private var bufferTask: Task<Void, Never>?
+    private var bufferTaskID: UUID?
+    private var connectionNeedsReset = false
+    private var bufferDeadline: Task<Void, Never>?
+    private let bufferSleep: @Sendable () async throws -> Void
     var conversations: [RemoteJSON] = []
     private(set) var hasLoadedConversations = false
     var isLoadingConversations: Bool { !hasLoadedConversations && (busy || error == nil) }
@@ -34,6 +70,7 @@ extension RelayClient: RemoteTransport {}
     var selected: String? {
         didSet {
             guard selected != oldValue else { return }
+            if pendingMessage?.conversationID != selected { cancelPendingMessage() }
             snapshot = selected.flatMap { recentConversations.visit($0) } ?? .null
             syncStates = syncStates.filter { recentConversations.contains($0.key) }
             transcriptViewStates = transcriptViewStates.filter { recentConversations.contains($0.key) }
@@ -79,12 +116,53 @@ extension RelayClient: RemoteTransport {}
          loadHost: () throws -> PairedHost? = { try DeviceStore.load() },
          saveHost: @escaping (PairedHost) throws -> Void = { try DeviceStore.save($0) },
          forgetHost: @escaping () throws -> Void = { try DeviceStore.forget() },
-         sleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }) {
+         sleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
+         bufferSleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(30)) }) {
         self.client = client; self.saveHost = saveHost; self.forgetHost = forgetHost
-        self.sleep = sleep
+        self.sleep = sleep; self.bufferSleep = bufferSleep
         do { host = try loadHost() } catch { self.error = error.localizedDescription }
     }
-    var active: Bool { RemoteMessageSubmission.isActive(snapshot) }
+    var active: Bool { RemoteMessageSubmission.isActive(snapshot) || currentOperationID != nil }
+    private var currentOperationID: String? {
+        guard let id = selected else { return nil }
+        if let accepted = acceptedOperations[id] { return accepted }
+        return RemoteMessageSubmission.isActive(snapshot) ? snapshot["operation"]["id"].string : nil
+    }
+    private func isCancelling(_ id: String) -> Bool {
+        let value = syncStates[id]?.snapshot ?? conversations.first(where: { $0.id == id }) ?? .null
+        return cancellingOperations[id] != nil || value["operation"]["state"].string == "cancelling"
+    }
+    var canSend: Bool {
+        guard host != nil, let id = selected, pendingMessage == nil,
+              !(drafts[id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return !isUpdatingConversation(id) && !isCancelling(id) && !uncertainSends.contains(id)
+    }
+    var canStop: Bool {
+        guard connected, let id = selected, currentOperationID != nil, sending[id] == nil else { return false }
+        return !isUpdatingConversation(id) && !isCancelling(id)
+    }
+    var canApprove: Bool {
+        guard connected, let id = selected, sending[id] == nil else { return false }
+        return !isUpdatingConversation(id) && !isCancelling(id)
+            && snapshot["approval"]["id"].string != nil && snapshot["approval"]["operationID"].string != nil
+    }
+    func canDeleteConversation(_ value: RemoteJSON) -> Bool {
+        connected && !isUpdatingConversation(value.id) && sending[value.id] == nil
+            && acceptedOperations[value.id] == nil && !RemoteMessageSubmission.isActive(value)
+    }
+    private func scope(for path: String) -> MutationScope {
+        if path == "/v1/library" { return .library }
+        if path == "/v1/conversations" { return .creation }
+        let parts = path.split(separator: "/")
+        if parts.count >= 3, parts[0] == "v1", parts[1] == "conversations" { return .conversation(String(parts[2])) }
+        return .request(path)
+    }
+    private func showConnectionError(_ failure: Error) {
+        // The banner must never hide an uncertain-delivery warning or other action error.
+        guard error == nil || connectionError else { return }
+        error = failure.localizedDescription
+        connectionError = true
+    }
 
     func transcriptViewState(for id: String?) -> TranscriptViewState? {
         guard let id, recentConversations.contains(id) else { return nil }
@@ -95,12 +173,11 @@ extension RelayClient: RemoteTransport {}
         transcriptViewStates[id] = value
     }
     func pair(_ text: String) async {
-        guard !busy else { return }
+        guard !isConnecting, !hasPendingCommands else { return }
         do {
             let invitation = try PairingInvitation.parse(text)
             let host = PairedHost(invitation: invitation, deviceName: "iPhone")
-            // Save before pairing. A lost acknowledgement must not lose the identity
-            // that the host may already have registered.
+            // Preserve the identity even when pairing acknowledgement is lost.
             try saveHost(host)
             clearConversationState()
             self.host = host
@@ -108,28 +185,41 @@ extension RelayClient: RemoteTransport {}
         } catch { self.error = error.localizedDescription }
     }
     func connect(resetBackoff: Bool = true) async {
-        guard var host, !busy, !Task.isCancelled else { return }
+        guard var host, canReconnect, !Task.isCancelled else { return }
+        connectionGeneration += 1
+        snapshotGeneration += 1
         let generation = connectionGeneration
-        busy = true; connected = false; error = nil
-        defer { busy = false }
+        isConnecting = true; connected = false; connectionNeedsReset = false
+        if connectionError { error = nil }
+        defer { isConnecting = false }
         do {
+            // Only reads may be interrupted here; pending commands gate reconnect.
+            if await client.isConnected { await client.disconnect() }
             try await client.connect(host)
             guard generation == connectionGeneration, !Task.isCancelled else { return }
             host.invitation.secret = nil
             try saveHost(host); self.host = host
+            connected = true
+            if connectionError { error = nil }
             let models = try await client.request("GET", "/v1/models").array
             guard generation == connectionGeneration, !Task.isCancelled else { return }
+            self.models = models
             try await refresh()
             guard generation == connectionGeneration, !Task.isCancelled else { return }
-            self.models = models; connected = true
+            scheduleBufferedMessage()
             if resetBackoff { reconnectDelay = 1.5 }
         } catch {
             guard generation == connectionGeneration, !Task.isCancelled else { return }
-            connected = false; self.error = error.localizedDescription
+            let transportConnected = await client.isConnected
+            guard generation == connectionGeneration, !Task.isCancelled else { return }
+            connected = transportConnected
+            if connected { self.error = error.localizedDescription }
+            else { showConnectionError(error) }
             reconnectDelay = min(reconnectDelay * 2, 30)
         }
     }
     func suspend() async {
+        cancelPendingMessage()
         observationGeneration += 1
         // Retain the teardown chain so a concurrent foreground owner awaits it.
         observationTask?.cancel()
@@ -143,7 +233,7 @@ extension RelayClient: RemoteTransport {}
         await client.disconnect()
     }
     func forget() async {
-        guard !busy else { return }
+        guard canForget else { return }
         do {
             try forgetHost()
             clearConversationState()
@@ -160,11 +250,14 @@ extension RelayClient: RemoteTransport {}
         ]))
     }
     private func clearConversationState() {
+        cancelPendingMessage()
         hostGeneration += 1
         transcriptViewStates.removeAll()
         settings = RemoteSettingsDraft()
         recentConversations = RecentConversationCache()
         syncStates = [:]; readTickets = [:]; loadingEarlier = []
+        conversationConnections = [:]; acceptedOperations = [:]; cancellingOperations = [:]; uncertainSends = []
+        models = []; library = .null; hasLoadedLibrary = false
         optimisticMessages = [:]
         deletions = RemoteSessionDeletions(); deferredHistoryRefreshes = []
         snapshotGeneration += 1
@@ -196,7 +289,7 @@ extension RelayClient: RemoteTransport {}
         guard generation == hostGeneration, connection == connectionGeneration, !Task.isCancelled,
               readGeneration == snapshotGeneration, ticket == catalogReadTicket else { return false }
         conversations = deletions.reconcile(list); library = settings
-        hasLoadedConversations = true
+        hasLoadedConversations = true; hasLoadedLibrary = true
         let ids = Set(conversations.compactMap { $0["id"].string }).union(deletions.pendingIDs)
         recentConversations.retain(ids)
         deferredHistoryRefreshes = deferredHistoryRefreshes.filter { recentConversations.contains($0) }
@@ -217,6 +310,15 @@ extension RelayClient: RemoteTransport {}
         guard recentConversations.contains(id) else { return true }
         let state = try syncStates[id].map { try $0.refreshed(value) } ?? RemoteTranscriptSync.initial(value)
         syncStates[id] = state
+        conversationConnections[id] = connection
+        uncertainSends.remove(id)
+        if sending[id] == nil {
+            acceptedOperations.removeValue(forKey: id)
+            if cancellingOperations[id] != state.snapshot["operation"]["id"].string
+                || !RemoteMessageSubmission.isActive(state.snapshot) {
+                cancellingOperations.removeValue(forKey: id)
+            }
+        }
         recentConversations.update(state.snapshot)
         optimisticMessages[id]?.reconcile(state.snapshot)
         // Transcript notices can arrive without a catalog revision. Keep the
@@ -248,7 +350,7 @@ extension RelayClient: RemoteTransport {}
         } catch {
             guard generation == hostGeneration, connection == connectionGeneration,
                   !Task.isCancelled, selected == id else { return }
-            self.error = error.localizedDescription
+            await reportReadFailure(error, connection: connection)
         }
     }
     func observe() async {
@@ -280,7 +382,11 @@ extension RelayClient: RemoteTransport {}
     }
     private func runObservation(_ generation: Int) async {
         while isObserving(generation) {
-            if host != nil, !busy {
+            if host != nil, !isConnecting {
+                if connectionNeedsReset, !hasPendingCommands {
+                    await disconnectConnection()
+                    connectionNeedsReset = false
+                }
                 if !(await client.isConnected) { connected = false }
                 guard isObserving(generation) else { return }
                 if !connected { await connect(resetBackoff: false) }
@@ -315,9 +421,14 @@ extension RelayClient: RemoteTransport {}
                     } catch {
                         guard isObserving(generation) else { return }
                         guard observedHost == hostGeneration, connection == connectionGeneration else { continue }
-                        self.error = error.localizedDescription
+                        showConnectionError(error)
                         reconnectDelay = min(reconnectDelay * 2, 30)
-                        await disconnectConnection()
+                        connected = false; connectionNeedsReset = true
+                        // Let an acknowledged/dispatched command finish before resetting reads.
+                        if !hasPendingCommands {
+                            await disconnectConnection()
+                            connectionNeedsReset = false
+                        }
                     }
                 }
             }
@@ -370,7 +481,7 @@ extension RelayClient: RemoteTransport {}
     // Legacy foreground recovery reads authoritative state, never commands.
     // A reconnect must re-probe changes(), rather than pinning fallback forever.
     func poll(reconnect: Bool = true) async {
-        guard host != nil, !busy, !Task.isCancelled else { return }
+        guard host != nil, !isConnecting, !Task.isCancelled else { return }
         let generation = connectionGeneration
         let transportConnected = await client.isConnected
         guard generation == connectionGeneration, !Task.isCancelled else { return }
@@ -386,24 +497,22 @@ extension RelayClient: RemoteTransport {}
             let transportConnected = await client.isConnected
             guard generation == connectionGeneration, !Task.isCancelled else { return }
             // An API rejection does not mean the WebSocket was lost.
-            if !transportConnected { connected = false }
-            self.error = error.localizedDescription
+            if !transportConnected { connected = false; showConnectionError(error) }
+            else { self.error = error.localizedDescription }
         }
     }
     @discardableResult func open(_ id: String) -> Task<Void, Never> {
         selected = id
         let generation = hostGeneration, connection = connectionGeneration
-        // This read belongs to the store, not the conversation view. Cancelling
-        // a view-owned in-flight read would close the shared ordered WebSocket
-        // when navigating back to All Sessions. Finish it and cache the result;
-        // refreshConversation only displays it if the same session is selected.
+        // Store-owned reads can finish and warm the cache after navigation.
+        // Cancelling a dispatched read only detaches its caller; the socket drains it.
         return Task {
             guard generation == hostGeneration, connection == connectionGeneration else { return }
             do {
                 try await refreshConversation(id)
             } catch {
                 if generation == hostGeneration, connection == connectionGeneration, selected == id {
-                    self.error = error.localizedDescription
+                    await reportReadFailure(error, connection: connection)
                 }
             }
         }
@@ -413,57 +522,65 @@ extension RelayClient: RemoteTransport {}
         settings.isPresented = true
     }
     @discardableResult func finishSettings() -> Task<Void, Never>? {
-        // Claim ownership before scheduling work: a second tap must not enqueue
-        // another PATCH, even before the first task gets actor time.
         guard settings.isPresented else { return nil }
         guard settings.hasUnsavedChanges else { settings.dismiss(); return nil }
-        guard connected, !busy, settingsSaveTask == nil else { return nil }
-        let prompt = settings.prompt, generation = hostGeneration
+        guard connected, !isSavingLibrary, settingsSaveTask == nil else { return nil }
+        let prompt = settings.prompt, generation = hostGeneration, connection = connectionGeneration
         let body: RemoteJSON = .object(["settings": .object(["systemPrompt": .string(prompt)])])
-        busy = true; error = nil; settings.error = nil
+        mutations.insert(.library); error = nil; settings.error = nil
         settings.dismiss()
-        // Owned by the store, not a SwiftUI .task or a captured dismiss action.
-        // Dismissing/recreating the sheet must not cancel or replay this write.
         let task = Task {
-            defer { busy = false; settingsSaveTask = nil }
             do {
                 let value = try await client.request("PATCH", "/v1/library", body: body)
+                mutations.remove(.library); settingsSaveTask = nil
                 guard generation == hostGeneration else { return }
                 settings.accept(prompt)
                 library = value
             } catch {
+                mutations.remove(.library); settingsSaveTask = nil
                 guard generation == hostGeneration else { return }
                 settings.fail(error)
                 return
             }
-            // Acceptance is final; a failed follow-up read is not a failed save.
+            // Readback is independent of the acknowledged write's admission lock.
             do { try await refresh() }
-            catch { if generation == hostGeneration { self.error = error.localizedDescription } }
+            catch { if generation == hostGeneration { await reportReadFailure(error, connection: connection) } }
         }
         settingsSaveTask = task
         return task
     }
     func mutate(_ method: String, _ path: String, _ body: RemoteJSON, onSuccess: ((RemoteJSON) -> Void)? = nil) async {
-        guard connected, !busy else { return }; busy = true; error = nil
-        defer { busy = false }
+        let scope = scope(for: path), generation = hostGeneration, connection = connectionGeneration
+        guard connected, !mutations.contains(scope) else { return }
+        if case .conversation(let id) = scope, sending[id] != nil { return }
+        mutations.insert(scope); error = nil
         do {
             let value = try await client.request(method, path, body: body)
+            mutations.remove(scope)
+            guard generation == hostGeneration else { return }
             onSuccess?(value)
-            try await refresh()
-        } catch { self.error = error.localizedDescription }
+            scheduleBufferedMessage()
+        } catch {
+            mutations.remove(scope)
+            guard generation == hostGeneration else { return }
+            self.error = error.localizedDescription
+            scheduleBufferedMessage()
+            return
+        }
+        do { try await refresh() }
+        catch { if generation == hostGeneration { await reportReadFailure(error, connection: connection) } }
     }
     func deleteConversation(_ id: String) async {
-        guard connected, !busy, let conversation = conversations.first(where: { $0.id == id }),
-              !RemoteMessageSubmission.isActive(conversation) else { return }
-        busy = true; error = nil
-        let generation = hostGeneration
+        guard let conversation = conversations.first(where: { $0.id == id }), canDeleteConversation(conversation) else { return }
+        mutations.insert(.conversation(id)); error = nil
+        let generation = hostGeneration, connection = connectionGeneration
         snapshotGeneration += 1
         deletions.begin(conversation)
         withAnimation { conversations = deletions.project(conversations) }
         if selected == id { selected = nil }
-        defer { busy = false }
         do {
             _ = try await client.request("DELETE", "/v1/conversations/\(id)")
+            mutations.remove(.conversation(id))
             guard generation == hostGeneration else { return }
             snapshotGeneration += 1
             deletions.accept(id)
@@ -471,10 +588,12 @@ extension RelayClient: RemoteTransport {}
             transcriptViewStates.removeValue(forKey: id)
             deferredHistoryRefreshes.remove(id)
             syncStates.removeValue(forKey: id)
+            conversationConnections.removeValue(forKey: id)
             readTickets[id, default: 0] += 1
             optimisticMessages.removeValue(forKey: id)
             drafts.removeValue(forKey: id)
         } catch {
+            mutations.remove(.conversation(id))
             guard generation == hostGeneration else { return }
             snapshotGeneration += 1
             if let restored = deletions.fail(id), !conversations.contains(where: { $0.id == id }) {
@@ -485,45 +604,164 @@ extension RelayClient: RemoteTransport {}
         }
         // Acceptance is final. A later refresh error must not resurrect the row.
         do { try await refresh() }
-        catch { if generation == hostGeneration { self.error = error.localizedDescription } }
+        catch { if generation == hostGeneration { await reportReadFailure(error, connection: connection) } }
+    }
+    private func messageTarget(_ id: String) -> MessageTarget {
+        if let flight = sending[id] { return .afterSend(flight) }
+        if let operation = acceptedOperations[id] { return .operation(operation) }
+        let value = syncStates[id]?.snapshot ?? conversations.first(where: { $0.id == id }) ?? .null
+        guard value["id"].string == id else { return .unresolved }
+        if RemoteMessageSubmission.isActive(value) {
+            return value["operation"]["id"].string.map(MessageTarget.operation) ?? .unresolved
+        }
+        return .newTurn
     }
     func send() async {
-        guard connected, !busy, !awaitingSendSnapshot,
-              let id = selected, let text = drafts[id],
-              let submission = RemoteMessageSubmission(conversationID: id, snapshot: snapshot, text: text) else { return }
-        busy = true; error = nil
-        snapshotGeneration += 1
-        let generation = hostGeneration
-        let localID = optimisticMessages[id, default: RemoteOptimisticMessages()].begin(text: text, snapshot: snapshot)
+        guard canSend, let id = selected, let text = drafts[id] else { return }
+        let target = messageTarget(id)
         drafts[id] = ""
-        defer { busy = false }
+        if connected, conversationConnections[id] == connectionGeneration, sending[id] == nil, target != .unresolved {
+            await performSend(id, text: text, target: target)
+        } else {
+            let message = PendingMessage(conversationID: id, text: text, target: target)
+            pendingMessage = message
+            bufferDeadline = Task { [weak self, bufferSleep] in
+                do { try await bufferSleep() } catch { return }
+                guard let self, pendingMessage?.id == message.id else { return }
+                cancelPendingMessage()
+                error = "The queued message expired and was returned to your draft."
+            }
+            scheduleBufferedMessage()
+        }
+    }
+    private func performSend(_ id: String, text: String, target: MessageTarget) async {
+        guard connected, sending[id] == nil, !isUpdatingConversation(id), !isCancelling(id) else {
+            restoreDraft(text, for: id); return
+        }
+        let path: String, body: RemoteJSON
+        switch target {
+        case .newTurn:
+            path = "/v1/conversations/\(id)/turns"; body = .object(["text": .string(text)])
+        case .operation(let operation):
+            path = "/v1/conversations/\(id)/steer"; body = .object(["operationID": .string(operation), "text": .string(text)])
+        default: restoreDraft(text, for: id); return
+        }
+        let flight = UUID(), generation = hostGeneration, connection = connectionGeneration
+        sending[id] = flight; error = nil; snapshotGeneration += 1
+        let localID = optimisticMessages[id, default: RemoteOptimisticMessages()].begin(text: text, snapshot: syncStates[id]?.snapshot ?? snapshot)
         do {
-            let response = try await client.request("POST", submission.path, body: submission.body)
+            let response = try await client.request("POST", path, body: body)
             guard generation == hostGeneration else { return }
             optimisticMessages[id]?.accept(localID, response: response)
+            if let operation = response["operationID"].string {
+                acceptedOperations[id] = operation
+                if pendingMessage?.target == .afterSend(flight) { pendingMessage?.target = .operation(operation) }
+            } else if pendingMessage?.target == .afterSend(flight) { cancelPendingMessage() }
+            sending.removeValue(forKey: id)
+            snapshotGeneration += 1
+            scheduleBufferedMessage()
         } catch {
             guard generation == hostGeneration else { return }
+            sending.removeValue(forKey: id)
             optimisticMessages[id]?.remove(localID)
-            // Preserve anything typed while the request was in flight. Never
-            // automatically resubmit a request whose acknowledgement was lost.
-            let newerDraft = drafts[id] ?? ""
-            drafts[id] = newerDraft.isEmpty ? text : text + "\n\n" + newerDraft
-            self.error = error.localizedDescription + " Check the refreshed conversation before sending again."
+            // The dependent input is unsent; the dispatched input is uncertain.
+            if pendingMessage?.conversationID == id { cancelPendingMessage() }
+            restoreDraft(text, for: id)
+            uncertainSends.insert(id)
+            self.error = "Message delivery could not be confirmed. Check the refreshed conversation before sending again."
+            let transportConnected = await client.isConnected
+            guard generation == hostGeneration, connection == connectionGeneration else { return }
+            connected = transportConnected && !connectionNeedsReset
             return
         }
-        // A failed read after acceptance is not a failed send. Keep its local
-        // row until a later snapshot confirms it, without restoring the draft.
         do { try await refreshConversation(id) }
-        catch { self.error = error.localizedDescription }
+        catch { if generation == hostGeneration { await reportReadFailure(error, connection: connection) } }
+    }
+    private func restoreDraft(_ text: String, for id: String) {
+        let newer = drafts[id] ?? ""
+        drafts[id] = newer.isEmpty ? text : text + "\n\n" + newer
+    }
+    func cancelPendingMessage() {
+        guard let message = pendingMessage else { return }
+        pendingMessage = nil
+        bufferDeadline?.cancel(); bufferDeadline = nil
+        bufferTask?.cancel(); bufferTask = nil; bufferTaskID = nil
+        restoreDraft(message.text, for: message.conversationID)
+    }
+    private func scheduleBufferedMessage() {
+        guard let message = pendingMessage, connected, bufferTask == nil,
+              sending[message.conversationID] == nil, !isUpdatingConversation(message.conversationID) else { return }
+        if case .afterSend = message.target { return }
+        let token = UUID(), generation = hostGeneration, connection = connectionGeneration
+        bufferTaskID = token
+        bufferTask = Task {
+            defer {
+                if bufferTaskID == token {
+                    bufferTask = nil; bufferTaskID = nil
+                    // A replacement connection may finish while the old read drains.
+                    if connection != connectionGeneration { scheduleBufferedMessage() }
+                }
+            }
+            do {
+                // Revalidate unsent intent, never retry a dispatched command.
+                while pendingMessage?.id == message.id, connected, !Task.isCancelled {
+                    guard try await refreshConversation(message.conversationID) else { await Task.yield(); continue }
+                    guard generation == hostGeneration, !Task.isCancelled,
+                          let pending = pendingMessage, pending.id == message.id,
+                          selected == pending.conversationID,
+                          let value = syncStates[pending.conversationID]?.snapshot else { return }
+                    var target = pending.target
+                    if target == .unresolved, !RemoteMessageSubmission.isActive(value) { target = .newTurn }
+                    let valid: Bool
+                    switch target {
+                    case .newTurn: valid = !RemoteMessageSubmission.isActive(value)
+                    case .operation(let operation):
+                        valid = value["operation"]["id"].string == operation
+                            && ["running", "awaiting_approval"].contains(value["operation"]["state"].string ?? "")
+                    default: valid = false
+                    }
+                    guard valid, !isCancelling(pending.conversationID) else {
+                        cancelPendingMessage()
+                        error = "The conversation changed. The queued message was returned to your draft."
+                        return
+                    }
+                    // Crossing this boundary commits one attempt. It is no longer cancellable or replayable.
+                    pendingMessage = nil
+                    bufferDeadline?.cancel(); bufferDeadline = nil
+                    bufferTask = nil; bufferTaskID = nil
+                    await performSend(pending.conversationID, text: pending.text, target: target)
+                    return
+                }
+            } catch {
+                guard generation == hostGeneration, !Task.isCancelled, pendingMessage?.id == message.id else { return }
+                let transportConnected = await client.isConnected
+                guard generation == hostGeneration, connection == connectionGeneration, !Task.isCancelled,
+                      pendingMessage?.id == message.id else { return }
+                connected = transportConnected && !connectionNeedsReset
+                if connected {
+                    cancelPendingMessage()
+                    self.error = "Could not verify the conversation. The queued message was returned to your draft."
+                } else { showConnectionError(error) }
+            }
+        }
+    }
+    private func reportReadFailure(_ failure: Error, connection: Int) async {
+        let transportConnected = await client.isConnected
+        guard connection == connectionGeneration, !Task.isCancelled else { return }
+        if !transportConnected { connected = false; showConnectionError(failure) }
+        else { error = failure.localizedDescription }
     }
     func stop() async {
-        guard let id = selected, let operation = snapshot["operation"]["id"].string else { return }
-        await mutate("POST", "/v1/conversations/\(id)/cancel", .object(["operationID":.string(operation)]))
+        guard canStop, let id = selected, let operation = currentOperationID else { return }
+        if pendingMessage?.conversationID == id { cancelPendingMessage() }
+        await mutate("POST", "/v1/conversations/\(id)/cancel", .object(["operationID": .string(operation)])) { _ in
+            self.cancellingOperations[id] = operation
+        }
     }
     func approve(_ approved: Bool) async {
-        guard let id = selected, let approval = snapshot["approval"]["id"].string,
+        guard canApprove, let id = selected, let approval = snapshot["approval"]["id"].string,
               let operation = snapshot["approval"]["operationID"].string else { return }
-        await mutate("POST", "/v1/conversations/\(id)/approvals", .object(["approvalID":.string(approval), "operationID":.string(operation), "approved":.bool(approved)]))
+        await mutate("POST", "/v1/conversations/\(id)/approvals", .object(["approvalID": .string(approval), "operationID": .string(operation), "approved": .bool(approved)]))
     }
 }
 
