@@ -172,6 +172,8 @@ struct SessionChildRowContent: View {
 }
 
 private struct SessionChildConnector: View {
+    @Environment(\.displayScale) private var displayScale
+
     var body: some View {
         let capHeight = NSFont.preferredFont(forTextStyle: .caption2).capHeight
         let width = capHeight * 0.85
@@ -182,8 +184,9 @@ private struct SessionChildConnector: View {
         }
         .stroke(style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
         .frame(width: width, height: capHeight)
-        // The upright starts at cap height; the horizontal sits halfway to the baseline.
         .alignmentGuide(.firstTextBaseline) { _ in capHeight }
+        // Lower only the drawing by two screen pixels, preserving the row's layout.
+        .offset(y: 2 / displayScale)
         .accessibilityHidden(true)
     }
 }
