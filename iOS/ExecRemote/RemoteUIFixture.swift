@@ -17,6 +17,7 @@ import ExecRemote
         let unpaired = ProcessInfo.processInfo.arguments.contains("--unpaired-fixture")
         let offlineActions = ProcessInfo.processInfo.arguments.contains("--offline-actions-fixture")
         let recovering = ProcessInfo.processInfo.arguments.contains("--recovering-host-fixture")
+        let delayedStartup = ProcessInfo.processInfo.arguments.contains("--delayed-startup-fixture")
         let transport = FixtureTransport()
         let store = RemoteStore(client: transport, loadHost: { unpaired ? nil : host }, saveHost: { _ in }, forgetHost: {}, sleep: { delay in
             // Allow one batched offline layout sample (including a sheet
@@ -29,9 +30,19 @@ import ExecRemote
             // Explicit-cancel checks must not race the normal 30-second expiry.
             try await Task.sleep(for: .seconds(offlineActions ? 300 : 30))
         })
-        store.conversations = unpaired ? [] : conversations
-        store.library = library
-        store.models = models
+        if !delayedStartup {
+            store.conversations = unpaired ? [] : conversations
+            store.library = library
+            store.models = models
+        }
+        if offlineActions, case .object(var cached) = snapshot("fixture-1") {
+            // Keep a completed transcript resident, as after losing a previously
+            // connected host, so offline checks exercise real scroll content.
+            cached["operation"] = conversations[0]["operation"]
+            store.selected = "fixture-1"
+            store.snapshot = .object(cached)
+            store.selected = nil
+        }
         return store
     }
     static var host: PairedHost {
@@ -45,7 +56,8 @@ import ExecRemote
     }
     private static let activityTime = Date().timeIntervalSince1970 * 1000
     static var conversations: [RemoteJSON] {
-        (1...6).map { index in
+        let count = ProcessInfo.processInfo.arguments.contains("--recovering-host-fixture") ? 12 : 6
+        return (1...count).map { index in
             var metadata: [String: RemoteJSON] = [
                 "title": .string("Session \(index)"),
                 "activityAt": .number(activityTime - Double(index) * 1000)
@@ -255,9 +267,12 @@ import ExecRemote
 private actor FixtureTransport: RemoteTransport {
     var isConnected = false
     private var connectionAttempts = 0
-    func connect(_ host: PairedHost) throws {
+    func connect(_ host: PairedHost) async throws {
         connectionAttempts += 1
         let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--delayed-startup-fixture"), connectionAttempts == 1 {
+            try await Task.sleep(for: .seconds(10))
+        }
         if arguments.contains("--settings-offline") || arguments.contains("--offline-actions-fixture")
             || (arguments.contains("--recovering-host-fixture") && connectionAttempts == 1) {
             throw RemoteFailure("Fixture host is offline.")

@@ -103,6 +103,12 @@ struct RootView: View {
                 }
             }
             .background(Color(uiColor: store.host == nil ? .systemBackground : .systemGroupedBackground))
+            .overlay(alignment: .bottom) {
+                if !store.settings.isPresented && !creating && !scanning {
+                    SessionNotice(message: Binding(get: { store.visibleError }, set: { store.error = $0 })).padding(.bottom, 72)
+                }
+            }
+            .modifier(HostConnectionState(store: store))
             .navigationDestination(item: $store.selected) { id in
                 ConversationScreen(store: store, conversationID: id)
                     .id(id)
@@ -122,12 +128,6 @@ struct RootView: View {
                 NewChatScreen(store: store) { createdSession = $0 }
             }
         }
-        .overlay(alignment: .bottom) {
-            if !store.settings.isPresented && !creating && !scanning {
-                SessionNotice(message: Binding(get: { store.visibleError }, set: { store.error = $0 })).padding(.bottom, 72)
-            }
-        }
-        .modifier(HostConnectionState(store: store))
     }
     private func sessionRow(_ family: RemoteSessionListDay.Family) -> some View {
         let row = family.parent
@@ -235,21 +235,29 @@ struct RootView: View {
 /// Connection loss reserves space below navigation, controls and action notices.
 private struct HostConnectionState: ViewModifier {
     let store: RemoteStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func body(content: Content) -> some View {
-        VStack(spacing: 0) {
-            content.frame(maxWidth: .infinity, maxHeight: .infinity)
-            if store.host != nil && !store.connected {
-                Label("Host connection lost", systemImage: "wifi.slash")
-                    .font(.footnote.weight(.medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(Color(uiColor: .secondarySystemBackground), ignoresSafeAreaEdges: [])
-                    .overlay(alignment: .top) { Divider() }
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Host connection lost")
-                    .accessibilityIdentifier("host-connection-banner")
+        content.safeAreaInset(edge: .bottom, spacing: 0) {
+            if store.showsConnectionFailure {
+                VStack(spacing: 0) {
+                    Label("Host connection lost", systemImage: "wifi.slash")
+                        .font(.footnote.weight(.medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Host connection lost")
+                        .accessibilityIdentifier("host-connection-banner")
+                }
+                // Keep the label's layout/accessible bounds separate from the
+                // paint that extends through the native home-indicator inset.
+                .background(Color(uiColor: .secondarySystemBackground), ignoresSafeAreaEdges: .bottom)
+                .overlay(alignment: .top) { Divider() }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.showsConnectionFailure)
     }
 }
 
@@ -430,6 +438,10 @@ struct ConversationScreen: View {
             }
         }
         .onPreferenceChange(ComposerHeightKey.self) { composerHeight = $0 }
+        .overlay(alignment: .bottom) {
+            SessionNotice(message: Binding(get: { store.visibleError }, set: { store.error = $0 })).padding(.bottom, 72)
+        }
+        .modifier(HostConnectionState(store: store))
     }
 }
 
@@ -501,6 +513,8 @@ private struct RemoteChatComposer: View {
             }
         }
         .onPreferenceChange(ComposerFieldHeightKey.self) { fieldHeight = $0 }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat-composer-controls")
     }
 }
 
@@ -584,14 +598,14 @@ struct NewChatScreen: View {
             .onAppear(perform: initializeDefaults)
             .onChange(of: store.hasLoadedLibrary) { _, _ in initializeDefaults() }
             .onChange(of: model) { _, _ in resetEffort() }
+            .overlay(alignment: .bottom) {
+                if !choosingFolder {
+                    SessionNotice(message: Binding(get: { store.visibleError }, set: { store.error = $0 }))
+                }
+            }
+            .modifier(HostConnectionState(store: store))
         }
         .interactiveDismissDisabled(store.isCreatingSession)
-        .overlay(alignment: .bottom) {
-            if !choosingFolder {
-                SessionNotice(message: Binding(get: { store.visibleError }, set: { store.error = $0 }))
-            }
-        }
-        .modifier(HostConnectionState(store: store))
     }
     private func initializeDefaults() {
         guard !initialized, store.hasLoadedLibrary || store.library != .null else { return }
@@ -649,15 +663,15 @@ struct SharedSettingsScreen: View {
             .onChange(of: store.library["settings"]["systemPrompt"]) { _, _ in
                 store.settings.refresh(store.library, editing: editingPrompt)
             }
+            .overlay(alignment: .bottom) {
+                SessionNotice(message: Binding(get: { store.settings.error ?? store.visibleError }, set: {
+                    if store.settings.error != nil { store.settings.error = $0 }
+                    else { store.error = $0 }
+                }))
+            }
+            .modifier(HostConnectionState(store: store))
         }
         .interactiveDismissDisabled(store.settings.hasUnsavedChanges)
-        .overlay(alignment: .bottom) {
-            SessionNotice(message: Binding(get: { store.settings.error ?? store.visibleError }, set: {
-                if store.settings.error != nil { store.settings.error = $0 }
-                else { store.error = $0 }
-            }))
-        }
-        .modifier(HostConnectionState(store: store))
     }
     private func patch(_ value: [String:RemoteJSON]) { Task { await store.mutate("PATCH", "/v1/library", .object(value)) } }
 }
@@ -736,8 +750,8 @@ private struct HostFolderPicker: View {
                     failure = error.localizedDescription
                 }
             }
+            .modifier(HostConnectionState(store: store))
         }
-        .modifier(HostConnectionState(store: store))
     }
 }
 private extension RemoteJSON { var folderPath: String { self["path"].string ?? "" } }

@@ -146,6 +146,7 @@ private actor ObservationClock {
         let observer = Task { await store.observe() }; defer { observer.cancel() }
         try await until { await clock.delays.count == 1 }
         XCTAssertFalse(store.connected)
+        XCTAssertTrue(store.showsConnectionFailure)
         XCTAssertNil(store.visibleError, "Connection-only failures use the persistent banner, not an action error.")
         XCTAssertEqual(store.reconnectDelay, 3)
 
@@ -158,7 +159,9 @@ private actor ObservationClock {
         XCTAssertTrue(commands.isEmpty, "Automatic connection recovery must only read, never infer a mutation retry.")
         XCTAssertEqual(store.drafts["session"], "Keep this unsent draft")
         XCTAssertEqual(store.reconnectDelay, 1.5)
+        XCTAssertFalse(store.hasConnectionFailure)
         observer.cancel(); await observer.value
+        XCTAssertFalse(store.showsConnectionFailure, "Cancelling observation and scene teardown are not connection failures.")
     }
 
     func testReconnectCatchesUpHiddenCacheWithUnchangedRevisions() async throws {
@@ -210,6 +213,7 @@ private actor ObservationClock {
         for (index, delay) in [3.0, 6, 12, 24, 30, 30].enumerated() {
             try await until { await clock.delays.count == index + 1 }
             XCTAssertEqual(store.reconnectDelay, delay)
+            XCTAssertTrue(store.showsConnectionFailure, "Subscription failures must latch independently of the socket state.")
             let attempts = await transport.subscriptionAttempts
             let lists = await transport.requests.filter { $0 == "GET /v1/conversations" }.count
             XCTAssertEqual(attempts, index + 1)

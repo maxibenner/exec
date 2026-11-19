@@ -9,7 +9,7 @@ actor FakeTransport: RemoteTransport {
     var failConnections = false
     var requests: [String] = []
     var conversation: RemoteJSON = .object(["id": .string("session"), "messages": .array([])])
-    private var failure: (request: String, disconnect: Bool)?
+    private var failure: (request: String, disconnect: Bool, cancelled: Bool)?
     private var holdConnection = false
     private var connectionWaiter: CheckedContinuation<Void, Never>?
     private var heldRequest: String?
@@ -73,20 +73,21 @@ actor FakeTransport: RemoteTransport {
 
     func connect(_ host: PairedHost) async throws {
         connectionAttempts += 1
-        if failConnections { throw RemoteFailure("Host unavailable.") }
-        isConnected = true
         if holdConnection {
             holdConnection = false
             await withCheckedContinuation { connectionWaiter = $0 }
         }
+        try Task.checkCancellation()
+        if failConnections { throw RemoteFailure("Host unavailable.") }
+        isConnected = true
     }
     func disconnect() {
         disconnections += 1
         isConnected = false
         notices?.finish(throwing: RemoteFailure("Disconnected.")); notices = nil
     }
-    func failNext(_ method: String, _ path: String, disconnect: Bool = true) {
-        failure = (method + " " + path, disconnect)
+    func failNext(_ method: String, _ path: String, disconnect: Bool = true, cancelled: Bool = false) {
+        failure = (method + " " + path, disconnect, cancelled)
     }
     func setFailConnections(_ value: Bool) { failConnections = value }
     func holdNextConnection() { holdConnection = true }
@@ -127,11 +128,11 @@ actor FakeTransport: RemoteTransport {
             // the shared socket or retry the already-dispatched request.
             try Task.checkCancellation()
         }
-        if failure?.request == key {
-            let disconnect = failure!.disconnect
-            failure = nil
-            if disconnect { self.disconnect() }
-            throw RemoteFailure(disconnect ? "Interrupted." : "Request rejected.")
+        if let failure, failure.request == key {
+            self.failure = nil
+            if failure.disconnect { self.disconnect() }
+            if failure.cancelled { throw CancellationError() }
+            throw RemoteFailure(failure.disconnect ? "Interrupted." : "Request rejected.")
         }
         return captured ?? response(path)
     }
@@ -157,6 +158,167 @@ actor FakeTransport: RemoteTransport {
         ])))
         let host = PairedHost(invitation: invitation, deviceName: "Test fixture")
         return RemoteStore(client: transport, loadHost: { host }, saveHost: { _ in }, forgetHost: {})
+    }
+
+    private func until(_ predicate: @MainActor () async -> Bool) async throws {
+        for _ in 0..<10_000 {
+            if await predicate() { return }
+            await Task.yield()
+        }
+        XCTFail("Transport did not reach the expected state")
+        throw RemoteFailure("Test synchronization failed.")
+    }
+
+    func testFirstConnectionStaysHiddenWhilePendingAndAfterSuccessOrSuspension() async throws {
+        let transport = FakeTransport(), store = try makeStore(transport)
+        XCTAssertFalse(store.showsConnectionFailure)
+        await transport.holdNextConnection()
+        let connecting = Task { await store.connect() }
+        try await until { await transport.waitingForConnection }
+        XCTAssertTrue(store.isConnecting)
+        XCTAssertFalse(store.connected)
+        XCTAssertFalse(store.hasConnectionFailure)
+        XCTAssertFalse(store.showsConnectionFailure)
+        await transport.releaseConnection(); await connecting.value
+        XCTAssertTrue(store.connected)
+        XCTAssertFalse(store.hasConnectionFailure)
+        await store.suspend()
+        XCTAssertFalse(store.connected)
+        XCTAssertFalse(store.showsConnectionFailure, "Intentional scene teardown is not a failure.")
+        await transport.holdNextConnection()
+        let foreground = Task { await store.connect() }
+        try await until { await transport.waitingForConnection }
+        XCTAssertFalse(store.showsConnectionFailure, "A pending foreground reconnect is not a failure either.")
+        await transport.releaseConnection(); await foreground.value
+        XCTAssertFalse(store.showsConnectionFailure)
+    }
+
+    func testFailureLatchSurvivesRetriesAndActionErrorsUntilRecoveryOrForget() async throws {
+        let transport = FakeTransport(), store = try makeStore(transport)
+        await transport.setFailConnections(true)
+        await store.connect()
+        XCTAssertTrue(store.hasConnectionFailure)
+        XCTAssertTrue(store.showsConnectionFailure)
+        XCTAssertNil(store.visibleError)
+        // The connection-error string is cleared at retry admission; its separate
+        // presentation state must not disappear or depend on a subsequent toast.
+        for actionError in [nil, "Keep the action warning"] as [String?] {
+            store.error = actionError
+            await transport.holdNextConnection()
+            let retry = Task { await store.connect() }
+            try await until { await transport.waitingForConnection }
+            XCTAssertTrue(store.showsConnectionFailure)
+            XCTAssertEqual(store.visibleError, actionError)
+            await transport.releaseConnection(); await retry.value
+            XCTAssertTrue(store.showsConnectionFailure)
+            XCTAssertEqual(store.visibleError, actionError)
+        }
+        await transport.setFailConnections(false)
+        await store.connect()
+        XCTAssertTrue(store.connected)
+        XCTAssertFalse(store.hasConnectionFailure)
+        XCTAssertEqual(store.visibleError, "Keep the action warning")
+        await store.suspend()
+        XCTAssertFalse(store.showsConnectionFailure, "A recovered failure must not return on suspension.")
+        await transport.setFailConnections(true)
+        await store.connect()
+        XCTAssertTrue(store.showsConnectionFailure)
+        await store.forget()
+        XCTAssertNil(store.host)
+        XCTAssertFalse(store.hasConnectionFailure)
+        XCTAssertFalse(store.showsConnectionFailure)
+    }
+
+    func testNewHostDoesNotInheritPreviousConnectionFailure() async throws {
+        let transport = FakeTransport(), store = try makeStore(transport)
+        await transport.setFailConnections(true)
+        await store.connect()
+        XCTAssertTrue(store.showsConnectionFailure)
+        let key = try XCTUnwrap(store.host?.invitation.hostKey)
+        let invitation = RemoteJSON.object([
+            "version": .number(1), "relay": .string("wss://example.invalid"),
+            "route": .string(String(repeating: "b", count: 64)), "hostKey": .string(key),
+            "secret": .string(String(repeating: "f", count: 64)),
+            "expires": .number(Date().addingTimeInterval(600).timeIntervalSince1970), "localDevelopment": .bool(false)
+        ])
+        let text = String(decoding: try JSONEncoder().encode(invitation), as: UTF8.self)
+        await transport.setFailConnections(false)
+        await transport.holdNextConnection()
+        let pairing = Task { await store.pair(text) }
+        try await until { await transport.waitingForConnection }
+        XCTAssertEqual(store.host?.invitation.route, String(repeating: "b", count: 64))
+        XCTAssertFalse(store.hasConnectionFailure)
+        XCTAssertFalse(store.showsConnectionFailure, "The new host has not failed its first handshake.")
+        await transport.releaseConnection(); await pairing.value
+        XCTAssertTrue(store.connected)
+    }
+
+    func testDisconnectedSettingsDeletionAndFolderFailuresPresentConnectionState() async throws {
+        for action in ["settings", "deletion", "folders"] {
+            let transport = FakeTransport(), store = try makeStore(transport)
+            await store.connect()
+            switch action {
+            case "settings":
+                store.showSettings(); store.settings.prompt = "Preserve the dirty draft"
+                await transport.failNext("PATCH", "/v1/library")
+                await store.finishSettings()?.value
+                XCTAssertEqual(store.settings.prompt, "Preserve the dirty draft")
+                XCTAssertNotNil(store.settings.error)
+            case "deletion":
+                await transport.failNext("DELETE", "/v1/conversations/session")
+                await store.deleteConversation("session")
+                XCTAssertEqual(store.conversations.map(\.id), ["session"])
+                XCTAssertEqual(store.visibleError, "Interrupted.")
+            default:
+                await transport.failNext("POST", "/v1/workspaces/browse")
+                do {
+                    _ = try await store.browseFolders(nil, showHidden: false)
+                    XCTFail("Expected the interrupted folder read to fail")
+                } catch { XCTAssertEqual(error.localizedDescription, "Interrupted.") }
+            }
+            XCTAssertTrue(store.showsConnectionFailure, action)
+            let commands = await transport.requests.filter { !$0.hasPrefix("GET ") }
+            XCTAssertEqual(commands.count, 1, "Failure presentation must never dispatch another command.")
+        }
+    }
+
+    func testCancelledInitialConnectionDoesNotPresentFailure() async throws {
+        let transport = FakeTransport(), store = try makeStore(transport)
+        await transport.holdNextConnection()
+        let connecting = Task { await store.connect() }
+        try await until { await transport.waitingForConnection }
+        connecting.cancel()
+        await transport.releaseConnection(); await connecting.value
+        XCTAssertFalse(store.connected)
+        XCTAssertFalse(store.hasConnectionFailure)
+        XCTAssertNil(store.error)
+    }
+
+    func testCancelledAndSupersededReadsDoNotPresentConnectionFailure() async throws {
+        for path in ["/v1/conversations", "/v1/conversations/session/sync"] {
+            let transport = FakeTransport(), store = try makeStore(transport)
+            await store.connect()
+            // An explicit cancellation error is not necessarily Task cancellation.
+            await transport.failNext("GET", path, disconnect: false, cancelled: true)
+            if path.hasSuffix("/sync") { await store.open("session").value }
+            else { await store.poll() }
+            XCTAssertFalse(store.hasConnectionFailure)
+            XCTAssertNil(store.error)
+
+            await transport.holdNextRequest("GET", path)
+            let stale = Task {
+                if path.hasSuffix("/sync") { await store.open("session").value }
+                else { await store.poll() }
+            }
+            try await until { await transport.waitingForRequest }
+            // A newer read supersedes the old ticket, even on the same connection.
+            if path.hasSuffix("/sync") { await store.open("session").value }
+            else { await store.poll() }
+            await transport.failNext("GET", path)
+            await transport.releaseRequest(); await stale.value
+            XCTAssertFalse(store.hasConnectionFailure, "A superseded read must not publish its late failure.")
+            XCTAssertNil(store.error)
+        }
     }
 
     func testTranscriptActivityUpdatesItsListRow() async throws {
@@ -252,6 +414,7 @@ actor FakeTransport: RemoteTransport {
         await transport.failNext("GET", "/v1/conversations", disconnect: false)
         await store.poll()
         XCTAssertTrue(store.connected)
+        XCTAssertFalse(store.hasConnectionFailure, "An action rejection on a healthy channel must not latch a connection failure.")
         XCTAssertEqual(store.error, "Request rejected.")
         await store.poll()
         let attempts = await transport.connectionAttempts
@@ -266,8 +429,11 @@ actor FakeTransport: RemoteTransport {
         await transport.failNext("POST", "/v1/conversations/session/turns")
         await store.send()
         XCTAssertEqual(store.drafts["session"], "Send once")
+        XCTAssertTrue(store.showsConnectionFailure)
+        XCTAssertTrue(store.visibleError?.contains("delivery could not be confirmed") == true)
         await store.poll()
         XCTAssertTrue(store.connected)
+        XCTAssertFalse(store.hasConnectionFailure)
         let sends = await transport.requests.filter { $0 == "POST /v1/conversations/session/turns" }
         XCTAssertEqual(sends.count, 1)
     }
@@ -279,31 +445,33 @@ actor FakeTransport: RemoteTransport {
             await store.poll()
             await transport.failNext(method, path)
             await store.mutate(method, path, .object([:]))
+            XCTAssertTrue(store.showsConnectionFailure, "A lost mutation acknowledgement must also update connection presentation.")
+            XCTAssertEqual(store.visibleError, "Interrupted.", "The banner must not consume the action error.")
             await store.poll()
             XCTAssertTrue(store.connected)
+            XCTAssertFalse(store.hasConnectionFailure)
             let commands = await transport.requests.filter { !$0.hasPrefix("GET ") }
             XCTAssertEqual(commands, [method + " " + path])
         }
     }
 
     func testSuspendingInFlightConnectionCannotRestoreConnectedState() async throws {
-        let transport = FakeTransport(), store = try makeStore(transport)
-        await transport.holdNextConnection()
-        let connection = Task { await store.connect() }
-        for _ in 0..<1000 {
-            if await transport.waitingForConnection { break }
-            await Task.yield()
+        for fails in [false, true] {
+            let transport = FakeTransport(), store = try makeStore(transport)
+            await transport.holdNextConnection()
+            let connection = Task { await store.connect() }
+            try await until { await transport.waitingForConnection }
+            await store.suspend()
+            await transport.setFailConnections(fails)
+            await transport.releaseConnection(); await connection.value
+            XCTAssertFalse(store.connected)
+            XCTAssertFalse(store.busy)
+            XCTAssertNil(store.error)
+            XCTAssertFalse(store.hasConnectionFailure, "Neither late success nor failure may undo intentional suspension.")
+            await transport.setFailConnections(false)
+            await store.poll() // Next foreground cycle can establish a fresh channel.
+            XCTAssertTrue(store.connected)
         }
-        let waiting = await transport.waitingForConnection
-        XCTAssertTrue(waiting)
-        await store.suspend()
-        await transport.releaseConnection()
-        await connection.value
-        XCTAssertFalse(store.connected)
-        XCTAssertFalse(store.busy)
-        XCTAssertNil(store.error)
-        await store.poll() // Next foreground cycle can establish a fresh channel.
-        XCTAssertTrue(store.connected)
     }
 
     func testUnavailableHostBacksOffAndSuccessfulRecoveryResetsDelay() async throws {

@@ -28,6 +28,9 @@ extension RelayClient: RemoteTransport {}
     var busy: Bool { isConnecting || hasPendingCommands }
     var error: String? { didSet { connectionError = false } }
     private var connectionError = false
+    // Presentation is independent of action errors and survives admitted retries.
+    private(set) var hasConnectionFailure = false
+    var showsConnectionFailure: Bool { host != nil && hasConnectionFailure && !connected }
     var visibleError: String? { connectionError ? nil : error }
     private enum MutationScope: Hashable {
         case library, creation, conversation(String), request(String)
@@ -158,10 +161,18 @@ extension RelayClient: RemoteTransport {}
         return .request(path)
     }
     private func showConnectionError(_ failure: Error) {
+        guard !Task.isCancelled, !(failure is CancellationError) else { return }
+        hasConnectionFailure = true
         // The banner must never hide an uncertain-delivery warning or other action error.
         guard error == nil || connectionError else { return }
         error = failure.localizedDescription
         connectionError = true
+    }
+    private func recordDisconnectedFailure(_ failure: Error, connection: Int) async {
+        guard connection == connectionGeneration, !Task.isCancelled, !(failure is CancellationError) else { return }
+        let transportConnected = await client.isConnected
+        guard connection == connectionGeneration, !Task.isCancelled else { return }
+        if !transportConnected { connected = false; showConnectionError(failure) }
     }
 
     func transcriptViewState(for id: String?) -> TranscriptViewState? {
@@ -197,6 +208,7 @@ extension RelayClient: RemoteTransport {}
             if await client.isConnected { await client.disconnect() }
             try await client.connect(host)
             guard generation == connectionGeneration, !Task.isCancelled else { return }
+            hasConnectionFailure = false
             host.invitation.secret = nil
             try saveHost(host); self.host = host
             connected = true
@@ -209,7 +221,7 @@ extension RelayClient: RemoteTransport {}
             scheduleBufferedMessage()
             if resetBackoff { reconnectDelay = 1.5 }
         } catch {
-            guard generation == connectionGeneration, !Task.isCancelled else { return }
+            guard generation == connectionGeneration, !Task.isCancelled, !(error is CancellationError) else { return }
             let transportConnected = await client.isConnected
             guard generation == connectionGeneration, !Task.isCancelled else { return }
             connected = transportConnected
@@ -245,12 +257,19 @@ extension RelayClient: RemoteTransport {}
     }
     func browseFolders(_ path: String?, showHidden: Bool) async throws -> RemoteJSON {
         guard connected else { throw RemoteFailure("Connect to the agent first.") }
-        return try await client.request("POST", "/v1/workspaces/browse", body: .object([
-            "path": .optional(path), "showHidden": .bool(showHidden)
-        ]))
+        let connection = connectionGeneration
+        do {
+            return try await client.request("POST", "/v1/workspaces/browse", body: .object([
+                "path": .optional(path), "showHidden": .bool(showHidden)
+            ]))
+        } catch {
+            await recordDisconnectedFailure(error, connection: connection)
+            throw error
+        }
     }
     private func clearConversationState() {
         cancelPendingMessage()
+        hasConnectionFailure = false
         hostGeneration += 1
         transcriptViewStates.removeAll()
         settings = RemoteSettingsDraft()
@@ -282,10 +301,17 @@ extension RelayClient: RemoteTransport {}
         let generation = hostGeneration, readGeneration = snapshotGeneration, connection = connectionGeneration
         catalogReadTicket += 1
         let ticket = catalogReadTicket
-        let list = try await client.request("GET", "/v1/conversations").array
-        guard generation == hostGeneration, connection == connectionGeneration, !Task.isCancelled,
-              readGeneration == snapshotGeneration, ticket == catalogReadTicket else { return false }
-        let settings = try await client.request("GET", "/v1/library")
+        let list: [RemoteJSON], settings: RemoteJSON
+        do {
+            list = try await client.request("GET", "/v1/conversations").array
+            guard generation == hostGeneration, connection == connectionGeneration, !Task.isCancelled,
+                  readGeneration == snapshotGeneration, ticket == catalogReadTicket else { return false }
+            settings = try await client.request("GET", "/v1/library")
+        } catch {
+            guard generation == hostGeneration, connection == connectionGeneration, !Task.isCancelled,
+                  readGeneration == snapshotGeneration, ticket == catalogReadTicket else { return false }
+            throw error
+        }
         guard generation == hostGeneration, connection == connectionGeneration, !Task.isCancelled,
               readGeneration == snapshotGeneration, ticket == catalogReadTicket else { return false }
         conversations = deletions.reconcile(list); library = settings
@@ -304,7 +330,14 @@ extension RelayClient: RemoteTransport {}
         readTickets[id, default: 0] += 1
         let ticket = readTickets[id]
         let path = "/v1/conversations/\(id)/sync"
-        let value = try await client.request("GET", syncStates[id]?.refreshPath(path) ?? path)
+        let value: RemoteJSON
+        do {
+            value = try await client.request("GET", syncStates[id]?.refreshPath(path) ?? path)
+        } catch {
+            guard generation == hostGeneration, connection == connectionGeneration, !Task.isCancelled,
+                  readGeneration == snapshotGeneration, ticket == readTickets[id] else { return false }
+            throw error
+        }
         guard generation == hostGeneration, connection == connectionGeneration, !Task.isCancelled,
               readGeneration == snapshotGeneration, ticket == readTickets[id] else { return false }
         guard recentConversations.contains(id) else { return true }
@@ -349,7 +382,7 @@ extension RelayClient: RemoteTransport {}
             snapshot = older.snapshot
         } catch {
             guard generation == hostGeneration, connection == connectionGeneration,
-                  !Task.isCancelled, selected == id else { return }
+                  readGeneration == snapshotGeneration, !Task.isCancelled, selected == id else { return }
             await reportReadFailure(error, connection: connection)
         }
     }
@@ -387,8 +420,14 @@ extension RelayClient: RemoteTransport {}
                     await disconnectConnection()
                     connectionNeedsReset = false
                 }
-                if !(await client.isConnected) { connected = false }
+                let connection = connectionGeneration
+                let transportConnected = await client.isConnected
                 guard isObserving(generation) else { return }
+                guard connection == connectionGeneration else { continue }
+                if !transportConnected {
+                    if connected { showConnectionError(RemoteFailure("Host connection lost.")) }
+                    connected = false
+                }
                 if !connected { await connect(resetBackoff: false) }
                 guard isObserving(generation) else { return }
                 if connected {
@@ -419,7 +458,7 @@ extension RelayClient: RemoteTransport {}
                             }
                         }
                     } catch {
-                        guard isObserving(generation) else { return }
+                        guard isObserving(generation), !(error is CancellationError) else { return }
                         guard observedHost == hostGeneration, connection == connectionGeneration else { continue }
                         showConnectionError(error)
                         reconnectDelay = min(reconnectDelay * 2, 30)
@@ -485,7 +524,10 @@ extension RelayClient: RemoteTransport {}
         let generation = connectionGeneration
         let transportConnected = await client.isConnected
         guard generation == connectionGeneration, !Task.isCancelled else { return }
-        if !transportConnected { connected = false }
+        if !transportConnected {
+            if connected { showConnectionError(RemoteFailure("Host connection lost.")) }
+            connected = false
+        }
         if !connected {
             if reconnect { await connect() }
             return
@@ -494,11 +536,7 @@ extension RelayClient: RemoteTransport {}
             if let id = selected, active || awaitingSendSnapshot { try await refreshConversation(id) }
             else { try await refresh() }
         } catch {
-            let transportConnected = await client.isConnected
-            guard generation == connectionGeneration, !Task.isCancelled else { return }
-            // An API rejection does not mean the WebSocket was lost.
-            if !transportConnected { connected = false; showConnectionError(error) }
-            else { self.error = error.localizedDescription }
+            await reportReadFailure(error, connection: generation)
         }
     }
     @discardableResult func open(_ id: String) -> Task<Void, Never> {
@@ -540,6 +578,7 @@ extension RelayClient: RemoteTransport {}
                 mutations.remove(.library); settingsSaveTask = nil
                 guard generation == hostGeneration else { return }
                 settings.fail(error)
+                await recordDisconnectedFailure(error, connection: connection)
                 return
             }
             // Readback is independent of the acknowledged write's admission lock.
@@ -564,6 +603,7 @@ extension RelayClient: RemoteTransport {}
             mutations.remove(scope)
             guard generation == hostGeneration else { return }
             self.error = error.localizedDescription
+            await recordDisconnectedFailure(error, connection: connection)
             scheduleBufferedMessage()
             return
         }
@@ -600,6 +640,7 @@ extension RelayClient: RemoteTransport {}
                 withAnimation { conversations.append(restored) }
             }
             self.error = error.localizedDescription
+            await recordDisconnectedFailure(error, connection: connection)
             return
         }
         // Acceptance is final. A later refresh error must not resurrect the row.
@@ -669,9 +710,7 @@ extension RelayClient: RemoteTransport {}
             restoreDraft(text, for: id)
             uncertainSends.insert(id)
             self.error = "Message delivery could not be confirmed. Check the refreshed conversation before sending again."
-            let transportConnected = await client.isConnected
-            guard generation == hostGeneration, connection == connectionGeneration else { return }
-            connected = transportConnected && !connectionNeedsReset
+            await recordDisconnectedFailure(error, connection: connection)
             return
         }
         do { try await refreshConversation(id) }
@@ -733,21 +772,23 @@ extension RelayClient: RemoteTransport {}
                     return
                 }
             } catch {
-                guard generation == hostGeneration, !Task.isCancelled, pendingMessage?.id == message.id else { return }
-                let transportConnected = await client.isConnected
+                guard generation == hostGeneration, !Task.isCancelled, !(error is CancellationError),
+                      pendingMessage?.id == message.id else { return }
+                await recordDisconnectedFailure(error, connection: connection)
                 guard generation == hostGeneration, connection == connectionGeneration, !Task.isCancelled,
                       pendingMessage?.id == message.id else { return }
-                connected = transportConnected && !connectionNeedsReset
                 if connected {
                     cancelPendingMessage()
                     self.error = "Could not verify the conversation. The queued message was returned to your draft."
-                } else { showConnectionError(error) }
+                }
             }
         }
     }
     private func reportReadFailure(_ failure: Error, connection: Int) async {
+        guard connection == connectionGeneration, !Task.isCancelled, !(failure is CancellationError) else { return }
         let transportConnected = await client.isConnected
         guard connection == connectionGeneration, !Task.isCancelled else { return }
+        // An API rejection does not mean the WebSocket was lost.
         if !transportConnected { connected = false; showConnectionError(failure) }
         else { error = failure.localizedDescription }
     }

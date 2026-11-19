@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 @MainActor final class SessionUITests: XCTestCase {
     private func wait(_ predicate: NSPredicate, on element: XCUIElement, timeout: TimeInterval = 10) {
@@ -80,20 +81,74 @@ import XCTest
         let bannerFrame = try frame("host-connection-banner", in: layout)
         XCTAssertGreaterThan(bannerFrame.height, 0)
         XCTAssertGreaterThan(bannerFrame.minY, app.frame.midY, "Connection loss belongs at the bottom of the screen.")
+        let scrollContainers = ["session-list", "settings-form", "new-session-form", "host-folder-list", "native-transcript"]
         for name in content.keys {
-            XCTAssertLessThanOrEqual(try frame(name, in: layout).maxY, bannerFrame.minY + 1,
-                                     "The banner must reserve space below lists, forms and controls, not cover them.")
+            let contentFrame = try frame(name, in: layout)
+            if scrollContainers.contains(name) {
+                // Native scroll views keep their full underlapping bounds. Their
+                // usable content inset (checked at the scroll end below), not
+                // their UIKit frame, must reserve room for the banner.
+                XCTAssertEqual(contentFrame.maxY, app.frame.maxY, accuracy: 1)
+            } else {
+                XCTAssertLessThanOrEqual(contentFrame.maxY, bannerFrame.minY + 1,
+                                         "The banner must reserve space below controls, not cover them.")
+            }
         }
         XCTAssertTrue(banner.exists, "Automatic recovery must not precede the offline layout sample.")
+        try assertBannerPaintReachesPhysicalBottom(app, banner: bannerFrame)
         return layout
     }
-    private func assertReclaimedViewport(offline: CGRect, online: CGRect, banner: CGRect, app: XCUIApplication) {
-        XCTAssertEqual(offline.maxY, banner.minY, accuracy: 1)
-        XCTAssertLessThanOrEqual(online.maxY, app.frame.maxY + 1)
-        // Native lists/forms extend under the home indicator again when the
-        // banner is gone. Compare usable space, excluding that system inset;
-        // the banner's measured bottom is the original safe-area boundary.
-        XCTAssertEqual(min(online.maxY, banner.maxY) - offline.maxY, banner.height, accuracy: 2)
+    private func assertBannerPaintReachesPhysicalBottom(_ app: XCUIApplication, banner: CGRect) throws {
+        let screenshot = app.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = "banner-physical-bottom-\(Int(banner.minY))"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        let image = try XCTUnwrap(screenshot.image.cgImage)
+        let screen = app.frame
+        let scale = CGFloat(image.width) / screen.width
+        let colorSpace = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        func rgb(x: CGFloat, y: CGFloat) throws -> [Int] {
+            let rect = CGRect(x: ((x - screen.minX) * scale).rounded(.down),
+                              y: ((y - screen.minY) * scale).rounded(.down), width: 1, height: 1)
+            let pixel = try XCTUnwrap(image.cropping(to: rect))
+            var bytes = [UInt8](repeating: 0, count: 4)
+            try bytes.withUnsafeMutableBytes { buffer in
+                let context = try XCTUnwrap(CGContext(data: buffer.baseAddress, width: 1, height: 1,
+                                                     bitsPerComponent: 8, bytesPerRow: 4, space: colorSpace,
+                                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                context.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            return bytes.prefix(3).map(Int.init)
+        }
+        // Sample clear vertical stripes on BOTH sides of the label/home indicator.
+        // This checks actual paint, not the label's safe-area-bound accessibility frame.
+        for fraction in [0.1, 0.9] {
+            let x = screen.minX + screen.width * fraction
+            let reference = try rgb(x: x, y: banner.midY)
+            XCTAssertLessThan(reference.min() ?? 255, 250, "The reference must be banner gray, not a white gap.")
+            let rows = stride(from: banner.midY, through: screen.maxY - 1 / scale, by: 1 / scale)
+            for y in rows {
+                let actual = try rgb(x: x, y: y)
+                guard zip(reference, actual).allSatisfy({ abs($0 - $1) <= 3 }) else {
+                    XCTFail("Banner paint stops before the physical bottom: x=\(x), y=\(y), expected RGB \(reference), got \(actual); label=\(banner), screen=\(screen)")
+                    return
+                }
+            }
+            print("BANNER PAINT reaches physical edge", "x", x, "label", banner, "screen", screen, "RGB", reference)
+        }
+    }
+    private func assertReclaimedScrollEnd(offline: CGRect, online: CGRect, banner: CGRect, app: XCUIApplication) {
+        XCTAssertLessThanOrEqual(offline.maxY, banner.minY + 1, "The last row must be fully above the banner when scrolled to the end.")
+        XCTAssertLessThanOrEqual(online.maxY, app.frame.maxY)
+        // Native scroll bounds do not shrink. The last content row at the scroll
+        // limit must reclaim the label's actual layout height, not its paint's
+        // extension into the system-owned home-indicator area.
+        XCTAssertEqual(online.maxY - offline.maxY, banner.height, accuracy: 2)
+    }
+    private func scrollToBottom(_ view: XCUIElement) {
+        view.swipeUp()
+        view.swipeUp()
     }
     private func capture(_ name: String, app: XCUIApplication) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
@@ -272,12 +327,20 @@ import XCTest
         XCTAssertTrue(newSession.isEnabled)
     }
 
-    func testOfflineSendBuffersOnceAndCancelRestoresBeforeNewerDraft() {
+    func testOfflineSendBuffersOnceAndCancelRestoresBeforeNewerDraft() throws {
         let app = launch(["--offline-actions-fixture"])
         app.buttons["session-fixture-1"].tap()
         XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 5))
         let composer = app.descendants(matching: .any).matching(identifier: "message-composer").firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        try assertOfflineBanner(app, below: ["Session 1": .navigationBar, "native-transcript": .table, "chat-composer-controls": .any])
+        let lastMessage = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "fixture-1 message 40")).firstMatch
+        XCTAssertTrue(lastMessage.waitForExistence(timeout: 5), "Exercise a resident transcript, not an empty offline view.")
+        let transcriptLayout = try stableLayout(app, matching: ["transcript-message-message-40": .cell, "chat-composer-controls": .any])
+        let lastCell = try frame("transcript-message-message-40", in: transcriptLayout)
+        let composerFrame = try frame("chat-composer-controls", in: transcriptLayout)
+        XCTAssertLessThanOrEqual(lastMessage.frame.maxY, composerFrame.minY, "The last message bubble must remain above the padded composer, not just above the banner.")
+        print("OFFLINE TRANSCRIPT last cell", lastCell, "bubble", lastMessage.frame, "composer", composerFrame)
         XCTAssertFalse(app.buttons["Send"].isEnabled)
         let original = "First offline message"
         let newer = "Newer draft text"
@@ -320,6 +383,29 @@ import XCTest
         wait(NSPredicate(format: "value == %@", restored), on: composer)
     }
 
+    func testDelayedFirstStartupConnectsWithoutShowingFailureBanner() {
+        // Do not use launch(): it waits for the banner to disappear and would
+        // accidentally accept a startup flash. This starts with no cached data.
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-fixture", "--delayed-startup-fixture"]
+        app.launch()
+        XCTAssertTrue(app.buttons["New Session"].waitForExistence(timeout: 5))
+        let pendingUntil = Date().addingTimeInterval(1.5)
+        repeat {
+            XCTAssertFalse(connectionBanner(app).exists, "A pending first connection is not a failure.")
+            XCTAssertFalse(app.buttons["session-fixture-1"].exists, "The delayed first read must still be pending.")
+        } while Date() < pendingUntil
+        capture("first-startup-pending-no-banner", app: app)
+        app.buttons["New Session"].tap()
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Create"].isEnabled, "Verify the first connection is still pending, not already recovered.")
+        XCTAssertFalse(connectionBanner(app).exists)
+        wait(NSPredicate(format: "enabled == true"), on: app.buttons["Create"], timeout: 15)
+        XCTAssertFalse(connectionBanner(app).exists)
+        XCTAssertFalse(element("session-notice", in: app).exists)
+        capture("first-startup-success-no-banner", app: app)
+    }
+
     func testAutomaticReconnectReclaimsBottomSpaceBelowRootListAndControls() throws {
         let app = launch(["--recovering-host-fixture"])
         let targets: [String: XCUIElement.ElementType] = [
@@ -335,9 +421,18 @@ import XCTest
         print("ROOT OFFLINE FRAMES", offline.mapValues(\.frame))
         capture("host-offline-bottom-layout", app: app)
         XCTAssertTrue(connectionBanner(app).exists, "The offline screenshot must still show the banner.")
+        let list = element("session-list", in: app)
+        scrollToBottom(list)
+        let offlineEnd = try stableLayout(app, matching: ["session-fixture-12": .button])
+        let offlineLastRow = try frame("session-fixture-12", in: offlineEnd)
+        XCTAssertLessThanOrEqual(offlineLastRow.maxY, offlineControls.minY, "Scrolling must reveal the last session above the controls and banner.")
+        XCTAssertTrue(connectionBanner(app).exists)
+        print("ROOT OFFLINE SCROLL END", offlineLastRow)
 
         // No Reconnect tap, pull-to-refresh or scene transition may be needed.
         wait(NSPredicate(format: "exists == false"), on: connectionBanner(app), timeout: 40)
+        list.swipeDown()
+        list.swipeDown()
         let online = try stableLayout(app, matching: targets)
         let onlineNavigation = try frame("All Sessions", in: online)
         let onlineList = try frame("session-list", in: online)
@@ -348,7 +443,12 @@ import XCTest
         XCTAssertEqual(onlineNavigation.minY, offlineNavigation.minY, accuracy: 1)
         XCTAssertEqual(onlineRow.minY, offlineRow.minY, accuracy: 1,
                        "A bottom banner must not shift the navigation bar or the first session row.")
-        assertReclaimedViewport(offline: offlineList, online: onlineList, banner: bannerFrame, app: app)
+        XCTAssertEqual(onlineList, offlineList, "Native list bounds must keep their top/bottom underlap; only the usable inset changes.")
+        scrollToBottom(list)
+        let onlineEnd = try stableLayout(app, matching: ["session-fixture-12": .button])
+        let onlineLastRow = try frame("session-fixture-12", in: onlineEnd)
+        print("ROOT ONLINE SCROLL END", onlineLastRow)
+        assertReclaimedScrollEnd(offline: offlineLastRow, online: onlineLastRow, banner: bannerFrame, app: app)
         XCTAssertEqual(onlineControls.minY - offlineControls.minY, bannerFrame.height, accuracy: 2,
                        "Controls must reclaim actual layout space, not remain underneath an overlay.")
         let offlineOptions = try frame("Session Options", in: offline)
@@ -374,8 +474,20 @@ import XCTest
         capture("host-offline-sheet-bottom-layout", app: app)
         XCTAssertTrue(connectionBanner(app).exists, "The offline screenshot must still show the banner.")
         XCTAssertFalse(app.buttons["Create"].isEnabled)
+        let form = element("new-session-form", in: app)
+        scrollToBottom(form)
+        let offlineEnd = try stableLayout(app, matching: ["new-session-tool-wait": .switch])
+        let offlineLastRow = try frame("new-session-tool-wait", in: offlineEnd)
+        XCTAssertLessThanOrEqual(offlineLastRow.maxY, bannerFrame.minY, "The final form control must scroll fully above the banner.")
+        XCTAssertTrue(app.switches["new-session-tool-wait"].isHittable)
+        XCTAssertTrue(connectionBanner(app).exists)
+        print("SHEET OFFLINE SCROLL END", offlineLastRow)
 
         wait(NSPredicate(format: "exists == false"), on: connectionBanner(app), timeout: 40)
+        scrollToBottom(form)
+        let onlineEnd = try stableLayout(app, matching: ["new-session-tool-wait": .switch])
+        let onlineLastRow = try frame("new-session-tool-wait", in: onlineEnd)
+        print("SHEET ONLINE SCROLL END", onlineLastRow)
         let online = try stableLayout(app, matching: targets)
         let onlineNavigation = try frame("New Session", in: online)
         let onlineForm = try frame("new-session-form", in: online)
@@ -383,7 +495,8 @@ import XCTest
         XCTAssertFalse(connectionBanner(app).exists)
         XCTAssertEqual(onlineNavigation.minY, offlineNavigation.minY, accuracy: 1)
         XCTAssertEqual(onlineForm.minY, offlineForm.minY, accuracy: 1)
-        assertReclaimedViewport(offline: offlineForm, online: onlineForm, banner: bannerFrame, app: app)
+        XCTAssertEqual(onlineForm, offlineForm, "The native form keeps its bounds while its usable bottom inset changes.")
+        assertReclaimedScrollEnd(offline: offlineLastRow, online: onlineLastRow, banner: bannerFrame, app: app)
         wait(NSPredicate(format: "enabled == true"), on: app.buttons["Create"])
         XCTAssertTrue(app.buttons["Cancel"].isEnabled)
         capture("host-recovered-sheet-bottom-layout", app: app)
