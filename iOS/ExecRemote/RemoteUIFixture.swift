@@ -85,8 +85,14 @@ import ExecRemote
     private static var updatedLibrary: RemoteJSON?
     private static var promptSaves = 0
     static var library: RemoteJSON {
-        updatedLibrary ?? .object(["defaultModel": .string("fixture/reasoning"), "automaticTitles": .bool(true),
-                 "defaultDisabledTools": .array(ProcessInfo.processInfo.arguments.contains("--all-tools-enabled") ? [] : [.string("shell")]),
+        let disabled: [String]
+        if ProcessInfo.processInfo.arguments.contains("--orchestration-defaults-fixture") {
+            disabled = ["shell", "delegate", "wait", "temporarily_unavailable"]
+        } else {
+            disabled = ProcessInfo.processInfo.arguments.contains("--all-tools-enabled") ? [] : ["shell"]
+        }
+        return updatedLibrary ?? .object(["defaultModel": .string("fixture/reasoning"), "automaticTitles": .bool(true),
+                 "defaultDisabledTools": .array(disabled.map(RemoteJSON.string)),
                  "settings": .object(["systemPrompt": .string("Synthetic fixture instructions"),
                                       "autoApprove": .bool(true), "effort": .string("high")])])
     }
@@ -195,9 +201,15 @@ import ExecRemote
               folders[workspace] != nil, models.contains(where: { $0["id"] == body["model"] }) else {
             throw RemoteFailure("Invalid fixture session configuration.")
         }
+        if ProcessInfo.processInfo.arguments.contains("--orchestration-defaults-fixture") {
+            guard fields["disabledTools"] == .array(["shell", "temporarily_unavailable"].map(RemoteJSON.string)),
+                  fields["settings"] == library["settings"] else {
+                throw RemoteFailure("Fixture creation must enable orchestration and preserve other host defaults.")
+            }
+        }
         let disabled: [RemoteJSON]
         if let selection = fields["disabledTools"] {
-            let supported = Set(RemoteSessionCreation.tools.map(\.id))
+            let supported = Set(RemoteSessionCreation.tools.map(\.id) + library["defaultDisabledTools"].array.compactMap(\.string))
             guard case .array(let names) = selection,
                   names.allSatisfy({ $0.string.map(supported.contains) ?? false }),
                   Set(names.compactMap(\.string)).count == names.count else {
