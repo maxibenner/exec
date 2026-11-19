@@ -9,15 +9,17 @@ public struct ToolCard<Content: View>: View {
     let isRunning: Bool
     let roundsTop: Bool
     let roundsBottom: Bool
+    let showsBackground: Bool
     let content: Content
     public init(presentation: ToolPresentation, isExpanded: Binding<Bool>, awaitingApproval: Bool = false, isRunning: Bool = false,
-                roundsTop: Bool = true, roundsBottom: Bool = true,
+                roundsTop: Bool = true, roundsBottom: Bool = true, showsBackground: Bool = true,
                 @ViewBuilder content: () -> Content) {
         self.presentation = presentation; _isExpanded = isExpanded
         self.awaitingApproval = awaitingApproval
         self.isRunning = isRunning || presentation.isRunning
         self.roundsTop = roundsTop
         self.roundsBottom = roundsBottom
+        self.showsBackground = showsBackground
         self.content = content()
     }
     public var body: some View {
@@ -36,7 +38,7 @@ public struct ToolCard<Content: View>: View {
         }
         .disclosureGroupStyle(InstantToolDisclosureStyle())
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
-        .background(.quaternary.opacity(0.25), in: UnevenRoundedRectangle(
+        .background(.quaternary.opacity(showsBackground ? 0.25 : 0), in: UnevenRoundedRectangle(
             topLeadingRadius: roundsTop ? 8 : 0,
             bottomLeadingRadius: roundsBottom ? 8 : 0,
             bottomTrailingRadius: roundsBottom ? 8 : 0,
