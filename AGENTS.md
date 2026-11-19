@@ -36,8 +36,10 @@
 
 ## Verification
 
-- When working on a Swift app, rebuild the app after every implemented feature change. For Exec, run `./scripts/build-app.sh` from `macOS/`.
-- Run `./scripts/test.sh` and `./scripts/build-app.sh` from `macOS/` before committing macOS code changes.
+- Verify completed changes, not every small edit. For small presentation-only changes (copy, colors, spacing, or reordering/regrouping displayed tools without changing behavior), rebuild directly without running tests.
+- Larger changes or meaningful behavior changes—including tool availability, approval policy, authentication, cancellation, queueing, conversation integrity and network state—require focused tests and a build. Run full suites only for cross-cutting changes or larger risks.
+- Rebuild the affected Swift app after each completed feature change and before committing app code: from `macOS/`, run `./scripts/build-app.sh`; from `iOS/`, run `xcodebuild -project ExecRemote.xcodeproj -scheme ExecRemote -sdk iphonesimulator -configuration Debug -derivedDataPath .build build`. Preserve existing code-signing settings.
+- Documentation-only changes require `git diff --check` and readback, not app builds or tests.
 - Keep tests small, practical and focused on meaningful behavior and regressions. Prioritize authentication, cancellation, conversation integrity and error recovery; do not build an oversized suite, chase coverage percentages or test trivial implementation details.
 - Tests must use isolated stores/fake transports, not the user's Keychain or live model calls.
 - Report manual checks or signing steps that remain unverified; do not claim mocks verify live service behavior.
