@@ -384,6 +384,9 @@ private actor ObservationClock {
         await transport.holdNextRequest("GET", "/v1/conversations/session/sync", captureResponse: true)
         await transport.emit(notice("2"))
         try await until { await transport.waitingForRequest }
+        // No authoritative post-send page yet: a successful empty reset now
+        // correctly means the host cleared history, not a missing readback.
+        await transport.failNext("GET", "/v1/conversations/session/sync", disconnect: false)
         store.drafts["session"] = "Sent once"
         await store.send()
         XCTAssertTrue(store.awaitingSendSnapshot)

@@ -15,12 +15,15 @@ final class TranscriptSyncTests: XCTestCase {
 
     func testOverlapReplacesStreamingTailAndPrependingPreservesNewerState() throws {
         let first = try RemoteTranscriptSync.initial(page([message("b", text: "partial")], offset: 1, total: 2, reset: true))
+        XCTAssertTrue(first.didReset)
         let updated = try first.refreshed(page([message("b", text: "done"), message("c")], offset: 1, total: 3, reset: false))
+        XCTAssertFalse(updated.didReset)
         XCTAssertEqual(updated.snapshot["messages"].array.count, 2)
         XCTAssertEqual(updated.snapshot["messages"].array.first?["text"].string, "done")
         let complete = try updated.prepending(page([message("a")], offset: 0, total: 3, reset: false))
         XCTAssertEqual(complete.snapshot["messages"].array.map { $0["id"].string }, ["a", "b", "c"])
         XCTAssertFalse(complete.hasEarlier)
+        XCTAssertFalse(complete.didReset)
         XCTAssertTrue(complete.refreshPath("/sync").contains("?after=c&prefix="))
     }
 
@@ -31,5 +34,6 @@ final class TranscriptSyncTests: XCTestCase {
         let reset = try first.refreshed(page([message("new")], offset: 4, total: 5, reset: true))
         XCTAssertEqual(reset.snapshot["messages"].array.map { $0["id"].string }, ["new"])
         XCTAssertTrue(reset.hasEarlier)
+        XCTAssertTrue(reset.didReset)
     }
 }

@@ -88,10 +88,7 @@ extension RelayClient: RemoteTransport {}
         }
     }
     var snapshot: RemoteJSON = .null {
-        didSet {
-            recentConversations.update(snapshot)
-            if let id = snapshot["id"].string { optimisticMessages[id]?.reconcile(snapshot) }
-        }
+        didSet { recentConversations.update(snapshot) }
     }
     var drafts: [String:String] = [:]
     private var optimisticMessages: [String: RemoteOptimisticMessages] = [:]
@@ -372,15 +369,15 @@ extension RelayClient: RemoteTransport {}
         syncStates[id] = state
         conversationConnections[id] = connection
         uncertainSends.remove(id)
+        acceptedOperations.removeValue(forKey: id)
         if sending[id] == nil {
-            acceptedOperations.removeValue(forKey: id)
             if cancellingOperations[id] != state.snapshot["operation"]["id"].string
                 || !RemoteMessageSubmission.isActive(state.snapshot) {
                 cancellingOperations.removeValue(forKey: id)
             }
         }
         recentConversations.update(state.snapshot)
-        optimisticMessages[id]?.reconcile(state.snapshot)
+        optimisticMessages[id]?.reconcile(state)
         // Transcript notices can arrive without a catalog revision. Keep the
         // row authoritative when returning to the session list.
         if let index = conversations.firstIndex(where: { $0.id == id }),
@@ -406,6 +403,7 @@ extension RelayClient: RemoteTransport {}
                   current.snapshot["messages"].array.first?["id"].string == first else { return }
             let older = try current.prepending(value)
             syncStates[id] = older
+            optimisticMessages[id]?.reconcile(older.snapshot)
             snapshot = older.snapshot
         } catch {
             guard generation == hostGeneration, connection == connectionGeneration,
@@ -726,9 +724,10 @@ extension RelayClient: RemoteTransport {}
         do {
             let response = try await client.request("POST", path, body: body)
             guard generation == hostGeneration else { return }
-            optimisticMessages[id]?.accept(localID, response: response)
+            let needsSnapshot = optimisticMessages[id]?.accept(localID, response: response) ?? false
             if let operation = response["operationID"].string {
-                acceptedOperations[id] = operation
+                if needsSnapshot { acceptedOperations[id] = operation }
+                else { acceptedOperations.removeValue(forKey: id) }
                 if pendingMessage?.target == .afterSend(flight) { pendingMessage?.target = .operation(operation) }
             } else if pendingMessage?.target == .afterSend(flight) { cancelPendingMessage() }
             sending.removeValue(forKey: id)

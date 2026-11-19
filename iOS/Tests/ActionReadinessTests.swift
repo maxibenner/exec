@@ -275,6 +275,54 @@ private actor ActionBufferClock {
         await sending.value; await stopping.value
     }
 
+    func testAuthoritativeResetAfterAcceptanceRetiresOptimisticHistoryAndOperation() async throws {
+        for canonical in [snapshot(), snapshot(operation: "newer", state: "completed")] {
+            let transport = ActionReadinessTransport(), store = try makeStore(transport)
+            await ready(store, transport)
+            await transport.hold("POST", turns)
+            await transport.hold("GET", sync)
+            store.drafts["session"] = "Accepted then cleared"
+            let send = Task { await store.send() }; defer { send.cancel() }
+            try await until { await transport.waiting("POST", self.turns) }
+            await transport.release("POST", turns)
+            try await until { await transport.waiting("GET", self.sync) }
+            XCTAssertTrue(store.awaitingSendSnapshot)
+            XCTAssertTrue(store.canStop)
+            await transport.setSnapshot(canonical)
+            await transport.release("GET", sync)
+            await send.value
+            XCTAssertFalse(store.awaitingSendSnapshot)
+            XCTAssertEqual(store.displaySnapshot["operation"], canonical["operation"])
+            XCTAssertTrue(TranscriptItem.project(store.displaySnapshot).isEmpty)
+            XCTAssertFalse(store.active)
+            XCTAssertFalse(store.canStop)
+            store.selected = "other"; store.selected = "session"
+            XCTAssertTrue(TranscriptItem.project(store.displaySnapshot).isEmpty, "A cache visit must not resurrect cleared input")
+            let commands = await transport.commands
+            XCTAssertEqual(commands.map(\.path), [turns])
+        }
+    }
+
+    func testCanonicalClearBeforeLateAcknowledgementWinsEvenWhenReadbackFails() async throws {
+        let transport = ActionReadinessTransport(), store = try makeStore(transport)
+        await ready(store, transport)
+        await transport.hold("POST", turns)
+        store.drafts["session"] = "Cleared before acknowledgement"
+        let send = Task { await store.send() }; defer { send.cancel() }
+        try await until { await transport.waiting("POST", self.turns) }
+        await store.open("session").value // A current authoritative clear while the reply is delayed.
+        await transport.failNext("GET", sync, disconnect: false)
+        await transport.release("POST", turns)
+        await send.value
+        XCTAssertFalse(store.awaitingSendSnapshot)
+        XCTAssertFalse(store.active, "A late reply must not install a phantom accepted operation")
+        XCTAssertFalse(store.canStop)
+        XCTAssertTrue(TranscriptItem.project(store.displaySnapshot).isEmpty)
+        XCTAssertNotNil(store.visibleError)
+        let commands = await transport.commands
+        XCTAssertEqual(commands.map(\.path), [turns])
+    }
+
     func testColdOfflineBufferHasOneSlotAndExplicitCancelRestoresBeforeNewerDraft() async throws {
         let transport = ActionReadinessTransport(), store = try makeStore(transport)
         await transport.setFailConnections(true)

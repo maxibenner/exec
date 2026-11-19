@@ -3,13 +3,21 @@ import Foundation
 /// Display-only input. Authoritative snapshots and operation IDs still control
 /// execution; local rows never enter the recent-snapshot cache.
 public struct RemoteOptimisticMessages {
+    private struct Read {
+        let snapshot: RemoteJSON
+        let reset: Bool
+    }
     private struct Pending {
         let id: String
         let text: String
         let previousMessageIDs: Set<String>
-        let previousOperationID: String?
+        let previousOperation: RemoteJSON
+        var accepted = false
         var operationID: String?
         var messageID: String?
+        // A read may arrive before the command acknowledgement. Remember it so
+        // accepting a late reply cannot resurrect input already cleared by the host.
+        var latestRead: Read?
     }
     private var pending: [Pending] = []
     private var rowIDs: [String: String] = [:]
@@ -20,35 +28,69 @@ public struct RemoteOptimisticMessages {
     public mutating func begin(text: String, snapshot: RemoteJSON, id: String = "local-\(UUID().uuidString)") -> String {
         pending.append(Pending(id: id, text: text,
                                previousMessageIDs: Set(Self.messages(snapshot).compactMap { $0["id"].string }),
-                               previousOperationID: snapshot["operation"]["id"].string))
+                               previousOperation: snapshot["operation"]))
         return id
     }
 
-    public mutating func accept(_ id: String, response: RemoteJSON) {
-        guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
+    /// Returns whether the acknowledgement still needs an authoritative read.
+    @discardableResult
+    public mutating func accept(_ id: String, response: RemoteJSON) -> Bool {
+        guard let index = pending.firstIndex(where: { $0.id == id }) else { return false }
+        pending[index].accepted = true
         pending[index].operationID = response["operationID"].string
         pending[index].messageID = response["messageID"].string
+        // Exact IDs remain useful if a reset omits the message and it is loaded later.
+        if let message = pending[index].messageID { rowIDs[message] = id }
+        let input = pending[index]
+        if let read = input.latestRead,
+           Self.resolve(input, snapshot: read.snapshot, reset: read.reset, rowIDs: &rowIDs) {
+            pending.remove(at: index)
+        }
+        return input.latestRead == nil
     }
 
     public mutating func remove(_ id: String) { pending.removeAll { $0.id == id } }
 
+    /// Cached snapshots can reconcile identity, but cannot prove that input was removed.
     public mutating func reconcile(_ snapshot: RemoteJSON) {
-        let messages = Self.messages(snapshot)
-        pending.removeAll { input in
-            guard input.operationID != nil else { return false }
-            // Steering supplies an exact message ID. New turns supply only an
-            // operation ID: match the first new user message after acceptance,
-            // excluding old polls, even if another device has since begun a turn.
-            let match = messages.first { message in
-                guard message["role"].string == "user", let id = message["id"].string else { return false }
-                if let messageID = input.messageID { return id == messageID }
-                return snapshot["operation"]["id"].string != input.previousOperationID
-                    && !input.previousMessageIDs.contains(id) && message["text"].string == input.text
-            }
-            guard let messageID = match?["id"].string else { return false }
-            rowIDs[messageID] = input.id
+        pending.removeAll { Self.resolve($0, snapshot: snapshot, reset: nil, rowIDs: &rowIDs) }
+    }
+
+    /// Only a validated, current host refresh may retire missing accepted input.
+    public mutating func reconcile(_ state: RemoteTranscriptSync) {
+        for index in pending.indices {
+            pending[index].latestRead = Read(snapshot: state.snapshot, reset: state.didReset)
+        }
+        pending.removeAll { Self.resolve($0, snapshot: state.snapshot, reset: state.didReset, rowIDs: &rowIDs) }
+    }
+
+    private static func resolve(_ input: Pending, snapshot: RemoteJSON, reset: Bool?, rowIDs: inout [String: String]) -> Bool {
+        guard input.accepted else { return false }
+        let messages = messages(snapshot)
+        let operation = snapshot["operation"]["id"].string
+        let previous = input.previousOperation["id"].string
+        // A turn reply has no message ID. After an operation transition, require
+        // continuity with the old history rather than borrowing identical text
+        // from a replacement/cleared conversation.
+        let hasContinuity = messages.contains { input.previousMessageIDs.contains($0["id"].string ?? "") }
+        let canMatchTurn = input.operationID != nil && (operation == input.operationID
+            || (operation != nil && operation != previous && hasContinuity))
+        let match = messages.first { message in
+            guard message["role"].string == "user", let id = message["id"].string else { return false }
+            if let messageID = input.messageID { return id == messageID }
+            return canMatchTurn && !input.previousMessageIDs.contains(id)
+                && rowIDs[id] == nil && message["text"].string == input.text
+        }
+        if let message = match?["id"].string {
+            rowIDs[message] = input.id
             return true
         }
+        guard let reset else { return false }
+        // Resets replace the entire loaded suffix, not necessarily the entire
+        // history. Missing input belongs to the host, never to a permanent overlay.
+        return reset || operation == nil
+            || (operation != input.operationID && operation != previous)
+            || (operation == input.operationID && !RemoteMessageSubmission.isActive(snapshot))
     }
 
     public func project(_ snapshot: RemoteJSON) -> RemoteJSON {
@@ -64,9 +106,12 @@ public struct RemoteOptimisticMessages {
         value["pendingInput"] = .array((value["pendingInput"]?.array ?? []) + pending.map {
             .object(["id": .string($0.id), "role": .string("user"), "text": .string($0.text)])
         })
-        // Don't infer completion from assistant text. A terminal host operation
-        // wins once it acknowledges this input, even before row reconciliation.
-        if pending.contains(where: { $0.operationID == nil || $0.operationID != snapshot["operation"]["id"].string }) {
+        // A spinner is only a bridge over the unchanged pre-send snapshot.
+        // Never replace a canonical newer, terminal or cleared operation.
+        if !RemoteMessageSubmission.isActive(snapshot), pending.contains(where: {
+            $0.latestRead == nil && $0.previousOperation == snapshot["operation"]
+                && ($0.operationID == nil || $0.operationID != snapshot["operation"]["id"].string)
+        }) {
             value["operation"] = .object(["state": .string("running")])
         }
         return .object(value)
