@@ -65,6 +65,7 @@ struct RootView: View {
                             }
                         }
                         .listStyle(.insetGrouped)
+                        .accessibilityIdentifier("session-list")
                         .scrollContentBackground(.hidden)
                         .background(Color(uiColor: .systemGroupedBackground))
                         .refreshable { await store.poll() }
@@ -92,9 +93,8 @@ struct RootView: View {
             .toolbar(store.host == nil ? .hidden : .visible, for: .navigationBar)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if store.host != nil {
-                    SessionControls(canReconnect: store.canReconnect, canForget: store.canForget,
+                    SessionControls(canForget: store.canForget,
                                     settings: store.showSettings,
-                                    reconnect: { Task { await store.connect() } },
                                     forget: { Task { await store.forget() } },
                                     create: { creating = true })
                         .padding(.horizontal, 20)
@@ -121,12 +121,12 @@ struct RootView: View {
                 NewChatScreen(store: store) { createdSession = $0 }
             }
         }
-        .modifier(HostConnectionState(store: store))
         .overlay(alignment: .bottom) {
             if !store.settings.isPresented && !creating && !scanning {
                 SessionNotice(message: Binding(get: { store.visibleError }, set: { store.error = $0 })).padding(.bottom, 72)
             }
         }
+        .modifier(HostConnectionState(store: store))
     }
     private func sessionRow(_ family: RemoteSessionListDay.Family) -> some View {
         let row = family.parent
@@ -231,23 +231,23 @@ struct RootView: View {
     }
 }
 
-/// Connection loss takes layout space and cannot be dismissed.
+/// Connection loss reserves space below navigation, controls and action notices.
 private struct HostConnectionState: ViewModifier {
     let store: RemoteStore
     func body(content: Content) -> some View {
         VStack(spacing: 0) {
+            content.frame(maxWidth: .infinity, maxHeight: .infinity)
             if store.host != nil && !store.connected {
                 Label("Host connection lost", systemImage: "wifi.slash")
                     .font(.footnote.weight(.medium))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
                     .background(Color(uiColor: .secondarySystemBackground), ignoresSafeAreaEdges: [])
-                    .overlay(alignment: .bottom) { Divider() }
+                    .overlay(alignment: .top) { Divider() }
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Host connection lost")
                     .accessibilityIdentifier("host-connection-banner")
             }
-            content.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
@@ -262,20 +262,24 @@ private struct SessionNotice: View {
             if let message {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "exclamationmark.circle")
-                        .foregroundStyle(AppColors.blue)
+                        .foregroundStyle(.red)
                         .accessibilityHidden(true)
                     Text(message)
                         .font(.callout)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Dismiss", systemImage: "xmark") { self.message = nil }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.plain)
-                        .foregroundStyle(AppColors.blue)
                 }
                 .padding(16)
-                .background(AppColors.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
+                .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                // Observe alongside selection; taps and other drag directions remain available.
+                .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { value in
+                    if value.translation.height >= 40, value.translation.height > abs(value.translation.width) {
+                        self.message = nil
+                    }
+                })
+                .accessibilityElement(children: .contain)
+                .accessibilityAction(.escape) { self.message = nil }
                 .accessibilityIdentifier("session-notice")
                 .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
             }
@@ -298,10 +302,8 @@ struct PrimaryActionButtonStyle: ViewModifier {
 }
 
 private struct SessionControls: View {
-    let canReconnect: Bool
     let canForget: Bool
     let settings: () -> Void
-    let reconnect: () -> Void
     let forget: () -> Void
     let create: () -> Void
 
@@ -323,7 +325,6 @@ private struct SessionControls: View {
     @ViewBuilder private var controls: some View {
         Menu {
             Button("Settings", systemImage: "gearshape", action: settings)
-            Button("Reconnect", systemImage: "arrow.clockwise", action: reconnect).disabled(!canReconnect)
             Button("Forget Host", systemImage: "trash", role: .destructive, action: forget).disabled(!canForget)
         } label: {
             Label("Session Options", systemImage: "ellipsis")
@@ -550,6 +551,7 @@ struct NewChatScreen: View {
                 }
                 .disabled(!initialized)
             }
+            .accessibilityIdentifier("new-session-form")
             .sheet(isPresented: $choosingFolder) {
                 HostFolderPicker(store: store, initialPath: workspace) { workspace = $0 }
             }
@@ -574,13 +576,13 @@ struct NewChatScreen: View {
             .onChange(of: store.hasLoadedLibrary) { _, _ in initializeDefaults() }
             .onChange(of: model) { _, _ in resetEffort() }
         }
-        .modifier(HostConnectionState(store: store))
         .interactiveDismissDisabled(store.isCreatingSession)
         .overlay(alignment: .bottom) {
             if !choosingFolder {
                 SessionNotice(message: Binding(get: { store.visibleError }, set: { store.error = $0 }))
             }
         }
+        .modifier(HostConnectionState(store: store))
     }
     private func initializeDefaults() {
         guard !initialized, store.hasLoadedLibrary || store.library != .null else { return }
@@ -621,6 +623,7 @@ struct SharedSettingsScreen: View {
                 }
                 .disabled(store.isSavingLibrary || !store.connected)
             }
+            .accessibilityIdentifier("settings-form")
             .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -638,7 +641,6 @@ struct SharedSettingsScreen: View {
                 store.settings.refresh(store.library, editing: editingPrompt)
             }
         }
-        .modifier(HostConnectionState(store: store))
         .interactiveDismissDisabled(store.settings.hasUnsavedChanges)
         .overlay(alignment: .bottom) {
             SessionNotice(message: Binding(get: { store.settings.error ?? store.visibleError }, set: {
@@ -646,6 +648,7 @@ struct SharedSettingsScreen: View {
                 else { store.error = $0 }
             }))
         }
+        .modifier(HostConnectionState(store: store))
     }
     private func patch(_ value: [String:RemoteJSON]) { Task { await store.mutate("PATCH", "/v1/library", .object(value)) } }
 }
@@ -693,6 +696,7 @@ private struct HostFolderPicker: View {
                 }
                 if let failure { Text(failure).foregroundStyle(.red) }
             }
+            .accessibilityIdentifier("host-folder-list")
             .navigationTitle("Choose Folder")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

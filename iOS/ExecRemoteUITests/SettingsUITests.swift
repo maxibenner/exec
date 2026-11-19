@@ -25,8 +25,11 @@ import XCTest
         XCTAssertFalse(app.staticTexts["Shared Agent Settings"].exists)
     }
     private func closeSettings(_ app: XCUIApplication) {
-        let dismiss = app.buttons["Dismiss"]
-        if dismiss.exists && dismiss.isHittable { dismiss.tap() }
+        let notice = app.descendants(matching: .any).matching(identifier: "session-notice").firstMatch
+        if notice.exists && notice.isHittable {
+            let start = notice.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.3))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 80)))
+        }
         app.buttons["settings-done"].tap()
         wait(NSPredicate(format: "exists == false"), on: app.navigationBars["Settings"])
     }
@@ -145,6 +148,15 @@ import XCTest
         app.navigationBars["Settings"].swipeDown()
         XCTAssertTrue(app.navigationBars["Settings"].exists, "Interactive dismissal must not discard a dirty prompt.")
         XCTAssertEqual(app.textViews["settings-system-prompt"].value as? String, draft)
+        let notice = app.descendants(matching: .any).matching(identifier: "session-notice").firstMatch
+        XCTAssertTrue(notice.exists)
+        XCTAssertFalse(notice.buttons.firstMatch.exists)
+        let start = notice.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.3))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 80)))
+        wait(NSPredicate(format: "exists == false"), on: notice)
+        XCTAssertTrue(app.navigationBars["Settings"].exists, "Dismissing the error must not dismiss its sheet.")
+        XCTAssertEqual(app.textViews["settings-system-prompt"].value as? String, draft)
+        XCTAssertEqual(done.label, "Apply", "Dismissing the error must not retry or accept the failed save.")
     }
 
     func testFastSaveFailureReopensAfterDismissalWithVisibleErrorAndDraft() {
