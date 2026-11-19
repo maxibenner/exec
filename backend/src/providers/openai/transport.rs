@@ -162,7 +162,8 @@ pub(super) async fn json_body(response: HttpResponse, limit: usize) -> Result<se
     if response
         .content_type
         .as_deref()
-        .is_none_or(|s| s.split(';').next() != Some("application/json"))
+        .and_then(|s| s.split(';').next())
+        .is_none_or(|s| !s.trim().eq_ignore_ascii_case("application/json"))
     {
         return Err(Error::Provider(Failure::Response));
     }
@@ -176,4 +177,31 @@ pub(super) async fn json_body(response: HttpResponse, limit: usize) -> Result<se
         bytes.extend(chunk);
     }
     serde_json::from_slice(&bytes).map_err(|_| Error::Provider(Failure::Response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::stream;
+
+    #[tokio::test]
+    async fn json_media_type_is_case_insensitive_but_not_a_prefix_match() {
+        for (kind, valid) in [
+            (Some("application/json"), true),
+            (Some("Application/JSON; Charset=UTF-8"), true),
+            (Some(" application/Json ; charset=utf-8 "), true),
+            (None, false),
+            (Some(""), false),
+            (Some("text/json"), false),
+            (Some("application/jsonx"), false),
+            (Some("application/json, text/html"), false),
+        ] {
+            let response = HttpResponse {
+                status: 200,
+                content_type: kind.map(str::to_owned),
+                body: Box::pin(stream::iter([Ok(bytes::Bytes::from_static(b"{}"))])),
+            };
+            assert_eq!(json_body(response, 2).await.is_ok(), valid, "{kind:?}");
+        }
+    }
 }
