@@ -311,15 +311,22 @@ impl AgentManager {
             }
             manager.changes.provider_metadata_changed();
         });
-        let challenge = match tokio::time::timeout(std::time::Duration::from_secs(45), receiver)
-            .await
-        {
-            Ok(Ok(challenge)) => challenge,
-            _ => {
-                startup_cancel.cancel();
-                return Err(Error::Invalid(
-                    "Could not start provider authentication. Inspect connection-attempt status.",
-                ));
+        let startup_error = Error::Invalid(
+            "Could not start provider authentication. Inspect connection-attempt status.",
+        );
+        let challenge = tokio::select! {
+            biased;
+            _ = startup_cancel.cancelled() => return Err(Error::Cancelled),
+            started = tokio::time::timeout(std::time::Duration::from_secs(45), receiver) => {
+                match started {
+                    // Closure can precede asynchronous provider cleanup. It is a failure,
+                    // not a cancellation request: preserve the provider's terminal result.
+                    Ok(result) => result.map_err(|_| startup_error)?,
+                    Err(_) => {
+                        startup_cancel.cancel();
+                        return Err(startup_error);
+                    }
+                }
             }
         };
         Ok(ConnectionChallenge {

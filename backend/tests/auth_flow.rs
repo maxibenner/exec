@@ -123,6 +123,94 @@ async fn device_login_is_explicit_and_keeps_the_existing_browser_wire_contract()
     assert_eq!(manager.connection_attempt().unwrap().state, "interrupted");
 }
 
+struct FailedStartup {
+    cleanup: CancellationToken,
+}
+#[async_trait::async_trait]
+impl ChatProvider for FailedStartup {
+    fn stream(&self, _: ProviderRequest) -> BoxStream<'static, Result<ProviderEvent>> {
+        panic!("authentication never invokes inference")
+    }
+    async fn connect(
+        &self,
+        _: &str,
+        _: ConnectionMethod,
+        challenge: tokio::sync::oneshot::Sender<AuthenticationChallenge>,
+        cancel: CancellationToken,
+    ) -> Result<()> {
+        // Mirror a registry wrapper: its inner provider drops the channel on failure,
+        // then the wrapper awaits cache cleanup before returning that failure.
+        drop(challenge);
+        self.cleanup.cancelled().await;
+        assert!(
+            !cancel.is_cancelled(),
+            "a failed startup was spuriously cancelled"
+        );
+        Err(Error::Provider(exec_agent::ProviderFailure::Authentication))
+    }
+}
+#[tokio::test]
+async fn prechallenge_failure_stays_failed_while_provider_cleanup_is_pending() {
+    let manager = Arc::new(AgentManager::default());
+    let cleanup = CancellationToken::new();
+    assert!(
+        manager
+            .connect_with_method(
+                Arc::new(FailedStartup {
+                    cleanup: cleanup.clone()
+                }),
+                "openai",
+                ConnectionMethod::DeviceCode,
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(manager.connection_attempt().unwrap().state, "running");
+    cleanup.cancel();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while manager.connection_attempt().unwrap().state == "running" {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let attempt = manager.connection_attempt().unwrap();
+    assert_eq!(attempt.state, "failed");
+    assert_eq!(
+        attempt.error,
+        Some(Error::Provider(exec_agent::ProviderFailure::Authentication).to_string())
+    );
+    manager.cancel_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn caller_can_cancel_before_the_provider_presents_a_challenge() {
+    let manager = Arc::new(AgentManager::default());
+    let task_manager = manager.clone();
+    let task = tokio::spawn(async move {
+        task_manager
+            .connect_with_method(
+                Arc::new(NoChallenge),
+                "openai",
+                ConnectionMethod::DeviceCode,
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while manager.connection_attempt().is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    manager
+        .cancel_connection(&manager.connection_attempt().unwrap().id)
+        .unwrap();
+    assert!(matches!(task.await.unwrap(), Err(Error::Cancelled)));
+    manager.cancel_and_wait().await.unwrap();
+    assert_eq!(manager.connection_attempt().unwrap().state, "interrupted");
+}
+
 struct NoChallenge;
 #[async_trait::async_trait]
 impl ChatProvider for NoChallenge {
