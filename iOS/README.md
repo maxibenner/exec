@@ -38,6 +38,8 @@ xcrun xcresulttool export attachments --path .build/ui-checks.xcresult \
 
 The tests launch with `--ui-fixture`, using only synthetic sessions and delayed fake responses. This launch mode exists only in Debug simulator builds and injects a fake transport and in-memory credential storage, exercising the real foreground/recovery lifecycle without network or Keychain access. Local display preferences use a separate UserDefaults suite, reset on each fixture launch.
 
+`SessionUITests` uses `--session-title-fixture` to delay conversation reads by five seconds and return snapshot titles different from the catalog. It checks titles while reads are pending, switching sessions before a read finishes, and cached reopening. These are pending/settled-state checks, not frame-by-frame measurements of navigation animations.
+
 `SettingsUITests` uses `--settings-fixture` for shell cards with descriptive and blank titles. Additional flags cover an offline host (`--settings-offline`), delayed save acknowledgement (`--slow-settings-save`), a rejected first save followed by a background library edit (`--settings-save-fails`), and accepted saves whose subsequent read fails (`--settings-refresh-fails`). A second save would succeed after the simulated rejection, so an automatic retry would incorrectly dismiss the sheet and fail the draft-preservation check.
 
 ## Settings

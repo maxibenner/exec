@@ -100,6 +100,9 @@ import ExecRemote
         }
         if method == "GET", path.hasPrefix("/v1/conversations/"), path.contains("/sync") {
             let id = String(path.split(separator: "/")[2])
+            if ProcessInfo.processInfo.arguments.contains("--session-title-fixture") {
+                try await Task.sleep(for: .seconds(5))
+            }
             let full = snapshot(id)
             let messages = full["messages"].array
             let incremental = path.contains("?after=")
@@ -229,7 +232,8 @@ import ExecRemote
                          "text": .string("Exit code: 0\n/Fixture/Workspace"), "outcome": .string("completed")])
             ]
         }
-        return .object(["id": .string(id), "metadata": .object(["title": .string("Session \(id.split(separator: "-").last ?? "")")]),
+        let titlePrefix = ProcessInfo.processInfo.arguments.contains("--session-title-fixture") ? "Loaded Session" : "Session"
+        return .object(["id": .string(id), "metadata": .object(["title": .string("\(titlePrefix) \(id.split(separator: "-").last ?? "")")]),
                         "messages": .array(messages),
                         "operation": .object(["id": .string("fixture-operation"), "state": .string("running")])])
     }

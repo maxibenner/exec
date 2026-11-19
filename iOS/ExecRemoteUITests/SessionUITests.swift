@@ -80,6 +80,32 @@ import XCTest
         }
     }
 
+    func testDelayedSessionTitlesAndCachedReopeningKeepTheirIdentity() {
+        let app = launch(["--session-title-fixture"])
+        // These assertions check pending/settled navigation states, not frames
+        // within the native push/pop animation.
+        app.buttons["session-fixture-1"].tap()
+        XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.navigationBars["Loaded Session 1"].exists)
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["All Sessions"].waitForExistence(timeout: 5))
+
+        app.buttons["session-fixture-2"].tap()
+        XCTAssertTrue(app.navigationBars["Session 2"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.navigationBars["Loaded Session 2"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.navigationBars["Loaded Session 1"].exists)
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["All Sessions"].waitForExistence(timeout: 5))
+
+        for index in [2, 1] {
+            app.buttons["session-fixture-\(index)"].tap()
+            XCTAssertTrue(app.navigationBars["Loaded Session \(index)"].waitForExistence(timeout: 2),
+                          "A cached matching snapshot must not revert to the differing catalog title.")
+            app.navigationBars.buttons.firstMatch.tap()
+            XCTAssertTrue(app.navigationBars["All Sessions"].waitForExistence(timeout: 5))
+        }
+    }
+
     func testSessionControlsAndNavigation() {
         let app = launch()
         XCTAssertFalse(app.toolbars["session-toolbar"].exists)

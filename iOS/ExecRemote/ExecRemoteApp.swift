@@ -102,8 +102,9 @@ struct RootView: View {
                 }
             }
             .background(Color(uiColor: store.host == nil ? .systemBackground : .systemGroupedBackground))
-            .navigationDestination(isPresented: Binding(get: { store.selected != nil }, set: { if !$0 { store.selected = nil } })) {
-                ConversationScreen(store: store)
+            .navigationDestination(item: $store.selected) { id in
+                ConversationScreen(store: store, conversationID: id)
+                    .id(id)
             }
             .sheet(isPresented: $scanning) {
                 ScannerView { text in
@@ -319,34 +320,54 @@ private struct SessionControls: View {
 
 struct ConversationScreen: View {
     @Bindable var store: RemoteStore
+    let conversationID: String
     @AppStorage(ToolDisplayPreferences.descriptiveShellTitlesKey) private var descriptiveShellTitles = false
     @State private var composerHeight: CGFloat = 68
+    @State private var presentation: ConversationPresentation
+
+    init(store: RemoteStore, conversationID: String) {
+        self.store = store
+        self.conversationID = conversationID
+        _presentation = State(initialValue: ConversationPresentation(
+            conversationID: conversationID, catalog: store.conversations, snapshot: store.displaySnapshot))
+    }
+
+    private var currentPresentation: ConversationPresentation {
+        var current = presentation
+        current.update(store.displaySnapshot)
+        return current
+    }
+
     var body: some View {
-        NativeTranscript(conversationID: store.selected, snapshot: store.displaySnapshot,
+        let current = currentPresentation
+        NativeTranscript(conversationID: conversationID, snapshot: current.snapshot,
                          descriptiveShellTitles: descriptiveShellTitles,
-                         viewState: store.transcriptViewState(for: store.selected),
+                         viewState: store.transcriptViewState(for: conversationID),
                          saveViewState: { id, value in store.saveTranscriptViewState(value, for: id) },
-                         bottomPadding: composerHeight, hasEarlier: store.hasEarlierMessages,
-                         loadEarlier: { Task { await store.loadEarlier() } })
+                         bottomPadding: composerHeight, hasEarlier: store.selected == conversationID && store.hasEarlierMessages,
+                         loadEarlier: { Task { if store.selected == conversationID { await store.loadEarlier() } } })
         .ignoresSafeArea(.container, edges: [.top, .bottom])
-        .navigationTitle(store.snapshot["metadata"]["title"].string ?? "Chat")
+        .navigationTitle(current.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.automatic, for: .navigationBar)
         .toolbar(.hidden, for: .bottomBar)
-        .onChange(of: store.selected, initial: true) { _, id in
-            if let id { store.open(id) }
+        .onChange(of: conversationID, initial: true) { _, id in
+            if store.selected == id { store.open(id) }
+        }
+        .onChange(of: store.displaySnapshot, initial: true) { _, snapshot in
+            presentation.update(snapshot)
         }
         .overlay(alignment: .bottom) {
             VStack(spacing: 10) {
-                if let failure = store.snapshot["operation"]["error"].string ?? store.snapshot["storageError"].string {
+                if let failure = current.snapshot["operation"]["error"].string ?? current.snapshot["storageError"].string {
                     Text(failure).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                         .padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
-                if store.snapshot["approval"] != .null {
+                if current.snapshot["approval"] != .null {
                     VStack(spacing: 10) {
-                        Text(store.snapshot["approval"]["description"].string ?? "Approve tool execution?").font(.callout).textSelection(.enabled)
+                        Text(current.snapshot["approval"]["description"].string ?? "Approve tool execution?").font(.callout).textSelection(.enabled)
                         DisclosureGroup("Tool Details") {
-                            Text(String(decoding: (try? JSONEncoder().encode(store.snapshot["approval"]["call"])) ?? Data(), as: UTF8.self))
+                            Text(String(decoding: (try? JSONEncoder().encode(current.snapshot["approval"]["call"])) ?? Data(), as: UTF8.self))
                                 .font(.caption.monospaced()).textSelection(.enabled).frame(maxHeight: 140)
                         }
                         HStack {
@@ -360,6 +381,7 @@ struct ConversationScreen: View {
                 }
                 RemoteChatComposer(store: store)
             }
+            .disabled(store.selected != conversationID)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .background {
                 GeometryReader { geometry in
