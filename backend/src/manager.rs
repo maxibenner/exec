@@ -865,48 +865,48 @@ impl AgentManager {
     pub fn snapshot(&self, id: &str) -> Result<ConversationSnapshot> {
         let catalog = self.catalog.lock().unwrap();
         if catalog.closed {
-            return Err(Error::Invalid("Agent manager is closed."));
+            return Err(Error::Closed);
         }
         Ok(catalog
             .conversations
             .get(id)
-            .ok_or(Error::Invalid("Conversation not found."))?
+            .ok_or(Error::ConversationNotFound)?
             .snapshot())
     }
     pub fn sync(&self, id: &str, cursor: SyncCursor<'_>) -> Result<ConversationSync> {
         let catalog = self.catalog.lock().unwrap();
         if catalog.closed {
-            return Err(Error::Invalid("Agent manager is closed."));
+            return Err(Error::Closed);
         }
         catalog
             .conversations
             .get(id)
-            .ok_or(Error::Invalid("Conversation not found."))?
+            .ok_or(Error::ConversationNotFound)?
             .sync(cursor)
     }
     pub fn observe(&self, id: &str) -> Result<(ConversationSnapshot, EventReceiver)> {
         let catalog = self.catalog.lock().unwrap();
         if catalog.closed {
-            return Err(Error::Invalid("Agent manager is closed."));
+            return Err(Error::Closed);
         }
         Ok(catalog
             .conversations
             .get(id)
-            .ok_or(Error::Invalid("Conversation not found."))?
+            .ok_or(Error::ConversationNotFound)?
             .subscribe())
     }
     pub fn get(&self, id: &str) -> Result<Arc<Conversation>> {
         let c = self.catalog.lock().unwrap();
         if c.closed {
-            return Err(Error::Invalid("Agent manager is closed."));
+            return Err(Error::Closed);
         }
         if c.mutating.contains(id) {
-            return Err(Error::Invalid("Conversation catalog operation is pending."));
+            return Err(Error::Busy);
         }
         c.conversations
             .get(id)
             .cloned()
-            .ok_or(Error::Invalid("Conversation not found."))
+            .ok_or(Error::ConversationNotFound)
     }
     pub fn native(&self) -> Arc<crate::native::NativeHub> {
         self.catalog.lock().unwrap().native.clone()

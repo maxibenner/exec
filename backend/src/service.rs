@@ -248,6 +248,10 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
 impl From<Error> for ApiError {
     fn from(error: Error) -> Self {
         match error {
+            Error::ConversationNotFound => Self(404, "Conversation not found."),
+            Error::Closed | Error::Invalid("Agent manager is closed.") => {
+                Self(503, "Service is closed.")
+            }
             Error::Busy => Self(409, "Conversation is busy."),
             Error::WorkspaceLocked => Self(
                 409,
@@ -932,28 +936,16 @@ async fn handle(
             .manager
             .sync(parts[0], sync_cursor(request.uri().query())?)
             .map_err(|error| match error {
-                Error::Invalid("Conversation not found.") => {
-                    ApiError(404, "Conversation not found.")
-                }
                 Error::Invalid(message) => ApiError(409, message),
                 other => other.into(),
             })?;
         return Ok(json_response(200, page));
     }
     if method == "GET" && action.is_none() {
-        return Ok(json_response(
-            200,
-            options
-                .manager
-                .snapshot(parts[0])
-                .map_err(|_| ApiError(404, "Conversation not found."))?,
-        ));
+        return Ok(json_response(200, options.manager.snapshot(parts[0])?));
     }
     if method == "GET" && action == Some("events") {
-        let (snapshot, mut receiver) = options
-            .manager
-            .observe(parts[0])
-            .map_err(|_| ApiError(404, "Conversation not found."))?;
+        let (snapshot, mut receiver) = options.manager.observe(parts[0])?;
         let stop = host.stop.clone();
         let frames = async_stream::stream! {
             yield Ok::<_,std::io::Error>(format!("{}\n",serde_json::to_string(&ServiceEvent::Snapshot{snapshot}).unwrap()));
@@ -991,10 +983,7 @@ async fn handle(
             })?;
         return Ok(json_response(200, snapshot));
     }
-    let conversation = options
-        .manager
-        .get(parts[0])
-        .map_err(|_| ApiError(404, "Conversation not found."))?;
+    let conversation = options.manager.get(parts[0])?;
     match (method.as_str(), action) {
         ("PATCH", None) => {
             let patch: PatchSession = body(request).await?;
@@ -1262,6 +1251,44 @@ mod change_tests {
         assert!(frames.next().now_or_never().is_none());
         stop.cancel();
         assert!(frames.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn closed_lookups_are_unavailable_and_internal_errors_are_not_absence() {
+        let manager = Arc::new(AgentManager::default());
+        manager.close().await.unwrap();
+        let host = Arc::new(Host {
+            options: ServiceOptions {
+                manager,
+                provider: Arc::new(NoInference),
+                tools: vec![],
+                address: "127.0.0.1:0".parse().unwrap(),
+                access: HttpAccess::externally_secured(None).unwrap(),
+            },
+            remote: None,
+            stop: CancellationToken::new(),
+            handlers: tokio_util::task::TaskTracker::new(),
+        });
+        for (method, suffix) in [
+            ("GET", ""),
+            ("GET", "/events"),
+            ("GET", "/sync"),
+            ("PUT", "/title"),
+        ] {
+            let request = Request::builder()
+                .method(method)
+                .uri(format!("/v1/conversations/{}{suffix}", new_id()))
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(
+                dispatch(host.clone(), request, CancellationToken::new())
+                    .await
+                    .status(),
+                503
+            );
+        }
+        assert_eq!(ApiError::from(Error::Internal).0, 500);
+        assert_eq!(ApiError::from(Error::Storage).0, 500);
     }
 
     struct NoInference;

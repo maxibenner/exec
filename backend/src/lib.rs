@@ -25,6 +25,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     Cancelled,
     Busy,
+    ConversationNotFound,
+    Closed,
     WorkspaceLocked,
     Storage,
     Internal,
@@ -58,6 +60,8 @@ impl fmt::Display for Error {
             Self::Busy => {
                 "Conversation is busy. Wait for execution or configuration changes to settle."
             }
+            Self::ConversationNotFound => "Conversation not found.",
+            Self::Closed => "Agent manager is closed.",
             Self::WorkspaceLocked => "Workspace cannot be changed after the first accepted turn.",
             Self::Storage => {
                 "Could not save conversation. Work stopped; prior actions may have had effects. Reload the last durable checkpoint before continuing."
