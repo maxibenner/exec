@@ -29,6 +29,8 @@ extension RelayClient: RemoteTransport {}
     var isLoadingConversations: Bool { !hasLoadedConversations && (busy || error == nil) }
     var models: [RemoteJSON] = []
     var library: RemoteJSON = .null
+    var settings = RemoteSettingsDraft()
+    private var settingsSaveTask: Task<Void, Never>?
     var selected: String? {
         didSet {
             guard selected != oldValue else { return }
@@ -148,6 +150,7 @@ extension RelayClient: RemoteTransport {}
     }
     private func clearConversationState() {
         hostGeneration += 1
+        settings = RemoteSettingsDraft()
         recentConversations = RecentConversationCache()
         syncStates = [:]; readTickets = [:]; loadingEarlier = []
         optimisticMessages = [:]
@@ -392,6 +395,41 @@ extension RelayClient: RemoteTransport {}
             }
         }
     }
+    func showSettings() {
+        settings.refresh(library)
+        settings.isPresented = true
+    }
+    @discardableResult func finishSettings() -> Task<Void, Never>? {
+        // Claim ownership before scheduling work: a second tap must not enqueue
+        // another PATCH, even before the first task gets actor time.
+        guard settings.isPresented else { return nil }
+        guard settings.hasUnsavedChanges else { settings.dismiss(); return nil }
+        guard connected, !busy, settingsSaveTask == nil else { return nil }
+        let prompt = settings.prompt, generation = hostGeneration
+        let body: RemoteJSON = .object(["settings": .object(["systemPrompt": .string(prompt)])])
+        busy = true; error = nil; settings.error = nil
+        settings.dismiss()
+        // Owned by the store, not a SwiftUI .task or a captured dismiss action.
+        // Dismissing/recreating the sheet must not cancel or replay this write.
+        let task = Task {
+            defer { busy = false; settingsSaveTask = nil }
+            do {
+                let value = try await client.request("PATCH", "/v1/library", body: body)
+                guard generation == hostGeneration else { return }
+                settings.accept(prompt)
+                library = value
+            } catch {
+                guard generation == hostGeneration else { return }
+                settings.fail(error)
+                return
+            }
+            // Acceptance is final; a failed follow-up read is not a failed save.
+            do { try await refresh() }
+            catch { if generation == hostGeneration { self.error = error.localizedDescription } }
+        }
+        settingsSaveTask = task
+        return task
+    }
     func mutate(_ method: String, _ path: String, _ body: RemoteJSON, onSuccess: ((RemoteJSON) -> Void)? = nil) async {
         guard connected, !busy else { return }; busy = true; error = nil
         defer { busy = false }
@@ -474,4 +512,43 @@ extension RelayClient: RemoteTransport {}
         await mutate("POST", "/v1/conversations/\(id)/approvals", .object(["approvalID":.string(approval), "operationID":.string(operation), "approved":.bool(approved)]))
     }
 }
+
+/// The settings draft and presentation outlive any individual sheet instance.
+struct RemoteSettingsDraft {
+    var prompt = ""
+    var error: String?
+    var isPresented = false
+    private var savedPrompt: String?
+    private var isDismissing = false
+    private var reopenAfterDismissal = false
+    var hasUnsavedChanges: Bool { savedPrompt.map { prompt != $0 } ?? false }
+    var actionTitle: String { hasUnsavedChanges ? "Apply" : "Done" }
+
+    mutating func refresh(_ library: RemoteJSON, editing: Bool = false) {
+        // Reads must not replace a dirty draft, including an unfocused failed save.
+        guard savedPrompt == nil || (!hasUnsavedChanges && !editing) else { return }
+        prompt = library["settings"]["systemPrompt"].string ?? ""
+        savedPrompt = prompt
+    }
+    mutating func accept(_ prompt: String) { savedPrompt = prompt }
+    mutating func dismiss() {
+        isDismissing = true
+        isPresented = false
+    }
+    mutating func didDismiss() {
+        isDismissing = false
+        if reopenAfterDismissal {
+            reopenAfterDismissal = false
+            isPresented = true
+        }
+    }
+    mutating func fail(_ failure: Error) {
+        error = "Could not confirm settings were saved. \(failure.localizedDescription) Your edits are preserved; check the host before applying again."
+        // A fast rejection can arrive during the sheet's dismissal animation.
+        // Wait for the actual presentation owner to finish before reopening.
+        if isDismissing { reopenAfterDismissal = true }
+        else { isPresented = true }
+    }
+}
+
 extension RemoteJSON { var id: String { self["id"].string ?? "" } }

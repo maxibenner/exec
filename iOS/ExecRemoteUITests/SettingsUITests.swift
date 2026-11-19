@@ -2,9 +2,9 @@ import XCTest
 
 /// Compile with build-for-testing; run only on a simulator reserved for UI checks.
 @MainActor final class SettingsUITests: XCTestCase {
-    private func wait(_ predicate: NSPredicate, on element: XCUIElement) {
+    private func wait(_ predicate: NSPredicate, on element: XCUIElement, timeout: TimeInterval = 10) {
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
-        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: timeout), .completed)
     }
     private func launch(_ arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
@@ -48,7 +48,7 @@ import XCTest
     }
 
     func testLocalShellTitlesReprojectCachedToolsAndKeepDetails() {
-        // Any accidental prompt PATCH would fail, preventing Done from closing.
+        // Any accidental prompt PATCH would fail and reopen Settings with an error.
         let app = launch(["--settings-save-fails"])
         app.buttons["session-fixture-1"].tap()
         XCTAssertTrue(toolHeader("printf 'fixture output'", in: app).waitForExistence(timeout: 5))
@@ -92,21 +92,26 @@ import XCTest
         closeSettings(app)
     }
 
-    func testDoneWaitsForAcknowledgementAndSavesPrompt() {
+    func testApplyClosesImmediatelyAndSavesPromptInBackground() {
         let app = launch(["--slow-settings-save"])
         openSettings(app)
         XCTAssertFalse(app.buttons["Save System Prompt"].exists)
-        let draft = editPrompt(app)
         let done = app.buttons["settings-done"]
         XCTAssertEqual(done.label, "Done")
-        let width = done.frame.width
+        toggleSwitch(app.switches["descriptive-shell-titles"])
+        XCTAssertEqual(done.label, "Done", "Local auto-save controls must not require Apply.")
+        toggleSwitch(app.switches["Automatic session titles"])
+        wait(NSPredicate(format: "enabled == true"), on: app.switches["Automatic session titles"])
+        XCTAssertEqual(done.label, "Done", "Shared auto-save controls must not require Apply.")
+        let draft = editPrompt(app)
+        XCTAssertEqual(done.label, "Apply")
         done.tap()
-        wait(NSPredicate(format: "label == 'Saving' AND enabled == false"), on: done)
-        XCTAssertTrue(app.navigationBars["Settings"].exists, "Do not dismiss an unacknowledged save.")
-        XCTAssertEqual(done.frame.width, width, accuracy: 1, "The spinner must not resize Done.")
-        wait(NSPredicate(format: "exists == false"), on: app.navigationBars["Settings"])
+        wait(NSPredicate(format: "exists == false"), on: app.navigationBars["Settings"], timeout: 1.5)
+        XCTAssertFalse(app.buttons["Session Options"].isEnabled, "The slow save is still in flight after dismissal.")
+        wait(NSPredicate(format: "enabled == true"), on: app.buttons["Session Options"])
         openSettings(app)
         XCTAssertEqual(app.textViews["settings-system-prompt"].value as? String, draft)
+        XCTAssertEqual(done.label, "Done")
         closeSettings(app)
     }
 
@@ -118,23 +123,38 @@ import XCTest
         XCTAssertTrue(app.staticTexts["Fixture settings refresh failed."].waitForExistence(timeout: 5))
     }
 
-    func testFailedPromptSaveKeepsDraftAcrossBackgroundRefreshWithoutRetry() {
-        // Only the first PATCH fails; an automatic retry would succeed and
-        // dismiss the sheet. The fake host also changes the library afterward.
+    func testFailedBackgroundSaveReopensDraftAcrossRefreshWithoutRetryOrDuplicatePatch() {
+        // Only the first PATCH fails; a duplicate or automatic retry would
+        // succeed. The fake host also changes the library afterward.
         let app = launch(["--settings-save-fails", "--slow-settings-save"])
         openSettings(app)
         let draft = editPrompt(app)
         let done = app.buttons["settings-done"]
-        // A repeated tap during the pending save must not issue a second PATCH.
+        XCTAssertEqual(done.label, "Apply")
         done.tap(withNumberOfTaps: 2, numberOfTouches: 1)
-        wait(NSPredicate(format: "label == 'Saving' AND enabled == false"), on: done)
-        wait(NSPredicate(format: "label == 'Done' AND enabled == true"), on: done)
+        wait(NSPredicate(format: "exists == false"), on: app.navigationBars["Settings"], timeout: 1.5)
+        let error = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Fixture settings save failed.")).firstMatch
+        XCTAssertTrue(error.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Settings"].exists, "A failed background save must reopen Settings.")
+        wait(NSPredicate(format: "label == 'Apply' AND enabled == true"), on: done)
         wait(NSPredicate(format: "value == %@", "0"), on: app.switches["Automatic session titles"])
-        XCTAssertTrue(app.navigationBars["Settings"].exists)
+        XCTAssertTrue(error.exists, "A background refresh must not clear the save error.")
         XCTAssertEqual(app.textViews["settings-system-prompt"].value as? String, draft,
                        "A refreshed library must not overwrite the unfocused, unsaved draft.")
         app.navigationBars["Settings"].swipeDown()
         XCTAssertTrue(app.navigationBars["Settings"].exists, "Interactive dismissal must not discard a dirty prompt.")
+        XCTAssertEqual(app.textViews["settings-system-prompt"].value as? String, draft)
+    }
+
+    func testFastSaveFailureReopensAfterDismissalWithVisibleErrorAndDraft() {
+        let app = launch(["--settings-save-fails"])
+        openSettings(app)
+        let draft = editPrompt(app)
+        app.buttons["settings-done"].tap()
+        let error = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Fixture settings save failed.")).firstMatch
+        XCTAssertTrue(error.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Settings"].exists)
+        XCTAssertEqual(app.buttons["settings-done"].label, "Apply")
         XCTAssertEqual(app.textViews["settings-system-prompt"].value as? String, draft)
     }
 }
