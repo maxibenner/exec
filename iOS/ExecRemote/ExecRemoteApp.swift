@@ -240,20 +240,20 @@ private struct HostConnectionState: ViewModifier {
     func body(content: Content) -> some View {
         content.safeAreaInset(edge: .bottom, spacing: 0) {
             if store.showsConnectionFailure {
-                VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
                     Label("Host connection lost", systemImage: "wifi.slash")
                         .font(.footnote.weight(.medium))
-                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .contentShape(Rectangle())
+                        .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel("Host connection lost")
                         .accessibilityIdentifier("host-connection-banner")
+                    Spacer(minLength: 0)
                 }
-                // Keep the label's layout/accessible bounds separate from the
-                // paint that extends through the native home-indicator inset.
-                .background(Color(uiColor: .secondarySystemBackground), ignoresSafeAreaEdges: .bottom)
-                .overlay(alignment: .top) { Divider() }
+                // Only the pill paints a background. The surrounding safe area
+                // stays transparent, including the keyboard's rounded corners.
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
