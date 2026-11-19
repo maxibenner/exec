@@ -51,10 +51,11 @@ public struct ToolPresentation: Sendable {
         }
         let arguments = rawArguments.utf8.count <= 32_768 ? try? JSONDecoder().decode(Arguments.self, from: Data(rawArguments.utf8)) : nil
         output = result?.text ?? ""
+        let metadata = ToolDisplayMetadata(name: name)
+        title = name == "delegate" && arguments?.tasks != nil ? "Sub-agents" : metadata.transcriptTitle
+        icon = metadata.icon
         switch name {
         case "delegate":
-            title = arguments?.tasks == nil ? "Sub-agent" : "Sub-agents"
-            icon = "person.2"
             summary = arguments?.title ?? arguments?.task ?? arguments?.tasks?.map { $0.title ?? $0.task }.joined(separator: " · ")
             if let tasks = arguments?.tasks {
                 inputs = tasks.enumerated().map { Field(title: "Task \($0.offset + 1)", text: $0.element.task) }
@@ -62,7 +63,6 @@ public struct ToolPresentation: Sendable {
                 inputs = [Field(title: "Task", text: task)]
             }
         case "wait":
-            title = "Wait"; icon = "stopwatch"
             showsOutput = false
             struct WaitArguments: Decodable {
                 let duration_seconds: Int
@@ -76,34 +76,28 @@ public struct ToolPresentation: Sendable {
                           Field(title: "Wake prompt", text: wait.wake_prompt)]
             }
         case "shell":
-            title = "Shell"; icon = "terminal"
             if let command = arguments?.command {
                 summary = descriptiveShellTitles ? (Self.shellDescription(rawArguments) ?? command) : command
                 inputs = [Field(title: "Command", text: command)]
             }
             outputTitle = "Output"
         case "list_files":
-            title = "List"; icon = "folder"
             summary = arguments?.path
             outputTitle = nil
         case "read_file":
-            title = "Read"; icon = "doc.text"
             summary = arguments?.path
             detail = result.flatMap { ReadFileSummary(name: name, arguments: rawArguments, output: $0.text)?.lineLabel }
             outputTitle = nil
         case "search_text":
-            title = "Search"; icon = "magnifyingglass"
             if let query = arguments?.query, let path = arguments?.path {
                 summary = "\(query) · \(path)"
                 inputs = [Field(title: "Query", text: query), Field(title: "Directory", text: path)]
             }
             outputTitle = "Matches"
         case "edit_file":
-            title = "Edit"; icon = "pencil"
             summary = result?.editPath ?? arguments?.path
             outputTitle = nil
         case "fetch_content":
-            title = "Fetch page"; icon = "doc.text"
             summary = arguments?.url
             outputTitle = nil
             if let text = result?.pageText { output = text }
@@ -113,20 +107,17 @@ public struct ToolPresentation: Sendable {
                 output = String(result.text[body.upperBound...])
             }
         case "generate_image":
-            title = "Generate image"; icon = "photo"
             summary = arguments?.prompt
             outputTitle = nil
         case "take_screenshot":
-            title = "Screenshot"; icon = "camera"
             summary = Self.screenshotSummary(rawArguments)
             outputTitle = nil
 
         case "web_search":
-            title = "Web search"; icon = "globe"
             summary = result?.searchQuery ?? arguments?.query
             outputTitle = nil
         default:
-            title = name; icon = "wrench"
+            break
         }
         if inputs.isEmpty, outputTitle != nil || result == nil {
             // Pending cards expose the complete request, even for tools whose

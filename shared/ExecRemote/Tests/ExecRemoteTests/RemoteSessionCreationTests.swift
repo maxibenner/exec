@@ -1,7 +1,28 @@
 import XCTest
+import ExecTranscript
 @testable import ExecRemote
 
 final class RemoteSessionCreationTests: XCTestCase {
+    func testToolSelectionUsesSharedMacAndTranscriptDisplayMetadata() {
+        XCTAssertEqual(RemoteSessionCreation.tools.map(\.id), [
+            "list_files", "read_file", "search_text", "edit_file", "shell",
+            "web_search", "fetch_content", "generate_image", "take_screenshot", "delegate", "wait"
+        ])
+        XCTAssertEqual(RemoteSessionCreation.tools, ToolDisplayMetadata.all)
+        for tool in RemoteSessionCreation.tools {
+            // The iOS approval disclosure looks up this same metadata by wire name.
+            let approval = ToolDisplayMetadata(name: tool.id)
+            let transcript = ToolPresentation(name: tool.id, arguments: "{}")
+            XCTAssertEqual(tool.label, approval.label)
+            XCTAssertEqual(tool.icon, approval.icon)
+            XCTAssertEqual(tool.icon, transcript.icon)
+            XCTAssertEqual(approval.transcriptTitle, transcript.title)
+        }
+        var selection = RemoteSessionCreation.ToolSelection(library: .null)
+        selection.setEnabled("future_tool", true)
+        XCTAssertFalse(selection.isEnabled("future_tool"), "A display fallback must not grant availability.")
+        XCTAssertNil(selection.creationDisabledTools)
+    }
     private let model: RemoteJSON = .object([
         "id": .string("fixture/reasoning"), "defaultEffort": .string("high"),
         "efforts": .array([.object(["id": .string("high"), "name": .string("High")])])

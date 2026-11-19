@@ -15,8 +15,12 @@ struct SessionToolCatalogTests {
         try expect(SessionTool.all.filter { $0.group == .sensitive }.map(\.name) == [
             "shell", "take_screenshot", "delegate"
         ])
-        for tool in SessionTool.all {
+        try expect(SessionTool.names == RemoteSessionCreation.tools.map(\.id))
+        for (tool, remote) in zip(SessionTool.all, RemoteSessionCreation.tools) {
+            let metadata = ToolDisplayMetadata(name: tool.name)
             try expect(!tool.label.isEmpty && !tool.label.contains("_"))
+            try expect(tool.label == metadata.label && tool.label == remote.label)
+            try expect(tool.icon == metadata.icon && tool.icon == remote.icon)
             try expect(tool.icon == ToolPresentation(name: tool.name, arguments: "{}").icon)
         }
     }

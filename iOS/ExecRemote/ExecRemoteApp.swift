@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import ExecRemote
+import ExecTranscript
 
 enum AppColors {
     // Match the Mac app's fixed iMessage blue, independent of system accent/appearance.
@@ -387,10 +388,14 @@ struct ConversationScreen: View {
                 if current.snapshot["approval"] != .null {
                     VStack(spacing: 10) {
                         Text(current.snapshot["approval"]["description"].string ?? "Approve tool execution?").font(.callout).textSelection(.enabled)
-                        DisclosureGroup("Tool Details") {
+                        DisclosureGroup {
                             Text(String(decoding: (try? JSONEncoder().encode(current.snapshot["approval"]["call"])) ?? Data(), as: UTF8.self))
                                 .font(.caption.monospaced()).textSelection(.enabled).frame(maxHeight: 140)
+                        } label: {
+                            let tool = ToolDisplayMetadata(name: current.snapshot["approval"]["call"]["name"].string ?? "Tool")
+                            Label(tool.label, systemImage: tool.icon)
                         }
+                        .accessibilityIdentifier("approval-tool-details")
                         HStack {
                             Button("Deny", role: .destructive) { Task { await store.approve(false) } }
                             Spacer()
