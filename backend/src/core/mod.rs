@@ -4,6 +4,8 @@ pub(crate) use changes::{ChangeHub, ChangeRegistration};
 mod sync;
 pub use sync::{ConversationSync, SyncCursor};
 mod conversation;
+mod diagnostics;
+pub use diagnostics::*;
 mod events;
 mod library;
 mod provider_services;

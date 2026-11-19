@@ -32,7 +32,8 @@ pub enum Error {
     Provider(ProviderFailure),
     Api(u16),
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderFailure {
     Authentication,
     Quota,
@@ -41,6 +42,12 @@ pub enum ProviderFailure {
     Timeout,
     Transport,
     Response,
+    EmptyResponse,
+    IncompleteResponse,
+    FailedResponse,
+    StreamEnded,
+    MalformedResponse,
+    UnexpectedContentType,
     Unsupported,
 }
 impl fmt::Display for Error {
@@ -80,7 +87,13 @@ impl fmt::Display for Error {
                 ProviderFailure::Transport => {
                     "Provider connection failed; the request may have been processed. No retry was made."
                 }
-                ProviderFailure::Response => {
+                ProviderFailure::Response
+                | ProviderFailure::EmptyResponse
+                | ProviderFailure::IncompleteResponse
+                | ProviderFailure::FailedResponse
+                | ProviderFailure::StreamEnded
+                | ProviderFailure::MalformedResponse
+                | ProviderFailure::UnexpectedContentType => {
                     "Provider returned an invalid or incomplete response. No retry was made."
                 }
                 ProviderFailure::Unsupported => {

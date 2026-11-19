@@ -247,8 +247,13 @@ impl Decoder {
             }
             Some("response.completed" | "response.done") => {
                 let response = &event["response"];
-                if response["status"] != "completed" {
-                    return Err(invalid());
+                match response["status"].as_str() {
+                    Some("completed") => {}
+                    Some("incomplete") => {
+                        return Err(Error::Provider(Failure::IncompleteResponse));
+                    }
+                    Some("failed") => return Err(Error::Provider(Failure::FailedResponse)),
+                    _ => return Err(invalid()),
                 }
                 if let Some(output) = response.get("output") {
                     let output = output
@@ -306,7 +311,12 @@ impl Decoder {
                 };
                 return Ok(Some((output, usage)));
             }
-            Some("response.failed" | "response.incomplete" | "error") => return Err(invalid()),
+            Some("response.incomplete") => {
+                return Err(Error::Provider(Failure::IncompleteResponse));
+            }
+            Some("response.failed" | "error") => {
+                return Err(Error::Provider(Failure::FailedResponse));
+            }
             _ => {}
         }
         if serde_json::to_vec(&self.items)?.len() > 4 * 1024 * 1024 {
@@ -447,11 +457,11 @@ impl OpenAIProvider {
                 let response=transport.send(Request{session_id:Some(session_id),endpoint:Endpoint::Responses,access:Some(session.access_token),account:Some(session.account_id),body:Some(encoded)},cancel.clone()).await?;transport::status(response.status)?;
                 // Successful Codex streams can omit Content-Type. Missing is allowed,
                 // but bounded SSE and terminal completion still validate the response.
-                if response.content_type.as_deref().is_some_and(|s| s.split(';').next().is_none_or(|t| !t.trim().eq_ignore_ascii_case("text/event-stream"))){return Err(invalid());}Ok(response.body)
+                if response.content_type.as_deref().is_some_and(|s| s.split(';').next().is_none_or(|t| !t.trim().eq_ignore_ascii_case("text/event-stream"))){return Err(Error::Provider(Failure::UnexpectedContentType));}Ok(response.body)
             };
             let bytes=tokio::select!{biased;_=cancel.cancelled()=>Err(Error::Cancelled),r=tokio::time::timeout(Duration::from_secs(120),work)=>r.unwrap_or(Err(Error::Provider(Failure::Timeout)))}?;
-            let mut source=super::response_stream::read_sse_bounded(bytes,5*1024*1024);let mut decoder=Decoder::default();let deadline=tokio::time::sleep(Duration::from_secs(600));tokio::pin!(deadline);let mut text_bytes=0;
-            loop {let next=tokio::select!{biased;_=cancel.cancelled()=>Err(Error::Cancelled),_=&mut deadline=>Err(Error::Provider(Failure::Timeout)),r=source.next()=>Ok(r)}?;let Some(next)=next else {Err(invalid())?;unreachable!()};let event:Value=serde_json::from_str(&next?).map_err(|_|invalid())?;
+            let mut source=super::response_stream::read_sse_bounded(bytes,5*1024*1024,Failure::MalformedResponse);let mut decoder=Decoder::default();let deadline=tokio::time::sleep(Duration::from_secs(600));tokio::pin!(deadline);let mut text_bytes=0;
+            loop {let next=tokio::select!{biased;_=cancel.cancelled()=>Err(Error::Cancelled),_=&mut deadline=>Err(Error::Provider(Failure::Timeout)),r=source.next()=>Ok(r)}?;let Some(next)=next else {Err(Error::Provider(Failure::StreamEnded))?;unreachable!()};let event:Value=serde_json::from_str(&next?).map_err(|_|Error::Provider(Failure::MalformedResponse))?;
                 if matches!(event["type"].as_str(),Some("response.output_text.delta"|"response.refusal.delta")) {let delta=event["delta"].as_str().ok_or_else(invalid)?;text_bytes+=delta.len();if text_bytes>4*1024*1024{Err(invalid())?;}yield ResponseEvent::Text(delta.into());}
                 if let Some((output,usage))=decoder.decode(&event)? {yield ResponseEvent::Completed(output,usage);break;}
             }
@@ -623,7 +633,7 @@ impl ChatProvider for OpenAIProvider {
             let session=authentication.credentials(request.cancel.clone()).await?;let mut state=restore(request.provider_state.clone(),&session)?;
             let body=body(&request,&state)?;let mut source=Self::response(transport,session,body,request.cancel.clone());
             while let Some(event)=source.next().await {match event? {ResponseEvent::Text(delta)=>yield ProviderEvent::Text(delta),ResponseEvent::Completed(output,usage)=>{
-                let calls=calls(&output)?;let final_text=text(&output);if final_text.is_empty()&&calls.is_empty(){Err(invalid())?;}
+                let calls=calls(&output)?;let final_text=text(&output);if final_text.is_empty()&&calls.is_empty(){Err(Error::Provider(Failure::EmptyResponse))?;}
                 yield ProviderEvent::TextSnapshot(final_text);
                 for call in calls {yield ProviderEvent::ToolCall(call);}
                 if let Some(boundary)=request.message_ids.last(){state.outputs.insert(boundary.clone(),output);}
@@ -891,12 +901,18 @@ mod tests {
 
     #[test]
     fn only_terminal_success_releases_calls() {
-        let mut d = Decoder::default();
-        assert!(d.decode(&json!({"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":"c","name":"shell","arguments":"{}"}})).unwrap().is_none());
-        assert!(
-            d.decode(&json!({"type":"response.incomplete","response":{}}))
-                .is_err()
-        );
+        for (event_type, failure) in [
+            ("response.incomplete", Failure::IncompleteResponse),
+            ("response.failed", Failure::FailedResponse),
+            ("error", Failure::FailedResponse),
+        ] {
+            let mut d = Decoder::default();
+            assert!(d.decode(&json!({"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":"c","name":"shell","arguments":"{}"}})).unwrap().is_none());
+            assert_eq!(
+                d.decode(&json!({"type":event_type,"response":{}})),
+                Err(Error::Provider(failure))
+            );
+        }
     }
     #[test]
     fn completed_items_survive_omitted_terminal_output() {
