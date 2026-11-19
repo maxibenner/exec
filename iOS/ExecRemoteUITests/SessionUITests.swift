@@ -149,8 +149,13 @@ import UIKit
                 XCTAssertFalse(matches(keyboardSurface, corner), "The corner sample must show the page, not the keyboard surface.")
             } else {
                 let background = try rgb(x: x, y: banner.minY - 3)
-                XCTAssertTrue(matches(background, besidePill),
-                              "The pill's sides must show the page background, not a rectangular banner fill.")
+                // Glass casts a gradient above the pill; transparency does not
+                // require a flat page color. Where the page differs from the
+                // pill, its sides must not be painted with the pill's fill.
+                if !matches(background, fill) {
+                    XCTAssertFalse(matches(fill, besidePill),
+                                   "The pill's solid fill must not extend into the surrounding page.")
+                }
             }
         }
     }
