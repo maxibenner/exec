@@ -740,12 +740,18 @@ async fn handle(
             .strip_prefix("/v1/providers/")
             .and_then(|s| s.strip_suffix("/connect"))
     {
-        let _: Empty = body(request).await?;
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Authenticate {
+            #[serde(default)]
+            method: ConnectionMethod,
+        }
+        let input: Authenticate = body(request).await?;
         return Ok(json_response(
             202,
             options
                 .manager
-                .connect(options.provider.clone(), id)
+                .connect_with_method(options.provider.clone(), id, input.method)
                 .await?,
         ));
     }

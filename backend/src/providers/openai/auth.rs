@@ -1,6 +1,9 @@
-//! OIDC/PKCE loopback sign-in and single-flight rotating credentials.
+//! OIDC browser/device sign-in and single-flight rotating credentials.
 use super::transport::{self, Endpoint, Request, Transport};
-use crate::{Error, ProviderFailure, Result, check_cancel, core::ProviderConnection};
+use crate::{
+    Error, ProviderFailure, Result, check_cancel,
+    core::{AuthenticationChallenge, ConnectionMethod, ProviderConnection},
+};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use ring::{
     rand::{SecureRandom, SystemRandom},
@@ -24,13 +27,13 @@ const REDIRECT: &str = "http://localhost:1455/auth/callback";
 fn failure() -> Error {
     Error::Provider(ProviderFailure::Authentication)
 }
-fn now() -> u64 {
+pub(super) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
 }
-fn token(value: &str) -> bool {
+pub(super) fn token(value: &str) -> bool {
     !value.is_empty() && value.len() <= 32768 && value.bytes().all(|b| (0x21..=0x7e).contains(&b))
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -123,6 +126,15 @@ pub fn verify_identity(
     keys: &Value,
     at: u64,
 ) -> Result<(String, Option<String>)> {
+    verify_identity_claims(jwt, Some(nonce), keys, at)
+}
+// Only the device flow has no caller-issued nonce. Browser callers always use Some(nonce).
+fn verify_identity_claims(
+    jwt: &str,
+    nonce: Option<&str>,
+    keys: &Value,
+    at: u64,
+) -> Result<(String, Option<String>)> {
     if jwt.len() > 32768 {
         return Err(failure());
     }
@@ -177,7 +189,7 @@ pub fn verify_identity(
         || claims
             .get("nbf")
             .is_some_and(|v| v.as_u64().is_none_or(|n| n > at))
-        || claims["nonce"] != nonce
+        || nonce.is_some_and(|nonce| claims["nonce"] != nonce)
     {
         return Err(failure());
     }
@@ -371,18 +383,49 @@ impl Authentication {
     }
     pub async fn connect(
         self: &Arc<Self>,
-        challenge: oneshot::Sender<String>,
+        method: ConnectionMethod,
+        challenge: oneshot::Sender<AuthenticationChallenge>,
         cancel: CancellationToken,
     ) -> Result<()> {
+        check_cancel(&cancel)?;
         if self.environment {
             return Err(Error::Invalid(
                 "Environment credentials are externally managed.",
             ));
         }
-        let _gate = self.gate.lock().await;
+        let _gate = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(Error::Cancelled),
+            gate = self.gate.lock() => gate,
+        };
         if self.state.lock().unwrap().blocked {
             return Err(failure());
         }
+        match method {
+            ConnectionMethod::Browser => self.connect_browser(challenge, cancel).await,
+            ConnectionMethod::DeviceCode => {
+                let authorization = super::device_auth::authorize(
+                    self.transport.as_ref(),
+                    challenge,
+                    cancel.clone(),
+                )
+                .await?;
+                self.finish_connect(
+                    &authorization.code,
+                    &authorization.verifier,
+                    super::device_auth::REDIRECT,
+                    None,
+                    cancel,
+                )
+                .await
+            }
+        }
+    }
+    async fn connect_browser(
+        &self,
+        challenge: oneshot::Sender<AuthenticationChallenge>,
+        cancel: CancellationToken,
+    ) -> Result<()> {
         let verifier = random()?;
         let state = random()?;
         let nonce = random()?;
@@ -407,7 +450,10 @@ impl Authentication {
             ("originator", "exec_agent_rust"),
         ]);
         challenge
-            .send(url.to_string())
+            .send(AuthenticationChallenge {
+                authorization_url: url.to_string(),
+                device_code: None,
+            })
             .map_err(|_| Error::Cancelled)?;
         let receive = async {
             // Only one valid callback is accepted. Invalid requests never consume the exchange.
@@ -451,15 +497,26 @@ impl Authentication {
             Err(failure())
         };
         let code = tokio::select! {biased;_=cancel.cancelled()=>return Err(Error::Cancelled),r=tokio::time::timeout(Duration::from_secs(300),receive)=>r.map_err(|_|failure())??};
+        self.finish_connect(&code, &verifier, REDIRECT, Some(&nonce), cancel)
+            .await
+    }
+    async fn finish_connect(
+        &self,
+        code: &str,
+        verifier: &str,
+        redirect: &str,
+        nonce: Option<&str>,
+        cancel: CancellationToken,
+    ) -> Result<()> {
         check_cancel(&cancel)?;
-        // Once exchange begins it must settle, even if cancellation races with rotation.
+        // Once exchange begins it must settle; an uncertain exchange is never retried.
         let value = self
             .exchange(form(&[
                 ("grant_type", "authorization_code"),
                 ("client_id", CLIENT_ID),
-                ("redirect_uri", REDIRECT),
-                ("code", &code),
-                ("code_verifier", &verifier),
+                ("redirect_uri", redirect),
+                ("code", code),
+                ("code_verifier", verifier),
             ]))
             .await?;
         let id = value["id_token"].as_str().ok_or_else(failure)?;
@@ -476,7 +533,10 @@ impl Authentication {
             CancellationToken::new(),
         )
         .await?;
-        let (subject, identity_account) = verify_identity(id, &nonce, &keys, now())?;
+        let (subject, identity_account) = match nonce {
+            Some(nonce) => verify_identity(id, nonce, &keys, now())?,
+            None => verify_identity_claims(id, None, &keys, now())?,
+        };
         let mut session = Self::replacement(&value, None)?;
         session.subject = subject;
         if identity_account.is_some_and(|a| a != session.account_id) {

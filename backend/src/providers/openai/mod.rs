@@ -1,5 +1,6 @@
 //! ChatGPT subscription Responses adapter. All wire formats and opaque context stay here.
 pub mod auth;
+mod device_auth;
 pub mod transport;
 use crate::{Error, ProviderFailure as Failure, Result, check_cancel, core::*};
 use async_trait::async_trait;
@@ -521,13 +522,14 @@ impl ChatProvider for OpenAIProvider {
     async fn connect(
         &self,
         id: &str,
-        challenge: tokio::sync::oneshot::Sender<String>,
+        method: ConnectionMethod,
+        challenge: tokio::sync::oneshot::Sender<AuthenticationChallenge>,
         cancel: CancellationToken,
     ) -> Result<()> {
         if id != "openai" {
             return Err(invalid());
         }
-        let result = self.authentication.connect(challenge, cancel).await;
+        let result = self.authentication.connect(method, challenge, cancel).await;
         *self.models.lock().unwrap() = ModelCatalog::default();
         result
     }
@@ -537,7 +539,7 @@ impl ChatProvider for OpenAIProvider {
     async fn set_credential(&self, id: &str, credential: Option<String>) -> Result<()> {
         if id != "openai" || credential.is_some() {
             return Err(Error::Invalid(
-                "Use browser sign-in for the OpenAI subscription provider.",
+                "Use sign-in for the OpenAI subscription provider.",
             ));
         }
         *self.models.lock().unwrap() = ModelCatalog::default();

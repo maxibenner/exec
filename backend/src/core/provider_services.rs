@@ -65,11 +65,33 @@ pub struct ConnectionAttempt {
     pub state: String,
     pub error: Option<String>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionMethod {
+    #[default]
+    Browser,
+    DeviceCode,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceCodeChallenge {
+    pub user_code: String,
+    pub expires_at: u64,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthenticationChallenge {
+    pub authorization_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_code: Option<DeviceCodeChallenge>,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionChallenge {
     pub attempt: ConnectionAttempt,
     pub authorization_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_code: Option<DeviceCodeChallenge>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

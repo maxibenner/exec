@@ -320,7 +320,8 @@ pub trait ChatProvider: Send + Sync {
     async fn connect(
         &self,
         _provider: &str,
-        _challenge: tokio::sync::oneshot::Sender<String>,
+        _method: super::ConnectionMethod,
+        _challenge: tokio::sync::oneshot::Sender<super::AuthenticationChallenge>,
         _cancel: CancellationToken,
     ) -> Result<()> {
         Err(crate::Error::Provider(crate::ProviderFailure::Unsupported))

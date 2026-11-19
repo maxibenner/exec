@@ -255,6 +255,15 @@ impl AgentManager {
         provider: Arc<dyn ChatProvider>,
         id: &str,
     ) -> Result<ConnectionChallenge> {
+        self.connect_with_method(provider, id, ConnectionMethod::Browser)
+            .await
+    }
+    pub async fn connect_with_method(
+        self: &Arc<Self>,
+        provider: Arc<dyn ChatProvider>,
+        id: &str,
+        method: ConnectionMethod,
+    ) -> Result<ConnectionChallenge> {
         let cancel = tokio_util::sync::CancellationToken::new();
         let attempt = ConnectionAttempt {
             id: new_id(),
@@ -279,8 +288,9 @@ impl AgentManager {
         let (challenge, receiver) = tokio::sync::oneshot::channel();
         let manager = self.clone();
         let id = id.to_owned();
+        let startup_cancel = cancel.clone();
         tokio::spawn(async move {
-            let result = AssertUnwindSafe(provider.connect(&id, challenge, cancel.clone()))
+            let result = AssertUnwindSafe(provider.connect(&id, method, challenge, cancel.clone()))
                 .catch_unwind()
                 .await
                 .unwrap_or(Err(Error::Internal));
@@ -301,14 +311,21 @@ impl AgentManager {
             }
             manager.changes.provider_metadata_changed();
         });
-        let authorization_url = receiver.await.map_err(|_| {
-            Error::Invalid(
-                "Could not start browser authentication. Inspect connection-attempt status.",
-            )
-        })?;
+        let challenge = match tokio::time::timeout(std::time::Duration::from_secs(45), receiver)
+            .await
+        {
+            Ok(Ok(challenge)) => challenge,
+            _ => {
+                startup_cancel.cancel();
+                return Err(Error::Invalid(
+                    "Could not start provider authentication. Inspect connection-attempt status.",
+                ));
+            }
+        };
         Ok(ConnectionChallenge {
             attempt,
-            authorization_url,
+            authorization_url: challenge.authorization_url,
+            device_code: challenge.device_code,
         })
     }
     pub fn connections(&self, provider: &dyn ChatProvider) -> Vec<ProviderConnection> {

@@ -319,7 +319,8 @@ impl ChatProvider for ProviderRegistry {
     async fn connect(
         &self,
         id: &str,
-        challenge: tokio::sync::oneshot::Sender<String>,
+        method: ConnectionMethod,
+        challenge: tokio::sync::oneshot::Sender<AuthenticationChallenge>,
         cancel: CancellationToken,
     ) -> Result<()> {
         let provider = self
@@ -327,7 +328,7 @@ impl ChatProvider for ProviderRegistry {
             .get(id)
             .ok_or(Error::Invalid("Unknown provider."))?;
         self.invalidate(id);
-        let result = provider.connect(id, challenge, cancel).await;
+        let result = provider.connect(id, method, challenge, cancel).await;
         self.invalidate(id);
         self.save_cache(id).await?;
         result

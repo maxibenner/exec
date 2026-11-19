@@ -16,6 +16,8 @@ pub struct Request {
 #[derive(Clone, Copy)]
 pub enum Endpoint {
     Token,
+    DeviceUserCode,
+    DeviceToken,
     Keys,
     Revoke,
     Models,
@@ -48,6 +50,14 @@ impl Transport for Http {
     async fn send(&self, request: Request, cancel: CancellationToken) -> Result<HttpResponse> {
         let (url, form) = match request.endpoint {
             Endpoint::Token => ("https://auth.openai.com/oauth/token", true),
+            Endpoint::DeviceUserCode => (
+                "https://auth.openai.com/api/accounts/deviceauth/usercode",
+                false,
+            ),
+            Endpoint::DeviceToken => (
+                "https://auth.openai.com/api/accounts/deviceauth/token",
+                false,
+            ),
             Endpoint::Keys => ("https://auth.openai.com/.well-known/jwks.json", false),
             Endpoint::Revoke => ("https://auth.openai.com/api/accounts/oauth/revoke", true),
             Endpoint::Models => (
@@ -143,23 +153,27 @@ pub(crate) async fn json(
     let work = async {
         let response = transport.send(request, cancel.clone()).await?;
         status(response.status)?;
-        if response
-            .content_type
-            .as_deref()
-            .is_none_or(|s| s.split(';').next() != Some("application/json"))
-        {
-            return Err(Error::Provider(Failure::Response));
-        }
-        let mut bytes = Vec::new();
-        let mut stream = response.body;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            if bytes.len() + chunk.len() > limit {
-                return Err(Error::Provider(Failure::Response));
-            }
-            bytes.extend(chunk);
-        }
-        serde_json::from_slice(&bytes).map_err(|_| Error::Provider(Failure::Response))
+        json_body(response, limit).await
     };
     tokio::select! {biased;_=cancel.cancelled()=>Err(Error::Cancelled),r=tokio::time::timeout(Duration::from_secs(deadline),work)=>r.map_err(|_|Error::Provider(Failure::Timeout))?}
+}
+/// Read only successful responses; callers handle endpoint-specific pending statuses first.
+pub(super) async fn json_body(response: HttpResponse, limit: usize) -> Result<serde_json::Value> {
+    if response
+        .content_type
+        .as_deref()
+        .is_none_or(|s| s.split(';').next() != Some("application/json"))
+    {
+        return Err(Error::Provider(Failure::Response));
+    }
+    let mut bytes = Vec::new();
+    let mut stream = response.body;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if chunk.len() > limit.saturating_sub(bytes.len()) {
+            return Err(Error::Provider(Failure::Response));
+        }
+        bytes.extend(chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| Error::Provider(Failure::Response))
 }
