@@ -40,7 +40,7 @@ struct ScannerView: View {
                         Button { scanned(pairingCode) } label: {
                             Text("Pair Device").frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .modifier(PrimaryActionButtonStyle())
                         .controlSize(.large)
                         .disabled(pairingCode.isEmpty)
                         .padding()

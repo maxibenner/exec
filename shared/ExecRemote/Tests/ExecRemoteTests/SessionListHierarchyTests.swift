@@ -42,6 +42,9 @@ final class SessionListHierarchyTests: XCTestCase {
         XCTAssertEqual(rows.map(\.id), ["root", "first-sibling", "child", "grandchild", "great-grandchild", "last-sibling"])
         XCTAssertEqual(rows.map(\.depth), [0, 1, 1, 2, 3, 1])
         XCTAssertEqual(rows.map(\.isSubagent), [false, true, true, true, true, true])
+        let families = RemoteSessionListDay.group(catalog, calendar: calendar).flatMap(\.families)
+        XCTAssertEqual(families.map(\.id), ["root"])
+        XCTAssertEqual(families.first?.children.map(\.id), Array(rows.dropFirst()).map(\.id))
 
         let updated = catalog.map { conversation in
             session(conversation["id"].string!, day: 10, parent: conversation["metadata"]["parent"]["sessionId"].string,

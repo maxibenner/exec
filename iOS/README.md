@@ -42,9 +42,19 @@ The tests launch with `--ui-fixture`, using only synthetic sessions and delayed 
 
 ## Settings
 
-**On This Device → Descriptive shell titles** is local to the iPhone, defaults off, and works offline. It changes shell-card summaries, including cached transcripts; missing or blank descriptions fall back to the command. Expanded commands and output are unchanged. Shared agent controls still require a connection.
+**Descriptive shell titles** is local to the iPhone, defaults off, and works offline. It changes shell-card summaries, including cached transcripts; missing or blank descriptions fall back to the command. Expanded commands and output are unchanged. The four settings share the General group; System Prompt stays separate. Shared agent controls still require a connection.
 
 **Done** sends one `PATCH /v1/library` only when the system prompt was edited, then dismisses on the mutation acknowledgement, independently of the follow-up read. Rejection keeps the sheet and draft without retrying. Background library refreshes do not overwrite a dirty draft. An unchanged sheet can close offline; an unsaved prompt cannot be dismissed by swiping or by Done while offline.
+
+## Sessions and transcripts
+
+New Session presents Workspace, Model selection, then Tools. Tool selections start from the host defaults and apply only to the new session. Directory navigation retains the last displayed valid folder while reads finish.
+
+Session cards show a one-line title and grey spinner at the top, then workspace left/time right in the footer. Child sessions are smaller grey buttons inside their parent card, between its title and metadata. They are independently selectable, without their own status or delete action. Parent cards retain native swipe deletion. Adjacent transcript tool cards share one uninterrupted hosting surface/background and identify running tools; the working-indicator implementation is retained but not displayed. User bubbles use a consistent width and the Mac app's fixed iMessage blue.
+
+Primary action buttons use blue glass backgrounds with white labels on supported iOS versions. Blue-tinted connection/error notices float above the bottom controls rather than changing layout. They are in-app notices, not system completion notifications.
+
+The conversation header and grouped-list swipe actions use native automatic appearances, including the system top scroll-edge blur/fade. No custom swipe backgrounds or navigation-bar color overrides are applied. New sends reserve response space and anchor the visible user bubble eight points below the navigation bar; streaming changes coalesce instead of jumping per layout. Reading history keeps its viewport and only an explicit downward scroll to the bottom resumes following. Reduce Motion uses immediate alignment.
 
 ## Foreground synchronization
 

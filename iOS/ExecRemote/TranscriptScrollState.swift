@@ -76,7 +76,7 @@ struct TranscriptViewportAnchor {
 /// Shared arithmetic for the unobscured viewport. A response consumes the
 /// reserved blank space before extending naturally below a top-anchored turn.
 enum TranscriptScrollGeometry {
-    static let turnPadding: CGFloat = 20
+    static let turnPadding: CGFloat = 8
     static func turnOffset(rowTop: CGFloat, topInset: CGFloat) -> CGFloat {
         max(-topInset, rowTop - topInset - turnPadding)
     }

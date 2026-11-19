@@ -7,6 +7,25 @@ public struct RemoteSessionListDay: Identifiable {
     public let rows: [Row]
     public var id: Date { day.id }
 
+    public struct Family: Identifiable {
+        public let parent: Row
+        public fileprivate(set) var children: [Row] = []
+        public var id: String { parent.id }
+    }
+
+    /// A parent and its descendants share one list card; children remain separate targets.
+    public var families: [Family] {
+        var result: [Family] = []
+        for row in rows {
+            if row.depth == 0 || result.isEmpty {
+                result.append(Family(parent: row))
+            } else {
+                result[result.count - 1].children.append(row)
+            }
+        }
+        return result
+    }
+
     public struct Row: Identifiable {
         public let conversation: RemoteJSON
         public let depth: Int

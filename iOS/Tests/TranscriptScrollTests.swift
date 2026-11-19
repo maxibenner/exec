@@ -89,18 +89,18 @@ final class TranscriptScrollTests: XCTestCase {
 
     func testResponseConsumesReservationAndKeyboardUsesUnobscuredViewport() {
         let target = TranscriptScrollGeometry.turnOffset(rowTop: 1_000, topInset: 100)
-        XCTAssertEqual(target, 880)
+        XCTAssertEqual(target, 892)
         let reserved = TranscriptScrollGeometry.reservation(turnOffset: target, naturalHeight: 1_100,
                                                              viewportHeight: 800, bottomInset: 100)
-        XCTAssertEqual(reserved, 480)
+        XCTAssertEqual(reserved, 492)
         XCTAssertEqual(TranscriptScrollGeometry.bottom(contentHeight: 1_100 + reserved, viewportHeight: 800,
                                                        topInset: 100, bottomInset: 100), target)
         XCTAssertEqual(TranscriptScrollGeometry.reservation(turnOffset: target, naturalHeight: 1_400,
-                                                             viewportHeight: 800, bottomInset: 100), 180)
+                                                             viewportHeight: 800, bottomInset: 100), 192)
         XCTAssertEqual(TranscriptScrollGeometry.reservation(turnOffset: target, naturalHeight: 2_000,
                                                              viewportHeight: 800, bottomInset: 100), 0)
         XCTAssertEqual(TranscriptScrollGeometry.reservation(turnOffset: target, naturalHeight: 1_100,
-                                                             viewportHeight: 500, bottomInset: 100), 180)
+                                                             viewportHeight: 500, bottomInset: 100), 192)
         XCTAssertFalse(TranscriptScrollGeometry.shouldAnimate(initial: true, geometryChanged: false, reduceMotion: false))
         XCTAssertFalse(TranscriptScrollGeometry.shouldAnimate(initial: false, geometryChanged: true, reduceMotion: false))
         XCTAssertFalse(TranscriptScrollGeometry.shouldAnimate(initial: false, geometryChanged: false, reduceMotion: true))

@@ -6,7 +6,7 @@ import XCTest
         app.launchArguments = ["--ui-fixture"] + arguments
         app.launch()
         XCTAssertTrue(app.buttons["session-fixture-1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["New Chat"].isEnabled, "The isolated host must be connected before testing mutations.")
+        XCTAssertTrue(app.buttons["New Session"].isEnabled, "The isolated host must be connected before testing mutations.")
         return app
     }
     private func capture(_ name: String, app: XCUIApplication) {
@@ -53,6 +53,20 @@ import XCTest
         XCTAssertLessThan(composer.frame.maxY, app.keyboards.firstMatch.frame.minY)
     }
 
+    func testFirstAndLastGroupRowsKeepNativeSwipeActions() {
+        let app = launch()
+        for index in [1, 6] {
+            let row = app.buttons["session-fixture-\(index)"]
+            row.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+                .press(forDuration: 0.05, thenDragTo: row.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5)))
+            let delete = app.buttons["Delete"].firstMatch
+            XCTAssertTrue(delete.waitForExistence(timeout: 3))
+            XCTAssertTrue(delete.isEnabled)
+            capture("group-edge-swipe-\(index)", app: app)
+            row.swipeRight()
+        }
+    }
+
     func testSwitchingSessionsKeepsTheirIdentity() {
         let app = launch()
         for index in [1, 2, 1, 3, 2] {
@@ -70,39 +84,119 @@ import XCTest
         let app = launch()
         XCTAssertFalse(app.toolbars["session-toolbar"].exists)
         let options = app.buttons["Session Options"]
-        let newChat = app.buttons["New Chat"]
+        let newSession = app.buttons["New Session"]
         XCTAssertTrue(options.waitForExistence(timeout: 5))
-        XCTAssertLessThan(options.frame.maxX, newChat.frame.minX)
+        XCTAssertLessThan(options.frame.maxX, newSession.frame.minX)
         options.tap()
         app.buttons["Settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         app.buttons["Done"].tap()
-        newChat.tap()
-        XCTAssertTrue(app.navigationBars["New Chat"].waitForExistence(timeout: 5))
+        newSession.tap()
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
         app.buttons["session-fixture-1"].tap()
         XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 5))
         XCTAssertFalse(options.exists, "Session controls must not occupy the conversation's composer area.")
-        XCTAssertFalse(newChat.exists)
+        XCTAssertFalse(newSession.exists)
         app.navigationBars.buttons.firstMatch.tap()
         XCTAssertTrue(options.waitForExistence(timeout: 5))
-        XCTAssertTrue(newChat.isHittable)
+        XCTAssertTrue(newSession.isHittable)
         capture("floating-session-controls", app: app)
     }
 
     func testActiveSessionIndicatorsIncludeApprovalAndCancellation() {
         let app = launch(["--activity-fixture"])
         for index in 1...3 {
-            XCTAssertTrue(app.activityIndicators["session-active-fixture-\(index)"].waitForExistence(timeout: 5))
+            let spinner = app.activityIndicators["session-active-fixture-\(index)"]
+            XCTAssertTrue(spinner.waitForExistence(timeout: 5))
+            XCTAssertGreaterThan(spinner.frame.width, 12)
+            XCTAssertLessThanOrEqual(spinner.frame.width, 18)
+            XCTAssertLessThan(spinner.frame.midY, app.buttons["session-fixture-\(index)"].frame.midY)
+            XCTAssertEqual(spinner.frame.maxX, app.buttons["session-fixture-\(index)"].frame.maxX, accuracy: 3)
         }
         for index in 4...6 {
             XCTAssertFalse(app.activityIndicators["session-active-fixture-\(index)"].exists)
         }
     }
 
+    func testNewSessionToolsStaySelectedWhenChoosingDuringFolderRead() {
+        let app = launch(["--slow-folders"])
+        app.buttons["New Session"].tap()
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        let shell = app.switches["new-session-tool-shell"]
+        if !shell.isHittable { app.swipeUp() }
+        XCTAssertTrue(shell.waitForExistence(timeout: 5))
+        XCTAssertEqual(shell.value as? String, "0")
+        shell.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        XCTAssertEqual(shell.value as? String, "1")
+        app.swipeDown()
+        app.buttons["new-session-workspace"].tap()
+        let sources = app.buttons["host-folder-/Fixture/Workspace/Sources"]
+        XCTAssertTrue(sources.waitForExistence(timeout: 5))
+        sources.tap()
+        XCTAssertTrue(sources.isEnabled, "Folder rows must stay interactive during reads.")
+        let choose = app.navigationBars["Choose Folder"].buttons["Choose"]
+        XCTAssertTrue(choose.isEnabled, "The displayed valid folder remains selectable while loading.")
+        capture("folder-read-pending", app: app)
+        choose.tap()
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        XCTAssertEqual(shell.value as? String, "1", "Returning from the picker must not reset the draft.")
+        XCTAssertTrue(app.buttons["Create"].isEnabled)
+        app.buttons["Create"].tap()
+        XCTAssertTrue(app.navigationBars["New Session 1"].waitForExistence(timeout: 10), app.debugDescription)
+    }
+
+    func testChildrenAreSelectableInsideTheirParentCard() {
+        let app = launch(["--subagent-fixture"])
+        let parent = app.buttons["session-fixture-1"]
+        let child = app.buttons["session-fixture-2"]
+        let sibling = app.buttons["session-fixture-3"]
+        XCTAssertGreaterThan(child.frame.minY, parent.frame.minY)
+        XCTAssertLessThan(sibling.frame.maxY, parent.frame.maxY)
+        XCTAssertLessThan(child.frame.height, parent.frame.height)
+        XCTAssertEqual(child.frame.minX, parent.frame.minX, accuracy: 1)
+        XCTAssertEqual(child.label, "Session 2")
+        XCTAssertFalse(app.activityIndicators["session-active-fixture-2"].exists)
+        capture("embedded-child-sessions", app: app)
+        child.tap()
+        XCTAssertTrue(app.navigationBars["Session 2"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons.firstMatch.tap()
+        parent.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+        XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 5))
+    }
+
+    func testToolGroupsShowOnlyRunningToolActivityWithoutThinkingRow() {
+        let app = launch(["--tool-fixture"])
+        app.buttons["session-fixture-1"].tap()
+        XCTAssertTrue(app.navigationBars["Tool Group"].waitForExistence(timeout: 5))
+        let table = app.tables.firstMatch
+        XCTAssertTrue(table.waitForExistence(timeout: 5))
+        XCTAssertEqual(table.cells.count, 2, "The user row and the seamless tool group should be two cells.")
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Running")).count, 1)
+        capture("joined-running-tool-cards", app: app)
+    }
+
+    func testUserMessagesKeepAConsistentBubbleWidth() {
+        let app = launch(["--bubble-fixture"])
+        app.buttons["session-fixture-1"].tap()
+        XCTAssertTrue(app.navigationBars["Bubble Width"].waitForExistence(timeout: 5))
+        let short = app.textViews.matching(NSPredicate(format: "value == %@", "Short")).firstMatch
+        let longer = app.textViews.matching(NSPredicate(format: "value BEGINSWITH %@", "A longer user message")).firstMatch
+        XCTAssertTrue(short.waitForExistence(timeout: 5))
+        XCTAssertTrue(longer.waitForExistence(timeout: 5))
+        XCTAssertEqual(short.frame.width, longer.frame.width, accuracy: 1)
+        XCTAssertEqual(short.frame.maxX, longer.frame.maxX, accuracy: 1)
+        capture("consistent-blue-user-bubbles", app: app)
+    }
+
+    private func launchUnpaired() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-fixture", "--unpaired-fixture"]
+        app.launch()
+        return app
+    }
+
     private func openManualPairing(_ app: XCUIApplication) -> XCUIElement {
-        app.buttons["Session Options"].tap()
-        app.buttons["Forget Host"].tap()
         let scan = app.buttons["Scan Pairing QR Code"]
         XCTAssertTrue(scan.waitForExistence(timeout: 5))
         scan.tap()
@@ -111,6 +205,9 @@ import XCTest
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         XCTAssertGreaterThan(input.frame.width, app.frame.width * 0.75,
                              "Manual pairing input should use the native form's available width.")
+        XCTAssertTrue(app.staticTexts["Enable camera access or enter the pairing code manually below."].exists)
+        XCTAssertGreaterThan(app.buttons["Pair Device"].frame.maxY, app.frame.maxY - 100,
+                             "Pair Device should stay at the bottom like Scan Pairing QR Code.")
         capture("manual-pairing-form", app: app)
         return input
     }
@@ -127,7 +224,7 @@ import XCTest
     }
 
     func testManualPairingAcceptsCodeAndIgnoresSurroundingWhitespace() throws {
-        let app = launch()
+        let app = launchUnpaired()
         let input = openManualPairing(app)
         let pair = app.buttons["Pair Device"]
         XCTAssertFalse(pair.isEnabled)
@@ -139,11 +236,11 @@ import XCTest
         capture("manual-pairing-input", app: app)
         pair.tap()
         XCTAssertTrue(app.buttons["session-fixture-1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["New Chat"].isEnabled)
+        XCTAssertTrue(app.buttons["New Session"].isEnabled)
     }
 
     func testManualPairingRejectsExpiredInvitations() throws {
-        let app = launch()
+        let app = launchUnpaired()
         let input = openManualPairing(app)
         input.tap()
         input.typeText(try pairingInvitation(expires: 1))
@@ -165,11 +262,18 @@ import XCTest
     }
     func testDeletionStaysHiddenWhenAcceptedButRefreshFails() {
         let app = launch(["--refresh-fails"])
+        let firstRowY = app.buttons["session-fixture-1"].frame.minY
         deleteMiddleSession(app)
         XCTAssertTrue(app.staticTexts["Fixture refresh failed."].waitForExistence(timeout: 8))
+        XCTAssertEqual(app.buttons["session-fixture-1"].frame.minY, firstRowY, accuracy: 1,
+                       "A floating notice must not shift the session list.")
         XCTAssertFalse(app.buttons["session-fixture-3"].exists)
         XCTAssertTrue(app.buttons["session-fixture-4"].exists)
         capture("deletion-accepted-refresh-failed", app: app)
+        app.buttons["Dismiss"].tap()
+        // The fixture keeps rejecting catalog reads, so another failure can
+        // legitimately report a new notice. Dismissing must never move rows.
+        XCTAssertEqual(app.buttons["session-fixture-1"].frame.minY, firstRowY, accuracy: 1)
     }
     func testDeletionFailureRestoresTheSession() {
         let app = launch(["--delete-fails"])

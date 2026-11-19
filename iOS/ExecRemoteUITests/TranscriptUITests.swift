@@ -61,8 +61,8 @@ import XCTest
         app.buttons["Send"].tap()
         let sent = table.cells.matching(NSPredicate(format: "identifier BEGINSWITH %@", "transcript-message-local-")).firstMatch
         XCTAssertTrue(sent.waitForExistence(timeout: 5))
-        let expectedTop = app.navigationBars.firstMatch.frame.maxY + 20
-        wait(NSPredicate { _, _ in abs(sent.frame.minY - expectedTop) < 4 }, on: sent)
+        let expectedTop = app.navigationBars.firstMatch.frame.maxY + 8
+        wait(NSPredicate { _, _ in abs(sent.textViews.firstMatch.frame.minY - expectedTop) < 4 }, on: sent)
         let pinnedY = sent.frame.minY
         let answer = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "Response paragraph 1.")).firstMatch
         XCTAssertTrue(answer.waitForExistence(timeout: 5))
@@ -118,8 +118,8 @@ import XCTest
         composer.tap(); composer.typeText("Reduced motion question")
         app.buttons["Send"].tap()
         let sent = table.cells.matching(NSPredicate(format: "identifier BEGINSWITH %@", "transcript-message-local-")).firstMatch
-        let expectedTop = app.navigationBars.firstMatch.frame.maxY + 20
-        wait(NSPredicate { _, _ in abs(sent.frame.minY - expectedTop) < 4 }, on: sent)
+        let expectedTop = app.navigationBars.firstMatch.frame.maxY + 8
+        wait(NSPredicate { _, _ in abs(sent.textViews.firstMatch.frame.minY - expectedTop) < 4 }, on: sent)
     }
 
     func testStreamingFollowCoalescesAndOnlyResumesAfterScrollingDown() {

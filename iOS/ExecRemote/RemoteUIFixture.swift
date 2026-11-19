@@ -14,8 +14,9 @@ import ExecRemote
         return preferences
     }()
     static func makeStore() -> RemoteStore {
-        let store = RemoteStore(client: FixtureTransport(), loadHost: { host }, saveHost: { _ in }, forgetHost: {})
-        store.conversations = conversations
+        let unpaired = ProcessInfo.processInfo.arguments.contains("--unpaired-fixture")
+        let store = RemoteStore(client: FixtureTransport(), loadHost: { unpaired ? nil : host }, saveHost: { _ in }, forgetHost: {})
+        store.conversations = unpaired ? [] : conversations
         store.library = library
         store.models = models
         return store
@@ -29,13 +30,20 @@ import ExecRemote
         ]).decoded(PairingInvitation.self)
         return PairedHost(invitation: invitation, deviceName: "UI Fixture")
     }
+    private static let activityTime = Date().timeIntervalSince1970 * 1000
     static var conversations: [RemoteJSON] {
         (1...6).map { index in
-            .object(["id": .string("fixture-\(index)"), "workspace": .string("/Fixture/Workspace"),
-                     "operation": .object(["state": .string(ProcessInfo.processInfo.arguments.contains("--activity-fixture")
-                        ? ["running", "awaiting_approval", "cancelling", "completed", "failed", "completed"][index - 1] : "completed")]),
-                     "metadata": .object(["title": .string("Session \(index)"),
-                                          "activityAt": .number(Date().timeIntervalSince1970 * 1000 - Double(index) * 1000)])])
+            var metadata: [String: RemoteJSON] = [
+                "title": .string("Session \(index)"),
+                "activityAt": .number(activityTime - Double(index) * 1000)
+            ]
+            if ProcessInfo.processInfo.arguments.contains("--subagent-fixture"), [2, 3].contains(index) {
+                metadata["parent"] = .object(["sessionId": .string("fixture-1")])
+            }
+            return .object(["id": .string("fixture-\(index)"), "workspace": .string("/Fixture/Workspace"),
+                            "operation": .object(["state": .string(ProcessInfo.processInfo.arguments.contains("--activity-fixture")
+                                ? ["running", "awaiting_approval", "cancelling", "completed", "failed", "completed"][index - 1] : "completed")]),
+                            "metadata": .object(metadata)])
         }
     }
     static var models: [RemoteJSON] {
@@ -100,7 +108,7 @@ import ExecRemote
             return .object(["snapshot": .object(fields),
                             "offset": .number(incremental ? Double(max(0, messages.count - 1)) : 0),
                             "total": .number(Double(messages.count)), "reset": .bool(!incremental),
-                            "prefix": .string(String(repeating: "a", count: 64))])
+                            "prefix": messages.isEmpty ? .null : .string(String(repeating: "a", count: 64))])
         }
         throw RemoteFailure("Unsupported UI fixture request.")
     }
@@ -179,6 +187,29 @@ import ExecRemote
         return value
     }
     static func snapshot(_ id: String) -> RemoteJSON {
+        if ProcessInfo.processInfo.arguments.contains("--bubble-fixture") {
+            return .object(["id": .string(id), "metadata": .object(["title": .string("Bubble Width")]),
+                "operation": .object(["state": .string("completed")]),
+                "messages": .array(["Short", "A longer user message that wraps onto multiple lines in the same bubble width.", "One more"].enumerated().map { index, text in
+                    .object(["id": .string("bubble-\(index)"), "role": .string("user"), "text": .string(text)])
+                })])
+        }
+        if ProcessInfo.processInfo.arguments.contains("--tool-fixture") {
+            let calls: [RemoteJSON] = ["first", "second"].map { call in
+                .object(["id": .string(call), "name": .string("shell"),
+                         "arguments": .object(["command": .string(call == "first" ? "pwd" : "sleep 5")])])
+            }
+            return .object([
+                "id": .string(id), "metadata": .object(["title": .string("Tool Group")]),
+                "messages": .array([
+                    .object(["id": .string("user"), "role": .string("user"), "text": .string("Check the workspace")]),
+                    .object(["id": .string("assistant"), "role": .string("assistant"), "text": .string(""), "calls": .array(calls)]),
+                    .object(["id": .string("result"), "role": .string("tool"), "callID": .string("first"),
+                             "text": .string("/Fixture/Workspace"), "outcome": .string("completed")])]),
+                "operation": .object(["id": .string("fixture-operation"), "state": .string("running")]),
+                "activeToolCallID": .string("second")
+            ])
+        }
         if let value = created.first(where: { $0.id == id }) { return value }
         var messages: [RemoteJSON] = (1...40).map { index in
             .object(["id": .string("message-\(index)"), "role": .string(index.isMultiple(of: 2) ? "user" : "assistant"),

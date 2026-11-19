@@ -21,10 +21,20 @@ import XCTest
         app.buttons["Session Options"].tap()
         app.buttons["Settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["On This Device"].exists)
+        XCTAssertFalse(app.staticTexts["Shared Agent Settings"].exists)
     }
     private func closeSettings(_ app: XCUIApplication) {
+        let dismiss = app.buttons["Dismiss"]
+        if dismiss.exists && dismiss.isHittable { dismiss.tap() }
         app.buttons["Done"].tap()
         wait(NSPredicate(format: "exists == false"), on: app.navigationBars["Settings"])
+    }
+    private func toggleSwitch(_ element: XCUIElement) {
+        let expected = (element.value as? String) == "1" ? "0" : "1"
+        // Native form accessibility can include the label in the switch frame.
+        element.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        wait(NSPredicate(format: "value == %@", expected), on: element)
     }
     private func toolHeader(_ text: String, in app: XCUIApplication) -> XCUIElement {
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
@@ -46,7 +56,7 @@ import XCTest
         openSettings(app)
         let toggle = app.switches["descriptive-shell-titles"]
         XCTAssertEqual(toggle.value as? String, "0")
-        toggle.tap()
+        toggleSwitch(toggle)
         closeSettings(app)
         openSettings(app)
         XCTAssertEqual(toggle.value as? String, "1", "The local preference must survive reopening Settings.")
@@ -60,7 +70,7 @@ import XCTest
         XCTAssertTrue(app.staticTexts["Exit code: 0\nfixture output"].exists)
         app.navigationBars.buttons.firstMatch.tap()
         openSettings(app)
-        toggle.tap()
+        toggleSwitch(toggle)
         closeSettings(app)
         app.buttons["session-fixture-1"].tap()
         XCTAssertTrue(toolHeader("printf 'fixture output'", in: app).waitForExistence(timeout: 5))
@@ -74,7 +84,7 @@ import XCTest
         XCTAssertTrue(local.isEnabled)
         XCTAssertFalse(app.switches["Automatic session titles"].isEnabled)
         XCTAssertFalse(app.textViews["settings-system-prompt"].isEnabled)
-        local.tap()
+        toggleSwitch(local)
         XCTAssertTrue(app.buttons["Done"].isEnabled)
         closeSettings(app)
         openSettings(app)

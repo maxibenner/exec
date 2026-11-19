@@ -2,6 +2,12 @@ import SwiftUI
 import UIKit
 import ExecRemote
 
+enum AppColors {
+    // Match the Mac app's fixed iMessage blue, independent of system accent/appearance.
+    static let nativeBlue = UIColor(red: 0, green: 122.0 / 255.0, blue: 1, alpha: 1)
+    static let blue = Color(uiColor: nativeBlue)
+}
+
 enum ToolDisplayPreferences {
     static let descriptiveShellTitlesKey = "descriptiveShellTitles"
 }
@@ -37,6 +43,7 @@ struct RootView: View {
     @State private var scanning = false
     @State private var settings = false
     @State private var creating = false
+    @State private var createdSession: String?
     var body: some View {
         NavigationStack {
             Group {
@@ -46,8 +53,8 @@ struct RootView: View {
                         List {
                             ForEach(RemoteSessionListDay.group(store.conversations)) { group in
                                 Section {
-                                    ForEach(Array(group.rows.enumerated()), id: \.element.id) { index, row in
-                                        sessionRow(row, isFirst: index == 0, isLast: index == group.rows.count - 1)
+                                    ForEach(group.families) { family in
+                                        sessionRow(family)
                                     }
                                 } header: {
                                     Text(group.day.title(now: context.date))
@@ -99,15 +106,6 @@ struct RootView: View {
             .navigationDestination(isPresented: Binding(get: { store.selected != nil }, set: { if !$0 { store.selected = nil } })) {
                 ConversationScreen(store: store)
             }
-            .safeAreaInset(edge: .bottom) {
-                if let error = store.error {
-                    HStack(alignment: .top) {
-                        Text(error).font(.caption).textSelection(.enabled)
-                        Spacer()
-                        Button("Dismiss", systemImage: "xmark") { store.error = nil }.labelStyle(.iconOnly)
-                    }.padding().background(.regularMaterial)
-                }
-            }
             .sheet(isPresented: $scanning) {
                 ScannerView { text in
                     scanning = false
@@ -115,60 +113,90 @@ struct RootView: View {
                 }
             }
             .sheet(isPresented: $settings) { SharedSettingsScreen(store: store) }
-            .sheet(isPresented: $creating) { NewChatScreen(store: store) }
+            .sheet(isPresented: $creating, onDismiss: {
+                if let id = createdSession { createdSession = nil; store.selected = id }
+            }) {
+                NewChatScreen(store: store) { createdSession = $0 }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if !settings && !creating && !scanning {
+                SessionNotice(message: $store.error).padding(.bottom, 72)
+            }
         }
     }
-    private func sessionRow(_ row: RemoteSessionListDay.Row, isFirst: Bool, isLast: Bool) -> some View {
+    private func sessionRow(_ family: RemoteSessionListDay.Family) -> some View {
+        let row = family.parent
         let conversation = row.conversation
-        return Button { store.selected = conversation.id } label: {
+        let title = conversation["metadata"]["title"].string ?? conversation["title"].string ?? "New Session"
+        let workspace = conversation["workspace"].string.map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
+        let date = RemoteSessionDay.activityDate(conversation)
+        return VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(conversation["metadata"]["title"].string ?? conversation["title"].string ?? "New Chat")
-                        .font(row.isSubagent ? .subheadline : .headline)
-                        .foregroundStyle(Color(uiColor: row.isSubagent ? .secondaryLabel : .label))
-                        .lineLimit(1).truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    if !row.isSubagent {
-                        HStack(spacing: 8) {
-                            Text(RemoteSessionDay.activityDate(conversation), format: .dateTime.hour().minute())
-                                .fixedSize()
-                            if let workspace = conversation["workspace"].string, !workspace.isEmpty {
-                                Text(URL(fileURLWithPath: workspace).lastPathComponent)
-                                    .lineLimit(1).truncationMode(.middle)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .font(.subheadline).foregroundStyle(Color(uiColor: .secondaryLabel))
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(title)
+                    .font(row.isSubagent ? .subheadline : .headline)
+                    .foregroundStyle(row.isSubagent ? .secondary : .primary)
+                    .lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityHidden(true)
                 if !row.isSubagent {
-                    // Always reserve the status slot, including for idle sessions.
                     Group {
                         if RemoteMessageSubmission.isActive(conversation) {
-                            ProgressView().controlSize(.regular).accessibilityLabel("Active")
+                            ProgressView().controlSize(.small)
+                                .tint(Color(uiColor: .secondaryLabel))
+                                .accessibilityLabel("Active")
                                 .accessibilityIdentifier("session-active-\(conversation.id)")
                         } else {
                             Color.clear.accessibilityHidden(true)
                         }
                     }
-                    .frame(width: 24, height: 24)
+                    .frame(width: 16, height: 20)
                 }
             }
-            .padding(.leading, CGFloat(row.depth) * 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, row.isSubagent ? 2 : 6)
-            .contentShape(Rectangle())
+            .allowsHitTesting(false)
+            ForEach(family.children) { child in
+                Button { store.selected = child.id } label: {
+                    Text(child.conversation["metadata"]["title"].string ?? "Sub-agent")
+                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 3).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(child.conversation["unreadable"].bool)
+                .accessibilityIdentifier("session-\(child.id)")
+            }
+            if !row.isSubagent {
+                HStack(spacing: 8) {
+                    Text(workspace).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Text(date, format: .dateTime.hour().minute()).fixedSize()
+                }
+                .font(.subheadline).foregroundStyle(.secondary)
+                .allowsHitTesting(false).accessibilityHidden(true)
+            }
         }
-        .accessibilityIdentifier("session-\(conversation.id)")
-        .disabled(conversation["unreadable"].bool)
-        .listRowBackground(SessionRowBackground(isFirst: isFirst, isLast: isLast))
+        .padding(.vertical, row.isSubagent ? 2 : 6)
+        .background {
+            // Child buttons sit above this full-card target; all other content opens the parent.
+            Button { store.selected = conversation.id } label: {
+                Color.clear.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(title)
+            .accessibilityValue(row.isSubagent ? "" : "\(workspace), \(date.formatted(date: .omitted, time: .shortened))")
+            .accessibilityIdentifier("session-\(conversation.id)")
+            .disabled(conversation["unreadable"].bool)
+        }
+        .accessibilityElement(children: .contain)
         .listRowSeparator(.hidden)
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button("Delete", systemImage: "trash", role: .destructive) {
-                Task { await store.deleteConversation(conversation.id) }
+            if !row.isSubagent {
+                Button("Delete", systemImage: "trash", role: .destructive) {
+                    Task { await store.deleteConversation(conversation.id) }
+                }
+                .disabled(store.busy || !store.connected || RemoteMessageSubmission.isActive(conversation))
+                .tint(.red)
             }
-            .disabled(store.busy || !store.connected || RemoteMessageSubmission.isActive(conversation))
         }
     }
 
@@ -192,10 +220,55 @@ struct RootView: View {
                 Text("Scan Pairing QR Code")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .modifier(PrimaryActionButtonStyle())
             .controlSize(.large)
             .disabled(store.busy)
             .padding()
+        }
+    }
+}
+
+/// In-app errors float above navigation content without changing its safe area.
+private struct SessionNotice: View {
+    @Binding var message: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack {
+            if let message {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "exclamationmark.circle")
+                        .foregroundStyle(AppColors.blue)
+                        .accessibilityHidden(true)
+                    Text(message)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Dismiss", systemImage: "xmark") { self.message = nil }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(AppColors.blue)
+                }
+                .padding(16)
+                .background(AppColors.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .accessibilityIdentifier("session-notice")
+                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .frame(maxWidth: 560)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+        .animation(.easeInOut(duration: 0.2), value: message)
+    }
+}
+
+struct PrimaryActionButtonStyle: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.buttonStyle(.glassProminent).tint(AppColors.blue).foregroundStyle(.white)
+        } else {
+            content.buttonStyle(.borderedProminent).tint(AppColors.blue).foregroundStyle(.white)
         }
     }
 }
@@ -217,6 +290,7 @@ private struct SessionControls: View {
             }
         }
         .labelStyle(.iconOnly)
+        .foregroundStyle(.primary)
         .font(.body.weight(.semibold))
         .buttonBorderShape(.circle)
         .controlSize(.large)
@@ -238,6 +312,7 @@ private struct SessionControls: View {
                 .frame(width: 24, height: 24)
         }
         .disabled(busy || !connected)
+        .modifier(PrimaryActionButtonStyle())
     }
 }
 
@@ -253,8 +328,7 @@ struct ConversationScreen: View {
         .ignoresSafeArea(.container, edges: [.top, .bottom])
         .navigationTitle(store.snapshot["metadata"]["title"].string ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.bar, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarBackground(.automatic, for: .navigationBar)
         .toolbar(.hidden, for: .bottomBar)
         .onChange(of: store.selected, initial: true) { _, id in
             if let id { store.open(id) }
@@ -275,7 +349,7 @@ struct ConversationScreen: View {
                         HStack {
                             Button("Deny", role: .destructive) { Task { await store.approve(false) } }
                             Spacer()
-                            Button("Approve") { Task { await store.approve(true) } }.buttonStyle(.borderedProminent)
+                            Button("Approve") { Task { await store.approve(true) } }.buttonStyle(.borderedProminent).tint(AppColors.blue)
                         }
                     }
                     .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -301,6 +375,7 @@ private struct ComposerHeightKey: PreferenceKey {
 
 private struct RemoteChatComposer: View {
     let store: RemoteStore
+    @FocusState private var focused: Bool
     @State private var fieldHeight: CGFloat = 48
     private var draft: Binding<String> {
         Binding(get: { store.selected.flatMap { store.drafts[$0] } ?? "" },
@@ -309,6 +384,8 @@ private struct RemoteChatComposer: View {
     private var stopping: Bool { RemoteMessageSubmission.showsStop(snapshot: store.displaySnapshot, draft: draft.wrappedValue) }
     private var field: some View {
         TextField("Message", text: draft, axis: .vertical)
+            .focused($focused)
+            .tint(AppColors.blue)
             .accessibilityIdentifier("message-composer")
             .lineLimit(1...6)
             .textFieldStyle(.plain)
@@ -320,6 +397,11 @@ private struct RemoteChatComposer: View {
                     Color.clear.preference(key: ComposerFieldHeightKey.self, value: geometry.size.height)
                 }
             }
+    }
+    private var outline: some View {
+        RoundedRectangle(cornerRadius: 26)
+            .strokeBorder(focused ? AppColors.blue : .clear, lineWidth: 1)
+            .allowsHitTesting(false)
     }
     private var action: some View {
         Button {
@@ -340,16 +422,16 @@ private struct RemoteChatComposer: View {
             if #available(iOS 26.0, *) {
                 GlassEffectContainer(spacing: 8) {
                     HStack(alignment: .bottom, spacing: 8) {
-                        field.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
-                        action.buttonStyle(.glassProminent).frame(width: 48, height: fieldHeight)
+                        field.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26)).overlay { outline }
+                        action.buttonStyle(.glassProminent).tint(AppColors.blue).frame(width: 48, height: fieldHeight)
                     }
                 }
             } else {
                 HStack(alignment: .bottom, spacing: 8) {
-                    field.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26))
+                    field.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26)).overlay { outline }
                     action.buttonStyle(.plain).foregroundStyle(.white)
                         .frame(width: 48, height: fieldHeight)
-                        .background(.blue, in: Capsule())
+                        .background(AppColors.blue, in: Capsule())
                 }
             }
         }
@@ -364,6 +446,7 @@ private struct ComposerFieldHeightKey: PreferenceKey {
 
 struct NewChatScreen: View {
     let store: RemoteStore
+    let created: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var workspace = ""
     @State private var model = ""
@@ -388,15 +471,6 @@ struct NewChatScreen: View {
                     }
                     .accessibilityIdentifier("new-session-workspace")
                 }
-                Section("Tools") {
-                    ForEach(RemoteSessionCreation.tools) { tool in
-                        Toggle(isOn: Binding(get: { tools.isEnabled(tool.id) },
-                                             set: { tools.setEnabled(tool.id, $0) })) {
-                            Label(tool.label, systemImage: tool.icon)
-                        }
-                        .accessibilityIdentifier("new-session-tool-\(tool.id)")
-                    }
-                }
                 Section("Model selection") {
                     Picker("Model", selection: $model) {
                         ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
@@ -409,6 +483,15 @@ struct NewChatScreen: View {
                     }
                     .disabled(selectedModel["efforts"].array.isEmpty)
                 }
+                Section("Tools") {
+                    ForEach(RemoteSessionCreation.tools) { tool in
+                        Toggle(isOn: Binding(get: { tools.isEnabled(tool.id) },
+                                             set: { tools.setEnabled(tool.id, $0) })) {
+                            Label(tool.label, systemImage: tool.icon)
+                        }
+                        .accessibilityIdentifier("new-session-tool-\(tool.id)")
+                    }
+                }
             }
             .sheet(isPresented: $choosingFolder) {
                 HostFolderPicker(store: store, initialPath: workspace) { workspace = $0 }
@@ -416,16 +499,17 @@ struct NewChatScreen: View {
             .navigationTitle("New Session")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", systemImage: "xmark") { dismiss() }.labelStyle(.iconOnly)
+                    Button("Cancel", systemImage: "xmark") { dismiss() }.labelStyle(.iconOnly).foregroundStyle(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") { Task {
                         let body = RemoteSessionCreation.body(workspace: workspace, model: selectedModel,
                                                               effort: effort, settings: store.library["settings"], tools: tools)
                         await store.mutate("POST", "/v1/conversations", body) { value in
-                            store.selected = value.id; dismiss()
+                            created(value.id); dismiss()
                         }
                     } }.disabled(!workspace.hasPrefix("/") || model.isEmpty || store.busy || !store.connected)
+                        .modifier(PrimaryActionButtonStyle())
                 }
             }
             .onAppear {
@@ -437,6 +521,11 @@ struct NewChatScreen: View {
                 resetEffort()
             }
             .onChange(of: model) { _, _ in resetEffort() }
+        }
+        .overlay(alignment: .bottom) {
+            if !choosingFolder {
+                SessionNotice(message: Binding(get: { store.error }, set: { store.error = $0 }))
+            }
         }
     }
     private func resetEffort() {
@@ -456,19 +545,19 @@ struct SharedSettingsScreen: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("On This Device") {
+                Section("General") {
                     Toggle("Descriptive shell titles", isOn: $descriptiveShellTitles)
                         .accessibilityIdentifier("descriptive-shell-titles")
-                }
-                Section("Shared Agent Settings") {
-                    Toggle("Automatic session titles", isOn: Binding(get: { store.library["automaticTitles"].bool }, set: { value in patch(["automaticTitles":.bool(value)]) }))
-                    Toggle("Auto mode for new chats", isOn: Binding(get: { store.library["settings"]["autoApprove"].bool }, set: { value in patch(["settings":.object(["autoApprove":.bool(value)])]) }))
-                    Picker("Default model", selection: Binding(get: { store.library["defaultModel"].string ?? "" }, set: { value in patch(["defaultModel": value.isEmpty ? .null : .string(value)]) })) {
-                        Text("Automatic").tag("")
-                        ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
+                    Group {
+                        Toggle("Automatic session titles", isOn: Binding(get: { store.library["automaticTitles"].bool }, set: { value in patch(["automaticTitles":.bool(value)]) }))
+                        Toggle("Auto mode for new chats", isOn: Binding(get: { store.library["settings"]["autoApprove"].bool }, set: { value in patch(["settings":.object(["autoApprove":.bool(value)])]) }))
+                        Picker("Default model", selection: Binding(get: { store.library["defaultModel"].string ?? "" }, set: { value in patch(["defaultModel": value.isEmpty ? .null : .string(value)]) })) {
+                            Text("Automatic").tag("")
+                            ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
+                        }
                     }
+                    .disabled(store.busy || !store.connected)
                 }
-                .disabled(store.busy || !store.connected)
                 Section("System Prompt") {
                     TextEditor(text: $prompt).frame(minHeight: 120).focused($editingPrompt)
                         .accessibilityIdentifier("settings-system-prompt")
@@ -479,6 +568,7 @@ struct SharedSettingsScreen: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done", action: done)
+                        .modifier(PrimaryActionButtonStyle())
                         .disabled(savingPrompt || (promptChanged && (store.busy || !store.connected)))
                 }
             }
@@ -486,6 +576,9 @@ struct SharedSettingsScreen: View {
             .onChange(of: store.library["settings"]["systemPrompt"]) { _, _ in refreshPrompt() }
         }
         .interactiveDismissDisabled(promptChanged || savingPrompt)
+        .overlay(alignment: .bottom) {
+            SessionNotice(message: Binding(get: { store.error }, set: { store.error = $0 }))
+        }
     }
     private func refreshPrompt() {
         // A background library read must not replace a draft, even after focus
@@ -537,6 +630,7 @@ private struct HostFolderPicker: View {
                     ForEach(listing["directories"].array, id: \.folderPath) { directory in
                         Button { requestedPath = directory["path"].string } label: {
                             Label(directory["name"].string ?? "Folder", systemImage: "folder")
+                                .foregroundStyle(AppColors.blue)
                         }
                         .accessibilityIdentifier("host-folder-\(directory.folderPath)")
                     }
@@ -551,17 +645,17 @@ private struct HostFolderPicker: View {
                 }
                 if let failure { Text(failure).foregroundStyle(.red) }
             }
-            .tint(.blue)
             .navigationTitle("Choose Folder")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", systemImage: "xmark") { dismiss() }.labelStyle(.iconOnly)
+                    Button("Cancel", systemImage: "xmark") { dismiss() }.labelStyle(.iconOnly).foregroundStyle(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     // A pending or failed read does not invalidate the displayed folder.
                     Button("Choose") { if let currentPath { choose(currentPath); dismiss() } }
                         .disabled(currentPath == nil)
+                        .modifier(PrimaryActionButtonStyle())
                 }
             }
             .task(id: requestedPath) {

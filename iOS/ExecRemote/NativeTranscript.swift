@@ -69,6 +69,11 @@ struct NativeTranscript: UIViewControllerRepresentable {
                 guard let self, let table else { return nil }
                 return self.rowTop(id, table: table)
             }
+            table.turnTop = { [weak self, weak table] id in
+                guard let self, let table, let top = self.rowTop(id, table: table) else { return nil }
+                // Pin the visible bubble, not its table cell's extra top margin.
+                return top + MessageCell.verticalContentInset
+            }
             table.readingPosition = { [weak self, weak table] in
                 guard let self, let table else { return nil }
                 return self.readingPosition(table)
@@ -300,6 +305,7 @@ private struct MobileToolCard: View {
     var hasEarlier = false
     var loadEarlier: (() -> Void)?
     var rowTop: ((String) -> CGFloat?)?
+    var turnTop: ((String) -> CGFloat?)?
     var readingPosition: (() -> TranscriptViewportAnchor?)?
     var didLayoutRows: (() -> Void)?
     var finishedFollowing: (() -> Void)?
@@ -464,7 +470,7 @@ private struct MobileToolCard: View {
         switch scrollState.intent {
         case .latest: target = maximum
         case .turn(let id):
-            guard let top = rowTop?(id) else { return }
+            guard let top = turnTop?(id) else { return }
             target = TranscriptScrollGeometry.turnOffset(rowTop: top, topInset: adjustedContentInset.top)
         case .reading:
             guard let anchor = readingAnchor, let top = rowTop?(anchor.rowID) else { return }
@@ -493,7 +499,7 @@ private struct MobileToolCard: View {
     private func updateResponseReservation() {
         let oldHeight = tableFooterView?.frame.height ?? 0
         let height: CGFloat
-        if let id = scrollState.reservedTurnID, let top = rowTop?(id) {
+        if let id = scrollState.reservedTurnID, let top = turnTop?(id) {
             height = TranscriptScrollGeometry.reservation(
                 turnOffset: TranscriptScrollGeometry.turnOffset(rowTop: top, topInset: adjustedContentInset.top),
                 naturalHeight: contentSize.height - oldHeight, viewportHeight: bounds.height, bottomInset: adjustedContentInset.bottom)
@@ -506,6 +512,7 @@ private struct MobileToolCard: View {
 }
 
 @MainActor private final class MessageCell: UITableViewCell, UITextViewDelegate {
+    static let verticalContentInset: CGFloat = 10
     private let text = UITextView()
     private var textWidth: NSLayoutConstraint!
     private var sourceText: String?
@@ -528,8 +535,8 @@ private struct MobileToolCard: View {
         NSLayoutConstraint.activate([
             text.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 16),
             text.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            text.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 10),
-            text.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -10),
+            text.topAnchor.constraint(equalTo: contentView.topAnchor, constant: Self.verticalContentInset),
+            text.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -Self.verticalContentInset),
             textWidth
         ])
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (cell: MessageCell, _: UITraitCollection) in
@@ -551,7 +558,8 @@ private struct MobileToolCard: View {
         guard sourceText != content || markdown != useMarkdown || isUser != user else { return }
         sourceText = content; markdown = useMarkdown; isUser = user
         blocks = useMarkdown ? MarkdownDocument.parse(content) : []
-        text.backgroundColor = user ? UIColor.systemBlue.withAlphaComponent(0.18) : .clear
+        text.backgroundColor = user ? AppColors.nativeBlue : .clear
+        text.tintColor = user ? .white : AppColors.nativeBlue
         text.textContainerInset = user ? UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12) : .zero
         render(width: width)
     }
@@ -559,14 +567,8 @@ private struct MobileToolCard: View {
         guard let sourceText else { return }
         renderedWidth = max(100, width)
         let attributed = markdown ? UIKitMarkdownText.render(blocks, width: renderedWidth) : NSAttributedString(string: sourceText,
-            attributes: [.font:UIFont.preferredFont(forTextStyle: .body), .foregroundColor:UIColor.label])
-        if isUser {
-            let maximum = renderedWidth * 0.85
-            let bounds = attributed.boundingRect(with: CGSize(width: maximum - 24, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-            textWidth.constant = min(maximum, max(40, ceil(bounds.width) + 24))
-        } else {
-            textWidth.constant = renderedWidth
-        }
+            attributes: [.font:UIFont.preferredFont(forTextStyle: .body), .foregroundColor:isUser ? UIColor.white : UIColor.label])
+        textWidth.constant = isUser ? renderedWidth * 0.85 : renderedWidth
         text.attributedText = attributed
     }
     func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
