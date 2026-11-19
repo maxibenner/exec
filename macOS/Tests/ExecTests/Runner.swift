@@ -246,6 +246,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("HTTP redirects and interrupted mutations never replay", { try await HTTPConsumerTests().redirectsAndInterruptedMutationsAreNotReplayed() }),
             ("HTTPS rejects an untrusted certificate without fallback", { try await HTTPConsumerTests().tlsRejectsUntrustedCertificate() }),
             ("Bundled backend ignores external settings and provisions private credentials", { try AgentIntegrationTests().httpConfiguration() }),
+            ("Idle and detached drafts require explicit Quit loss confirmation", { try await QuitDraftTests().idleAndDetachedDraftsRequireExplicitLossConfirmation() }),
             ("Agent transport connects to isolated Rust service", { try await AgentIntegrationTests().realService() })
         ]
         for (name, check) in checks {

@@ -21,7 +21,7 @@ import AppKit
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if waitingToQuit { return .terminateLater }
-        guard let store, store.hasRunningOperations || store.hasUnsavedChanges else {
+        guard let store, store.hasRunningOperations || store.hasUnsavedChanges || store.hasUnsentDrafts else {
             guard let shutdownBackend else { return .terminateNow }
             waitingToQuit = true
             Task { await shutdownBackend(); replyToTermination(sender, true) }
@@ -34,6 +34,7 @@ import AppKit
             reasons.append("Active operations in all conversations will be stopped.")
         }
         if store.hasUnsavedChanges { reasons.append("Changes that could not be saved will be discarded.") }
+        if store.hasUnsentDrafts { reasons.append("Unsent text and attachments in all conversations will be discarded.") }
         reasons.append("Saved conversations will be kept.")
         alert.informativeText = reasons.joined(separator: " ")
         alert.alertStyle = .warning
