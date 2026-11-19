@@ -148,8 +148,10 @@ struct SessionChildRowContent: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(verbatim: "↳ \(child.title)").lineLimit(1).truncationMode(.tail)
-                .accessibilityLabel(child.title)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                SessionChildConnector()
+                Text(verbatim: child.title).lineLimit(1).truncationMode(.tail)
+            }
             Spacer(minLength: 0)
             if store.needsApproval(child.id) {
                 SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
@@ -164,7 +166,25 @@ struct SessionChildRowContent: View {
         .font(.caption2).foregroundStyle(.secondary)
         // Status symbols must not change the child's layout height.
         .frame(height: 22, alignment: .center)
-        .padding(.horizontal, 6)
+        // Align the connector with the parent title and metadata's leading edge.
+        .padding(.trailing, 6)
+    }
+}
+
+private struct SessionChildConnector: View {
+    var body: some View {
+        let capHeight = NSFont.preferredFont(forTextStyle: .caption2).capHeight
+        let width = capHeight * 0.85
+        Path { path in
+            path.move(to: CGPoint(x: 0.5, y: 0.5))
+            path.addLine(to: CGPoint(x: 0.5, y: capHeight / 2))
+            path.addLine(to: CGPoint(x: width - 0.5, y: capHeight / 2))
+        }
+        .stroke(style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+        .frame(width: width, height: capHeight)
+        // The upright starts at cap height; the horizontal sits halfway to the baseline.
+        .alignmentGuide(.firstTextBaseline) { _ in capHeight }
+        .accessibilityHidden(true)
     }
 }
 
