@@ -95,13 +95,13 @@ import UIKit
             }
         }
         XCTAssertTrue(banner.exists, "Automatic recovery must not precede the offline layout sample.")
-        try assertBannerPaintReachesPhysicalBottom(app, banner: bannerFrame)
+        try assertConnectionPill(app, frame: bannerFrame)
         return layout
     }
-    private func assertBannerPaintReachesPhysicalBottom(_ app: XCUIApplication, banner: CGRect) throws {
+    private func assertConnectionPill(_ app: XCUIApplication, frame banner: CGRect, keyboard: CGRect? = nil) throws {
         let screenshot = app.screenshot()
         let attachment = XCTAttachment(screenshot: screenshot)
-        attachment.name = "banner-physical-bottom-\(Int(banner.minY))"
+        attachment.name = "connection-pill-\(Int(banner.minY))"
         attachment.lifetime = .keepAlways
         add(attachment)
         let image = try XCTUnwrap(screenshot.image.cgImage)
@@ -121,21 +121,37 @@ import UIKit
             }
             return bytes.prefix(3).map(Int.init)
         }
-        // Sample clear vertical stripes on BOTH sides of the label/home indicator.
-        // This checks actual paint, not the label's safe-area-bound accessibility frame.
-        for fraction in [0.1, 0.9] {
-            let x = screen.minX + screen.width * fraction
-            let reference = try rgb(x: x, y: banner.midY)
-            XCTAssertLessThan(reference.min() ?? 255, 250, "The reference must be banner gray, not a white gap.")
-            let rows = stride(from: banner.midY, through: screen.maxY - 1 / scale, by: 1 / scale)
-            for y in rows {
-                let actual = try rgb(x: x, y: y)
-                guard zip(reference, actual).allSatisfy({ abs($0 - $1) <= 3 }) else {
-                    XCTFail("Banner paint stops before the physical bottom: x=\(x), y=\(y), expected RGB \(reference), got \(actual); label=\(banner), screen=\(screen)")
-                    return
-                }
+        func matches(_ lhs: [Int], _ rhs: [Int]) -> Bool {
+            zip(lhs, rhs).allSatisfy { abs($0 - $1) <= 3 }
+        }
+        XCTAssertGreaterThan(banner.minX, screen.minX + 12, "The connection indicator must be a pill, not a full-width strip.")
+        XCTAssertLessThan(banner.maxX, screen.maxX - 12)
+        let fill = try rgb(x: banner.minX + 6, y: banner.midY)
+        XCTAssertLessThan(fill.min() ?? 255, 250, "The pill needs its own solid background.")
+        // Sample padding on all four sides, clear of the icon/text. A solid
+        // capsule stays uniform even over the composer's varying glass shadow.
+        for point in [CGPoint(x: banner.maxX - 6, y: banner.midY),
+                      CGPoint(x: banner.midX, y: banner.minY + 4),
+                      CGPoint(x: banner.midX, y: banner.maxY - 4)] {
+            let actual = try rgb(x: point.x, y: point.y)
+            XCTAssertTrue(matches(fill, actual), "The pill must have a uniform solid fill: expected \(fill), got \(actual).")
+        }
+        for x in [screen.minX + 8, screen.maxX - 8] {
+            let besidePill = try rgb(x: x, y: banner.midY)
+            if let keyboard {
+                // The reference is the page visible through the real rounded
+                // keyboard corner, not the glass shadow just above the pill.
+                let corner = try rgb(x: x, y: keyboard.minY + 2)
+                let keyboardSurface = try rgb(x: keyboard.midX, y: keyboard.minY + 2)
+                XCTAssertTrue(matches(besidePill, corner),
+                              "The page must remain continuous behind the keyboard's rounded corners: beside=\(besidePill), corner=\(corner).")
+                XCTAssertFalse(matches(fill, besidePill), "The pill's solid fill must not extend across the full row.")
+                XCTAssertFalse(matches(keyboardSurface, corner), "The corner sample must show the page, not the keyboard surface.")
+            } else {
+                let background = try rgb(x: x, y: banner.minY - 3)
+                XCTAssertTrue(matches(background, besidePill),
+                              "The pill's sides must show the page background, not a rectangular banner fill.")
             }
-            print("BANNER PAINT reaches physical edge", "x", x, "label", banner, "screen", screen, "RGB", reference)
         }
     }
     private func assertReclaimedScrollEnd(offline: CGRect, online: CGRect, banner: CGRect, app: XCUIApplication) {
@@ -156,6 +172,33 @@ import UIKit
         attachment.lifetime = .keepAlways
         add(attachment)
     }
+    func testConnectionPillKeepsKeyboardCornersAndComposerClear() throws {
+        let app = launch(["--offline-actions-fixture"])
+        app.buttons["session-fixture-1"].tap()
+        XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 5))
+        let composer = element("message-composer", in: app)
+        composer.tap(); composer.typeText("Keyboard pill")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        let layout = try stableLayout(app, matching: ["host-connection-banner": .any,
+                                                      "chat-composer-controls": .any, "inputView": .any])
+        let pill = try frame("host-connection-banner", in: layout)
+        let controls = try frame("chat-composer-controls", in: layout)
+        // The system inputView includes QuickType. The .keyboard AX frame
+        // starts below SystemInputAssistantView and exposes only the key rows.
+        let keyboard = try frame("inputView", in: layout)
+        let diagnostic = XCTAttachment(string: app.debugDescription)
+        diagnostic.name = "connection-pill-keyboard-hierarchy"
+        diagnostic.lifetime = .keepAlways
+        add(diagnostic)
+        print("CONNECTION PILL FRAMES", "pill", pill, "controls", controls,
+              "inputView", keyboard, "AX keys", app.keyboards.firstMatch.frame)
+        XCTAssertEqual(keyboard.minX, app.frame.minX, accuracy: 1)
+        XCTAssertEqual(keyboard.maxX, app.frame.maxX, accuracy: 1)
+        XCTAssertLessThanOrEqual(controls.maxY, pill.minY + 1, "The pill must not overlap the composer controls.")
+        XCTAssertEqual(pill.maxY, keyboard.minY, accuracy: 2, "The pill stays just above the complete keyboard, including QuickType.")
+        try assertConnectionPill(app, frame: pill, keyboard: keyboard)
+    }
+
     func testNavigationAndSwipeAppearance() {
         let app = launch()
         capture("sessions-rest", app: app)
