@@ -18,13 +18,24 @@ struct SessionToolCatalogTests {
         try expect(SessionTool.all.filter { $0.group == nil }.map(\.name) == [
             "delegate", "wait"
         ])
-        try expect(SessionTool.names == RemoteSessionCreation.tools.map(\.id))
-        for (tool, remote) in zip(SessionTool.all, RemoteSessionCreation.tools) {
+        let visible = SessionTool.Group.allCases.flatMap { group in
+            SessionTool.all.filter { $0.group == group }
+        }
+        try expect(visible.map(\.name) == [
+            "list_files", "read_file", "search_text", "web_search", "fetch_content", "take_screenshot",
+            "edit_file", "generate_image", "shell"
+        ])
+        try expect(visible.map(\.name) == RemoteSessionCreation.tools.map(\.id))
+        try expect(SessionTool.names == ToolDisplayMetadata.all.map(\.id))
+        for tool in SessionTool.all {
             let metadata = ToolDisplayMetadata(name: tool.name)
             try expect(!tool.label.isEmpty && !tool.label.contains("_"))
-            try expect(tool.label == metadata.label && tool.label == remote.label)
-            try expect(tool.icon == metadata.icon && tool.icon == remote.icon)
+            try expect(tool.label == metadata.label)
+            try expect(tool.icon == metadata.icon)
             try expect(tool.icon == ToolPresentation(name: tool.name, arguments: "{}").icon)
+        }
+        for (tool, remote) in zip(visible, RemoteSessionCreation.tools) {
+            try expect(tool.label == remote.label && tool.icon == remote.icon)
         }
     }
 }

@@ -20,6 +20,8 @@ extension RemoteTransport {
 extension RelayClient: RemoteTransport {}
 
 @MainActor @Observable final class RemoteStore {
+    static let hostConnectionRequiredMessage = "Connect to the host first."
+
     var host: PairedHost?
     var connected = false
     private(set) var isConnecting = false
@@ -261,7 +263,7 @@ extension RelayClient: RemoteTransport {}
         } catch { self.error = error.localizedDescription }
     }
     func browseFolders(_ path: String?, showHidden: Bool) async throws -> RemoteJSON {
-        guard connected else { throw RemoteFailure("Connect to the agent first.") }
+        guard connected else { throw RemoteFailure(Self.hostConnectionRequiredMessage) }
         let connection = connectionGeneration
         do {
             return try await client.request("POST", "/v1/workspaces/browse", body: .object([

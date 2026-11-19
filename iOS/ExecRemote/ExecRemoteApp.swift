@@ -496,7 +496,10 @@ struct NewChatScreen: View {
         NavigationStack {
             Form {
                 Section("Workspace") {
-                    Button { choosingFolder = true } label: {
+                    Button {
+                        guard store.connected else { return }
+                        choosingFolder = true
+                    } label: {
                         HStack {
                             Image(systemName: "folder")
                             Text(workspace.isEmpty ? "Choose Folder" : workspace)
@@ -506,6 +509,7 @@ struct NewChatScreen: View {
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                         }
                     }
+                    .disabled(!store.connected)
                     .accessibilityIdentifier("new-session-workspace")
                 }
                 Section("Model selection") {
@@ -635,6 +639,11 @@ struct SharedSettingsScreen: View {
 /// Native navigation/list controls over the agent's read-only directory endpoint.
 /// UIDocumentPicker would select an iPhone folder, not a workspace on the host.
 private struct HostFolderPicker: View {
+    private struct LoadRequest: Hashable {
+        let path: String?
+        let connected: Bool
+    }
+
     let store: RemoteStore
     let choose: (String) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -652,30 +661,41 @@ private struct HostFolderPicker: View {
     }
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    if let parent = listing["parent"].string {
-                        Button("back up", systemImage: "arrow.turn.left.up") { requestedPath = parent }
-                    }
-                    ForEach(listing["directories"].array, id: \.folderPath) { directory in
-                        Button { requestedPath = directory["path"].string } label: {
-                            Label(directory["name"].string ?? "Folder", systemImage: "folder")
-                                .foregroundStyle(AppColors.blue)
+            Group {
+                if !store.connected {
+                    Text(RemoteStore.hostConnectionRequiredMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityIdentifier("host-folder-offline")
+                } else {
+                    List {
+                        Section {
+                            if let parent = listing["parent"].string {
+                                Button("back up", systemImage: "arrow.turn.left.up") { requestedPath = parent }
+                            }
+                            ForEach(listing["directories"].array, id: \.folderPath) { directory in
+                                Button { requestedPath = directory["path"].string } label: {
+                                    Label(directory["name"].string ?? "Folder", systemImage: "folder")
+                                        .foregroundStyle(AppColors.blue)
+                                }
+                                .accessibilityIdentifier("host-folder-\(directory.folderPath)")
+                            }
+                        } header: {
+                            if let currentPath {
+                                Text(currentPath).font(.callout).textCase(nil).textSelection(.enabled)
+                                    .padding(.bottom, 8)
+                            }
                         }
-                        .accessibilityIdentifier("host-folder-\(directory.folderPath)")
+                        if listing["truncated"].bool {
+                            Text("This folder is too large to list completely. Some folders are not shown.").font(.caption)
+                        }
+                        if let failure { Text(failure).foregroundStyle(.red) }
                     }
-                } header: {
-                    if let currentPath {
-                        Text(currentPath).font(.callout).textCase(nil).textSelection(.enabled)
-                            .padding(.bottom, 8)
-                    }
+                    .accessibilityIdentifier("host-folder-list")
                 }
-                if listing["truncated"].bool {
-                    Text("This folder is too large to list completely. Some folders are not shown.").font(.caption)
-                }
-                if let failure { Text(failure).foregroundStyle(.red) }
             }
-            .accessibilityIdentifier("host-folder-list")
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Choose Folder")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -689,10 +709,11 @@ private struct HostFolderPicker: View {
                         .modifier(PrimaryActionButtonStyle())
                 }
             }
-            .task(id: requestedPath) {
+            .task(id: LoadRequest(path: requestedPath, connected: store.connected)) {
                 readGeneration += 1
                 let generation = readGeneration
                 failure = nil
+                guard store.connected else { return }
                 do {
                     // Drain already-issued reads even after navigation or dismissal;
                     // cancelling a secure-channel receive would close the shared socket.
