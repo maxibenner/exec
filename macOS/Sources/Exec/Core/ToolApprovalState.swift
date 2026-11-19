@@ -43,11 +43,15 @@ import Observation
         resolving = true
         Task {
             defer { resolving = false }
-            do { try await resolve(operationID, id, approved) }
-            catch { reportError?(error.localizedDescription) }
-            // Hide the submitted decision locally, without fabricating a tool outcome.
-            // An uncertain acknowledgement is not a denial; reopening reads backend state.
-            if pendingApproval?.id == id { pendingApproval = nil }
+            do {
+                try await resolve(operationID, id, approved)
+                // Hide only an acknowledged decision, without fabricating a tool outcome.
+                if pendingApproval?.id == id { pendingApproval = nil }
+            } catch {
+                // Reconciliation may retain this approval, remove it, or replace it.
+                // A failed acknowledgement alone is never evidence it was resolved.
+                reportError?(error.localizedDescription)
+            }
         }
     }
 }

@@ -238,17 +238,18 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Agent incremental Unicode updates reconcile by stable identity", { try await AgentEventTests().streamsAndReconcilesWithoutReplacingRenderer() }),
             ("Agent sync recovers one failed read without replaying work", { try await AgentEventTests().reconnectsObserverOnceWithoutReplayingWork() }),
             ("Cancellation keeps ownership through cleanup", { try await AgentEventTests().cancellationOwnsCleanupAndUsesExactID() }),
-            ("Uncertain configuration never retries", { try await AgentEventTests().configurationFailureDoesNotRetry() }),
-            ("Agent snapshot reconciliation and approvals", { try await AgentIntegrationTests().snapshotAndApproval() }),
             ("Stop and close during image/file uploads retain drafts without dispatch", { try await SubmissionSafetyTests().stopAndCloseDuringUploadsNeverDispatchAndPreserveDrafts() }),
             ("Stop after dispatch reconciles once and cancels only the confirmed operation", { try await SubmissionSafetyTests().stopAfterDispatchReconcilesOnceAndCancelsOnlyConfirmedOperation() }),
+            ("Uncertain configuration never retries", { try await AgentEventTests().configurationFailureDoesNotRetry() }),
+            ("Agent snapshot reconciliation and approvals", { try await AgentIntegrationTests().snapshotAndApproval() }),
+            ("Failed approval decisions reconcile pending state without replay", { try await ToolApprovalRecoveryTests().failedDecisionsReconcileAuthoritativelyWithoutResending() }),
             ("Queued images retain their operation and never replay", { try await ImageQueueTests().queuesImagesWithoutReplayingOrChangingOperation() }),
             ("Uncertain submissions never retry", { try await AgentIntegrationTests().uncertainSendIsNotRetried() }),
             ("Quit retains copy and awaits backend shutdown", { try await AgentIntegrationTests().quitWaitsForBackendAndPreservesCopy() }),
+            ("Idle and detached drafts require explicit Quit loss confirmation", { try await QuitDraftTests().idleAndDetachedDraftsRequireExplicitLossConfirmation() }),
             ("HTTP redirects and interrupted mutations never replay", { try await HTTPConsumerTests().redirectsAndInterruptedMutationsAreNotReplayed() }),
             ("HTTPS rejects an untrusted certificate without fallback", { try await HTTPConsumerTests().tlsRejectsUntrustedCertificate() }),
             ("Bundled backend ignores external settings and provisions private credentials", { try AgentIntegrationTests().httpConfiguration() }),
-            ("Idle and detached drafts require explicit Quit loss confirmation", { try await QuitDraftTests().idleAndDetachedDraftsRequireExplicitLossConfirmation() }),
             ("Agent transport connects to isolated Rust service", { try await AgentIntegrationTests().realService() })
         ]
         for (name, check) in checks {

@@ -168,8 +168,15 @@ import CryptoKit
         self.observationSleep = observationSleep
         tools.resolve = { [weak self] operation, approval, approved in
             guard let self, let id = self.currentSessionID else { return }
-            _ = try await self.api.request("POST", AgentAPI.path(id, "/approvals"), .object([
-                "operationID": .string(operation.uuidString.lowercased()), "approvalID": .string(approval.uuidString.lowercased()), "approved": .bool(approved)]))
+            do {
+                _ = try await self.api.request("POST", AgentAPI.path(id, "/approvals"), .object([
+                    "operationID": .string(operation.uuidString.lowercased()), "approvalID": .string(approval.uuidString.lowercased()), "approved": .bool(approved)]))
+            } catch {
+                // The decision may have committed. Refresh even an unchanged approval
+                // through a fresh authoritative reader; never resend the decision.
+                try? await self.resynchronize(id)
+                throw error
+            }
         }
         tools.reportError = { [weak self] in self?.error = $0 }
     }
@@ -455,6 +462,8 @@ import CryptoKit
         }
     }
 
+    private var canPrepareSubmission: Bool { !isStopping && !commandsClosed && !hasUnsavedChanges && !Task.isCancelled }
+
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let pendingCompaction = compactionTask
@@ -462,33 +471,32 @@ import CryptoKit
         let steeringOperationID = operationActive ? snapshot?.operation?.id : nil
         let inputImages = draftImages
         let inputFiles = draftFiles
-    private var canPrepareSubmission: Bool { !isStopping && !commandsClosed && !hasUnsavedChanges && !Task.isCancelled }
-
         let originalDraft = draft
         submitting = true
         if pendingCompaction == nil { acceptedOperationID = nil }
         error = nil
         task = Task {
             defer { submitting = false; task = nil; updateSleepActivity(); drainCommands() }
+            // Preparation can be abandoned without consuming the draft. Once dispatched,
+            // keep the single request alive for receipt reconciliation and exact-ID Stop.
+            var requestDispatched = false
             do {
                 await waitForPendingSave()
+                guard canPrepareSubmission else { return }
                 var steeringOperationID = steeringOperationID
                 if let pendingCompaction {
                     // Wait only for acceptance, not completion. Bind this single send to
                     // that operation; a failed/uncertain compaction must not start a turn.
                     guard let operationID = await pendingCompaction.value,
-            // Preparation can be abandoned without consuming the draft. Once dispatched,
-            // keep the single request alive for receipt reconciliation and exact-ID Stop.
-            var requestDispatched = false
                           canPrepareSubmission else { return }
                     steeringOperationID = operationID
-                guard canPrepareSubmission else { return }
                 }
                 if snapshot?.metadata.parent != nil, steeringOperationID == nil,
                    let id = currentSessionID {
                     // A child can be opened between creation and its first turn.
                     // Refresh before choosing a route; never submit a competing turn.
                     try await resynchronize(id)
+                    guard canPrepareSubmission else { return }
                     guard operationActive, let operation = snapshot?.operation else {
                         throw ExecError("This sub-agent is no longer running. Send a new task in the parent session.")
                     }
@@ -499,29 +507,29 @@ import CryptoKit
                     guard canPrepareSubmission else { return }
                 }
                 guard let id = currentSessionID else { throw ExecError("Choose a workspace and model before sending a message.") }
-                    guard canPrepareSubmission else { return }
                 // Select the local capture adapter, without granting screen or OS access.
                 if steeringOperationID == nil, api.desktop.frontendID != nil, !api.desktop.enabled.contains(id) {
                     try await api.desktop.setEnabled(true, for: id)
+                    guard canPrepareSubmission else { return }
                 }
                 var images: [AgentImage] = []
                 for image in inputImages {
                     let value = try await api.request("POST", AgentAPI.path(id, "/images"), .object([
                         "name": .string(image.name), "base64": .string(image.data.base64EncodedString())]))
+                    guard canPrepareSubmission else { return }
                     let ref = try value.decoded(AgentImage.self)
                     imageCache[ref.id] = ImageAttachment(id: ref.id, name: ref.name, mediaType: ref.mediaType, data: image.data)
-                    guard canPrepareSubmission else { return }
                     images.append(ref)
                 }
                 var files: [String] = []
                 for file in inputFiles {
                     let ref: AgentFile
-                    guard canPrepareSubmission else { return }
                     if let uploaded = uploadedFiles[file.id], uploaded.session == id {
                         ref = uploaded.file
                     } else {
                         let value = try await api.request("POST", AgentAPI.path(id, "/files"), .object([
                             "name": .string(file.name), "base64": .string(file.data.base64EncodedString())]))
+                        guard canPrepareSubmission else { return }
                         ref = try value.decoded(AgentFile.self)
                         guard ref.name == file.name, ref.byteCount == file.data.count,
                               ref.sha256.lowercased() == SHA256.hash(data: file.data).map({ String(format: "%02x", $0) }).joined() else {
@@ -529,9 +537,10 @@ import CryptoKit
                         }
                         uploadedFiles[file.id] = (session: id, file: ref)
                     }
-                        guard canPrepareSubmission else { return }
                     files.append(ref.id.uuidString.lowercased())
                 }
+                guard canPrepareSubmission else { return }
+                requestDispatched = true
                 if let steeringOperationID {
                     // Keep the original operation target even if it finishes during upload.
                     // A rejected/uncertain queue request must never become a new turn.
@@ -539,8 +548,6 @@ import CryptoKit
                     _ = try await api.send("POST", AgentAPI.path(id, "/steer"), body: Steering(
                         operationID: steeringOperationID.uuidString.lowercased(), text: text, images: images, files: files))
                 } else {
-                guard canPrepareSubmission else { return }
-                requestDispatched = true
                     struct Turn: Encodable { let text: String; let images: [AgentImage]; let files: [String] }
                     let receipt = try await api.send("POST", AgentAPI.path(id, "/turns"), body: Turn(text: text, images: images, files: files))
                     acceptedOperationID = receipt["operationID"].string.flatMap(UUID.init(uuidString:))
