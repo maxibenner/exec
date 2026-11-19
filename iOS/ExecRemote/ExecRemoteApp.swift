@@ -489,7 +489,6 @@ struct NewChatScreen: View {
                                              set: { tools.setEnabled(tool.id, $0) })) {
                             Label(tool.label, systemImage: tool.icon)
                         }
-                        .tint(.blue)
                         .accessibilityIdentifier("new-session-tool-\(tool.id)")
                     }
                 }
@@ -548,13 +547,10 @@ struct SharedSettingsScreen: View {
             Form {
                 Section("General") {
                     Toggle("Descriptive shell titles", isOn: $descriptiveShellTitles)
-                        .tint(.blue)
                         .accessibilityIdentifier("descriptive-shell-titles")
                     Group {
                         Toggle("Automatic session titles", isOn: Binding(get: { store.library["automaticTitles"].bool }, set: { value in patch(["automaticTitles":.bool(value)]) }))
-                            .tint(.blue)
                         Toggle("Auto mode for new chats", isOn: Binding(get: { store.library["settings"]["autoApprove"].bool }, set: { value in patch(["settings":.object(["autoApprove":.bool(value)])]) }))
-                            .tint(.blue)
                         Picker("Default model", selection: Binding(get: { store.library["defaultModel"].string ?? "" }, set: { value in patch(["defaultModel": value.isEmpty ? .null : .string(value)]) })) {
                             Text("Automatic").tag("")
                             ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
