@@ -36,8 +36,10 @@ init-token uses the shared server token initializer and prints nothing.
 Provider IDs: deepseek, openai. No secrets are accepted as command arguments.
 DeepSeek prompts without echo; --key-stdin explicitly reads a pipe/file (8192 bytes, 60s).
 OpenAI device login and invitation JSON require interactive terminal stdin/stdout.
-No browser is launched. Ctrl-C/SIGTERM/SIGHUP cancels the same OpenAI attempt once.
-After a lost login acknowledgement, inspect login-status and cancel-login its exact ID.
+No browser is launched. Ctrl-C/SIGTERM/SIGHUP requests cancellation of that OpenAI attempt once.
+Cancellation reports an observed terminal state or an unknown outcome, not just acceptance.
+After an unknown outcome, inspect login-status and providers status before another login.
+Cancel only the exact observed attempt ID; never blindly replay login or cancellation.
 Requests have bounded responses/timeouts, with no proxies, redirects or retries.
 ";
 
@@ -266,9 +268,10 @@ fn invitation(value: Invitation) -> Result<()> {
 }
 
 fn output(value: &impl Serialize) -> Result<()> {
+    const FAILED: &str = "Cannot write command output; the operation may have taken effect. Inspect service state before continuing; do not replay it blindly.";
     let mut stdout = std::io::stdout().lock();
-    serde_json::to_writer_pretty(&mut stdout, value).map_err(|_| "Cannot write command output.")?;
-    writeln!(stdout).map_err(|_| "Cannot write command output.")
+    serde_json::to_writer_pretty(&mut stdout, value).map_err(|_| FAILED)?;
+    writeln!(stdout).map_err(|_| FAILED)
 }
 
 pub(super) async fn run() -> Result<()> {

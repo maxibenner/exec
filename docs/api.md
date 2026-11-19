@@ -61,6 +61,39 @@ Keep transport/provider secrets out of command arguments and source control.
 The local admin CLI does not run chat, inference or model-discovery commands.
 Run `exec-agent-admin --help` for provider and remote administration commands.
 
+### Device login interruption and uncertain commands
+
+`exec-agent-admin providers connect openai --device-code` requires interactive
+terminal stdin/stdout. It launches no browser and prints challenge material only
+on that terminal. Ctrl-C/SIGTERM/SIGHUP requests cancellation of the **same attempt
+ID once**; additional signals do not resend or abandon cleanup. A cancellation
+acknowledgement is not settlement. The CLI observes for up to five seconds after
+that request finishes, even if the cancellation POST failed or lost its response.
+
+Only an observed terminal state for that attempt can establish settlement.
+Completion can win the cancellation race: the CLI then reports `state:completed`
+and `connected:true`, not interruption. Observed failed/interrupted states are
+reported as such. `providers cancel-login ATTEMPT_ID` also includes the observed
+terminal `state` in its JSON; `cancellationRequested:true` means the one request
+was attempted, **not** that it was accepted or prevented credential persistence.
+Cancellation POST errors are reported even if observation subsequently settles.
+
+A lost/invalid login acknowledgement, observation error, changed/missing attempt,
+or settlement timeout reports an **unknown outcome** and fails the command.
+The attempt may still be active, or credentials may already have been saved.
+Before starting another login, run:
+
+```sh
+exec-agent-admin providers login-status
+exec-agent-admin providers status
+```
+
+If cancellation is still needed, use only the exact active ID from `login-status`;
+do not blindly replay login or cancellation. HTTP/validation/output failures in
+other mutating commands can likewise occur after effects: inspect provider or
+remote status before deciding what to do next. The CLI does not retry mutations,
+provider authentication or inference.
+
 ## Embedded startup
 
 `service::start_persistent_service(profile, provider, workspace_tools, address, access)` accepts an absolute profile path, `Arc<dyn ChatProvider>`, an explicit tool opt-in, a `SocketAddr`, and an explicit `HttpAccess` policy. The execution runtime itself does not depend on HTTP authentication. `providers::credentials::configured_deepseek_provider` provides the same JSON/environment setup; alternatively construct `DeepSeekProvider` with a host-owned async `CredentialSource`.
