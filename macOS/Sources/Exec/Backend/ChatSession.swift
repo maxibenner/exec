@@ -458,10 +458,12 @@ import CryptoKit
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let pendingCompaction = compactionTask
-        guard !text.isEmpty || !draftImages.isEmpty || !draftFiles.isEmpty, canEditDraft, !isStopping, !isImportingAttachments, !submitting, !isSaving, commandTask == nil || pendingCompaction != nil, clearTask == nil, hasUsableModel else { return }
+        guard !text.isEmpty || !draftImages.isEmpty || !draftFiles.isEmpty, canEditDraft, !commandsClosed, !isStopping, !isImportingAttachments, !submitting, !isSaving, commandTask == nil || pendingCompaction != nil, clearTask == nil, hasUsableModel else { return }
         let steeringOperationID = operationActive ? snapshot?.operation?.id : nil
         let inputImages = draftImages
         let inputFiles = draftFiles
+    private var canPrepareSubmission: Bool { !isStopping && !commandsClosed && !hasUnsavedChanges && !Task.isCancelled }
+
         let originalDraft = draft
         submitting = true
         if pendingCompaction == nil { acceptedOperationID = nil }
@@ -475,8 +477,12 @@ import CryptoKit
                     // Wait only for acceptance, not completion. Bind this single send to
                     // that operation; a failed/uncertain compaction must not start a turn.
                     guard let operationID = await pendingCompaction.value,
-                          !isStopping, !commandsClosed, !hasUnsavedChanges else { return }
+            // Preparation can be abandoned without consuming the draft. Once dispatched,
+            // keep the single request alive for receipt reconciliation and exact-ID Stop.
+            var requestDispatched = false
+                          canPrepareSubmission else { return }
                     steeringOperationID = operationID
+                guard canPrepareSubmission else { return }
                 }
                 if snapshot?.metadata.parent != nil, steeringOperationID == nil,
                    let id = currentSessionID {
@@ -488,8 +494,12 @@ import CryptoKit
                     }
                     steeringOperationID = operation.id
                 }
-                if steeringOperationID == nil { try await persistConfiguration(allowInheritedWorkspace: true) }
+                if steeringOperationID == nil {
+                    try await persistConfiguration(allowInheritedWorkspace: true)
+                    guard canPrepareSubmission else { return }
+                }
                 guard let id = currentSessionID else { throw ExecError("Choose a workspace and model before sending a message.") }
+                    guard canPrepareSubmission else { return }
                 // Select the local capture adapter, without granting screen or OS access.
                 if steeringOperationID == nil, api.desktop.frontendID != nil, !api.desktop.enabled.contains(id) {
                     try await api.desktop.setEnabled(true, for: id)
@@ -500,11 +510,13 @@ import CryptoKit
                         "name": .string(image.name), "base64": .string(image.data.base64EncodedString())]))
                     let ref = try value.decoded(AgentImage.self)
                     imageCache[ref.id] = ImageAttachment(id: ref.id, name: ref.name, mediaType: ref.mediaType, data: image.data)
+                    guard canPrepareSubmission else { return }
                     images.append(ref)
                 }
                 var files: [String] = []
                 for file in inputFiles {
                     let ref: AgentFile
+                    guard canPrepareSubmission else { return }
                     if let uploaded = uploadedFiles[file.id], uploaded.session == id {
                         ref = uploaded.file
                     } else {
@@ -517,6 +529,7 @@ import CryptoKit
                         }
                         uploadedFiles[file.id] = (session: id, file: ref)
                     }
+                        guard canPrepareSubmission else { return }
                     files.append(ref.id.uuidString.lowercased())
                 }
                 if let steeringOperationID {
@@ -526,6 +539,8 @@ import CryptoKit
                     _ = try await api.send("POST", AgentAPI.path(id, "/steer"), body: Steering(
                         operationID: steeringOperationID.uuidString.lowercased(), text: text, images: images, files: files))
                 } else {
+                guard canPrepareSubmission else { return }
+                requestDispatched = true
                     struct Turn: Encodable { let text: String; let images: [AgentImage]; let files: [String] }
                     let receipt = try await api.send("POST", AgentAPI.path(id, "/turns"), body: Turn(text: text, images: images, files: files))
                     acceptedOperationID = receipt["operationID"].string.flatMap(UUID.init(uuidString:))
@@ -540,7 +555,7 @@ import CryptoKit
             } catch {
                 self.error = error.localizedDescription
                 // Never resubmit. A lost acknowledgement can follow accepted input or effects.
-                if let id = currentSessionID { try? await resynchronize(id) }
+                if requestDispatched, let id = currentSessionID { try? await resynchronize(id) }
             }
         }
     }
