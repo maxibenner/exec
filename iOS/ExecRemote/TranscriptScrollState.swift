@@ -1,0 +1,94 @@
+import Foundation
+import ExecRemote
+
+/// A table item is either one message or a contiguous run of tools. Calls keep
+/// their own identities even though UIKit measures the entire run in one host.
+struct TranscriptItem: Equatable {
+    let rows: [RemoteTranscriptRow]
+    var id: String { rows[0].id }
+    var isToolGroup: Bool { rows[0].call != nil }
+
+    static func project(_ snapshot: RemoteJSON) -> [Self] {
+        var items: [Self] = []
+        var tools: [RemoteTranscriptRow] = []
+        var seen: Set<String> = []
+        for row in RemoteTranscriptRow.project(snapshot) where !row.id.isEmpty && seen.insert(row.id).inserted {
+            if row.call != nil {
+                tools.append(row)
+            } else {
+                if !tools.isEmpty { items.append(Self(rows: tools)); tools = [] }
+                items.append(Self(rows: [row]))
+            }
+        }
+        if !tools.isEmpty { items.append(Self(rows: tools)) }
+        return items
+    }
+}
+
+/// Only reader input changes follow intent. Geometry, keyboard changes and
+/// delayed self-sizing must never infer permission to return to the latest row.
+struct TranscriptScrollState {
+    enum Intent: Equatable { case latest, turn(String), reading }
+    private(set) var intent: Intent = .latest
+    private(set) var reservedTurnID: String?
+    private var previousIDs: Set<String> = []
+    private var lastUserID: String?
+    private var initialized = false
+
+    /// Returns true only for a newly delivered user turn, not a history page,
+    /// cached initial snapshot, or acknowledgement of an optimistic local row.
+    mutating func update(rows: [RemoteTranscriptRow]) -> Bool {
+        let ids = Set(rows.map(\.id))
+        let user = rows.last { $0.message["role"].string == "user" }
+        let appended = initialized && (previousIDs.isEmpty || !previousIDs.isDisjoint(with: ids))
+        let isNewUser = appended && user.map { $0.id != lastUserID && !previousIDs.contains($0.id) } == true
+        let shouldFollow = isNewUser && user.map { intent != .reading || $0.id.hasPrefix("local-") } == true
+        if shouldFollow, let user {
+            intent = .turn(user.id)
+            reservedTurnID = user.id
+        } else if let reservedTurnID, !ids.contains(reservedTurnID) {
+            self.reservedTurnID = nil
+            if case .turn = intent { intent = .latest }
+        }
+        previousIDs = ids
+        lastUserID = user?.id
+        initialized = true
+        return shouldFollow
+    }
+
+    mutating func readerScrolled(towardLatest: Bool, atBottom: Bool) {
+        if towardLatest && atBottom {
+            intent = .latest
+            reservedTurnID = nil
+        } else {
+            // Retain the response-space minimum while reading so a short turn
+            // doesn't collapse out from under an interrupted send animation.
+            intent = .reading
+        }
+    }
+}
+
+struct TranscriptViewportAnchor {
+    let rowID: String
+    let offset: CGFloat
+}
+
+/// Shared arithmetic for the unobscured viewport. A response consumes the
+/// reserved blank space before extending naturally below a top-anchored turn.
+enum TranscriptScrollGeometry {
+    static let turnPadding: CGFloat = 20
+    static func turnOffset(rowTop: CGFloat, topInset: CGFloat) -> CGFloat {
+        max(-topInset, rowTop - topInset - turnPadding)
+    }
+    static func reservation(turnOffset: CGFloat, naturalHeight: CGFloat,
+                            viewportHeight: CGFloat, bottomInset: CGFloat) -> CGFloat {
+        max(0, turnOffset + viewportHeight - bottomInset - naturalHeight)
+    }
+    static func bottom(contentHeight: CGFloat, viewportHeight: CGFloat,
+                       topInset: CGFloat, bottomInset: CGFloat) -> CGFloat {
+        max(-topInset, contentHeight - viewportHeight + bottomInset)
+    }
+    static func shouldAnimate(initial: Bool, geometryChanged: Bool, reduceMotion: Bool) -> Bool {
+        !initial && !geometryChanged && !reduceMotion
+    }
+}

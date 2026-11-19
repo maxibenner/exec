@@ -253,6 +253,8 @@ struct ConversationScreen: View {
         .ignoresSafeArea(.container, edges: [.top, .bottom])
         .navigationTitle(store.snapshot["metadata"]["title"].string ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.bar, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         .toolbar(.hidden, for: .bottomBar)
         .onChange(of: store.selected, initial: true) { _, id in
             if let id { store.open(id) }

@@ -63,6 +63,7 @@ import ExecRemote
     private static var created: [RemoteJSON] = []
     private static var deleted: Set<String> = []
     static func request(_ method: String, _ path: String, body: RemoteJSON?) async throws -> RemoteJSON {
+        if let response = try await TranscriptUIFixture.request(method, path, body: body) { return response }
         if method == "DELETE" {
             try await Task.sleep(for: .seconds(3))
             if ProcessInfo.processInfo.arguments.contains("--delete-fails") { throw RemoteFailure("Fixture deletion failed.") }
