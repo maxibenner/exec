@@ -57,7 +57,7 @@ struct SessionSidebar: View {
         List {
             ForEach(displayedGroups) { group in
                 let session = group.session
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 0) {
                     SessionRow(session: session, store: store,
                                rename: {
                                    guard store.canRenameSession(session.id) else { return }
