@@ -418,7 +418,9 @@ import SwiftUI
         let pixels = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-        for y in 0..<8 { for x in 0..<8 { pixels.setColor(.systemRed, atX: x, y: y) } }
+        // Transparent attachments cannot supply accent-colored pixels themselves.
+        let transparent = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0)
+        for y in 0..<8 { for x in 0..<8 { pixels.setColor(transparent, atX: x, y: y) } }
         let image = ImageAttachment(name: "attachment.png", mediaType: "image/png",
                                    data: pixels.representation(using: .png, properties: [:])!)
         let other = ImageAttachment(name: "second.png", mediaType: "image/png", data: image.data)
@@ -428,18 +430,19 @@ import SwiftUI
             Message(role: .user, text: "", images: [image]),
             Message(role: .user, text: "Two attached images", images: [image, other])
         ]
-        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            for width in [CGFloat(420), 860] {
-                let state = TranscriptState()
-                let view = TranscriptScrollView(state: state)
-                view.frame = NSRect(x: 0, y: 0, width: width, height: 800)
-                let window = NSWindow(contentRect: view.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
-                window.appearance = NSAppearance(named: appearance)
-                window.contentView = view
-                defer { view.detach(); window.orderOut(nil); window.contentView = nil }
-                window.orderFront(nil)
-                for message in messages {
-                    view.update(messages: [message], jumpRequest: 0)
+        for width in [CGFloat(420), 860] {
+            let state = TranscriptState()
+            let view = TranscriptScrollView(state: state)
+            view.frame = NSRect(x: 0, y: 0, width: width, height: 800)
+            let window = NSWindow(contentRect: view.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.contentView = view
+            defer { view.detach(); window.orderOut(nil); window.contentView = nil }
+            window.orderFront(nil)
+            for message in messages {
+                view.update(messages: [message], jumpRequest: 0)
+                // Change appearance in place, without replacing the hosted message.
+                for appearance in [NSAppearance.Name.aqua, .darkAqua, .aqua] {
+                    window.appearance = NSAppearance(named: appearance)
                     try await settle(view)
                     let rows = view.documentView!.subviews
                     try expect(rows.count == 1)
@@ -448,19 +451,25 @@ import SwiftUI
                     try expect(abs(row.frame.height - ceil(row.fittingSize.height)) < 1)
                     let texts = textViews(in: row)
                     try expect(texts.map(\.string) == (message.text.isEmpty ? [] : [message.text]))
+                    var accent = NSColor.controlAccentColor
+                    var foreground = AppColors.systemAccentText
+                    window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                        accent = accent.usingColorSpace(.sRGB)!
+                        foreground = foreground.usingColorSpace(.sRGB)!
+                    }
                     if let text = texts.first {
                         let storage = text.textStorage!
-                        var hasWhiteText = true
-                        storage.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
-                            guard let color = (value as? NSColor)?.usingColorSpace(.sRGB) else {
-                                hasWhiteText = false
-                                return
+                        var hasContrastingText = true
+                        text.effectiveAppearance.performAsCurrentDrawingAppearance {
+                            storage.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+                                guard let color = (value as? NSColor)?.usingColorSpace(.sRGB) else {
+                                    hasContrastingText = false
+                                    return
+                                }
+                                hasContrastingText = hasContrastingText && color == foreground
                             }
-                            hasWhiteText = hasWhiteText && color.redComponent > 0.99
-                                && color.greenComponent > 0.99 && color.blueComponent > 0.99
-                                && color.alphaComponent == 1
                         }
-                        try expect(hasWhiteText)
+                        try expect(hasContrastingText)
                         let range = NSRange(location: 0, length: (message.text as NSString).length)
                         text.setSelectedRange(range)
                         try expect(text.selectedRange() == range)
@@ -470,21 +479,21 @@ import SwiftUI
                         throw CheckFailure(description: "Could not render user bubble")
                     }
                     view.cacheDisplay(in: view.bounds, to: bitmap)
-                    // Red attachment fixtures cannot satisfy this check: the blue
-                    // must come from the shared bubble, including image-only rows.
-                    var bluePixels = 0
+                    // Cached surfaces can shift profiles; check accent coverage here,
+                    // including image-only rows. The color tests check exact contrast.
+                    var accentPixels = 0
                     for y in stride(from: 0, to: bitmap.pixelsHigh, by: 4) {
                         for x in stride(from: 0, to: bitmap.pixelsWide, by: 4) {
                             guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
-                            // Cached SwiftUI surfaces can retain compositing alpha;
-                            // verify blue coverage here, exact sRGB in the layer test.
-                            if color.blueComponent > color.redComponent + 0.04,
-                               color.blueComponent > color.greenComponent + 0.02 {
-                                bluePixels += 1
+                            if abs(color.redComponent - accent.redComponent) < 0.15,
+                               abs(color.greenComponent - accent.greenComponent) < 0.15,
+                               abs(color.blueComponent - accent.blueComponent) < 0.15,
+                               color.alphaComponent > 0.5 {
+                                accentPixels += 1
                             }
                         }
                     }
-                    try expect(bluePixels > 20)
+                    try expect(accentPixels > 20)
                 }
             }
         }
