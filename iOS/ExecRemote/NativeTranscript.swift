@@ -412,6 +412,7 @@ private struct MobileToolCard: View {
     private var settling = false
     private var correctingOffset = false
     private var scrollAnimator: UIViewPropertyAnimator?
+    private var revealAnimator: UIViewPropertyAnimator?
     var animatingScroll: Bool { scrollAnimator != nil }
     private var readerActive = false
     private var readerDirection: CGFloat = 0
@@ -433,6 +434,7 @@ private struct MobileToolCard: View {
 
     func resetScroll() {
         cancelScrollAnimation()
+        finishContentReveal()
         scrollState = TranscriptScrollState()
         readingAnchor = nil
         restoringReadingAnchor = false
@@ -536,12 +538,17 @@ private struct MobileToolCard: View {
         finishedFollowing?()
     }
     @objc private func motionPolicyChanged() {
-        if UIAccessibility.isReduceMotionEnabled { scheduleAlignment(immediate: true) }
+        if UIAccessibility.isReduceMotionEnabled {
+            finishContentReveal()
+            scheduleAlignment(immediate: true)
+        }
     }
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { cancelScrollAnimation() }
-        else { scheduleAlignment(immediate: true) }
+        if window == nil {
+            cancelScrollAnimation()
+            finishContentReveal()
+        } else { scheduleAlignment(immediate: true) }
     }
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -610,10 +617,30 @@ private struct MobileToolCard: View {
                 scheduleAlignment(immediate: true)
                 return
             }
-            UIView.performWithoutAnimation { alpha = 1 }
-            hasPresentedContent = true
+            revealContent()
             didChangeViewState?()
         }
+    }
+    private func revealContent() {
+        // Fade only the first positioned transcript, not later streaming,
+        // keyboard or disclosure layouts. Content offsets stay non-animated.
+        guard !hasPresentedContent else { return }
+        hasPresentedContent = true
+        guard !reduceMotion else {
+            UIView.performWithoutAnimation { alpha = 1 }
+            return
+        }
+        let animator = UIViewPropertyAnimator(duration: 0.2, curve: .easeOut) { [weak self] in
+            self?.alpha = 1
+        }
+        animator.addCompletion { [weak self] _ in self?.revealAnimator = nil }
+        revealAnimator = animator
+        animator.startAnimation()
+    }
+    private func finishContentReveal() {
+        revealAnimator?.stopAnimation(true)
+        revealAnimator = nil
+        if hasPresentedContent { UIView.performWithoutAnimation { alpha = 1 } }
     }
     private func resolvedOffset() -> CGFloat? {
         let maximum = TranscriptScrollGeometry.bottom(contentHeight: contentSize.height, viewportHeight: bounds.height,
