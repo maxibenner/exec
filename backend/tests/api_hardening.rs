@@ -92,6 +92,117 @@ async fn serve(manager: Arc<AgentManager>, provider: Arc<dyn ChatProvider>) -> S
     .unwrap()
 }
 
+#[derive(Default)]
+struct PartialMetadataProvider {
+    limit: AtomicUsize,
+    model_calls: AtomicUsize,
+    stream_calls: AtomicUsize,
+    entered: CancellationToken,
+}
+#[async_trait]
+impl ChatProvider for PartialMetadataProvider {
+    fn stream(
+        &self,
+        _: ProviderRequest,
+    ) -> futures_util::stream::BoxStream<'static, Result<ProviderEvent>> {
+        self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        // A single explicit fake turn seeds derived context usage, without I/O.
+        Box::pin(futures_util::stream::iter([
+            Ok(ProviderEvent::Metadata {
+                state: None,
+                usage: Some(TokenUsage {
+                    total_tokens: Some(120),
+                    ..Default::default()
+                }),
+            }),
+            Ok(ProviderEvent::Done),
+        ]))
+    }
+    fn context_window(&self, _: &str) -> Option<u64> {
+        let limit = self.limit.load(Ordering::SeqCst);
+        (limit != 0).then_some(limit as u64)
+    }
+    async fn models(&self, _: CancellationToken) -> Result<Vec<ChatModel>> {
+        self.model_calls.fetch_add(1, Ordering::SeqCst);
+        self.limit.store(1_000, Ordering::SeqCst);
+        self.entered.cancel();
+        // Simulate one updated cache followed by another provider that stalls.
+        // Deliberately ignore cancellation: the HTTP boundary must drop us.
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn partial_discovery_disconnect_and_timeout_invalidate_derived_snapshots() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    for disconnect in [true, false] {
+        let manager = Arc::new(AgentManager::default());
+        let provider = Arc::new(PartialMetadataProvider::default());
+        let c = manager
+            .create(support::options(provider.clone(), vec![]))
+            .await
+            .unwrap();
+        support::complete(c.submit("seed fake usage".into()).unwrap()).await;
+        assert!(c.snapshot().context_usage.is_none());
+        let service = serve(manager.clone(), provider.clone()).await;
+        let mut changes = manager.subscribe_changes();
+        let request = format!(
+            "GET /v1/models HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            support::API_TOKEN
+        );
+        let mut socket = tokio::net::TcpStream::connect(service.address)
+            .await
+            .unwrap();
+        socket.write_all(request.as_bytes()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), provider.entered.cancelled())
+            .await
+            .unwrap();
+        assert_eq!(c.snapshot().context_usage.unwrap().limit, 1_000);
+        // Invalidation must include sessions created while discovery is suspended.
+        let late = manager
+            .create(support::options(provider.clone(), vec![]))
+            .await
+            .unwrap();
+        let before = changes.borrow_and_update().clone();
+        if disconnect {
+            drop(socket);
+        } else {
+            // Use the real API's 120-second deadline without waiting on wall time.
+            // Pause only after loopback headers have reached the provider gate.
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(120)).await;
+            tokio::time::resume();
+            let mut response = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(response.starts_with(b"HTTP/1.1 500"));
+        }
+        tokio::time::timeout(Duration::from_secs(2), changes.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        let after = changes.borrow_and_update().clone();
+        assert_ne!(after.catalog, before.catalog);
+        for id in [&c.id, &late.id] {
+            assert_ne!(after.conversations[id], before.conversations[id]);
+        }
+        assert_eq!(
+            manager
+                .snapshot(&c.id)
+                .unwrap()
+                .context_usage
+                .unwrap()
+                .limit,
+            1_000
+        );
+        assert_eq!(provider.model_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
+        service.close().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn pending_deletion_is_conflict_not_absence_and_readers_still_work() {
     let store = Arc::new(GatedStore::default());

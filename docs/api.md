@@ -179,6 +179,8 @@ Missing conversations return 404; catalog reservations (including pending deleti
 
 A snapshot has `id`, `model`, `workspace`, `canChangeWorkspace`, `configuration`, `messages`, `pendingInput`, `metadata`, `usage`, `contextUsage`, `resources`, `operation`, `approval`, `activeToolCallID`, optional `activeToolName`, and `storageError`. Nullable fields are serialized explicitly as null, except `activeToolName`, which is omitted when no tool is executing. Operation states are `running`, `awaiting_approval`, `cancelling`, `completed`, `failed`, `interrupted`. Messages retain the original user/assistant/tool tagged JSON shapes, assistant completion status, finalized calls and paired tool outcomes. Rust declarations are in [`backend/src/core/types.rs`](../backend/src/core/types.rs); command validation is in [`backend/src/service.rs`](../backend/src/service.rs).
 
+`GET /v1/models` may partially refresh provider metadata before another provider stalls or fails. Discovery invalidates the catalog and all conversation revisions on completion, failure, disconnect or its 120-second timeout, including conversations created during discovery. Clients must re-read provider-derived snapshots after that invalidation; a failed discovery response does not imply the caches were unchanged. Discovery is not automatically retried.
+
 **Turn acceptance is in-memory, not a durable receipt.** A 202 can precede the input checkpoint; a lost response can happen after effects. No idempotent replay mechanism is advertised. Terminal success is published only after its final checkpoint succeeds. Intermediate snapshots/events are not durability receipts.
 
 ## Clear and fork

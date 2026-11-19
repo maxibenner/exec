@@ -195,9 +195,18 @@ impl AgentManager {
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<Vec<ChatModel>> {
         let epoch = self.provider_epoch()?;
+        // A provider can update one cache and then suspend on another. The HTTP
+        // caller may drop this future on disconnect or timeout without polling it
+        // again, so invalidation must also happen when discovery is dropped.
+        struct InvalidateMetadata<'a>(&'a ChangeHub);
+        impl Drop for InvalidateMetadata<'_> {
+            fn drop(&mut self) {
+                self.0.provider_metadata_changed();
+            }
+        }
+        let invalidation = InvalidateMetadata(&self.changes);
         let result = provider.models(cancel).await;
-        // Provider caches may have changed even if discovery only partly succeeded.
-        self.changes.provider_metadata_changed();
+        drop(invalidation);
         self.check_provider_epoch(epoch)?;
         result
     }
