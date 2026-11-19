@@ -273,8 +273,12 @@ private struct SessionNotice: View {
                 .padding(16)
                 .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-                // Observe alongside selection; taps and other drag directions remain available.
-                .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { value in
+                // Include padding and the empty column below the icon in a
+                // multiline notice's drag target, not just its rendered text.
+                .contentShape(Rectangle())
+                // Begin alongside a sheet's pan without taking text selection
+                // away. Only a clear downward drag dismisses the action error.
+                .simultaneousGesture(DragGesture(minimumDistance: 10).onEnded { value in
                     if value.translation.height >= 40, value.translation.height > abs(value.translation.width) {
                         self.message = nil
                     }
