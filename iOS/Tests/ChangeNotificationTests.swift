@@ -137,6 +137,30 @@ private actor ObservationClock {
         observer.cancel(); await observer.value
     }
 
+    func testInitialConnectionFailureRecoversWithoutManualConnect() async throws {
+        let transport = FakeTransport(), clock = ObservationClock()
+        let store = try makeStore(transport, clock)
+        await configure(transport)
+        await transport.setFailConnections(true)
+        store.drafts["session"] = "Keep this unsent draft"
+        let observer = Task { await store.observe() }; defer { observer.cancel() }
+        try await until { await clock.delays.count == 1 }
+        XCTAssertFalse(store.connected)
+        XCTAssertNil(store.visibleError, "Connection-only failures use the persistent banner, not an action error.")
+        XCTAssertEqual(store.reconnectDelay, 3)
+
+        await transport.setFailConnections(false)
+        await clock.advance()
+        try await until { store.connected && store.lastChangeNotification == self.notice() }
+        let attempts = await transport.connectionAttempts
+        let commands = await transport.requests.filter { !$0.hasPrefix("GET ") }
+        XCTAssertEqual(attempts, 2, "The observer must recover without an explicit connect or refresh action.")
+        XCTAssertTrue(commands.isEmpty, "Automatic connection recovery must only read, never infer a mutation retry.")
+        XCTAssertEqual(store.drafts["session"], "Keep this unsent draft")
+        XCTAssertEqual(store.reconnectDelay, 1.5)
+        observer.cancel(); await observer.value
+    }
+
     func testReconnectCatchesUpHiddenCacheWithUnchangedRevisions() async throws {
         let transport = FakeTransport(), clock = ObservationClock()
         let store = try makeStore(transport, clock)
