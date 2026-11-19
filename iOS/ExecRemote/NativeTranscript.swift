@@ -675,6 +675,8 @@ private struct MobileToolCard: View {
 @MainActor private final class MessageCell: UITableViewCell, UITextViewDelegate {
     static let verticalContentInset: CGFloat = 10
     private let text = UITextView()
+    private let markdownBody = UIKitMarkdownView()
+    private let body = UIStackView()
     private var textWidth: NSLayoutConstraint!
     private var sourceText: String?
     private var markdown = false
@@ -691,24 +693,38 @@ private struct MobileToolCard: View {
         text.translatesAutoresizingMaskIntoConstraints = false
         text.layer.cornerRadius = 10
         text.layer.cornerCurve = .continuous
-        contentView.addSubview(text)
-        textWidth = text.widthAnchor.constraint(equalToConstant: 100)
+        body.axis = .vertical
+        body.translatesAutoresizingMaskIntoConstraints = false
+        body.addArrangedSubview(text); body.addArrangedSubview(markdownBody)
+        markdownBody.tintColor = AppColors.nativeBlue
+        contentView.addSubview(body)
+        textWidth = body.widthAnchor.constraint(equalToConstant: 100)
         NSLayoutConstraint.activate([
-            text.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 16),
-            text.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            text.topAnchor.constraint(equalTo: contentView.topAnchor, constant: Self.verticalContentInset),
-            text.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -Self.verticalContentInset),
+            body.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 16),
+            body.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            body.topAnchor.constraint(equalTo: contentView.topAnchor, constant: Self.verticalContentInset),
+            body.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -Self.verticalContentInset),
             textWidth
         ])
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (cell: MessageCell, _: UITraitCollection) in
-            cell.render(width: max(100, cell.contentView.bounds.width - 32))
+            // The Markdown body handles its own attributed-font trait changes.
+            if !cell.markdown { cell.render(width: max(100, cell.contentView.bounds.width - 32)) }
         }
     }
     required init?(coder: NSCoder) { fatalError("Use init(style:reuseIdentifier:)") }
-    override func prepareForReuse() { super.prepareForReuse(); sourceText = nil; blocks = [] }
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        sourceText = nil; blocks = []
+        text.attributedText = nil; text.selectedRange = NSRange(location: 0, length: 0)
+        markdownBody.reset()
+    }
     override func layoutSubviews() {
         let width = max(100, contentView.bounds.width - 32)
-        if sourceText != nil, abs(width - renderedWidth) > 1 { render(width: width) }
+        if sourceText != nil, abs(width - renderedWidth) > 1 {
+            renderedWidth = width
+            textWidth.constant = isUser ? width * 0.85 : width
+            if markdown { markdownBody.setLayoutWidth(width) }
+        }
         super.layoutSubviews()
     }
     func configure(_ message: RemoteJSON, width: CGFloat) {
@@ -719,6 +735,8 @@ private struct MobileToolCard: View {
         guard sourceText != content || markdown != useMarkdown || isUser != user else { return }
         sourceText = content; markdown = useMarkdown; isUser = user
         blocks = useMarkdown ? MarkdownDocument.parse(content) : []
+        text.isHidden = useMarkdown; markdownBody.isHidden = !useMarkdown
+        if !useMarkdown { markdownBody.reset() }
         text.backgroundColor = user ? AppColors.nativeBlue : .clear
         text.tintColor = user ? .white : AppColors.nativeBlue
         text.textContainerInset = user ? UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12) : .zero
@@ -727,10 +745,15 @@ private struct MobileToolCard: View {
     private func render(width: CGFloat) {
         guard let sourceText else { return }
         renderedWidth = max(100, width)
-        let attributed = markdown ? UIKitMarkdownText.render(blocks, width: renderedWidth) : NSAttributedString(string: sourceText,
-            attributes: [.font:UIFont.preferredFont(forTextStyle: .body), .foregroundColor:isUser ? UIColor.white : UIColor.label])
         textWidth.constant = isUser ? renderedWidth * 0.85 : renderedWidth
-        text.attributedText = attributed
+        if markdown {
+            markdownBody.update(blocks, source: sourceText, width: renderedWidth)
+        } else {
+            text.attributedText = NSAttributedString(string: sourceText, attributes: [
+                .font: UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection),
+                .foregroundColor: isUser ? UIColor.white : UIColor.label
+            ])
+        }
     }
     func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
         MarkdownDocument.allowsLink(URL)
