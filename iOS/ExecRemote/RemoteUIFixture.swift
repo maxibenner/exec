@@ -15,7 +15,22 @@ import ExecRemote
     }()
     static func makeStore() -> RemoteStore {
         let unpaired = ProcessInfo.processInfo.arguments.contains("--unpaired-fixture")
-        let store = RemoteStore(client: FixtureTransport(), loadHost: { unpaired ? nil : host }, saveHost: { _ in }, forgetHost: {})
+        let offlineActions = ProcessInfo.processInfo.arguments.contains("--offline-actions-fixture")
+        let recovering = ProcessInfo.processInfo.arguments.contains("--recovering-host-fixture")
+        let transport = FixtureTransport()
+        let store = RemoteStore(client: transport, loadHost: { unpaired ? nil : host }, saveHost: { _ in }, forgetHost: {}, sleep: { delay in
+            // Park automatic reconnect after the initial failure. Only the UI's
+            // explicit Reconnect can establish this fixture's second connection.
+            if recovering {
+                while !(await transport.isConnected) {
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+            }
+            try await Task.sleep(for: .seconds(delay))
+        }, bufferSleep: {
+            // Explicit-cancel checks must not race the normal 30-second expiry.
+            try await Task.sleep(for: .seconds(offlineActions ? 300 : 30))
+        })
         store.conversations = unpaired ? [] : conversations
         store.library = library
         store.models = models
@@ -241,12 +256,22 @@ import ExecRemote
 
 private actor FixtureTransport: RemoteTransport {
     var isConnected = false
+    private var connectionAttempts = 0
     func connect(_ host: PairedHost) throws {
-        if ProcessInfo.processInfo.arguments.contains("--settings-offline") { throw RemoteFailure("Fixture host is offline.") }
+        connectionAttempts += 1
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--settings-offline") || arguments.contains("--offline-actions-fixture")
+            || (arguments.contains("--recovering-host-fixture") && connectionAttempts == 1) {
+            throw RemoteFailure("Fixture host is offline.")
+        }
         isConnected = true
     }
     func disconnect() { isConnected = false }
     func request(_ method: String, _ path: String, body: RemoteJSON?) async throws -> RemoteJSON {
+        if ProcessInfo.processInfo.arguments.contains("--offline-actions-fixture") {
+            // An offline Send must stay buffered, never even attempt a fake command.
+            precondition(method == "GET", "Offline actions must not dispatch host mutations.")
+        }
         guard isConnected else { throw RemoteFailure("Fixture is disconnected.") }
         return try await RemoteUIFixture.request(method, path, body: body)
     }

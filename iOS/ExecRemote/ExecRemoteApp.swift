@@ -67,7 +67,7 @@ struct RootView: View {
                         .listStyle(.insetGrouped)
                         .scrollContentBackground(.hidden)
                         .background(Color(uiColor: .systemGroupedBackground))
-                        .refreshable { do { try await store.refresh() } catch { store.error = error.localizedDescription } }
+                        .refreshable { await store.poll() }
                         .overlay {
                             if store.conversations.isEmpty {
                                 if store.isLoadingConversations {
@@ -92,7 +92,7 @@ struct RootView: View {
             .toolbar(store.host == nil ? .hidden : .visible, for: .navigationBar)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if store.host != nil {
-                    SessionControls(busy: store.busy, connected: store.connected,
+                    SessionControls(canReconnect: store.canReconnect, canForget: store.canForget,
                                     settings: store.showSettings,
                                     reconnect: { Task { await store.connect() } },
                                     forget: { Task { await store.forget() } },
@@ -121,9 +121,10 @@ struct RootView: View {
                 NewChatScreen(store: store) { createdSession = $0 }
             }
         }
+        .modifier(HostConnectionState(store: store))
         .overlay(alignment: .bottom) {
             if !store.settings.isPresented && !creating && !scanning {
-                SessionNotice(message: $store.error).padding(.bottom, 72)
+                SessionNotice(message: Binding(get: { store.visibleError }, set: { store.error = $0 })).padding(.bottom, 72)
             }
         }
     }
@@ -196,7 +197,7 @@ struct RootView: View {
                 Button("Delete", systemImage: "trash", role: .destructive) {
                     Task { await store.deleteConversation(conversation.id) }
                 }
-                .disabled(store.busy || !store.connected || RemoteMessageSubmission.isActive(conversation))
+                .disabled(!store.canDeleteConversation(conversation))
                 .tint(.red)
             }
         }
@@ -224,13 +225,34 @@ struct RootView: View {
             }
             .modifier(PrimaryActionButtonStyle())
             .controlSize(.large)
-            .disabled(store.busy)
+            .disabled(store.isConnecting)
             .padding()
         }
     }
 }
 
-/// In-app errors float above navigation content without changing its safe area.
+/// Connection loss takes layout space and cannot be dismissed.
+private struct HostConnectionState: ViewModifier {
+    let store: RemoteStore
+    func body(content: Content) -> some View {
+        VStack(spacing: 0) {
+            if store.host != nil && !store.connected {
+                Label("Host connection lost", systemImage: "wifi.slash")
+                    .font(.footnote.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(Color(uiColor: .secondarySystemBackground), ignoresSafeAreaEdges: [])
+                    .overlay(alignment: .bottom) { Divider() }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Host connection lost")
+                    .accessibilityIdentifier("host-connection-banner")
+            }
+            content.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+/// Action errors remain separate from persistent connection state.
 private struct SessionNotice: View {
     @Binding var message: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -276,8 +298,8 @@ struct PrimaryActionButtonStyle: ViewModifier {
 }
 
 private struct SessionControls: View {
-    let busy: Bool
-    let connected: Bool
+    let canReconnect: Bool
+    let canForget: Bool
     let settings: () -> Void
     let reconnect: () -> Void
     let forget: () -> Void
@@ -301,19 +323,17 @@ private struct SessionControls: View {
     @ViewBuilder private var controls: some View {
         Menu {
             Button("Settings", systemImage: "gearshape", action: settings)
-            Button("Reconnect", systemImage: "arrow.clockwise", action: reconnect)
-            Button("Forget Host", systemImage: "trash", role: .destructive, action: forget)
+            Button("Reconnect", systemImage: "arrow.clockwise", action: reconnect).disabled(!canReconnect)
+            Button("Forget Host", systemImage: "trash", role: .destructive, action: forget).disabled(!canForget)
         } label: {
             Label("Session Options", systemImage: "ellipsis")
                 .frame(width: 24, height: 24)
         }
-        .disabled(busy)
         Spacer()
         Button(action: create) {
             Label("New Session", systemImage: "plus")
                 .frame(width: 24, height: 24)
         }
-        .disabled(busy || !connected)
         .modifier(PrimaryActionButtonStyle())
     }
 }
@@ -377,7 +397,17 @@ struct ConversationScreen: View {
                         }
                     }
                     .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-                    .disabled(store.busy || !store.connected)
+                    .disabled(!store.canApprove)
+                }
+                if let pending = store.pendingMessage, pending.conversationID == conversationID {
+                    HStack(spacing: 12) {
+                        Image(systemName: "clock").foregroundStyle(.secondary).accessibilityHidden(true)
+                        Text(pending.text).font(.callout).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("pending-message")
+                        Button("Cancel Queued Message", systemImage: "xmark") { store.cancelPendingMessage() }
+                            .labelStyle(.iconOnly).accessibilityIdentifier("cancel-pending-message")
+                    }
+                    .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
                 }
                 RemoteChatComposer(store: store)
             }
@@ -440,7 +470,7 @@ private struct RemoteChatComposer: View {
         }
         .accessibilityLabel(stopping ? "Stop" : (store.active ? "Queue Message" : "Send"))
         .buttonBorderShape(.capsule)
-        .disabled(store.busy || store.awaitingSendSnapshot || !store.connected || (!stopping && draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+        .disabled(stopping ? !store.canStop : !store.canSend)
     }
     var body: some View {
         Group {
@@ -508,6 +538,7 @@ struct NewChatScreen: View {
                     }
                     .disabled(selectedModel["efforts"].array.isEmpty)
                 }
+                .disabled(!initialized)
                 Section("Tools") {
                     ForEach(RemoteSessionCreation.tools) { tool in
                         Toggle(isOn: Binding(get: { tools.isEnabled(tool.id) },
@@ -517,6 +548,7 @@ struct NewChatScreen: View {
                         .accessibilityIdentifier("new-session-tool-\(tool.id)")
                     }
                 }
+                .disabled(!initialized)
             }
             .sheet(isPresented: $choosingFolder) {
                 HostFolderPicker(store: store, initialPath: workspace) { workspace = $0 }
@@ -525,6 +557,7 @@ struct NewChatScreen: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", systemImage: "xmark") { dismiss() }.labelStyle(.iconOnly).foregroundStyle(.secondary)
+                        .disabled(store.isCreatingSession)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") { Task {
@@ -533,25 +566,29 @@ struct NewChatScreen: View {
                         await store.mutate("POST", "/v1/conversations", body) { value in
                             created(value.id); dismiss()
                         }
-                    } }.disabled(!workspace.hasPrefix("/") || model.isEmpty || store.busy || !store.connected)
+                    } }.disabled(!workspace.hasPrefix("/") || !initialized || selectedModel.id.isEmpty || store.isCreatingSession || !store.connected)
                         .modifier(PrimaryActionButtonStyle())
                 }
             }
-            .onAppear {
-                guard !initialized else { return }
-                initialized = true
-                workspace = store.conversations.first?["workspace"].string ?? ""
-                model = store.library["defaultModel"].string ?? store.models.first?.id ?? ""
-                tools = RemoteSessionCreation.ToolSelection(library: store.library)
-                resetEffort()
-            }
+            .onAppear(perform: initializeDefaults)
+            .onChange(of: store.hasLoadedLibrary) { _, _ in initializeDefaults() }
             .onChange(of: model) { _, _ in resetEffort() }
         }
+        .modifier(HostConnectionState(store: store))
+        .interactiveDismissDisabled(store.isCreatingSession)
         .overlay(alignment: .bottom) {
             if !choosingFolder {
-                SessionNotice(message: Binding(get: { store.error }, set: { store.error = $0 }))
+                SessionNotice(message: Binding(get: { store.visibleError }, set: { store.error = $0 }))
             }
         }
+    }
+    private func initializeDefaults() {
+        guard !initialized, store.hasLoadedLibrary || store.library != .null else { return }
+        initialized = true
+        if workspace.isEmpty { workspace = store.conversations.first?["workspace"].string ?? "" }
+        if model.isEmpty { model = store.library["defaultModel"].string ?? store.models.first?.id ?? "" }
+        tools = RemoteSessionCreation.ToolSelection(library: store.library)
+        resetEffort()
     }
     private func resetEffort() {
         effort = RemoteSessionCreation.initialEffort(model: selectedModel, settings: store.library["settings"])
@@ -576,13 +613,13 @@ struct SharedSettingsScreen: View {
                             ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
                         }
                     }
-                    .disabled(store.busy || !store.connected)
+                    .disabled(store.isSavingLibrary || !store.connected)
                 }
                 Section("System Prompt") {
                     TextEditor(text: $store.settings.prompt).frame(minHeight: 120).focused($editingPrompt)
                         .accessibilityIdentifier("settings-system-prompt")
                 }
-                .disabled(store.busy || !store.connected)
+                .disabled(store.isSavingLibrary || !store.connected)
             }
             .navigationTitle("Settings")
             .toolbar {
@@ -593,7 +630,7 @@ struct SharedSettingsScreen: View {
                     }
                     .accessibilityIdentifier("settings-done")
                     .modifier(PrimaryActionButtonStyle())
-                    .disabled(store.settings.hasUnsavedChanges && (store.busy || !store.connected))
+                    .disabled(store.settings.hasUnsavedChanges && (store.isSavingLibrary || !store.connected))
                 }
             }
             .onAppear { store.settings.refresh(store.library) }
@@ -601,9 +638,10 @@ struct SharedSettingsScreen: View {
                 store.settings.refresh(store.library, editing: editingPrompt)
             }
         }
+        .modifier(HostConnectionState(store: store))
         .interactiveDismissDisabled(store.settings.hasUnsavedChanges)
         .overlay(alignment: .bottom) {
-            SessionNotice(message: Binding(get: { store.settings.error ?? store.error }, set: {
+            SessionNotice(message: Binding(get: { store.settings.error ?? store.visibleError }, set: {
                 if store.settings.error != nil { store.settings.error = $0 }
                 else { store.error = $0 }
             }))
@@ -686,6 +724,7 @@ private struct HostFolderPicker: View {
                 }
             }
         }
+        .modifier(HostConnectionState(store: store))
     }
 }
 private extension RemoteJSON { var folderPath: String { self["path"].string ?? "" } }

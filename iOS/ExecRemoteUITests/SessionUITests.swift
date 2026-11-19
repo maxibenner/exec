@@ -1,13 +1,57 @@
 import XCTest
 
 @MainActor final class SessionUITests: XCTestCase {
+    private func wait(_ predicate: NSPredicate, on element: XCUIElement, timeout: TimeInterval = 10) {
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: timeout), .completed)
+    }
+    private func connectionBanner(_ app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: "host-connection-banner").firstMatch
+    }
     private func launch(_ arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-fixture"] + arguments
         app.launch()
         XCTAssertTrue(app.buttons["session-fixture-1"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["New Session"].isEnabled, "The isolated host must be connected before testing mutations.")
+        if arguments.contains("--offline-actions-fixture") || arguments.contains("--recovering-host-fixture")
+            || arguments.contains("--settings-offline") {
+            XCTAssertTrue(connectionBanner(app).waitForExistence(timeout: 10))
+        } else {
+            // Opening New Session is also allowed offline; it is not a readiness signal.
+            wait(NSPredicate(format: "exists == false"), on: connectionBanner(app))
+        }
+        XCTAssertTrue(app.buttons["New Session"].isEnabled)
         return app
+    }
+    private func stableFrame(_ element: XCUIElement) -> CGRect {
+        var previous = CGRect.null
+        var unchangedSince = Date()
+        wait(NSPredicate { _, _ in
+            guard element.exists else { return false }
+            let frame = element.frame
+            guard !frame.isEmpty else { return false }
+            if frame != previous {
+                previous = frame
+                unchangedSince = Date()
+                return false
+            }
+            return Date().timeIntervalSince(unchangedSince) >= 0.5
+        }, on: element)
+        return element.frame
+    }
+    @discardableResult
+    private func assertOfflineBanner(_ app: XCUIApplication, above navigationBar: XCUIElement) -> CGRect {
+        let banner = connectionBanner(app)
+        XCTAssertTrue(banner.waitForExistence(timeout: 5))
+        XCTAssertEqual(banner.label, "Host connection lost")
+        XCTAssertFalse(app.buttons["Dismiss"].exists, "Connection loss must not have a dismiss action.")
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "session-notice").firstMatch.exists,
+                       "Connection loss belongs in the layout banner, not a toast.")
+        let navigationFrame = stableFrame(navigationBar)
+        XCTAssertGreaterThan(banner.frame.height, 0)
+        XCTAssertLessThanOrEqual(banner.frame.maxY, navigationFrame.minY + 1,
+                                 "The banner must reserve space above the navigation stack.")
+        return navigationFrame
     }
     private func capture(_ name: String, app: XCUIApplication) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
@@ -128,6 +172,139 @@ import XCTest
         XCTAssertTrue(options.waitForExistence(timeout: 5))
         XCTAssertTrue(newSession.isHittable)
         capture("floating-session-controls", app: app)
+    }
+
+    func testOfflineHostBannerKeepsSettingsAndNewSessionAvailable() {
+        let app = launch(["--offline-actions-fixture"])
+        assertOfflineBanner(app, above: app.navigationBars["All Sessions"])
+        let options = app.buttons["Session Options"]
+        let newSession = app.buttons["New Session"]
+        XCTAssertTrue(options.isEnabled)
+        XCTAssertTrue(options.isHittable)
+        XCTAssertTrue(newSession.isEnabled)
+        XCTAssertTrue(newSession.isHittable)
+
+        options.tap()
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        assertOfflineBanner(app, above: app.navigationBars["Settings"])
+        let local = app.switches["descriptive-shell-titles"]
+        XCTAssertTrue(local.isEnabled)
+        XCTAssertEqual(local.value as? String, "0")
+        local.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        wait(NSPredicate(format: "value == %@", "1"), on: local)
+        XCTAssertFalse(app.switches["Automatic session titles"].isEnabled)
+        XCTAssertFalse(app.textViews["settings-system-prompt"].isEnabled)
+        let done = app.buttons["settings-done"]
+        XCTAssertEqual(done.label, "Done", "A local preference must not dirty the shared prompt.")
+        XCTAssertTrue(done.isEnabled)
+        done.tap()
+        wait(NSPredicate(format: "exists == false"), on: app.navigationBars["Settings"])
+
+        newSession.tap()
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        assertOfflineBanner(app, above: app.navigationBars["New Session"])
+        XCTAssertTrue(app.buttons["new-session-workspace"].label.contains("/Fixture/Workspace"))
+        XCTAssertFalse(app.buttons["Create"].isEnabled, "A cached valid draft still requires a connected host.")
+        XCTAssertTrue(app.buttons["Cancel"].isEnabled)
+        app.buttons["Cancel"].tap()
+        wait(NSPredicate(format: "exists == false"), on: app.navigationBars["New Session"])
+        XCTAssertTrue(connectionBanner(app).exists, "Closing a sheet must not dismiss the connection banner.")
+        XCTAssertTrue(options.isEnabled)
+        XCTAssertTrue(newSession.isEnabled)
+    }
+
+    func testOfflineSendBuffersOnceAndCancelRestoresBeforeNewerDraft() {
+        let app = launch(["--offline-actions-fixture"])
+        app.buttons["session-fixture-1"].tap()
+        XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 5))
+        let composer = app.descendants(matching: .any).matching(identifier: "message-composer").firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Send"].isEnabled)
+        let original = "First offline message"
+        let newer = "Newer draft text"
+        composer.tap()
+        composer.typeText(original)
+        wait(NSPredicate(format: "enabled == true"), on: app.buttons["Send"])
+        app.buttons["Send"].tap()
+
+        let pending = app.descendants(matching: .any).matching(identifier: "pending-message").firstMatch
+        XCTAssertTrue(pending.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts[original].exists)
+        let cancel = app.buttons["cancel-pending-message"]
+        XCTAssertEqual(cancel.label, "Cancel Queued Message")
+        XCTAssertTrue(cancel.isEnabled)
+        composer.tap()
+        composer.typeText(newer)
+        wait(NSPredicate(format: "value == %@", newer), on: composer)
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", original)).count, 1)
+        XCTAssertFalse(app.buttons["Send"].isEnabled, "Only one unsent message may be buffered.")
+        capture("offline-queued-message", app: app)
+        cancel.tap()
+        wait(NSPredicate(format: "exists == false"), on: pending)
+        let restored = original + "\n\n" + newer
+        wait(NSPredicate(format: "value == %@", restored), on: composer)
+        XCTAssertTrue(app.buttons["Send"].isEnabled)
+        XCTAssertEqual(app.tables["native-transcript"].cells.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "transcript-message-local-")).count, 0,
+                       "The offline buffer must not appear as a dispatched transcript message.")
+        XCTAssertTrue(connectionBanner(app).exists)
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "session-notice").firstMatch.exists)
+
+        // Leaving the session also returns an unsent buffer to that session's draft.
+        app.buttons["Send"].tap()
+        XCTAssertTrue(pending.waitForExistence(timeout: 5))
+        app.navigationBars["Session 1"].buttons.firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["All Sessions"].waitForExistence(timeout: 5))
+        XCTAssertFalse(pending.exists)
+        app.buttons["session-fixture-1"].tap()
+        XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 5))
+        wait(NSPredicate(format: "value == %@", restored), on: composer)
+    }
+
+    func testExplicitReconnectRemovesBannerAndReclaimsRootAndSheetLayout() {
+        let app = launch(["--recovering-host-fixture"])
+        let rootBar = app.navigationBars["All Sessions"]
+        let offlineNavigation = assertOfflineBanner(app, above: rootBar)
+        let row = app.buttons["session-fixture-1"]
+        let offlineRow = stableFrame(row)
+        capture("host-offline-layout", app: app)
+
+        app.buttons["New Session"].tap()
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        let offlineSheetNavigation = assertOfflineBanner(app, above: app.navigationBars["New Session"])
+        XCTAssertFalse(app.buttons["Create"].isEnabled)
+        app.buttons["Cancel"].tap()
+        wait(NSPredicate(format: "exists == false"), on: app.navigationBars["New Session"])
+        app.buttons["Session Options"].tap()
+        XCTAssertTrue(app.buttons["Reconnect"].isEnabled)
+        app.buttons["Reconnect"].tap()
+        wait(NSPredicate(format: "exists == false"), on: connectionBanner(app))
+
+        // Compare settled layouts, never intermediate reconnect/presentation animations.
+        let onlineNavigation = stableFrame(rootBar)
+        let onlineRow = stableFrame(row)
+        let reclaimedHeight = offlineNavigation.minY - onlineNavigation.minY
+        XCTAssertGreaterThan(reclaimedHeight, 20, "A real banner must move navigation, not overlay it.")
+        XCTAssertLessThan(reclaimedHeight, 64, "The banner must remain small.")
+        XCTAssertEqual(offlineNavigation.height, onlineNavigation.height, accuracy: 1)
+        XCTAssertLessThan(onlineRow.minY, offlineRow.minY)
+        XCTAssertEqual(offlineRow.minY - onlineRow.minY, reclaimedHeight, accuracy: 2)
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "session-notice").firstMatch.exists)
+        capture("host-recovered-layout", app: app)
+
+        app.buttons["New Session"].tap()
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        let onlineSheetNavigation = stableFrame(app.navigationBars["New Session"])
+        XCTAssertFalse(connectionBanner(app).exists)
+        // UIKit adds different safe-area margins to root and sheet navigation.
+        // Verify actual reclaimed layout, not the accessibility background's outsets.
+        let reclaimedSheetHeight = offlineSheetNavigation.minY - onlineSheetNavigation.minY
+        XCTAssertGreaterThan(reclaimedSheetHeight, 20)
+        XCTAssertLessThan(reclaimedSheetHeight, 64)
+        wait(NSPredicate(format: "enabled == true"), on: app.buttons["Create"])
+        XCTAssertTrue(app.buttons["Cancel"].isEnabled)
+        app.buttons["Cancel"].tap()
     }
 
     func testActiveSessionIndicatorsIncludeApprovalAndCancellation() {
