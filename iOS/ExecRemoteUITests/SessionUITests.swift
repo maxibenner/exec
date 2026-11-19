@@ -68,37 +68,35 @@ import UIKit
         try XCTUnwrap(layout[name], "Missing layout element: \(name)").frame
     }
     @discardableResult
-    private func assertOfflineBanner(_ app: XCUIApplication, below content: [String: XCUIElement.ElementType]) throws -> [String: XCUIElementSnapshot] {
+    private func assertOfflineBanner(_ app: XCUIApplication, over content: [String: XCUIElement.ElementType], fixedFrame: CGRect? = nil) throws -> [String: XCUIElementSnapshot] {
         let banner = connectionBanner(app)
         XCTAssertTrue(banner.waitForExistence(timeout: 5))
         XCTAssertEqual(banner.label, "Host connection lost")
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "host-connection-banner").count, 1,
+                       "The scene must contain one pill, not one per page or sheet.")
         XCTAssertFalse(app.buttons["Dismiss"].exists, "Connection loss must not have a dismiss action.")
         XCTAssertFalse(element("session-notice", in: app).exists,
-                       "Connection loss belongs in the layout banner, not a toast.")
+                       "Connection loss belongs in the persistent pill, not an action notice.")
         var targets = content
         targets["host-connection-banner"] = .any
         let layout = try stableLayout(app, matching: targets)
         let bannerFrame = try frame("host-connection-banner", in: layout)
         XCTAssertGreaterThan(bannerFrame.height, 0)
-        XCTAssertGreaterThan(bannerFrame.minY, app.frame.midY, "Connection loss belongs at the bottom of the screen.")
-        let scrollContainers = ["session-list", "settings-form", "new-session-form", "host-folder-list", "native-transcript"]
-        for name in content.keys {
-            let contentFrame = try frame(name, in: layout)
-            if scrollContainers.contains(name) {
-                // Native scroll views keep their full underlapping bounds. Their
-                // usable content inset (checked at the scroll end below), not
-                // their UIKit frame, must reserve room for the banner.
-                XCTAssertEqual(contentFrame.maxY, app.frame.maxY, accuracy: 1)
-            } else {
-                XCTAssertLessThanOrEqual(contentFrame.maxY, bannerFrame.minY + 1,
-                                         "The banner must reserve space below controls, not cover them.")
-            }
-        }
+        XCTAssertGreaterThan(bannerFrame.minY, app.frame.minY)
+        XCTAssertLessThan(bannerFrame.maxY, app.frame.minY + app.frame.height / 4,
+                          "The pill stays near the scene's safe top, not its keyboard or bottom inset.")
+        if let fixedFrame { assertSameFrame(bannerFrame, fixedFrame) }
         XCTAssertTrue(banner.exists, "Automatic recovery must not precede the offline layout sample.")
         try assertConnectionPill(app, frame: bannerFrame)
         return layout
     }
-    private func assertConnectionPill(_ app: XCUIApplication, frame banner: CGRect, keyboard: CGRect? = nil) throws {
+    private func assertSameFrame(_ actual: CGRect, _ expected: CGRect, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(actual.minX, expected.minX, accuracy: 1, file: file, line: line)
+        XCTAssertEqual(actual.minY, expected.minY, accuracy: 1, file: file, line: line)
+        XCTAssertEqual(actual.width, expected.width, accuracy: 1, file: file, line: line)
+        XCTAssertEqual(actual.height, expected.height, accuracy: 1, file: file, line: line)
+    }
+    private func assertConnectionPill(_ app: XCUIApplication, frame banner: CGRect) throws {
         let screenshot = app.screenshot()
         let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = "connection-pill-\(Int(banner.minY))"
@@ -128,8 +126,7 @@ import UIKit
         XCTAssertLessThan(banner.maxX, screen.maxX - 12)
         let fill = try rgb(x: banner.minX + 6, y: banner.midY)
         XCTAssertLessThan(fill.min() ?? 255, 250, "The pill needs its own solid background.")
-        // Sample padding on all four sides, clear of the icon/text. A solid
-        // capsule stays uniform even over the composer's varying glass shadow.
+        // Sample padding on all four sides, clear of the icon/text.
         for point in [CGPoint(x: banner.maxX - 6, y: banner.midY),
                       CGPoint(x: banner.midX, y: banner.minY + 4),
                       CGPoint(x: banner.midX, y: banner.maxY - 4)] {
@@ -138,34 +135,14 @@ import UIKit
         }
         for x in [screen.minX + 8, screen.maxX - 8] {
             let besidePill = try rgb(x: x, y: banner.midY)
-            if let keyboard {
-                // The reference is the page visible through the real rounded
-                // keyboard corner, not the glass shadow just above the pill.
-                let corner = try rgb(x: x, y: keyboard.minY + 2)
-                let keyboardSurface = try rgb(x: keyboard.midX, y: keyboard.minY + 2)
-                XCTAssertTrue(matches(besidePill, corner),
-                              "The page must remain continuous behind the keyboard's rounded corners: beside=\(besidePill), corner=\(corner).")
-                XCTAssertFalse(matches(fill, besidePill), "The pill's solid fill must not extend across the full row.")
-                XCTAssertFalse(matches(keyboardSurface, corner), "The corner sample must show the page, not the keyboard surface.")
-            } else {
-                let background = try rgb(x: x, y: banner.minY - 3)
-                // Glass casts a gradient above the pill; transparency does not
-                // require a flat page color. Where the page differs from the
-                // pill, its sides must not be painted with the pill's fill.
-                if !matches(background, fill) {
-                    XCTAssertFalse(matches(fill, besidePill),
-                                   "The pill's solid fill must not extend into the surrounding page.")
-                }
+            let background = try rgb(x: x, y: banner.minY - 3)
+            // The underlying native page can have a gradient. Where it differs
+            // from the pill, the transparent host must not paint a full strip.
+            if !matches(background, fill) {
+                XCTAssertFalse(matches(fill, besidePill),
+                               "The pill's solid fill must not extend into the surrounding page.")
             }
         }
-    }
-    private func assertReclaimedScrollEnd(offline: CGRect, online: CGRect, banner: CGRect, app: XCUIApplication) {
-        XCTAssertLessThanOrEqual(offline.maxY, banner.minY + 1, "The last row must be fully above the banner when scrolled to the end.")
-        XCTAssertLessThanOrEqual(online.maxY, app.frame.maxY)
-        // Native scroll bounds do not shrink. The last content row at the scroll
-        // limit must reclaim the label's actual layout height, not its paint's
-        // extension into the system-owned home-indicator area.
-        XCTAssertEqual(online.maxY - offline.maxY, banner.height, accuracy: 2)
     }
     private func scrollToBottom(_ view: XCUIElement) {
         view.swipeUp()
@@ -177,31 +154,29 @@ import UIKit
         attachment.lifetime = .keepAlways
         add(attachment)
     }
-    func testConnectionPillKeepsKeyboardCornersAndComposerClear() throws {
+    func testConnectionPillStaysAtTopWhenKeyboardOpens() throws {
         let app = launch(["--offline-actions-fixture"])
+        let root = try assertOfflineBanner(app, over: ["All Sessions": .navigationBar])
+        let pill = try frame("host-connection-banner", in: root)
+        XCTAssertGreaterThanOrEqual(pill.minY, app.navigationBars["All Sessions"].frame.maxY + 4,
+                                    "The top anchor should leave the primary navigation buttons clear.")
         app.buttons["session-fixture-1"].tap()
         XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 5))
         let composer = element("message-composer", in: app)
         composer.tap(); composer.typeText("Keyboard pill")
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        let layout = try stableLayout(app, matching: ["host-connection-banner": .any,
-                                                      "chat-composer-controls": .any, "inputView": .any])
-        let pill = try frame("host-connection-banner", in: layout)
+        let layout = try assertOfflineBanner(app, over: ["chat-composer-controls": .any, "inputView": .any], fixedFrame: pill)
         let controls = try frame("chat-composer-controls", in: layout)
-        // The system inputView includes QuickType. The .keyboard AX frame
-        // starts below SystemInputAssistantView and exposes only the key rows.
+        // inputView includes QuickType, unlike the .keyboard AX key-row frame.
         let keyboard = try frame("inputView", in: layout)
-        let diagnostic = XCTAttachment(string: app.debugDescription)
-        diagnostic.name = "connection-pill-keyboard-hierarchy"
-        diagnostic.lifetime = .keepAlways
-        add(diagnostic)
-        print("CONNECTION PILL FRAMES", "pill", pill, "controls", controls,
-              "inputView", keyboard, "AX keys", app.keyboards.firstMatch.frame)
-        XCTAssertEqual(keyboard.minX, app.frame.minX, accuracy: 1)
-        XCTAssertEqual(keyboard.maxX, app.frame.maxX, accuracy: 1)
-        XCTAssertLessThanOrEqual(controls.maxY, pill.minY + 1, "The pill must not overlap the composer controls.")
-        XCTAssertEqual(pill.maxY, keyboard.minY, accuracy: 2, "The pill stays just above the complete keyboard, including QuickType.")
-        try assertConnectionPill(app, frame: pill, keyboard: keyboard)
+        XCTAssertLessThan(pill.maxY, controls.minY)
+        XCTAssertLessThanOrEqual(controls.maxY, keyboard.minY + 1)
+        // No re-tap: the overlay must never acquire keyboard focus.
+        composer.typeText(" still focused")
+        XCTAssertEqual(composer.value as? String, "Keyboard pill still focused")
+        app.navigationBars["Session 1"].buttons.firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["All Sessions"].waitForExistence(timeout: 5))
+        try assertOfflineBanner(app, over: ["New Session": .button], fixedFrame: pill)
     }
 
     func testNavigationAndSwipeAppearance() {
@@ -321,27 +296,37 @@ import UIKit
         capture("floating-session-controls", app: app)
     }
 
-    func testOfflineHostBannerKeepsSettingsNewSessionAndFolderAvailable() throws {
+    func testOneTopConnectionPillPersistsAcrossNavigationAndNestedSheets() throws {
         let app = launch(["--offline-actions-fixture"])
         let options = app.buttons["Session Options"]
         let newSession = app.buttons["New Session"]
-        try assertOfflineBanner(app, below: ["All Sessions": .navigationBar, "session-list": .any,
-                                            "Session Options": .button, "New Session": .button])
+        let targets: [String: XCUIElement.ElementType] = [
+            "All Sessions": .navigationBar, "session-list": .any, "Session Options": .button, "New Session": .button
+        ]
+        let root = try assertOfflineBanner(app, over: targets)
+        let pill = try frame("host-connection-banner", in: root)
         let banner = connectionBanner(app)
-        banner.tap()
-        banner.swipeDown()
+        // A passive indicator has no hittable AX target. Send real coordinates
+        // through its frame instead of asking XCTest to tap the label itself.
+        let center = banner.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        center.tap()
+        center.press(forDuration: 0.05, thenDragTo: center.withOffset(CGVector(dx: 0, dy: 80)))
         XCTAssertTrue(banner.exists, "Connection loss must not be dismissible by tapping or swiping.")
         XCTAssertTrue(options.isEnabled)
-        XCTAssertTrue(options.isHittable)
-        XCTAssertTrue(newSession.isEnabled)
         XCTAssertTrue(newSession.isHittable)
+
+        app.buttons["session-fixture-1"].tap()
+        XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 5))
+        try assertOfflineBanner(app, over: ["Session 1": .navigationBar, "chat-composer-controls": .any], fixedFrame: pill)
+        app.navigationBars["Session 1"].buttons.firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["All Sessions"].waitForExistence(timeout: 5))
 
         options.tap()
         XCTAssertFalse(app.buttons["Reconnect"].exists, "Recovery must not depend on a menu action, even offline.")
         XCTAssertTrue(app.buttons["Forget Host"].isEnabled)
         app.buttons["Settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
-        try assertOfflineBanner(app, below: ["settings-form": .any, "settings-done": .button])
+        try assertOfflineBanner(app, over: ["settings-form": .any, "settings-done": .button], fixedFrame: pill)
         let local = app.switches["descriptive-shell-titles"]
         XCTAssertTrue(local.isEnabled)
         XCTAssertEqual(local.value as? String, "0")
@@ -357,22 +342,22 @@ import UIKit
 
         newSession.tap()
         XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
-        try assertOfflineBanner(app, below: ["new-session-form": .any, "Create": .button, "Cancel": .button])
+        try assertOfflineBanner(app, over: ["new-session-form": .any, "Create": .button, "Cancel": .button], fixedFrame: pill)
         XCTAssertTrue(app.buttons["new-session-workspace"].label.contains("/Fixture/Workspace"))
         XCTAssertFalse(app.buttons["Create"].isEnabled, "A cached valid draft still requires a connected host.")
-        XCTAssertTrue(app.buttons["Cancel"].isEnabled)
         app.buttons["new-session-workspace"].tap()
         let folderBar = app.navigationBars["Choose Folder"]
         XCTAssertTrue(folderBar.waitForExistence(timeout: 5))
-        try assertOfflineBanner(app, below: ["host-folder-list": .any, "Choose": .button, "Cancel": .button])
+        try assertOfflineBanner(app, over: ["host-folder-list": .any, "Choose": .button, "Cancel": .button], fixedFrame: pill)
         XCTAssertTrue(folderBar.buttons["Cancel"].isEnabled)
         folderBar.buttons["Cancel"].tap()
         wait(NSPredicate(format: "exists == false"), on: folderBar)
         app.navigationBars["New Session"].buttons["Cancel"].tap()
         wait(NSPredicate(format: "exists == false"), on: app.navigationBars["New Session"])
-        XCTAssertTrue(connectionBanner(app).exists, "Closing a sheet must not dismiss the connection banner.")
-        XCTAssertTrue(options.isEnabled)
-        XCTAssertTrue(newSession.isEnabled)
+        let returned = try assertOfflineBanner(app, over: targets, fixedFrame: pill)
+        for name in targets.keys { assertSameFrame(try frame(name, in: returned), try frame(name, in: root)) }
+        XCTAssertTrue(options.isHittable)
+        XCTAssertTrue(newSession.isHittable)
     }
 
     private func localBubbles(_ app: XCUIApplication) -> XCUIElementQuery {
@@ -431,7 +416,7 @@ import UIKit
         XCTAssertTrue(app.navigationBars["Session 1"].waitForExistence(timeout: 5))
         let composer = app.descendants(matching: .any).matching(identifier: "message-composer").firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
-        try assertOfflineBanner(app, below: ["Session 1": .navigationBar, "native-transcript": .table, "chat-composer-controls": .any])
+        try assertOfflineBanner(app, over: ["Session 1": .navigationBar, "native-transcript": .table, "chat-composer-controls": .any])
         let lastMessage = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "fixture-1 message 40")).firstMatch
         XCTAssertTrue(lastMessage.waitForExistence(timeout: 5), "Exercise a resident transcript, not an empty offline view.")
         let transcriptLayout = try stableLayout(app, matching: ["transcript-message-message-40": .cell, "chat-composer-controls": .any])
@@ -576,13 +561,50 @@ import UIKit
         capture("queued-bubble-auto-dispatched-same-row", app: app)
     }
 
-    func testDelayedFirstStartupConnectsWithoutShowingFailureBanner() {
+    func testConnectionFailureAndRecoveryPreserveComposerLayoutAndKeyboardFocus() throws {
+        // Leave the first real attempt pending long enough to focus the composer,
+        // then fail once and recover via the store's ordinary observer loop.
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-fixture", "--recovering-host-fixture", "--delayed-host-failure-fixture"]
+        app.launch()
+        XCTAssertTrue(app.buttons["session-fixture-1"].waitForExistence(timeout: 5))
+        app.buttons["session-fixture-1"].tap()
+        let composer = element("message-composer", in: app)
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap(); composer.typeText("Focus")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        let targets: [String: XCUIElement.ElementType] = [
+            "Session 1": .navigationBar, "message-composer": .any, "chat-composer-controls": .any, "inputView": .any
+        ]
+        let pending = try stableLayout(app, matching: targets)
+        XCTAssertFalse(connectionBanner(app).exists, "The initial attempt must still be pending, without a pill.")
+        XCTAssertTrue(connectionBanner(app).waitForExistence(timeout: 20))
+        let failed = try assertOfflineBanner(app, over: targets)
+        for name in targets.keys { assertSameFrame(try frame(name, in: failed), try frame(name, in: pending)) }
+        composer.typeText(" A") // No re-tap after the window's pill appears.
+        XCTAssertEqual(composer.value as? String, "Focus A")
+
+        wait(NSPredicate(format: "exists == false"), on: connectionBanner(app), timeout: 40)
+        let recovered = try stableLayout(app, matching: targets)
+        for name in targets.keys { assertSameFrame(try frame(name, in: recovered), try frame(name, in: pending)) }
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        composer.typeText(" B") // No re-tap after recovery either.
+        XCTAssertEqual(composer.value as? String, "Focus A B")
+        XCTAssertFalse(element("session-notice", in: app).exists)
+        capture("connection-transitions-preserve-composer-and-focus", app: app)
+    }
+
+    func testDelayedFirstStartupConnectsWithoutShowingFailureBanner() throws {
         // Do not use launch(): it waits for the banner to disappear and would
         // accidentally accept a startup flash. This starts with no cached data.
         let app = XCUIApplication()
         app.launchArguments = ["--ui-fixture", "--delayed-startup-fixture"]
         app.launch()
         XCTAssertTrue(app.buttons["New Session"].waitForExistence(timeout: 5))
+        let rootTargets: [String: XCUIElement.ElementType] = [
+            "All Sessions": .navigationBar, "session-list": .any, "New Session": .button, "Session Options": .button
+        ]
+        let pendingRoot = try stableLayout(app, matching: rootTargets)
         let pendingUntil = Date().addingTimeInterval(1.5)
         repeat {
             XCTAssertFalse(connectionBanner(app).exists, "A pending first connection is not a failure.")
@@ -593,106 +615,75 @@ import UIKit
         XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Create"].isEnabled, "Verify the first connection is still pending, not already recovered.")
         XCTAssertFalse(connectionBanner(app).exists)
+        let sheetTargets: [String: XCUIElement.ElementType] = [
+            "New Session": .navigationBar, "new-session-form": .any, "Cancel": .button, "Create": .button
+        ]
+        let pendingSheet = try stableLayout(app, matching: sheetTargets)
         wait(NSPredicate(format: "enabled == true"), on: app.buttons["Create"], timeout: 15)
+        let readySheet = try stableLayout(app, matching: sheetTargets)
+        for name in sheetTargets.keys { assertSameFrame(try frame(name, in: readySheet), try frame(name, in: pendingSheet)) }
         XCTAssertFalse(connectionBanner(app).exists)
         XCTAssertFalse(element("session-notice", in: app).exists)
         capture("first-startup-success-no-banner", app: app)
+        app.buttons["Cancel"].tap()
+        wait(NSPredicate(format: "exists == false"), on: app.navigationBars["New Session"])
+        let readyRoot = try stableLayout(app, matching: rootTargets)
+        for name in rootTargets.keys { assertSameFrame(try frame(name, in: readyRoot), try frame(name, in: pendingRoot)) }
+        XCTAssertFalse(connectionBanner(app).exists)
     }
 
-    func testAutomaticReconnectReclaimsBottomSpaceBelowRootListAndControls() throws {
+    func testAutomaticReconnectDoesNotMoveRootControlsOrScrollInsets() throws {
         let app = launch(["--recovering-host-fixture"])
         let targets: [String: XCUIElement.ElementType] = [
             "All Sessions": .navigationBar, "session-list": .any, "New Session": .button,
             "Session Options": .button, "session-fixture-1": .button
         ]
-        let offline = try assertOfflineBanner(app, below: targets)
-        let bannerFrame = try frame("host-connection-banner", in: offline)
-        let offlineNavigation = try frame("All Sessions", in: offline)
-        let offlineList = try frame("session-list", in: offline)
-        let offlineControls = try frame("New Session", in: offline)
-        let offlineRow = try frame("session-fixture-1", in: offline)
-        print("ROOT OFFLINE FRAMES", offline.mapValues(\.frame))
-        capture("host-offline-bottom-layout", app: app)
-        XCTAssertTrue(connectionBanner(app).exists, "The offline screenshot must still show the banner.")
+        let offline = try assertOfflineBanner(app, over: targets)
         let list = element("session-list", in: app)
         scrollToBottom(list)
         let offlineEnd = try stableLayout(app, matching: ["session-fixture-12": .button])
         let offlineLastRow = try frame("session-fixture-12", in: offlineEnd)
-        XCTAssertLessThanOrEqual(offlineLastRow.maxY, offlineControls.minY, "Scrolling must reveal the last session above the controls and banner.")
+        XCTAssertLessThanOrEqual(offlineLastRow.maxY, try frame("New Session", in: offline).minY)
         XCTAssertTrue(connectionBanner(app).exists)
-        print("ROOT OFFLINE SCROLL END", offlineLastRow)
 
-        // No Reconnect tap, pull-to-refresh or scene transition may be needed.
+        // No refresh, scene transition or extra scroll: recovery must neither
+        // change the usable inset nor move the last row at the scroll limit.
         wait(NSPredicate(format: "exists == false"), on: connectionBanner(app), timeout: 40)
+        let onlineEnd = try stableLayout(app, matching: ["session-fixture-12": .button])
+        assertSameFrame(try frame("session-fixture-12", in: onlineEnd), offlineLastRow)
         list.swipeDown()
         list.swipeDown()
         let online = try stableLayout(app, matching: targets)
-        let onlineNavigation = try frame("All Sessions", in: online)
-        let onlineList = try frame("session-list", in: online)
-        let onlineControls = try frame("New Session", in: online)
-        let onlineRow = try frame("session-fixture-1", in: online)
-        print("ROOT ONLINE FRAMES", online.mapValues(\.frame))
-        XCTAssertFalse(connectionBanner(app).exists)
-        XCTAssertEqual(onlineNavigation.minY, offlineNavigation.minY, accuracy: 1)
-        XCTAssertEqual(onlineRow.minY, offlineRow.minY, accuracy: 1,
-                       "A bottom banner must not shift the navigation bar or the first session row.")
-        XCTAssertEqual(onlineList, offlineList, "Native list bounds must keep their top/bottom underlap; only the usable inset changes.")
-        scrollToBottom(list)
-        let onlineEnd = try stableLayout(app, matching: ["session-fixture-12": .button])
-        let onlineLastRow = try frame("session-fixture-12", in: onlineEnd)
-        print("ROOT ONLINE SCROLL END", onlineLastRow)
-        assertReclaimedScrollEnd(offline: offlineLastRow, online: onlineLastRow, banner: bannerFrame, app: app)
-        XCTAssertEqual(onlineControls.minY - offlineControls.minY, bannerFrame.height, accuracy: 2,
-                       "Controls must reclaim actual layout space, not remain underneath an overlay.")
-        let offlineOptions = try frame("Session Options", in: offline)
-        let onlineOptions = try frame("Session Options", in: online)
-        XCTAssertEqual(onlineOptions.minY - offlineOptions.minY, bannerFrame.height, accuracy: 2)
+        for name in targets.keys { assertSameFrame(try frame(name, in: online), try frame(name, in: offline)) }
         XCTAssertFalse(element("session-notice", in: app).exists)
-        capture("host-recovered-bottom-layout", app: app)
+        XCTAssertTrue(app.buttons["New Session"].isHittable)
+        capture("host-recovered-unchanged-root-layout", app: app)
     }
 
-    func testAutomaticReconnectReclaimsNewSessionSheetBottomSpace() throws {
+    func testAutomaticReconnectDoesNotMoveNewSessionSheetOrScrollInsets() throws {
         let app = launch(["--recovering-host-fixture"])
         app.buttons["New Session"].tap()
         XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
         let targets: [String: XCUIElement.ElementType] = [
             "New Session": .navigationBar, "new-session-form": .any, "Create": .button, "Cancel": .button
         ]
-        let offline = try assertOfflineBanner(app, below: targets)
-        let bannerFrame = try frame("host-connection-banner", in: offline)
-        let offlineNavigation = try frame("New Session", in: offline)
-        let offlineForm = try frame("new-session-form", in: offline)
-        XCTAssertFalse(try XCTUnwrap(offline["Create"]).isEnabled)
-        print("SHEET OFFLINE FRAMES", offline.mapValues(\.frame))
-        capture("host-offline-sheet-bottom-layout", app: app)
-        XCTAssertTrue(connectionBanner(app).exists, "The offline screenshot must still show the banner.")
+        let offline = try assertOfflineBanner(app, over: targets)
         XCTAssertFalse(app.buttons["Create"].isEnabled)
         let form = element("new-session-form", in: app)
         scrollToBottom(form)
         let offlineEnd = try stableLayout(app, matching: ["new-session-tool-wait": .switch])
         let offlineLastRow = try frame("new-session-tool-wait", in: offlineEnd)
-        XCTAssertLessThanOrEqual(offlineLastRow.maxY, bannerFrame.minY, "The final form control must scroll fully above the banner.")
         XCTAssertTrue(app.switches["new-session-tool-wait"].isHittable)
         XCTAssertTrue(connectionBanner(app).exists)
-        print("SHEET OFFLINE SCROLL END", offlineLastRow)
 
         wait(NSPredicate(format: "exists == false"), on: connectionBanner(app), timeout: 40)
-        scrollToBottom(form)
         let onlineEnd = try stableLayout(app, matching: ["new-session-tool-wait": .switch])
-        let onlineLastRow = try frame("new-session-tool-wait", in: onlineEnd)
-        print("SHEET ONLINE SCROLL END", onlineLastRow)
+        assertSameFrame(try frame("new-session-tool-wait", in: onlineEnd), offlineLastRow)
         let online = try stableLayout(app, matching: targets)
-        let onlineNavigation = try frame("New Session", in: online)
-        let onlineForm = try frame("new-session-form", in: online)
-        print("SHEET ONLINE FRAMES", online.mapValues(\.frame))
-        XCTAssertFalse(connectionBanner(app).exists)
-        XCTAssertEqual(onlineNavigation.minY, offlineNavigation.minY, accuracy: 1)
-        XCTAssertEqual(onlineForm.minY, offlineForm.minY, accuracy: 1)
-        XCTAssertEqual(onlineForm, offlineForm, "The native form keeps its bounds while its usable bottom inset changes.")
-        assertReclaimedScrollEnd(offline: offlineLastRow, online: onlineLastRow, banner: bannerFrame, app: app)
+        for name in targets.keys { assertSameFrame(try frame(name, in: online), try frame(name, in: offline)) }
         wait(NSPredicate(format: "enabled == true"), on: app.buttons["Create"])
-        XCTAssertTrue(app.buttons["Cancel"].isEnabled)
-        capture("host-recovered-sheet-bottom-layout", app: app)
+        XCTAssertTrue(app.buttons["Cancel"].isHittable)
+        capture("host-recovered-unchanged-sheet-layout", app: app)
         app.buttons["Cancel"].tap()
     }
 
