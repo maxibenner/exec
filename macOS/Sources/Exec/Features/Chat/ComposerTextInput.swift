@@ -84,7 +84,7 @@ struct ComposerTextInput: NSViewRepresentable {
             editor.drawsBackground = false
             editor.font = .preferredFont(forTextStyle: .body)
             editor.textColor = .labelColor
-            editor.insertionPointColor = AppColors.nativeBlue
+            editor.insertionPointColor = .controlAccentColor
             editor.textContainerInset = .zero
             editor.textContainer?.lineFragmentPadding = 0
             editor.isVerticallyResizable = true
