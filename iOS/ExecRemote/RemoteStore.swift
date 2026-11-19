@@ -34,6 +34,7 @@ extension RelayClient: RemoteTransport {}
             guard selected != oldValue else { return }
             snapshot = selected.flatMap { recentConversations.visit($0) } ?? .null
             syncStates = syncStates.filter { recentConversations.contains($0.key) }
+            transcriptViewStates = transcriptViewStates.filter { recentConversations.contains($0.key) }
         }
     }
     var snapshot: RemoteJSON = .null {
@@ -56,6 +57,7 @@ extension RelayClient: RemoteTransport {}
     }
     var awaitingSendSnapshot: Bool { selected.flatMap { optimisticMessages[$0]?.awaitingSnapshot } ?? false }
     private var recentConversations = RecentConversationCache()
+    @ObservationIgnored private var transcriptViewStates: [String: TranscriptViewState] = [:]
     private var syncStates: [String: RemoteTranscriptSync] = [:]
     private var readTickets: [String: Int] = [:]
     private var loadingEarlier: Set<String> = []
@@ -81,6 +83,15 @@ extension RelayClient: RemoteTransport {}
         do { host = try loadHost() } catch { self.error = error.localizedDescription }
     }
     var active: Bool { RemoteMessageSubmission.isActive(snapshot) }
+
+    func transcriptViewState(for id: String?) -> TranscriptViewState? {
+        guard let id, recentConversations.contains(id) else { return nil }
+        return transcriptViewStates[id] ?? TranscriptViewState(generation: hostGeneration)
+    }
+    func saveTranscriptViewState(_ value: TranscriptViewState, for id: String) {
+        guard value.generation == hostGeneration, recentConversations.contains(id) else { return }
+        transcriptViewStates[id] = value
+    }
     func pair(_ text: String) async {
         guard !busy else { return }
         do {
@@ -148,6 +159,7 @@ extension RelayClient: RemoteTransport {}
     }
     private func clearConversationState() {
         hostGeneration += 1
+        transcriptViewStates.removeAll()
         recentConversations = RecentConversationCache()
         syncStates = [:]; readTickets = [:]; loadingEarlier = []
         optimisticMessages = [:]
@@ -186,6 +198,7 @@ extension RelayClient: RemoteTransport {}
         recentConversations.retain(ids)
         deferredHistoryRefreshes = deferredHistoryRefreshes.filter { recentConversations.contains($0) }
         syncStates = syncStates.filter { recentConversations.contains($0.key) }
+        transcriptViewStates = transcriptViewStates.filter { recentConversations.contains($0.key) }
         optimisticMessages = optimisticMessages.filter { ids.contains($0.key) }
         if let id = selected, !ids.contains(id) { selected = nil; snapshot = .null }
         return true
@@ -417,6 +430,7 @@ extension RelayClient: RemoteTransport {}
             snapshotGeneration += 1
             deletions.accept(id)
             recentConversations.remove(id)
+            transcriptViewStates.removeValue(forKey: id)
             deferredHistoryRefreshes.remove(id)
             syncStates.removeValue(forKey: id)
             readTickets[id, default: 0] += 1

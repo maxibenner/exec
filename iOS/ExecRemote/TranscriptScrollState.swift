@@ -56,6 +56,18 @@ struct TranscriptScrollState {
         return shouldFollow
     }
 
+    /// Reopening adopts the current cached history without replaying messages
+    /// received while hidden as a newly sent turn.
+    mutating func restoreRows(_ rows: [RemoteTranscriptRow]) {
+        previousIDs = Set(rows.map(\.id))
+        lastUserID = rows.last { $0.message["role"].string == "user" }?.id
+        initialized = true
+        if let reservedTurnID, !previousIDs.contains(reservedTurnID) {
+            self.reservedTurnID = nil
+            if case .turn = intent { intent = .latest }
+        }
+    }
+
     mutating func readerScrolled(towardLatest: Bool, atBottom: Bool) {
         if towardLatest && atBottom {
             intent = .latest
@@ -68,9 +80,21 @@ struct TranscriptScrollState {
     }
 }
 
-struct TranscriptViewportAnchor {
+struct TranscriptViewportAnchor: Equatable {
     let rowID: String
     let offset: CGFloat
+}
+
+/// In-memory presentation state, retained only alongside a resident transcript.
+/// The generation prevents a late disappearing view from saving into another host.
+struct TranscriptViewState {
+    let generation: Int
+    var scrollState = TranscriptScrollState()
+    var anchor: TranscriptViewportAnchor?
+    var expansion: [String: Bool] = [:]
+    var rowHeights: [String: CGFloat] = [:]
+    var layoutWidth: CGFloat = 0
+    var contentSizeCategory = ""
 }
 
 /// Shared arithmetic for the unobscured viewport. A response consumes the

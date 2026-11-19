@@ -323,6 +323,8 @@ struct ConversationScreen: View {
     var body: some View {
         NativeTranscript(conversationID: store.selected, snapshot: store.displaySnapshot,
                          descriptiveShellTitles: descriptiveShellTitles,
+                         viewState: store.transcriptViewState(for: store.selected),
+                         saveViewState: { id, value in store.saveTranscriptViewState(value, for: id) },
                          bottomPadding: composerHeight, hasEarlier: store.hasEarlierMessages,
                          loadEarlier: { Task { await store.loadEarlier() } })
         .ignoresSafeArea(.container, edges: [.top, .bottom])

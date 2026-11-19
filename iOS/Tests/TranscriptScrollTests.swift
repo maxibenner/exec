@@ -87,6 +87,62 @@ final class TranscriptScrollTests: XCTestCase {
         XCTAssertEqual(state.intent, .latest)
     }
 
+    func testRestorationAdoptsHiddenUpdatesWithoutReplayingASend() {
+        var state = TranscriptScrollState()
+        _ = state.update(rows: rows([message("old")]))
+        state.readerScrolled(towardLatest: false, atBottom: false)
+        let cached = rows([message("old"), message("local-delivered-while-hidden")])
+        state.restoreRows(cached)
+        XCTAssertEqual(state.intent, .reading)
+        XCTAssertFalse(state.update(rows: cached))
+        XCTAssertTrue(state.update(rows: cached + rows([message("local-next")])) )
+        XCTAssertEqual(state.intent, .turn("local-next"))
+    }
+
+    func testRestorationDropsATurnRemovedByHistoryReset() {
+        var state = TranscriptScrollState()
+        _ = state.update(rows: [])
+        _ = state.update(rows: rows([message("local-send")]))
+        let reset = rows([message("summary", "assistant")])
+        state.restoreRows(reset)
+        XCTAssertEqual(state.intent, .latest)
+        XCTAssertNil(state.reservedTurnID)
+        XCTAssertFalse(state.update(rows: reset))
+    }
+
+    @MainActor func testViewStateFollowsTheThreeSessionCacheAndRejectsEvictedWrites() throws {
+        let store = RemoteStore(client: FakeTransport(), loadHost: { nil }, saveHost: { _ in }, forgetHost: {})
+        for id in ["a", "b", "c"] {
+            store.selected = id
+            var value = try XCTUnwrap(store.transcriptViewState(for: id))
+            value.anchor = .init(rowID: "message-\(id)", offset: 17)
+            value.expansion["tool-\(id)"] = true
+            store.saveTranscriptViewState(value, for: id)
+        }
+        let stale = try XCTUnwrap(store.transcriptViewState(for: "b"))
+        store.selected = "a"
+        store.selected = "d" // b is now evicted, just like its transcript history.
+        XCTAssertNil(store.transcriptViewState(for: "b"))
+        store.saveTranscriptViewState(stale, for: "b")
+        XCTAssertNil(store.transcriptViewState(for: "b"))
+        XCTAssertEqual(store.transcriptViewState(for: "a")?.anchor, TranscriptViewportAnchor(rowID: "message-a", offset: 17))
+        XCTAssertEqual(store.transcriptViewState(for: "a")?.expansion["tool-a"], true)
+    }
+
+    @MainActor func testForgettingClearsViewStateAndRejectsThePreviousHostWriter() async throws {
+        let store = RemoteStore(client: FakeTransport(), loadHost: { nil }, saveHost: { _ in }, forgetHost: {})
+        store.selected = "same-id"
+        var old = try XCTUnwrap(store.transcriptViewState(for: "same-id"))
+        old.anchor = .init(rowID: "private-old-message", offset: 20)
+        store.saveTranscriptViewState(old, for: "same-id")
+        await store.forget()
+        store.selected = "same-id"
+        let replacement = try XCTUnwrap(store.transcriptViewState(for: "same-id"))
+        XCTAssertNotEqual(replacement.generation, old.generation)
+        store.saveTranscriptViewState(old, for: "same-id")
+        XCTAssertNil(store.transcriptViewState(for: "same-id")?.anchor)
+    }
+
     func testResponseConsumesReservationAndKeyboardUsesUnobscuredViewport() {
         let target = TranscriptScrollGeometry.turnOffset(rowTop: 1_000, topInset: 100)
         XCTAssertEqual(target, 892)

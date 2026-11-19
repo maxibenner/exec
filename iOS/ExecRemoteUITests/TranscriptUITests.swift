@@ -50,6 +50,18 @@ import XCTest
         XCTAssertLessThan(table.frame.minY, app.navigationBars.firstMatch.frame.minY,
                           "Native material chrome must not remove transcript underlap.")
         capture("one-host-joined-tools", app: app)
+        app.navigationBars.buttons.firstMatch.tap()
+        app.buttons["session-fixture-2"].tap()
+        XCTAssertTrue(header("first", app: app).waitForExistence(timeout: 5))
+        XCTAssertEqual(header("first", app: app).value as? String, "Collapsed")
+        XCTAssertEqual(header("second", app: app).value as? String, "Collapsed")
+        header("first", app: app).tap()
+        wait(NSPredicate(format: "value == %@", "Expanded"), on: header("first", app: app))
+        app.navigationBars.buttons.firstMatch.tap()
+        app.buttons["session-fixture-1"].tap()
+        XCTAssertTrue(header("second", app: app).waitForExistence(timeout: 5))
+        XCTAssertEqual(header("first", app: app).value as? String, "Collapsed")
+        XCTAssertEqual(header("second", app: app).value as? String, "Expanded")
     }
 
     func testSendReservesResponseSpaceAndManualReadingSurvivesStreaming() {
@@ -87,8 +99,34 @@ import XCTest
         XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "fixture-2 reading marker 24")).firstMatch.waitForExistence(timeout: 5))
         app.navigationBars.buttons.firstMatch.tap()
         app.buttons["session-fixture-1"].tap()
-        XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "Response paragraph 60.")).firstMatch.waitForExistence(timeout: 5),
-                      "Reopening a cached transcript must initialize at latest, not replay a stale send-to-top animation.")
+        let restored = app.tables["native-transcript"].cells["transcript-message-history-24"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 5))
+        XCTAssertEqual(restored.frame.minY, readingY, accuracy: 3,
+                       "Reopening must preserve the reader's position, not scroll to the response's end.")
+    }
+
+    func testCachedReadingPositionRestoresAcrossSessions() throws {
+        let app = launch()
+        let table = app.tables["native-transcript"]
+        table.swipeDown(velocity: .slow)
+        let top = app.navigationBars.firstMatch.frame.maxY
+        let anchor = try XCTUnwrap(table.cells.allElementsBoundByIndex.first { cell in
+            let frame = cell.frame
+            return cell.identifier.hasPrefix("transcript-message-history-")
+                && frame.minY > top + 12 && frame.maxY < table.frame.maxY - 100
+        })
+        let identifier = anchor.identifier, y = anchor.frame.minY
+        capture("cached-reading-before-navigation", app: app)
+        app.navigationBars.buttons.firstMatch.tap()
+        app.buttons["session-fixture-2"].tap()
+        XCTAssertTrue(app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "fixture-2 reading marker 24")).firstMatch.waitForExistence(timeout: 5))
+        app.navigationBars.buttons.firstMatch.tap()
+        app.buttons["session-fixture-1"].tap()
+        let restored = app.tables["native-transcript"].cells[identifier]
+        XCTAssertTrue(restored.waitForExistence(timeout: 5))
+        wait(NSPredicate { _, _ in restored.isHittable }, on: restored)
+        XCTAssertEqual(restored.frame.minY, y, accuracy: 3)
+        capture("cached-reading-after-navigation", app: app)
     }
 
     func testCachedToolTitlesReprojectWithoutChangingExpandedDetails() {
@@ -135,10 +173,13 @@ import XCTest
         let readingY = answer.frame.minY
         wait(NSPredicate(format: "value CONTAINS %@", "Response paragraph 40."), on: text)
         XCTAssertEqual(answer.frame.minY, readingY, accuracy: 3)
-        for _ in 0..<5 {
+        // The response keeps growing during each gesture. Scroll until the
+        // gesture actually reaches the bottom instead of assuming five swipes.
+        for _ in 0..<12 {
             if answer.frame.maxY <= bottom + 3 { break }
             table.swipeUp(velocity: .fast)
         }
+        XCTAssertLessThanOrEqual(answer.frame.maxY, bottom + 3, "An explicit gesture must reach the bottom before following can resume.")
         wait(NSPredicate { _, _ in abs(answer.frame.maxY - bottom) < 3 }, on: answer)
         wait(NSPredicate(format: "value CONTAINS %@", "Response paragraph 60."), on: text, timeout: 20)
         wait(NSPredicate { _, _ in abs(answer.frame.maxY - bottom) < 3 }, on: answer)

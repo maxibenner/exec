@@ -9,6 +9,8 @@ struct NativeTranscript: UIViewControllerRepresentable {
     let conversationID: String?
     let snapshot: RemoteJSON
     let descriptiveShellTitles: Bool
+    let viewState: TranscriptViewState?
+    let saveViewState: (String, TranscriptViewState) -> Void
     let bottomPadding: CGFloat
     let hasEarlier: Bool
     let loadEarlier: () -> Void
@@ -28,7 +30,12 @@ struct NativeTranscript: UIViewControllerRepresentable {
         table.allowsSelection = false
         table.register(MessageCell.self, forCellReuseIdentifier: "message")
         table.register(UITableViewCell.self, forCellReuseIdentifier: "tool")
-        context.coordinator.attach(table)
+        let coordinator = context.coordinator
+        coordinator.attach(table, saveViewState: saveViewState)
+        controller.saveViewState = { [weak coordinator, weak table] in
+            guard let table else { return }
+            coordinator?.savePresentation(table)
+        }
         return controller
     }
     func updateUIViewController(_ controller: UITableViewController, context: Context) {
@@ -38,13 +45,17 @@ struct NativeTranscript: UIViewControllerRepresentable {
         table.hasEarlier = hasEarlier
         table.loadEarlier = loadEarlier
         context.coordinator.update(conversationID: conversationID, snapshot: snapshot,
-                                   descriptiveShellTitles: descriptiveShellTitles, table: table)
+                                   descriptiveShellTitles: descriptiveShellTitles, viewState: viewState, table: table)
+    }
+    static func dismantleUIViewController(_ controller: UITableViewController, coordinator: Coordinator) {
+        if let table = controller.tableView as? TranscriptTableView { coordinator.detach(table) }
     }
     @MainActor final class Coordinator: NSObject, UITableViewDelegate {
         private struct Update {
             let conversationID: String?
             let snapshot: RemoteJSON
             let descriptiveShellTitles: Bool
+            let viewState: TranscriptViewState?
         }
         private var source: UITableViewDiffableDataSource<Int, String>?
         private var items: [String: TranscriptItem] = [:]
@@ -62,9 +73,22 @@ struct NativeTranscript: UIViewControllerRepresentable {
         private var dirtyGroups: Set<String> = []
         private var scheduled = false
         private var applying = false
+        private var attached = false
+        private var presentation: TranscriptViewState?
+        private var saveViewState: ((String, TranscriptViewState) -> Void)?
 
-        func attach(_ table: TranscriptTableView) {
+        func attach(_ table: TranscriptTableView, saveViewState: @escaping (String, TranscriptViewState) -> Void) {
+            attached = true
+            self.saveViewState = saveViewState
             table.delegate = self
+            table.prepareInitialRows = { [weak self, weak table] in
+                guard let self, let table else { return }
+                self.primeInitialPosition(table)
+            }
+            table.didChangeViewState = { [weak self, weak table] in
+                guard let table else { return }
+                self?.savePresentation(table)
+            }
             table.rowTop = { [weak self, weak table] id in
                 guard let self, let table else { return nil }
                 return self.rowTop(id, table: table)
@@ -79,14 +103,15 @@ struct NativeTranscript: UIViewControllerRepresentable {
                 return self.readingPosition(table)
             }
             table.didLayoutRows = { [weak self, weak table] in
-                guard let self, let table else { return }
+                guard let self, let table, table.bounds.width > 0 else { return }
                 if self.measuredWidth != table.bounds.width || self.measuredCategory != table.traitCollection.preferredContentSizeCategory {
                     self.measuredHeights.removeAll()
                     self.measuredWidth = table.bounds.width
                     self.measuredCategory = table.traitCollection.preferredContentSizeCategory
                 }
                 for path in table.indexPathsForVisibleRows ?? [] {
-                    if let id = self.source?.itemIdentifier(for: path), let cell = table.cellForRow(at: path) {
+                    if let id = self.source?.itemIdentifier(for: path), let cell = table.cellForRow(at: path),
+                       self.measuredHeights[id] != cell.bounds.height {
                         self.measuredHeights[id] = cell.bounds.height
                     }
                 }
@@ -141,12 +166,14 @@ struct NativeTranscript: UIViewControllerRepresentable {
                 self.scheduleUpdate(table)
             })
         }
-        func update(conversationID: String?, snapshot: RemoteJSON, descriptiveShellTitles: Bool, table: TranscriptTableView) {
-            pendingUpdate = Update(conversationID: conversationID, snapshot: snapshot, descriptiveShellTitles: descriptiveShellTitles)
+        func update(conversationID: String?, snapshot: RemoteJSON, descriptiveShellTitles: Bool,
+                    viewState: TranscriptViewState?, table: TranscriptTableView) {
+            pendingUpdate = Update(conversationID: conversationID, snapshot: snapshot,
+                                   descriptiveShellTitles: descriptiveShellTitles, viewState: viewState)
             scheduleUpdate(table)
         }
         private func scheduleUpdate(_ table: TranscriptTableView) {
-            guard !scheduled, !applying, !table.animatingScroll else { return }
+            guard attached, !scheduled, !applying, !table.animatingScroll else { return }
             scheduled = true
             // Streaming snapshots and disclosure changes arriving before the next
             // run-loop turn share one diffable/self-sizing update.
@@ -157,10 +184,9 @@ struct NativeTranscript: UIViewControllerRepresentable {
             }
         }
         private func applyUpdate(_ table: TranscriptTableView) {
-            guard !table.animatingScroll, let source, let update = pendingUpdate ?? currentUpdate else { return }
+            guard attached, !table.animatingScroll, let source, let update = pendingUpdate ?? currentUpdate else { return }
             pendingUpdate = nil
-            currentUpdate = update
-            let changedConversation = conversationID != update.conversationID
+            let changedConversation = conversationID != update.conversationID || presentation?.generation != update.viewState?.generation
             let changedDisplay = descriptiveShellTitles != update.descriptiveShellTitles
             let projected = TranscriptItem.project(update.snapshot)
             let next = Dictionary(uniqueKeysWithValues: projected.map { ($0.id, $0) })
@@ -168,17 +194,32 @@ struct NativeTranscript: UIViewControllerRepresentable {
             dirtyGroups.removeAll()
             let validSnapshot = update.snapshot["id"].string == update.conversationID && update.conversationID != nil
             guard changedConversation || changedDisplay || next != items || !dirty.isEmpty || (!hasSnapshot && validSnapshot) else { return }
-            table.beginContentUpdate()
             applying = true
             if changedConversation {
+                savePresentation(table)
                 table.resetScroll()
                 expansion.removeAll(); toolFrames.removeAll(); measuredHeights.removeAll(); hasSnapshot = false
+                presentation = update.viewState
             }
+            currentUpdate = update
+            table.beginContentUpdate()
             let initial = !hasSnapshot
-            // A null loading snapshot is not an empty conversation and must not
-            // turn its eventual cached/history page into a newly sent turn.
+            // Opening/reopening establishes a baseline, not a newly sent turn.
+            // Keep cached reading intent even when hidden sessions received updates.
             if validSnapshot {
-                _ = table.scrollState.update(rows: projected.flatMap(\.rows))
+                let rows = projected.flatMap(\.rows)
+                if initial {
+                    presentation = update.viewState
+                    expansion = presentation?.expansion ?? [:]
+                    measuredHeights = presentation?.rowHeights ?? [:]
+                    measuredWidth = presentation?.layoutWidth ?? 0
+                    measuredCategory = presentation.flatMap {
+                        $0.contentSizeCategory.isEmpty ? nil : UIContentSizeCategory(rawValue: $0.contentSizeCategory)
+                    }
+                    table.restorePresentation(presentation, rows: rows)
+                } else {
+                    _ = table.scrollState.update(rows: rows)
+                }
                 hasSnapshot = true
             }
             let previousIDs = Set(source.snapshot().itemIdentifiers)
@@ -196,10 +237,41 @@ struct NativeTranscript: UIViewControllerRepresentable {
             snapshot.appendSections([0]); snapshot.appendItems(projected.map(\.id))
             snapshot.reconfigureItems(changed)
             source.apply(snapshot, animatingDifferences: false) { [weak self, weak table] in
-                guard let self, let table else { return }
+                guard let self, let table, self.attached else { return }
                 self.applying = false
-                table.finishContentUpdate(initial: changedConversation || initial)
+                table.finishContentUpdate(initial: changedConversation || initial, ready: self.hasSnapshot)
                 if self.pendingUpdate != nil || !self.dirtyGroups.isEmpty { self.scheduleUpdate(table) }
+            }
+        }
+        func savePresentation(_ table: TranscriptTableView) {
+            guard attached, hasSnapshot, table.hasPresentedContent, !table.updatingContent,
+                  let id = conversationID, var value = presentation else { return }
+            value.anchor = table.captureReadingPosition()
+            value.scrollState = table.scrollState
+            value.expansion = expansion
+            value.rowHeights = measuredHeights
+            value.layoutWidth = measuredWidth
+            value.contentSizeCategory = measuredCategory?.rawValue ?? ""
+            presentation = value
+            saveViewState?(id, value)
+        }
+        func detach(_ table: TranscriptTableView) {
+            savePresentation(table)
+            attached = false
+            pendingUpdate = nil; currentUpdate = nil; source = nil; saveViewState = nil
+            table.delegate = nil
+        }
+        private func primeInitialPosition(_ table: TranscriptTableView) {
+            guard let source, table.bounds.width > 0, table.bounds.height > 0 else { return }
+            let row = table.restorationRowID
+            guard let id = row.flatMap({ itemForRow[$0] }) ?? source.snapshot().itemIdentifiers.last,
+                  let path = source.indexPath(for: id) else { return }
+            // Materialize the anchor's cell/tool group before resolving its internal
+            // geometry. Cached heights keep the initial table estimate consistent.
+            UIView.performWithoutAnimation {
+                table.layoutIfNeeded()
+                table.scrollToRow(at: path, at: row == nil ? .bottom : .top, animated: false)
+                table.layoutIfNeeded()
             }
         }
         private func rowTop(_ rowID: String, table: UITableView) -> CGFloat? {
@@ -243,6 +315,11 @@ struct NativeTranscript: UIViewControllerRepresentable {
 /// appearance and scroll-edge effect entirely to UIKit.
 @MainActor private final class TranscriptViewController: UITableViewController {
     private weak var navigationOwner: UIViewController?
+    var saveViewState: (() -> Void)?
+    override func viewWillDisappear(_ animated: Bool) {
+        saveViewState?()
+        super.viewWillDisappear(animated)
+    }
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         guard let owner = navigationController?.topViewController, owner !== navigationOwner else { return }
@@ -309,8 +386,20 @@ private struct MobileToolCard: View {
     var readingPosition: (() -> TranscriptViewportAnchor?)?
     var didLayoutRows: (() -> Void)?
     var finishedFollowing: (() -> Void)?
+    var prepareInitialRows: (() -> Void)?
+    var didChangeViewState: (() -> Void)?
     var scrollState = TranscriptScrollState()
     var updatingContent = false
+    private(set) var hasPresentedContent = false
+    private var contentReady = false
+    private var suppressOpeningAnimation = true
+    var restorationRowID: String? {
+        switch scrollState.intent {
+        case .reading: readingAnchor?.rowID
+        case .turn(let id): id
+        case .latest: nil
+        }
+    }
     private var readingAnchor: TranscriptViewportAnchor?
     private var restoringReadingAnchor = false
     private var requestedEarlier = false
@@ -350,14 +439,36 @@ private struct MobileToolCard: View {
         requestedEarlier = false
         tableFooterView = nil
         immediateAlignment = true
+        suppressOpeningAnimation = true
+        hasPresentedContent = false
+        contentReady = false
+        UIView.performWithoutAnimation { alpha = 0 }
+    }
+    func restorePresentation(_ value: TranscriptViewState?, rows: [RemoteTranscriptRow]) {
+        scrollState = value?.scrollState ?? TranscriptScrollState()
+        scrollState.restoreRows(rows)
+        readingAnchor = value?.anchor
+        if scrollState.intent == .reading,
+           !rows.contains(where: { $0.id == readingAnchor?.rowID }) {
+            scrollState = TranscriptScrollState()
+            scrollState.restoreRows(rows)
+            readingAnchor = nil
+        }
+        restoringReadingAnchor = scrollState.intent == .reading && readingAnchor != nil
+    }
+    func captureReadingPosition() -> TranscriptViewportAnchor? {
+        cancelScrollAnimation()
+        return readingPosition?() ?? readingAnchor
     }
     func beginContentUpdate() {
         if readingAnchor == nil { rememberReadingPosition() }
         restoringReadingAnchor = scrollState.intent == .reading && readingAnchor != nil
         updatingContent = true
     }
-    func finishContentUpdate(initial: Bool) {
+    func finishContentUpdate(initial: Bool, ready: Bool) {
         updatingContent = false
+        contentReady = ready
+        if !initial { suppressOpeningAnimation = false }
         if scrollState.intent != .reading { restoringReadingAnchor = false }
         scheduleAlignment(immediate: initial)
         // Paging must compensate before the next frame, even with a finger still
@@ -404,9 +515,11 @@ private struct MobileToolCard: View {
         readerActive = false
         if !immediateAlignment { rememberReadingPosition() }
         scheduleAlignment()
+        didChangeViewState?()
     }
     private func finishedScrollAnimation() {
         scrollAnimator = nil
+        didChangeViewState?()
         scheduleAlignment()
         finishedFollowing?()
     }
@@ -444,45 +557,35 @@ private struct MobileToolCard: View {
     }
     func scheduleAlignment(immediate: Bool = false) {
         alignmentNeeded = true
-        immediateAlignment = immediateAlignment || immediate
+        immediateAlignment = immediateAlignment || immediate || suppressOpeningAnimation
         guard !alignmentScheduled, !settling, !updatingContent, !animatingScroll || immediate else { return }
         alignmentScheduled = true
         DispatchQueue.main.async { [weak self] in self?.alignViewport() }
     }
     private func alignViewport() {
         alignmentScheduled = false
-        guard alignmentNeeded, !updatingContent,
+        guard alignmentNeeded, contentReady, !updatingContent,
               restoringReadingAnchor || (!isTracking && !isDragging && !isDecelerating),
               window != nil, bounds.height > 0 else { return }
         settling = true
-        defer { settling = false }
+        defer {
+            settling = false
+            if alignmentNeeded { scheduleAlignment() }
+        }
+        if !hasPresentedContent { prepareInitialRows?() }
         layoutIfNeeded()
         updateResponseReservation()
         layoutIfNeeded()
         if immediateAlignment || reduceMotion { cancelScrollAnimation() }
-        // Let an in-flight native animation finish. New streaming geometry is
-        // coalesced into its next target, rather than restarting it per token.
         guard !animatingScroll else { return }
         alignmentNeeded = false
-        let maximum = TranscriptScrollGeometry.bottom(contentHeight: contentSize.height, viewportHeight: bounds.height,
-                                                        topInset: adjustedContentInset.top, bottomInset: adjustedContentInset.bottom)
-        let target: CGFloat
-        switch scrollState.intent {
-        case .latest: target = maximum
-        case .turn(let id):
-            guard let top = turnTop?(id) else { return }
-            target = TranscriptScrollGeometry.turnOffset(rowTop: top, topInset: adjustedContentInset.top)
-        case .reading:
-            guard let anchor = readingAnchor, let top = rowTop?(anchor.rowID) else { return }
-            target = top - adjustedContentInset.top - anchor.offset
-        }
-        let y = min(maximum, max(-adjustedContentInset.top, target))
-        let animate = TranscriptScrollGeometry.shouldAnimate(initial: false, geometryChanged: immediateAlignment,
-                                                               reduceMotion: reduceMotion)
-            && scrollState.intent != .reading
+        guard let y = resolvedOffset() else { return }
+        let animate = hasPresentedContent && !suppressOpeningAnimation
+            && TranscriptScrollGeometry.shouldAnimate(initial: false, geometryChanged: immediateAlignment,
+                                                       reduceMotion: reduceMotion)
+            && scrollState.intent != .reading && abs(contentOffset.y - y) > 0.5
         immediateAlignment = false
         restoringReadingAnchor = false
-        guard abs(contentOffset.y - y) > 0.5 else { return }
         correctingOffset = true
         let destination = CGPoint(x: contentOffset.x, y: y)
         if animate {
@@ -492,9 +595,40 @@ private struct MobileToolCard: View {
             animator.addCompletion { [weak self] _ in self?.finishedScrollAnimation() }
             scrollAnimator = animator
             animator.startAnimation()
-        } else { setContentOffset(destination, animated: false) }
+        } else {
+            UIView.performWithoutAnimation {
+                setContentOffset(destination, animated: false)
+                layoutIfNeeded()
+            }
+        }
         lastReaderOffset = contentOffset.y
         correctingOffset = false
+        if !animate {
+            // Self-sizing may refine the target during the synchronous layout.
+            // Reveal only the positioned content, never a visible initial travel.
+            if let refined = resolvedOffset(), abs(contentOffset.y - refined) > 0.5 {
+                scheduleAlignment(immediate: true)
+                return
+            }
+            UIView.performWithoutAnimation { alpha = 1 }
+            hasPresentedContent = true
+            didChangeViewState?()
+        }
+    }
+    private func resolvedOffset() -> CGFloat? {
+        let maximum = TranscriptScrollGeometry.bottom(contentHeight: contentSize.height, viewportHeight: bounds.height,
+                                                       topInset: adjustedContentInset.top, bottomInset: adjustedContentInset.bottom)
+        let target: CGFloat
+        switch scrollState.intent {
+        case .latest: target = maximum
+        case .turn(let id):
+            guard let top = turnTop?(id) else { return nil }
+            target = TranscriptScrollGeometry.turnOffset(rowTop: top, topInset: adjustedContentInset.top)
+        case .reading:
+            guard let anchor = readingAnchor, let top = rowTop?(anchor.rowID) else { return nil }
+            target = top - adjustedContentInset.top - anchor.offset
+        }
+        return min(maximum, max(-adjustedContentInset.top, target))
     }
     private func updateResponseReservation() {
         let oldHeight = tableFooterView?.frame.height ?? 0
