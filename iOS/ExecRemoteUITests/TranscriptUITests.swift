@@ -28,32 +28,61 @@ import XCTest
 
     func testMarkdownUsesOneMultilineCodeSurfaceAndFullSizeScrollableTable() {
         let app = launch(["--transcript-markdown"])
+        print("Markdown accessibility hierarchy before horizontal scrolling:\n\(app.debugDescription)")
         let transcript = app.tables["native-transcript"]
-        let codeBlocks = app.descendants(matching: .any).matching(identifier: "markdown-code-block")
-        XCTAssertTrue(codeBlocks.firstMatch.waitForExistence(timeout: 5))
-        XCTAssertEqual(codeBlocks.count, 1, "One fence must not become an inline-code view for every line.")
-        let code = app.textViews["markdown-code-text"]
+        // UIKit flattens the non-element block/scroll wrappers in accessibility.
+        // Count the selectable region, not TextKit's individual line children.
+        let codeRegions = app.textViews.matching(identifier: "markdown-code-text")
+        XCTAssertTrue(codeRegions.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(codeRegions.count, 1, "One fence must use one continuous selectable multiline region.")
+        let code = codeRegions.firstMatch
         XCTAssertTrue((code.value as? String)?.contains("let first = 1\nlet second = 2\nprint(") == true)
         XCTAssertGreaterThan(code.frame.height, 35)
         XCTAssertEqual(transcript.cells.count, 2, "Block views stay inside one virtualized assistant message cell.")
         let user = transcript.cells["transcript-message-markdown-user"].textViews.firstMatch
         XCTAssertEqual(user.value as? String, "**Literal user text** and `inline code`")
 
-        let scroll = app.scrollViews["markdown-table-scroll"]
-        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
         let first = app.textViews["markdown-table-cell-1-0"]
         let last = app.textViews["markdown-table-cell-0-4"]
-        let x = first.frame.minX, height = first.frame.height, tableHeight = scroll.frame.height, y = scroll.frame.minY
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+        XCTAssertTrue(last.exists, "The offscreen column must remain an accessible text region.")
+        XCTAssertTrue(first.isHittable)
+        // Offscreen UITextView frames can fall back to the message cell's frame;
+        // TextKit's text children retain their actual glyph bounds after clipping.
+        let firstText = first.textViews.firstMatch, lastText = last.textViews.firstMatch
+        let firstFrame = firstText.frame, lastFrame = lastText.frame, userY = user.frame.minY
+        let top = app.textViews["markdown-table-cell-0-0"].textViews.firstMatch
+        let bottom = app.textViews["markdown-table-cell-2-0"].textViews.firstMatch
+        let y = top.frame.minY, tableTextHeight = bottom.frame.maxY - y
+        let bodyFrame = transcript.cells["transcript-message-markdown-answer"].textViews
+            .matching(NSPredicate(format: "value == %@", "Between native blocks.")).firstMatch.frame
+        XCTAssertGreaterThan(lastFrame.minX, bodyFrame.maxX, "The fixture must require horizontal scrolling.")
+        // Use the visible row's screen position; the wide text frames extend
+        // offscreen and the horizontal UIScrollView is not an AX scroll element.
+        let origin = transcript.coordinate(withNormalizedOffset: .zero)
+        let rowY = firstFrame.midY - transcript.frame.minY
+        let leftX = bodyFrame.minX - transcript.frame.minX, inset = bodyFrame.width * 0.1
+        let right = origin.withOffset(CGVector(dx: leftX + bodyFrame.width - inset, dy: rowY))
+        let left = origin.withOffset(CGVector(dx: leftX + inset, dy: rowY))
         for _ in 0..<16 {
-            if last.isHittable { break }
-            scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5))
-                .press(forDuration: 0.05, thenDragTo: scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)))
+            // Offscreen TextKit hittability can throw instead of returning false.
+            if lastText.frame.maxX <= bodyFrame.maxX { break }
+            right.press(forDuration: 0.05, thenDragTo: left, withVelocity: .slow, thenHoldForDuration: 0.1)
         }
-        XCTAssertTrue(last.isHittable, "Horizontal dragging must expose the final header/column, not clip it.")
-        XCTAssertLessThan(first.frame.minX, x - 30)
-        XCTAssertEqual(first.frame.height, height, accuracy: 0.5, "Dragging must not scale down table text.")
-        XCTAssertEqual(scroll.frame.height, tableHeight, accuracy: 0.5)
-        XCTAssertEqual(scroll.frame.minY, y, accuracy: 2, "A horizontal block drag must not move the transcript's reading anchor.")
+        print("Markdown accessibility hierarchy after horizontal scrolling:\n\(app.debugDescription)")
+        guard lastText.frame.minX >= bodyFrame.minX, lastText.frame.maxX <= bodyFrame.maxX else {
+            XCTFail("Horizontal dragging must fully reveal the final header/column, not clip it.")
+            return
+        }
+        XCTAssertTrue(last.isHittable)
+        XCTAssertLessThan(firstText.frame.minX, firstFrame.minX - 30)
+        XCTAssertEqual(firstText.frame.width, firstFrame.width, accuracy: 0.5)
+        XCTAssertEqual(firstText.frame.height, firstFrame.height, accuracy: 0.5, "Dragging must not scale down table text.")
+        XCTAssertEqual(lastText.frame.width, lastFrame.width, accuracy: 0.5)
+        XCTAssertEqual(lastText.frame.height, lastFrame.height, accuracy: 0.5)
+        XCTAssertEqual(bottom.frame.maxY - top.frame.minY, tableTextHeight, accuracy: 0.5)
+        XCTAssertEqual(top.frame.minY, y, accuracy: 2, "A horizontal block drag must not move the table vertically.")
+        XCTAssertEqual(user.frame.minY, userY, accuracy: 2, "A horizontal block drag must not move the transcript's reading anchor.")
         XCTAssertEqual(last.value as? String, "Rightmost")
         capture("native-markdown-blocks-last-column", app: app)
     }
