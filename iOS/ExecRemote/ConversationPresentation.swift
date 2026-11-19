@@ -10,7 +10,7 @@ struct ConversationPresentation {
     init(conversationID: String, catalog: [RemoteJSON], snapshot: RemoteJSON) {
         self.conversationID = conversationID
         let row = catalog.first { $0["id"].string == conversationID } ?? .null
-        title = row["metadata"]["title"].string ?? row["title"].string ?? "Chat"
+        title = row["metadata"]["title"].string ?? row["title"].string ?? "New Session"
         update(snapshot)
     }
 

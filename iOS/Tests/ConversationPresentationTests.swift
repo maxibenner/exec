@@ -65,7 +65,7 @@ import ExecRemote
         XCTAssertEqual(legacyPresentation.title, "Legacy snapshot")
 
         var created = ConversationPresentation(conversationID: "created", catalog: catalog, snapshot: parent)
-        XCTAssertEqual(created.title, "Chat")
+        XCTAssertEqual(created.title, "New Session")
         created.update(conversation("created", title: "New Session"))
         XCTAssertEqual(created.title, "New Session")
         XCTAssertEqual(created.snapshot["id"].string, "created")
@@ -140,7 +140,7 @@ import ExecRemote
 
         await store.forget()
         let future = ConversationPresentation(conversationID: "session", catalog: store.conversations, snapshot: store.displaySnapshot)
-        XCTAssertEqual(future.title, "Chat")
+        XCTAssertEqual(future.title, "New Session")
         XCTAssertEqual(future.snapshot, .null)
     }
 }
