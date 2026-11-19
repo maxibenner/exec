@@ -6,11 +6,13 @@ public struct RemoteOptimisticMessages {
     private struct Read {
         let snapshot: RemoteJSON
         let reset: Bool
+        let offset: Int
     }
     private struct Pending {
         let id: String
         let text: String
         let previousMessageIDs: Set<String>
+        let previousLastMessageID: String?
         let previousOperation: RemoteJSON
         var accepted = false
         var operationID: String?
@@ -26,8 +28,10 @@ public struct RemoteOptimisticMessages {
 
     @discardableResult
     public mutating func begin(text: String, snapshot: RemoteJSON, id: String = "local-\(UUID().uuidString)") -> String {
+        let messages = Self.messages(snapshot)
         pending.append(Pending(id: id, text: text,
-                               previousMessageIDs: Set(Self.messages(snapshot).compactMap { $0["id"].string }),
+                               previousMessageIDs: Set(messages.compactMap { $0["id"].string }),
+                               previousLastMessageID: messages.last?["id"].string,
                                previousOperation: snapshot["operation"]))
         return id
     }
@@ -43,7 +47,7 @@ public struct RemoteOptimisticMessages {
         if let message = pending[index].messageID { rowIDs[message] = id }
         let input = pending[index]
         if let read = input.latestRead,
-           Self.resolve(input, snapshot: read.snapshot, reset: read.reset, rowIDs: &rowIDs) {
+           Self.resolve(input, snapshot: read.snapshot, reset: read.reset, offset: read.offset, rowIDs: &rowIDs) {
             pending.remove(at: index)
         }
         return input.latestRead == nil
@@ -59,28 +63,33 @@ public struct RemoteOptimisticMessages {
     /// Only a validated, current host refresh may retire missing accepted input.
     public mutating func reconcile(_ state: RemoteTranscriptSync) {
         for index in pending.indices {
-            pending[index].latestRead = Read(snapshot: state.snapshot, reset: state.didReset)
+            pending[index].latestRead = Read(snapshot: state.snapshot, reset: state.didReset, offset: state.offset)
         }
-        pending.removeAll { Self.resolve($0, snapshot: state.snapshot, reset: state.didReset, rowIDs: &rowIDs) }
+        pending.removeAll { Self.resolve($0, snapshot: state.snapshot, reset: state.didReset, offset: state.offset, rowIDs: &rowIDs) }
     }
 
-    private static func resolve(_ input: Pending, snapshot: RemoteJSON, reset: Bool?, rowIDs: inout [String: String]) -> Bool {
+    private static func resolve(_ input: Pending, snapshot: RemoteJSON, reset: Bool?, offset: Int = 0,
+                                rowIDs: inout [String: String]) -> Bool {
         guard input.accepted else { return false }
         let messages = messages(snapshot)
         let operation = snapshot["operation"]["id"].string
         let previous = input.previousOperation["id"].string
-        // A turn reply has no message ID. After an operation transition, require
-        // continuity with the old history rather than borrowing identical text
-        // from a replacement/cleared conversation.
-        let hasContinuity = messages.contains { input.previousMessageIDs.contains($0["id"].string ?? "") }
+        // A turn reply has no message ID. Only match after the pre-send tail;
+        // paging older identical text or losing that tail in a reset is not proof
+        // of identity. With an empty baseline, require the full history start.
+        let firstNewIndex: Int?
+        if let tail = input.previousLastMessageID {
+            firstNewIndex = messages.firstIndex { $0["id"].string == tail }.map { $0 + 1 }
+        } else { firstNewIndex = offset == 0 ? 0 : nil }
+        let hasContinuity = input.previousLastMessageID != nil && firstNewIndex != nil
         let canMatchTurn = input.operationID != nil && (operation == input.operationID
             || (operation != nil && operation != previous && hasContinuity))
-        let match = messages.first { message in
+        let match = messages.enumerated().first { index, message in
             guard message["role"].string == "user", let id = message["id"].string else { return false }
             if let messageID = input.messageID { return id == messageID }
-            return canMatchTurn && !input.previousMessageIDs.contains(id)
+            return canMatchTurn && firstNewIndex.map { index >= $0 } == true && !input.previousMessageIDs.contains(id)
                 && rowIDs[id] == nil && message["text"].string == input.text
-        }
+        }?.element
         if let message = match?["id"].string {
             rowIDs[message] = input.id
             return true

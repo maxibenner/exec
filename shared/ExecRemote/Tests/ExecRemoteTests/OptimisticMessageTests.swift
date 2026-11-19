@@ -117,6 +117,30 @@ final class OptimisticMessageTests: XCTestCase {
         XCTAssertEqual(RemoteTranscriptRow.project(display.project(expanded)).map(\.id), [id, "later"])
     }
 
+    func testNewTurnIdentityCannotMatchOlderIdenticalTextLoadedAfterSend() {
+        var display = RemoteOptimisticMessages()
+        let id = display.begin(text: "Hello", snapshot: snapshot(messages: [user("tail", "Before")]))
+        display.accept(id, response: acceptance())
+        let expanded = snapshot("running", operation: "new", messages: [
+            user("older", "Hello"), user("tail", "Before"), user("accepted", "Hello")
+        ])
+        display.reconcile(expanded)
+        XCTAssertFalse(display.awaitingSnapshot)
+        XCTAssertEqual(RemoteTranscriptRow.project(display.project(expanded)).map(\.id), ["older", "tail", id])
+    }
+
+    func testResetSuffixCannotBorrowLaterSteeringMessageIdentityForANewTurn() throws {
+        for baseline in [snapshot(), snapshot(messages: [user("tail", "Before")])] {
+            var display = RemoteOptimisticMessages()
+            let id = display.begin(text: "Hello", snapshot: baseline)
+            display.accept(id, response: acceptance())
+            let suffix = snapshot("running", operation: "new", messages: [user("later-steer", "Hello")])
+            display.reconcile(try RemoteTranscriptSync.initial(page(suffix, offset: 10, total: 11)))
+            XCTAssertFalse(display.awaitingSnapshot)
+            XCTAssertEqual(RemoteTranscriptRow.project(display.project(suffix)).map(\.id), ["later-steer"])
+        }
+    }
+
     func testCanonicalNewerOperationsWinWithoutBorrowingReplacementTextIdentity() throws {
         for state in ["running", "completed", "failed", "cancelled", "interrupted"] {
             var display = RemoteOptimisticMessages()
