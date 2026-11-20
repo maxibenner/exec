@@ -174,9 +174,9 @@ extension RelayClient: RemoteTransport {}
               snapshot["operation"]["state"].string == "awaiting_approval" else { return false }
         return !isUpdatingConversation(target.conversationID) && !isCancelling(target.conversationID)
     }
-    /// Remote deletion is explicit and immediate, even with running work or drafts.
     func canDeleteConversation(_ value: RemoteJSON) -> Bool {
         connected && !isUpdatingConversation(value.id) && sending[value.id] == nil
+            && acceptedOperations[value.id] == nil && !RemoteMessageSubmission.isActive(value)
     }
     private func scope(for path: String) -> MutationScope {
         if path == "/v1/library" { return .library }
@@ -664,9 +664,6 @@ extension RelayClient: RemoteTransport {}
             conversationConnections.removeValue(forKey: id)
             readTickets[id, default: 0] += 1
             optimisticMessages.removeValue(forKey: id)
-            acceptedOperations.removeValue(forKey: id)
-            cancellingOperations.removeValue(forKey: id)
-            uncertainSends.remove(id)
             drafts.removeValue(forKey: id)
         } catch {
             mutations.remove(.conversation(id))
