@@ -189,11 +189,15 @@ import AppKit
         // Scrollbar/keyboard tracking resumes within a fractional point margin,
         // not only when it happens to land less than one point from the edge.
         let target = ScrollerTarget(view: view)
+        let scroller = view.verticalScroller!
+        scroller.target = target
+        scroller.action = #selector(ScrollerTarget.scroll)
+        view.tile() // Reattach reader tracking around the native control's action.
         target.y = newBottom - 10
-        try expect(view.verticalScroller!.sendAction(#selector(ScrollerTarget.scroll), to: target))
+        try expect(scroller.sendAction(scroller.action, to: scroller.target))
         try expect(!state.followsLatest)
         target.y = newBottom - 1.5
-        try expect(view.verticalScroller!.sendAction(#selector(ScrollerTarget.scroll), to: target))
+        try expect(scroller.sendAction(scroller.action, to: scroller.target))
         try expect(state.followsLatest)
         reply.text += "Following again.\n\n"
         try update()
