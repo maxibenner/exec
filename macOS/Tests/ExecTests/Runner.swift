@@ -75,6 +75,15 @@ func expectFailure(_ operation: () throws -> Void) throws {
             runComposerEvents()
             return
         }
+        if CommandLine.arguments.contains("--quit-appkit") {
+            QuitLifecycleTests.runAppKitProbe()
+            return
+        }
+        let quitChecks: [(String, @MainActor () async throws -> Void)] = [
+            ("Quit retains copy and awaits backend shutdown", { try await AgentIntegrationTests().quitWaitsForBackendAndPreservesCopy() }),
+            ("Idle and detached drafts require explicit Quit loss confirmation", { try await QuitDraftTests().idleAndDetachedDraftsRequireExplicitLossConfirmation() }),
+            ("Command-Q awaits shutdown without blocking AppKit", { try await QuitLifecycleTests().commandQuitAwaitsShutdown() })
+        ]
         let allChecks: [(String, @MainActor () async throws -> Void)] = [
             ("Thinking footer follows response gaps and terminal states", { try ThinkingIndicatorTests().responseActivity() }),
             ("Thinking footer belongs to transcript geometry", { try await ThinkingIndicatorTests().documentFooter() }),
@@ -285,15 +294,14 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Failed approval decisions reconcile pending state without replay", { try await ToolApprovalRecoveryTests().failedDecisionsReconcileAuthoritativelyWithoutResending() }),
             ("Queued images retain their operation and never replay", { try await ImageQueueTests().queuesImagesWithoutReplayingOrChangingOperation() }),
             ("Uncertain submissions never retry", { try await AgentIntegrationTests().uncertainSendIsNotRetried() }),
-            ("Quit retains copy and awaits backend shutdown", { try await AgentIntegrationTests().quitWaitsForBackendAndPreservesCopy() }),
-            ("Idle and detached drafts require explicit Quit loss confirmation", { try await QuitDraftTests().idleAndDetachedDraftsRequireExplicitLossConfirmation() }),
             ("HTTP redirects and interrupted mutations never replay", { try await HTTPConsumerTests().redirectsAndInterruptedMutationsAreNotReplayed() }),
             ("HTTPS rejects an untrusted certificate without fallback", { try await HTTPConsumerTests().tlsRejectsUntrustedCertificate() }),
             ("Bundled backend ignores external settings and provisions private credentials", { try AgentIntegrationTests().httpConfiguration() }),
             ("Agent transport connects to isolated Rust service", { try await AgentIntegrationTests().realService() })
         ]
-        let checks = allChecks.filter { matchesFilter($0.0) }
-        for (name, check) in checks {
+        let selectedChecks = (CommandLine.arguments.contains("--quit-lifecycle") ? quitChecks : allChecks + quitChecks)
+            .filter { matchesFilter($0.0) }
+        for (name, check) in selectedChecks {
             do { try await check() }
             catch {
                 FileHandle.standardError.write(Data("FAIL \(name): \(error)\n".utf8))
@@ -301,6 +309,6 @@ func expectFailure(_ operation: () throws -> Void) throws {
             }
             print("PASS \(name)")
         }
-        print("\(checks.count) checks passed.")
+        print("\(selectedChecks.count) checks passed.")
     }
 }

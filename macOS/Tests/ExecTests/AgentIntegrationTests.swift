@@ -169,8 +169,11 @@ actor FakeAgentTransport: AgentTransport {
     }
 
     func quitWaitsForBackendAndPreservesCopy() async throws {
+        let suite = "exec-quit-lifecycle-\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
         let transport = FakeAgentTransport()
-        let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)))
+        let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
         try library.current.apply(Self.fixture().decoded(AgentSnapshot.self))
         defer { library.closePresentations() }
         let delegate = AppDelegate()
@@ -181,30 +184,37 @@ actor FakeAgentTransport: AgentTransport {
         var decision: CheckedContinuation<NSApplication.ModalResponse, Never>?
         var shutdown: CheckedContinuation<Void, Never>?
         var replies: [Bool] = []
+        var confirmations = 0, shutdowns = 0
         delegate.confirmQuit = { alert, _ in
+            confirmations += 1
             alertTitle = alert.messageText
             buttonTitles = alert.buttons.map(\.title)
             alertText = alert.informativeText
             return await withCheckedContinuation { decision = $0 }
         }
-        delegate.shutdownBackend = { await withCheckedContinuation { shutdown = $0 } }
-        delegate.replyToTermination = { _, value in replies.append(value) }
-        try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateLater)
-        await Task.yield()
-        try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateLater)
+        delegate.shutdownBackend = {
+            shutdowns += 1
+            await withCheckedContinuation { shutdown = $0 }
+        }
+        delegate.finishQuitRequest = { _, value in replies.append(value) }
+        try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateCancel)
+        try await wait { decision != nil }
+        try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateCancel)
+        try expect(confirmations == 1 && shutdowns == 0)
         decision?.resume(returning: .alertSecondButtonReturn); decision = nil
-        for _ in 0..<10 { await Task.yield() }
-        try expect(replies == [false])
+        try await wait { replies == [false] }
+        try expect(library.hasRunningOperations && shutdowns == 0)
         try expect(alertTitle == "Quit Exec?" && buttonTitles == ["Quit", "Cancel"])
         try expect(alertText == "Active operations in all conversations will be stopped. Saved conversations will be kept.")
-        try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateLater)
-        for _ in 0..<10 { await Task.yield() }
+        try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateCancel)
+        try await wait { decision != nil }
         decision?.resume(returning: .alertFirstButtonReturn); decision = nil
-        for _ in 0..<10 { await Task.yield() }
-        try expect(replies == [false] && shutdown != nil)
+        try await wait { shutdown != nil }
+        try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateCancel)
+        try expect(replies == [false] && confirmations == 2 && shutdowns == 1)
         shutdown?.resume(); shutdown = nil
-        for _ in 0..<10 { await Task.yield() }
-        try expect(replies == [false, true])
+        try await wait { replies == [false, true] }
+        try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateNow)
     }
 
     private func wait(_ predicate: @escaping @MainActor () -> Bool) async throws {
