@@ -1,6 +1,15 @@
 import SwiftUI
 import ExecRemote
 
+/// A short OS assertion, not a background socket/service. Nil means no time granted.
+@MainActor protocol SendBackgroundTime {
+    func begin(expiration: @escaping @MainActor @Sendable () -> Void) -> (() -> Void)?
+}
+
+@MainActor struct NoSendBackgroundTime: SendBackgroundTime {
+    func begin(expiration: @escaping @MainActor @Sendable () -> Void) -> (() -> Void)? { nil }
+}
+
 protocol RemoteTransport: Sendable {
     var isConnected: Bool { get async }
     func connect(_ host: PairedHost) async throws
@@ -56,6 +65,7 @@ extension RelayClient: RemoteTransport {}
 
     struct PendingMessage: Identifiable {
         let id = UUID()
+        let expiresAt: ContinuousClock.Instant
         let conversationID: String
         let text: String
         fileprivate var target: MessageTarget
@@ -73,6 +83,7 @@ extension RelayClient: RemoteTransport {}
     private var bufferTaskID: UUID?
     private var connectionNeedsReset = false
     private var bufferDeadline: Task<Void, Never>?
+    private let bufferNow: () -> ContinuousClock.Instant
     private let bufferSleep: @Sendable () async throws -> Void
     var conversations: [RemoteJSON] = []
     private(set) var hasLoadedConversations = false
@@ -126,18 +137,32 @@ extension RelayClient: RemoteTransport {}
     private(set) var reconnectDelay = 1.5
     private let sleep: @Sendable (Double) async throws -> Void
     private let client: any RemoteTransport
+    private let backgroundTime: any SendBackgroundTime
+    private var backgroundEnd: (() -> Void)?
+    private var backgroundToken: UUID?
+    private var sendIntents: Set<UUID> = []
+    private var sendTasks: [UUID: Task<Void, Never>] = [:]
+    private var sceneIsBackground = false
+    private var sceneGeneration = 0
+    private var sceneObserver: Task<Void, Never>?
+    private var backgroundSetup: Task<Void, Never>?
+    private var sceneDisconnect: Task<Void, Never>?
+    private var disconnectScheduled = false
     private let saveHost: (PairedHost) throws -> Void
     private let forgetHost: () throws -> Void
     init(client: any RemoteTransport = RelayClient(),
+         backgroundTime: any SendBackgroundTime = NoSendBackgroundTime(),
          loadHost: () throws -> PairedHost? = { try DeviceStore.load() },
          saveHost: @escaping (PairedHost) throws -> Void = { try DeviceStore.save($0) },
          forgetHost: @escaping () throws -> Void = { try DeviceStore.forget() },
          sleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
          thinkingSleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
+         bufferNow: @escaping () -> ContinuousClock.Instant = { .now },
          bufferSleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(30)) }) {
         self.thinking = ThinkingIndicatorLifecycle(sleep: thinkingSleep)
-        self.client = client; self.saveHost = saveHost; self.forgetHost = forgetHost
-        self.sleep = sleep; self.bufferSleep = bufferSleep
+        self.client = client; self.backgroundTime = backgroundTime
+        self.saveHost = saveHost; self.forgetHost = forgetHost
+        self.sleep = sleep; self.bufferNow = bufferNow; self.bufferSleep = bufferSleep
         do { host = try loadHost() } catch { self.error = error.localizedDescription }
     }
     private func updateThinking(_ value: RemoteJSON) {
@@ -233,7 +258,7 @@ extension RelayClient: RemoteTransport {}
         } catch { self.error = error.localizedDescription }
     }
     func connect(resetBackoff: Bool = true) async {
-        guard var host, canReconnect, !Task.isCancelled else { return }
+        guard var host, canReconnect, !Task.isCancelled, !sceneIsBackground || backgroundEnd != nil else { return }
         connectionGeneration += 1
         snapshotGeneration += 1
         let generation = connectionGeneration
@@ -247,8 +272,15 @@ extension RelayClient: RemoteTransport {}
             guard generation == connectionGeneration, !Task.isCancelled else { return }
             hasConnectionFailure = false
             host.invitation.secret = nil
-            try saveHost(host); self.host = host
+            // The paired key is already in memory. Never require a Keychain write
+            // while locked; its WhenUnlockedThisDeviceOnly protection is unchanged.
+            if !sceneIsBackground { try saveHost(host) }
+            self.host = host
             connected = true
+            if sceneIsBackground {
+                scheduleBufferedMessage()
+                return // Handoff needs only a fresh target read, not models/catalog.
+            }
             if connectionError { error = nil }
             let models = try await client.request("GET", "/v1/models").array
             guard generation == connectionGeneration, !Task.isCancelled else { return }
@@ -267,6 +299,105 @@ extension RelayClient: RemoteTransport {}
             reconnectDelay = min(reconnectDelay * 2, 30)
         }
     }
+    enum SceneState { case active, inactive, background }
+
+    /// Synchronous scene intent; temporary inactivity does not replace the owner.
+    func sceneChanged(_ state: SceneState) {
+        if state == .inactive { return }
+        if state == .active {
+            guard sceneIsBackground || sceneObserver == nil else { return }
+            sceneIsBackground = false
+            sceneGeneration += 1
+            disconnectScheduled = false
+            backgroundSetup?.cancel()
+            let setup = backgroundSetup, teardown = sceneDisconnect, generation = sceneGeneration
+            sceneObserver = Task {
+                await setup?.value
+                await teardown?.value
+                guard !Task.isCancelled, generation == sceneGeneration, !sceneIsBackground else { return }
+                await observe()
+            }
+            return
+        }
+        guard !sceneIsBackground else { return }
+        sceneIsBackground = true
+        sceneGeneration += 1
+        // Pause read observation, without invoking observe()'s owner teardown.
+        observationGeneration += 1
+        observationTask?.cancel()
+        sceneObserver?.cancel(); sceneObserver = nil
+        if backgroundEnd == nil {
+            stopSendWork()
+            disconnectIfBackgroundIdle()
+            return
+        }
+        let predecessor = observationTask, setup = backgroundSetup, teardown = sceneDisconnect
+        let generation = sceneGeneration
+        backgroundSetup = Task {
+            // A rapid foreground/background cycle may still be draining an old
+            // connect or disconnect. Neither may race this handoff's connection.
+            await setup?.value
+            await teardown?.value
+            await predecessor?.value
+            guard !Task.isCancelled, generation == sceneGeneration, sceneIsBackground,
+                  backgroundEnd != nil, let pending = pendingMessage else { return }
+            guard bufferNow() < pending.expiresAt else { cancelPendingMessage(); return }
+            // At most one connection attempt for already-admitted input. No backoff
+            // loop or polling survives in the background.
+            if !connected { await connect() }
+            guard !Task.isCancelled, generation == sceneGeneration, sceneIsBackground else { return }
+            if connected { scheduleBufferedMessage() }
+            else { cancelPendingMessage() }
+        }
+    }
+
+    private func beginSendIntent(_ id: UUID) {
+        if sendIntents.isEmpty {
+            let token = UUID()
+            backgroundToken = token
+            backgroundEnd = backgroundTime.begin { [weak self] in
+                guard let self, backgroundToken == token else { return }
+                endBackgroundTime()
+                // Returning to the foreground wins over a late expiration.
+                if sceneIsBackground {
+                    stopSendWork()
+                    disconnectIfBackgroundIdle()
+                }
+            }
+        }
+        sendIntents.insert(id)
+    }
+    private func endBackgroundTime() {
+        backgroundToken = nil
+        let end = backgroundEnd
+        backgroundEnd = nil
+        end?()
+    }
+    private func finishSendIntent(_ id: UUID) {
+        guard sendIntents.remove(id) != nil else { return }
+        sendTasks.removeValue(forKey: id)
+        if sendIntents.isEmpty {
+            if sceneIsBackground { backgroundSetup?.cancel() }
+            endBackgroundTime()
+            disconnectIfBackgroundIdle()
+        }
+    }
+    private func stopSendWork() {
+        backgroundSetup?.cancel()
+        cancelPendingMessage()
+        for task in sendTasks.values { task.cancel() }
+    }
+    private func disconnectIfBackgroundIdle() {
+        guard sceneIsBackground, backgroundEnd == nil, !disconnectScheduled else { return }
+        disconnectScheduled = true
+        let generation = sceneGeneration, predecessor = sceneDisconnect
+        sceneDisconnect = Task {
+            await predecessor?.value
+            guard generation == sceneGeneration, sceneIsBackground, backgroundEnd == nil else { return }
+            await disconnectConnection()
+        }
+    }
+
     func suspend() async {
         cancelPendingMessage()
         observationGeneration += 1
@@ -570,7 +701,7 @@ extension RelayClient: RemoteTransport {}
     // Legacy foreground recovery reads authoritative state, never commands.
     // A reconnect must re-probe changes(), rather than pinning fallback forever.
     func poll(reconnect: Bool = true) async {
-        guard host != nil, !isConnecting, !Task.isCancelled else { return }
+        guard host != nil, !isConnecting, !Task.isCancelled, !sceneIsBackground else { return }
         let generation = connectionGeneration
         let transportConnected = await client.isConnected
         guard generation == connectionGeneration, !Task.isCancelled else { return }
@@ -713,26 +844,42 @@ extension RelayClient: RemoteTransport {}
         }
         return .newTurn
     }
-    func send() async {
-        guard canSend, let id = selected, let text = drafts[id] else { return }
+    /// Capture text/target and acquire background time in the button action, not
+    /// in a later SwiftUI task that may start only after the scene backgrounds.
+    @discardableResult func beginSend() -> Task<Void, Never>? {
+        guard !sceneIsBackground, canSend, let id = selected, let text = drafts[id] else { return nil }
         let target = messageTarget(id)
+        let message = PendingMessage(expiresAt: bufferNow().advanced(by: .seconds(30)),
+                                     conversationID: id, text: text, target: target)
+        beginSendIntent(message.id)
         drafts[id] = ""
         if connected, conversationConnections[id] == connectionGeneration, sending[id] == nil, target != .unresolved {
-            await performSend(id, text: text, target: target)
-        } else {
-            let message = PendingMessage(conversationID: id, text: text, target: target)
-            pendingMessage = message
-            bufferDeadline = Task { [weak self, bufferSleep] in
-                do { try await bufferSleep() } catch { return }
-                guard let self, pendingMessage?.id == message.id else { return }
-                cancelPendingMessage()
+            // Reserve the slot synchronously so a second button action depends on it.
+            sending[id] = message.id
+            let task = Task {
+                await performSend(message, target: target)
             }
-            scheduleBufferedMessage()
+            sendTasks[message.id] = task
+            return task
         }
+        pendingMessage = message
+        bufferDeadline = Task { [weak self, bufferSleep] in
+            do { try await bufferSleep() } catch { return }
+            guard let self, pendingMessage?.id == message.id else { return }
+            cancelPendingMessage()
+        }
+        scheduleBufferedMessage()
+        return nil
     }
-    private func performSend(_ id: String, text: String, target: MessageTarget,
-                             rowID: String = "local-\(UUID().uuidString)") async {
-        guard !Task.isCancelled, connected, sending[id] == nil, !isUpdatingConversation(id), !isCancelling(id) else {
+    func send() async { await beginSend()?.value }
+    private func performSend(_ message: PendingMessage, target: MessageTarget) async {
+        let id = message.conversationID, text = message.text, intent = message.id
+        defer { finishSendIntent(intent) }
+        guard !Task.isCancelled, bufferNow() < message.expiresAt, connected, sending[id] == intent,
+              !sceneIsBackground || backgroundEnd != nil,
+              !isUpdatingConversation(id), !isCancelling(id) else {
+            if sending[id] == intent { sending.removeValue(forKey: id) }
+            if pendingMessage?.target == .afterSend(intent) { cancelPendingMessage() }
             restoreDraft(text, for: id); return
         }
         let path: String, body: RemoteJSON
@@ -741,12 +888,14 @@ extension RelayClient: RemoteTransport {}
             path = "/v1/conversations/\(id)/turns"; body = .object(["text": .string(text)])
         case .operation(let operation):
             path = "/v1/conversations/\(id)/steer"; body = .object(["operationID": .string(operation), "text": .string(text)])
-        default: restoreDraft(text, for: id); return
+        default:
+            sending.removeValue(forKey: id)
+            restoreDraft(text, for: id); return
         }
-        let flight = UUID(), generation = hostGeneration, connection = connectionGeneration
+        let flight = intent, generation = hostGeneration, connection = connectionGeneration
         sending[id] = flight; error = nil; snapshotGeneration += 1
         let localID = optimisticMessages[id, default: RemoteOptimisticMessages()].begin(
-            text: text, snapshot: syncStates[id]?.snapshot ?? snapshot, id: rowID)
+            text: text, snapshot: syncStates[id]?.snapshot ?? snapshot, id: message.rowID)
         do {
             let response = try await client.request("POST", path, body: body)
             guard generation == hostGeneration else { return }
@@ -759,6 +908,7 @@ extension RelayClient: RemoteTransport {}
             sending.removeValue(forKey: id)
             snapshotGeneration += 1
             scheduleBufferedMessage()
+            finishSendIntent(intent) // ACK, not history download, ends the assertion.
         } catch {
             guard generation == hostGeneration else { return }
             sending.removeValue(forKey: id)
@@ -777,6 +927,8 @@ extension RelayClient: RemoteTransport {}
                 deferredHistoryRefreshes.insert(id)
                 self.error = "Message delivery could not be confirmed. \(error.localizedDescription) Check the refreshed conversation before sending again."
             }
+            finishSendIntent(intent)
+            guard !sceneIsBackground else { return }
             await recordDisconnectedFailure(error, connection: connection)
             guard kind == .uncertain, generation == hostGeneration, connection == connectionGeneration,
                   connected, !Task.isCancelled else { return }
@@ -787,6 +939,7 @@ extension RelayClient: RemoteTransport {}
             catch { await recordDisconnectedFailure(error, connection: connection) }
             return
         }
+        guard !sceneIsBackground, !Task.isCancelled else { return }
         do { try await refreshConversation(id) }
         catch { if generation == hostGeneration { await reportReadFailure(error, connection: connection) } }
     }
@@ -805,10 +958,13 @@ extension RelayClient: RemoteTransport {}
         bufferDeadline?.cancel(); bufferDeadline = nil
         bufferTask?.cancel(); bufferTask = nil; bufferTaskID = nil
         restoreDraft(message.text, for: message.conversationID)
+        finishSendIntent(message.id)
     }
     private func scheduleBufferedMessage() {
         guard let message = pendingMessage, connected, bufferTask == nil,
+              !sceneIsBackground || backgroundEnd != nil,
               sending[message.conversationID] == nil, !isUpdatingConversation(message.conversationID) else { return }
+        guard bufferNow() < message.expiresAt else { cancelPendingMessage(); return }
         if case .afterSend = message.target { return }
         let token = UUID(), generation = hostGeneration, connection = connectionGeneration
         bufferTaskID = token
@@ -823,11 +979,15 @@ extension RelayClient: RemoteTransport {}
             do {
                 // Revalidate unsent intent, never retry a dispatched command.
                 while pendingMessage?.id == message.id, connected, !Task.isCancelled {
-                    guard try await refreshConversation(message.conversationID) else { await Task.yield(); continue }
+                    guard try await refreshConversation(message.conversationID) else {
+                        if sceneIsBackground { cancelPendingMessage(); return }
+                        await Task.yield(); continue
+                    }
                     guard generation == hostGeneration, !Task.isCancelled,
                           let pending = pendingMessage, pending.id == message.id,
                           selected == pending.conversationID,
                           let value = syncStates[pending.conversationID]?.snapshot else { return }
+                    guard bufferNow() < pending.expiresAt else { cancelPendingMessage(); return }
                     var target = pending.target
                     if target == .unresolved, !RemoteMessageSubmission.isActive(value) { target = .newTurn }
                     let valid: Bool
@@ -843,11 +1003,17 @@ extension RelayClient: RemoteTransport {}
                         error = "The conversation changed. The queued message was returned to your draft."
                         return
                     }
-                    // Crossing this boundary commits one attempt. It is no longer cancellable or replayable.
+                    // Commit one attempt, never a replay. Expiration can still
+                    // stop its task before transport dispatch.
                     pendingMessage = nil
                     bufferDeadline?.cancel(); bufferDeadline = nil
                     bufferTask = nil; bufferTaskID = nil
-                    await performSend(pending.conversationID, text: pending.text, target: target, rowID: pending.rowID)
+                    sending[pending.conversationID] = pending.id
+                    let task = Task {
+                        await performSend(pending, target: target)
+                    }
+                    sendTasks[pending.id] = task
+                    await task.value
                     return
                 }
             } catch {
@@ -856,7 +1022,7 @@ extension RelayClient: RemoteTransport {}
                 await recordDisconnectedFailure(error, connection: connection)
                 guard generation == hostGeneration, connection == connectionGeneration, !Task.isCancelled,
                       pendingMessage?.id == message.id else { return }
-                if connected {
+                if connected || sceneIsBackground {
                     cancelPendingMessage()
                     self.error = "Could not verify the conversation. The queued message was returned to your draft."
                 }
