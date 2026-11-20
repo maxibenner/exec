@@ -179,6 +179,89 @@ async fn finish(submission: Submission) -> Operation {
 }
 
 #[tokio::test]
+async fn new_delegates_use_current_model_and_effort_without_changing_previous_children() {
+    let workspace = directory();
+    let entered = [CancellationToken::new(), CancellationToken::new()];
+    let release = [CancellationToken::new(), CancellationToken::new()];
+    let mut scripts = Vec::new();
+    for index in 0..2 {
+        scripts.push(response(vec![
+            delegate(
+                &format!("delegate-{index}"),
+                "Inspect current configuration",
+            ),
+            ProviderEvent::Done,
+        ]));
+        let entered = entered[index].clone();
+        let release = release[index].clone();
+        scripts.push(script(move |_| {
+            Box::pin(async_stream::try_stream! {
+                entered.cancel();
+                release.cancelled().await;
+                yield ProviderEvent::Text("Child answer".into());
+                yield ProviderEvent::Done;
+            })
+        }));
+        scripts.push(answer());
+    }
+    let provider = FakeProvider::new(scripts);
+    let manager = Arc::new(AgentManager::default());
+    let parent = root(&manager, provider.clone(), vec![], workspace.path()).await;
+    assert_eq!(parent.snapshot().model, "fake");
+    assert_eq!(
+        parent.snapshot().configuration.settings.effort.as_deref(),
+        Some("low")
+    );
+    let mut previous: Vec<Arc<Conversation>> = Vec::new();
+    for (index, (model, effort)) in [("updated-model", Some("high")), ("another-model", None)]
+        .into_iter()
+        .enumerate()
+    {
+        manager
+            .select_model(&parent.id, model.into())
+            .await
+            .unwrap();
+        let mut settings = parent.snapshot().configuration.settings;
+        settings.effort = effort.map(str::to_owned);
+        manager.update_settings(&parent.id, settings).await.unwrap();
+        let submission = manager
+            .submit(&parent.id, "Delegate now".into())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), entered[index].cancelled())
+            .await
+            .unwrap();
+        let current = child(&manager).await;
+        let snapshot = current.snapshot();
+        assert_eq!(snapshot.model, model);
+        assert_eq!(snapshot.configuration.settings.effort.as_deref(), effort);
+        {
+            let requests = provider.requests.lock().unwrap();
+            let request = &requests[index * 3 + 1];
+            assert_eq!(
+                request.model, model,
+                "Check the actual child inference, not just metadata"
+            );
+            assert_eq!(request.effort.as_deref(), effort);
+        }
+        // Even retained native references to an earlier child remain independent;
+        // only a newly created child receives the parent's new selection.
+        if let Some(earlier) = previous.first() {
+            assert_eq!(earlier.snapshot().model, "updated-model");
+            assert_eq!(
+                earlier.snapshot().configuration.settings.effort.as_deref(),
+                Some("high")
+            );
+        }
+        release[index].cancel();
+        assert_eq!(finish(submission).await.state, OperationState::Completed);
+        previous.push(current);
+    }
+    assert_eq!(provider.count(), 6, "No extra inference or replay");
+    manager.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn delegation_reuses_sessions_without_sharing_context_and_survives_restore() {
     let profile = directory();
     let workspace = directory();
