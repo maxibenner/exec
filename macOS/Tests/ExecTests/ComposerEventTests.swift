@@ -31,11 +31,25 @@ struct ComposerEventTests {
         }
     }
 
+    private static func describe(_ object: AnyObject?) -> String {
+        guard let object else { return "nil" }
+        return "\(type(of: object))@\(ObjectIdentifier(object))"
+    }
+
     private final class EventWindow: NSWindow {
+        var postedEventNumbers = Set<Int>()
         var deliveredDowns = 0
+        var lastMouseDown = "none"
+
         override func sendEvent(_ event: NSEvent) {
-            if event.type == .leftMouseDown { deliveredDowns += 1 }
+            guard event.type == .leftMouseDown else { super.sendEvent(event); return }
+            // Count our queued events, not unrelated desktop clicks received while
+            // an asynchronous check is settling. Duplicate fixture events still fail.
+            if postedEventNumbers.contains(event.eventNumber) { deliveredDowns += 1 }
+            let before = "active=\(NSApp.isActive), key=\(isKeyWindow), responder=\(describe(firstResponder))"
+            let hit = describe(contentView?.hitTest(event.locationInWindow))
             super.sendEvent(event)
+            lastMouseDown = "#\(deliveredDowns) at \(event.locationInWindow), hit=\(hit); before: \(before); after: active=\(NSApp.isActive), key=\(isKeyWindow), responder=\(describe(firstResponder))"
         }
     }
 
@@ -111,41 +125,76 @@ struct ComposerEventTests {
             return nil
         }
 
+        func diagnostics(_ view: ComposerTextInput.EditorScrollView? = nil) -> String {
+            let view = view ?? findEditor(host)
+            let editorState = view.map {
+                "editor=\(describe($0.editor)), window=\(describe($0.window)), editable=\($0.editor.isEditable), pendingFocus=\($0.pendingFocus), position=\($0.editor.hasEditingPosition), selection=\($0.editor.selectedRange()), viewport=\($0.contentView.bounds), textUTF16=\($0.editor.string.utf16.count), matchesDraft=\($0.editor.string == model.panel.draft)"
+            } ?? "editor=nil"
+            return "app: running=\(NSApp.isRunning), active=\(NSApp.isActive), policy=\(NSApp.activationPolicy().rawValue), keyWindow=\(describe(NSApp.keyWindow)); fixture: window=\(describe(window)), key=\(window.isKeyWindow), visible=\(window.isVisible), responder=\(describe(window.firstResponder)); \(editorState); model: focused=\(model.focused), mounted=\(model.mounted), identity=\(model.identity), request=\(String(describing: model.focusRequest)), draftUTF16=\(model.panel.draft.utf16.count); last mouseDown: \(window.lastMouseDown)"
+        }
+
+        func check(_ condition: Bool, _ context: String, view: ComposerTextInput.EditorScrollView? = nil) throws {
+            guard condition else { throw CheckFailure(description: "\(context)\n\(diagnostics(view))") }
+        }
+
         func editor() throws -> ComposerTextInput.EditorScrollView {
-            guard let view = findEditor(host) else { throw CheckFailure(description: "ConversationView composer not mounted") }
-            try expect(view.editor.isEditable)
+            guard let view = findEditor(host) else {
+                throw CheckFailure(description: "ConversationView composer not mounted\n\(diagnostics())")
+            }
+            try check(view.editor.isEditable, "Composer is not editable", view: view)
             return view
         }
 
+        private func requireActiveWindow() async throws {
+            guard !NSApp.isActive || !window.isKeyWindow else { return }
+            // Posting directly to NSApp bypasses the Window Server's activation
+            // click. Another app may have become active during an awaited layout.
+            // Restore that precondition, without assigning the editor's responder.
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            for _ in 0..<100 {
+                if NSApp.isActive && window.isKeyWindow { return }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            try check(false, "Fixture did not acquire its active key window")
+        }
+
         func click(_ point: NSPoint, flags: NSEvent.ModifierFlags = []) async throws {
+            try await requireActiveWindow()
             let before = window.deliveredDowns
             eventNumber += 1
+            // Window Server event numbers are nonnegative; reserve negatives for
+            // this harness so real input cannot satisfy the delivery assertion.
+            window.postedEventNumbers.insert(-eventNumber)
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                 guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: flags,
                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                    context: nil, eventNumber: eventNumber, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)
-                else { throw CheckFailure(description: "Could not construct mouse event") }
+                    context: nil, eventNumber: -eventNumber, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)
+                else { throw CheckFailure(description: "Could not construct mouse event\n\(diagnostics())") }
                 NSApp.postEvent(event, atStart: false)
             }
             try await settle()
-            try expect(window.deliveredDowns == before + 1)
+            try check(window.deliveredDowns == before + 1,
+                      "Click #\(eventNumber) at \(point): expected one delivered mouseDown, got \(window.deliveredDowns - before)")
         }
 
         func clickEditor(_ view: ComposerTextInput.EditorScrollView, flags: NSEvent.ModifierFlags = []) async throws {
             let point = view.contentView.convert(NSPoint(x: 75, y: view.contentView.bounds.minY + 30), to: nil)
             // Verify the actual hit target, not only that our window saw an event.
             let hit = window.contentView?.hitTest(point)
-            try expect(hit === view.editor)
+            try check(hit === view.editor, "Editor click hit \(describe(hit)) at \(point)", view: view)
+            let before = diagnostics(view)
             try await click(point, flags: flags)
-            try expect(window.firstResponder === view.editor)
-            try expect(model.focused)
+            try check(window.firstResponder === view.editor,
+                      "Editor click #\(eventNumber) did not focus editor; before click: \(before)", view: view)
+            try check(model.focused, "Editor click #\(eventNumber) did not update focus binding", view: view)
         }
 
         func blur() async throws {
             try await click(other.convert(NSPoint(x: 40, y: 12), to: nil))
-            try expect(other.currentEditor() != nil)
-            try expect(window.firstResponder === other.currentEditor())
-            try expect(!model.focused)
+            try check(other.currentEditor() != nil, "Blur click did not start field editing")
+            try check(window.firstResponder === other.currentEditor(), "Blur click did not focus field editor")
+            try check(!model.focused, "Blur click did not clear focus binding")
         }
 
         func scroll(_ view: ComposerTextInput.EditorScrollView, to y: CGFloat) async throws {
