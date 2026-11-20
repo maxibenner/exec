@@ -190,6 +190,18 @@ struct ComposerEventTests {
             try check(model.focused, "Editor click #\(eventNumber) did not update focus binding", view: view)
         }
 
+        func type(_ character: String, keyCode: UInt16) async throws {
+            try await requireActiveWindow()
+            for type in [NSEvent.EventType.keyDown, .keyUp] {
+                let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, characters: character, charactersIgnoringModifiers: character,
+                    isARepeat: false, keyCode: keyCode)!
+                NSApp.postEvent(event, atStart: false)
+            }
+            try await settle()
+        }
+
         func blur() async throws {
             try await click(other.convert(NSPoint(x: 40, y: 12), to: nil))
             try check(other.currentEditor() != nil, "Blur click did not start field editing")
@@ -235,6 +247,41 @@ struct ComposerEventTests {
             guard requests.isEmpty else {
                 throw CheckFailure(description: "Composer UI made unexpected transport requests: \(requests.map { $0.method + " " + $0.path })")
             }
+        }
+    }
+
+    func survivingEditorResumesAfterTemporaryReplacement() async throws {
+        for updateBeforeDetach in [false, true] {
+            let h = try Harness()
+            defer { h.close() }
+            let (view, _) = try await h.prepare()
+            let session = ObjectIdentifier(h.model.panel.current)
+            let state = h.presentation.composerEditingState
+            let draft = h.model.panel.draft
+            // Navigation can disable the current editor while SwiftUI briefly mounts
+            // another representable for the same presentation, then keeps the first.
+            view.update(text: draft, session: session, request: nil, enabled: false,
+                        focused: true, editingState: state)
+            let temporary = ComposerTextInput.EditorScrollView()
+            temporary.update(text: draft, session: session, request: nil, enabled: false,
+                             focused: false, editingState: state)
+            if updateBeforeDetach {
+                h.model.focusRequest = 1
+                try await h.settle()
+            }
+            ComposerTextInput.dismantleNSView(temporary, coordinator: ())
+            if !updateBeforeDetach { h.model.focusRequest = 1 }
+            try await h.settle()
+            // A highlighted border and first-responder identity alone are not proof
+            // of an editable native text view. Click and deliver actual key events.
+            try await h.clickEditor(view)
+            try h.check(view.editor.isEditable && view.editor.isSelectable && view.editor.shouldDrawInsertionPoint,
+                        "Surviving composer remained disabled after its replacement was dismantled (updateBeforeDetach=\(updateBeforeDetach))", view: view)
+            let before = h.model.panel.draft
+            try await h.type("a", keyCode: 0)
+            try h.check(h.model.panel.draft.utf16.count == before.utf16.count + 1,
+                        "Surviving composer did not accept native keyboard input", view: view)
+            try await h.checkNoRequests()
         }
     }
 

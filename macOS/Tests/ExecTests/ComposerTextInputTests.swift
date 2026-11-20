@@ -66,6 +66,46 @@ struct ComposerTextInputTests {
         try expect(window.firstResponder !== view.editor)
     }
 
+    func retiredEditorsCannotApplyQueuedFocus() async throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 240),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let root = NSView(frame: window.contentLayoutRect)
+        let original = ComposerTextInput.EditorScrollView()
+        let replacement = ComposerTextInput.EditorScrollView()
+        original.frame = NSRect(x: 20, y: 20, width: 400, height: 40)
+        replacement.frame = NSRect(x: 20, y: 100, width: 400, height: 40)
+        root.addSubview(original)
+        root.addSubview(replacement)
+        window.contentView = root
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        let session = ObjectIdentifier(root)
+        let state = ComposerEditingState()
+        var originalReports: [Bool] = []
+        original.onFocus = { originalReports.append($0) }
+        original.update(text: "", session: session, request: 1, enabled: true,
+                        focused: true, editingState: state)
+        // Claim the shared presentation before the original's queued focus runs.
+        replacement.update(text: "", session: session, request: nil, enabled: true,
+                           focused: false, editingState: state)
+        original.editor.onFocus?()
+        try await settle()
+        try expect(window.firstResponder !== original.editor && originalReports.isEmpty)
+
+        var replacementReports: [Bool] = []
+        let responderBeforeDetaching = window.firstResponder
+        replacement.onFocus = { replacementReports.append($0) }
+        replacement.update(text: "", session: session, request: 2, enabled: true,
+                           focused: true, editingState: state)
+        replacement.editor.onFocus?()
+        // Even when callbacks retain the old representable, detaching invalidates
+        // work already queued on the main thread.
+        replacement.detach()
+        try await settle()
+        try expect(window.firstResponder === responderBeforeDetaching && replacementReports.isEmpty)
+    }
+
     func preservesViewportAcrossFocusChanges() async throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 300),

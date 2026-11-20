@@ -122,7 +122,9 @@ struct ComposerTextInput: NSViewRepresentable {
             let changedState = editingState.map { $0 !== self.editingState } ?? false
             if changedSession || changedState { capturePosition() }
             if let editingState { self.editingState = editingState }
-            if changedSession || changedState { self.editingState.owner = ownership }
+            if changedSession || changedState || self.editingState.owner == nil {
+                self.editingState.owner = ownership
+            }
             guard self.editingState.owner == ownership else { return }
             updating = true
             defer { updating = false }
@@ -176,6 +178,10 @@ struct ComposerTextInput: NSViewRepresentable {
         func detach() {
             capturePosition()
             detached = true
+            // SwiftUI may keep the original editor after a temporary replacement.
+            // Do not leave that survivor blocked by a dismantled owner's token.
+            if editingState.owner == ownership { editingState.owner = nil }
+            pendingFocus = false
             pendingPosition = nil
             editor.delegate = nil
             editor.onFocus = nil
@@ -233,12 +239,14 @@ struct ComposerTextInput: NSViewRepresentable {
         }
 
         private func scheduleFocus() {
-            guard pendingFocus, enabled, window != nil, !scheduled else { return }
+            guard !detached, editingState.owner == ownership,
+                  pendingFocus, enabled, window != nil, !scheduled else { return }
             scheduled = true
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.scheduled = false
-                guard self.pendingFocus, self.enabled, let window = self.window,
+                guard !self.detached, self.editingState.owner == self.ownership,
+                      self.pendingFocus, self.enabled, let window = self.window,
                       !self.isHiddenOrHasHiddenAncestor else { return }
                 self.pendingFocus = false
                 if window.firstResponder !== self.editor {
@@ -251,7 +259,7 @@ struct ComposerTextInput: NSViewRepresentable {
             capturePosition()
             // Responder changes can happen inside a SwiftUI update transaction.
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, !self.detached, self.editingState.owner == self.ownership else { return }
                 let focused = self.window?.firstResponder === self.editor
                 self.focused = focused
                 self.onFocus?(focused)
