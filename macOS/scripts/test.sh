@@ -19,3 +19,7 @@ swiftc -swift-version 6 -parse-as-library "${sources[@]}" -o .build/exec-checks
 .build/exec-checks
 # Posted mouse events need a separate process running NSApplication.run().
 .build/exec-checks --composer-events
+# Assert real intermediate presentation frames, not just final sidebar geometry.
+# These use isolated synthetic sessions and never capture the user's screen.
+./scripts/probe-sidebar.sh --check --verify-detectors --output .build/sidebar-motion.json
+.build/sidebar-animation-probe --check --reduce-motion --output .build/sidebar-reduced.json
