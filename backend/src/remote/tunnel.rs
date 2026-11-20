@@ -6,7 +6,11 @@ use axum::{
     http::Request,
 };
 use futures_util::{SinkExt, StreamExt};
-use std::{collections::HashMap, sync::Weak, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{OnceLock, Weak},
+    time::Duration,
+};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{
     connect_async_with_config,
@@ -39,9 +43,57 @@ impl Envelope {
         Ok(text)
     }
 }
+struct ClientFrame {
+    envelope: Envelope,
+    device: Arc<OnceLock<String>>,
+}
+struct ClientOutput {
+    client: String,
+    device: Arc<OnceLock<String>>,
+    frames: mpsc::Sender<ClientFrame>,
+}
+impl ClientOutput {
+    fn new(client: String, frames: mpsc::Sender<ClientFrame>) -> Self {
+        Self {
+            client,
+            device: Arc::default(),
+            frames,
+        }
+    }
+    async fn enqueue(&self, envelope: Envelope) -> Result<()> {
+        envelope.text()?;
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            self.frames.send(ClientFrame {
+                envelope,
+                device: self.device.clone(),
+            }),
+        )
+        .await
+        .map_err(|_| Error::Internal)?
+        .map_err(|_| Error::Internal)
+    }
+}
 struct Client {
     incoming: mpsc::Sender<String>,
     task: tokio::task::AbortHandle,
+    // Published before ready is queued, so revocation also gates queued output
+    // and can abort a busy client without closing the shared host socket.
+    device: Arc<OnceLock<String>>,
+}
+impl Client {
+    fn is_revoked(&self, config: &Configuration) -> bool {
+        !config.enabled
+            || self
+                .device
+                .get()
+                .is_some_and(|id| !config.devices.iter().any(|device| device.id == *id))
+    }
+    fn owns(&self, frame: &ClientFrame) -> bool {
+        // A relay may reuse a client ID. Never deliver an old session's queued
+        // data/close to its replacement, even when the device key is the same.
+        Arc::ptr_eq(&self.device, &frame.device)
+    }
 }
 impl Drop for Client {
     fn drop(&mut self) {
@@ -111,6 +163,27 @@ impl RemoteAccess {
         if *self.revision.borrow() == revision && state.config.enabled {
             state.connection = connection;
         }
+    }
+    async fn authorized_output(
+        &self,
+        output: ClientFrame,
+        clients: &mut HashMap<String, Client>,
+    ) -> Option<Envelope> {
+        let client = clients
+            .get(&output.envelope.client)
+            .filter(|client| client.owns(&output))?;
+        // Challenges/rejections must not wait behind a pairing write.
+        if let Some(device) = client.device.get()
+            && !self.device_exists(device).await
+        {
+            clients.remove(&output.envelope.client);
+            return Some(Envelope::close(output.envelope.client));
+        }
+        let frame = output.envelope;
+        if frame.kind == "close" {
+            clients.remove(&frame.client);
+        }
+        Some(frame)
     }
     pub(crate) async fn run(self: Arc<Self>, host: Weak<Host>, stop: CancellationToken) {
         let mut changed = self.revision.subscribe();
@@ -182,16 +255,30 @@ impl RemoteAccess {
         self.set_connection(revision, ConnectionStatus::Connected)
             .await;
         let (mut sink, mut source) = socket.split();
-        let (out, mut outgoing) = mpsc::channel::<Envelope>(16);
+        let (out, mut outgoing) = mpsc::channel::<ClientFrame>(16);
+        let mut authorization = self.authorization_revision.subscribe();
         let mut clients = HashMap::<String, Client>::new();
         let mut tasks = tokio::task::JoinSet::new();
         let mut ping = tokio::time::interval(Duration::from_secs(20));
         let mut seen = tokio::time::Instant::now();
         loop {
             tokio::select! {
+                _ = authorization.changed() => {
+                    let revoked = {
+                        let state = self.state.lock().await;
+                        clients.iter().filter_map(|(id, client)| {
+                            client.is_revoked(&state.config).then_some(id.clone())
+                        }).collect::<Vec<_>>()
+                    };
+                    for id in revoked {
+                        clients.remove(&id);
+                        write(&mut sink, Message::Text(Envelope::close(id).text()?.into())).await?;
+                    }
+                }
                 Some(_) = tasks.join_next() => {},
-                Some(frame) = outgoing.recv() => {
-                    if frame.kind == "close" { clients.remove(&frame.client); }
+                Some(queued) = outgoing.recv() => {
+                    // Recheck at egress, even before the revocation watcher runs.
+                    let Some(frame) = self.authorized_output(queued, &mut clients).await else { continue; };
                     let text = match frame.text() {
                         Ok(text) => text,
                         Err(_) => {
@@ -214,13 +301,14 @@ impl RemoteAccess {
                             match frame.kind.as_str() {
                                 "open" if clients.len() < MAX_CLIENTS && !clients.contains_key(&frame.client) => {
                                     let (tx, rx) = mpsc::channel(4);
-                                    let remote = self.clone(); let host = host.clone(); let out = out.clone(); let key = config.private_key.clone();
-                                    let id = frame.client.clone();
+                                    let remote = self.clone(); let host = host.clone(); let key = config.private_key.clone();
+                                    let out = ClientOutput::new(frame.client.clone(), out.clone());
+                                    let device = out.device.clone();
                                     let task = tasks.spawn(async move {
-                                        let _ = remote.client(host, &id, &key, &out, rx).await;
-                                        let _ = out.send(Envelope::close(id)).await;
+                                        let _ = remote.client(host, &key, &out, rx).await;
+                                        let _ = out.enqueue(Envelope::close(out.client.clone())).await;
                                     });
-                                    clients.insert(frame.client, Client { incoming: tx, task });
+                                    clients.insert(frame.client, Client { incoming: tx, task, device });
                                 }
                                 "data" => {
                                     if let Some(client) = clients.get(&frame.client)
@@ -253,16 +341,14 @@ impl RemoteAccess {
     async fn client(
         self: &Arc<Self>,
         host: Weak<Host>,
-        id: &str,
         key: &str,
-        out: &mpsc::Sender<Envelope>,
+        out: &ClientOutput,
         mut incoming: mpsc::Receiver<String>,
     ) -> Result<()> {
-        let mut authorization = self.revision.subscribe();
+        let mut authorization = self.authorization_revision.subscribe();
         let challenge = random();
         send(
             out,
-            id,
             json!({"challenge":challenge,"version":crypto::VERSION}),
         )
         .await?;
@@ -281,6 +367,9 @@ impl RemoteAccess {
         let device = self
             .authorize_device(&peer, hello.invitation.as_deref(), &hello.name)
             .await?;
+        out.device
+            .set(device.clone())
+            .map_err(|_| Error::Internal)?;
         let response_context = crypto::response_context(&challenge, &client_encapsulated);
         let (enc, mut sender) = crypto::sender(key, &peer, &response_context, "host")?;
         let ready = crypto::seal(
@@ -292,7 +381,6 @@ impl RemoteAccess {
         )?;
         send(
             out,
-            id,
             serde_json::to_value(Packet {
                 ciphertext: ready,
                 encapsulated_key: Some(enc),
@@ -308,8 +396,11 @@ impl RemoteAccess {
                 break;
             }
             let text = tokio::select! { biased;
-                // Revocation/configuration changes close idle observers too.
-                _ = authorization.changed() => return Err(Error::Internal),
+                // Keep unrelated devices' HPKE contexts and subscriptions intact.
+                _ = authorization.changed() => {
+                    if !self.device_exists(&device).await { return Err(Error::Internal); }
+                    continue;
+                },
                 notice = next_notice(&mut observation) => {
                     if incoming.is_closed() || !self.device_exists(&device).await { break; }
                     let value = serde_json::to_vec(&json!({"notification": notice?}))
@@ -317,7 +408,7 @@ impl RemoteAccess {
                     // Unfragmented notices must fit the relay's 1 MiB frame limit,
                     // including base64/envelope overhead. Oversize fails closed.
                     if value.len() > 512 * 1024 { return Err(Error::Internal); }
-                    encrypted(out, id, &mut sender, &value).await?;
+                    encrypted(out, &mut sender, &value).await?;
                     continue;
                 }
                 text = incoming.recv() => {
@@ -373,7 +464,7 @@ impl RemoteAccess {
             if incoming.is_closed() || !self.device_exists(&device).await {
                 break;
             }
-            reply_body(out, id, &mut sender, &command.id, status, &bytes).await?;
+            reply_body(out, &mut sender, &command.id, status, &bytes).await?;
         }
         Ok(())
     }
@@ -387,22 +478,16 @@ where
         .map_err(|_| Error::Internal)?
         .map_err(|_| Error::Internal)
 }
-async fn send(out: &mpsc::Sender<Envelope>, client: &str, data: Value) -> Result<()> {
-    let frame = Envelope {
+async fn send(out: &ClientOutput, data: Value) -> Result<()> {
+    out.enqueue(Envelope {
         kind: "data".into(),
-        client: client.into(),
+        client: out.client.clone(),
         data: data.to_string(),
-    };
-    // Fail this client's loop before queueing an oversized serialized envelope.
-    frame.text()?;
-    tokio::time::timeout(Duration::from_secs(10), out.send(frame))
-        .await
-        .map_err(|_| Error::Internal)?
-        .map_err(|_| Error::Internal)
+    })
+    .await
 }
 async fn reply_body(
-    out: &mpsc::Sender<Envelope>,
-    client: &str,
+    out: &ClientOutput,
     sender: &mut Sender,
     id: &str,
     status: u16,
@@ -412,17 +497,16 @@ async fn reply_body(
         return Err(Error::Internal);
     }
     if bytes.is_empty() {
-        return reply(out, client, sender, id, status, &[], true).await;
+        return reply(out, sender, id, status, &[], true).await;
     }
     let count = bytes.len().div_ceil(48 * 1024);
     for (index, chunk) in bytes.chunks(48 * 1024).enumerate() {
-        reply(out, client, sender, id, status, chunk, index + 1 == count).await?;
+        reply(out, sender, id, status, chunk, index + 1 == count).await?;
     }
     Ok(())
 }
 async fn reply(
-    out: &mpsc::Sender<Envelope>,
-    client: &str,
+    out: &ClientOutput,
     sender: &mut Sender,
     id: &str,
     status: u16,
@@ -430,17 +514,11 @@ async fn reply(
     done: bool,
 ) -> Result<()> {
     let value = json!({"id":id,"status":status,"body":crypto::encode(body),"done":done});
-    encrypted(out, client, sender, &serde_json::to_vec(&value).unwrap()).await
+    encrypted(out, sender, &serde_json::to_vec(&value).unwrap()).await
 }
-async fn encrypted(
-    out: &mpsc::Sender<Envelope>,
-    client: &str,
-    sender: &mut Sender,
-    plaintext: &[u8],
-) -> Result<()> {
+async fn encrypted(out: &ClientOutput, sender: &mut Sender, plaintext: &[u8]) -> Result<()> {
     send(
         out,
-        client,
         serde_json::to_value(Packet {
             ciphertext: crypto::seal(sender, plaintext)?,
             encapsulated_key: None,
@@ -526,27 +604,27 @@ mod tests {
         let mut receiver =
             crypto::receiver(&peer_private, &public, &enc, "challenge", "host").unwrap();
         let (out, mut frames) = mpsc::channel(16);
+        let out = ClientOutput::new("client".into(), out);
         let id = uuid::Uuid::new_v4().to_string();
         let body = vec![b'x'; 48 * 1024 + 10];
-        reply_body(&out, "client", &mut sender, &id, 200, &body)
+        reply_body(&out, &mut sender, &id, 200, &body)
             .await
             .unwrap();
         encrypted(
             &out,
-            "client",
             &mut sender,
             &serde_json::to_vec(&json!({"notification": change("1")})).unwrap(),
         )
         .await
         .unwrap();
-        reply_body(&out, "client", &mut sender, &id, 403, b"{}")
+        reply_body(&out, &mut sender, &id, 403, b"{}")
             .await
             .unwrap();
-        reply_body(&out, "client", &mut sender, &id, 200, b"{}")
+        reply_body(&out, &mut sender, &id, 200, b"{}")
             .await
             .unwrap();
         for index in 0..5 {
-            let envelope = frames.recv().await.unwrap();
+            let envelope = frames.recv().await.unwrap().envelope;
             assert_eq!(envelope.client, "client");
             let packet: Packet = serde_json::from_str(&envelope.data).unwrap();
             assert!(packet.encapsulated_key.is_none());
@@ -599,16 +677,14 @@ mod tests {
         };
         let public = crypto::public_key(&key).unwrap();
         let (out, mut frames) = mpsc::channel(16);
+        let out = ClientOutput::new("client".into(), out);
         let (input, incoming) = mpsc::channel(4);
         let task = {
             let remote = remote.clone();
-            tokio::spawn(async move {
-                remote
-                    .client(Weak::new(), "client", &key, &out, incoming)
-                    .await
-            })
+            tokio::spawn(async move { remote.client(Weak::new(), &key, &out, incoming).await })
         };
-        let challenge: Value = serde_json::from_str(&frames.recv().await.unwrap().data).unwrap();
+        let challenge: Value =
+            serde_json::from_str(&frames.recv().await.unwrap().envelope.data).unwrap();
         assert!(challenge.get("changeNotifications").is_none());
         let challenge = challenge["challenge"].as_str().unwrap();
         let (enc, mut sender) =
@@ -626,7 +702,8 @@ mod tests {
             )
             .await
             .unwrap();
-        let packet: Packet = serde_json::from_str(&frames.recv().await.unwrap().data).unwrap();
+        let packet: Packet =
+            serde_json::from_str(&frames.recv().await.unwrap().envelope.data).unwrap();
         let mut receiver = crypto::receiver(
             &peer_private,
             &public,

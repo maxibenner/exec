@@ -110,6 +110,27 @@ impl Fixture {
         .await;
         crypto::response_context(challenge, &enc)
     }
+    async fn authenticate(&mut self, id: &str, private: &str, invitation: Option<&str>) -> String {
+        let challenge = self.open(id).await;
+        let context = self.hello(id, private, &challenge, invitation).await;
+        let frame = self.frame().await;
+        assert_eq!(frame.kind, "data");
+        assert_eq!(frame.client, id);
+        let packet: Packet = serde_json::from_str(&frame.data).unwrap();
+        let mut receiver = crypto::receiver(
+            private,
+            &self.host_key,
+            packet.encapsulated_key.as_ref().unwrap(),
+            &context,
+            "host",
+        )
+        .unwrap();
+        let ready: Value =
+            serde_json::from_slice(&crypto::open(&mut receiver, &packet.ciphertext).unwrap())
+                .unwrap();
+        assert_eq!(ready["ready"], true);
+        ready["deviceID"].as_str().unwrap().to_owned()
+    }
     fn pause_next_write(&self) -> Arc<WritePause> {
         let pause = Arc::new(WritePause::default());
         *self.remote.write_pause.lock().unwrap() = Some(pause.clone());
@@ -168,6 +189,131 @@ impl Fixture {
             .unwrap()
             .unwrap();
     }
+}
+
+#[tokio::test]
+async fn revocation_closes_only_that_devices_sessions_on_the_existing_host_socket() {
+    let mut fixture = Fixture::new().await;
+    let (revoked_key, revoked_public) = crypto::keypair();
+    let invitation = fixture.remote.invite().await.unwrap();
+    let revoked = fixture
+        .authenticate("revoked-1", &revoked_key, invitation["secret"].as_str())
+        .await;
+    let same_device = fixture.authenticate("revoked-2", &revoked_key, None).await;
+    assert_eq!(same_device, revoked);
+    let (healthy_key, _) = crypto::keypair();
+    let invitation = fixture.remote.invite().await.unwrap();
+    let healthy = fixture
+        .authenticate("healthy", &healthy_key, invitation["secret"].as_str())
+        .await;
+
+    fixture.remote.revoke(&revoked).await.unwrap();
+    let mut closed = Vec::new();
+    for _ in 0..2 {
+        let frame = fixture.frame().await;
+        assert_eq!(frame.kind, "close");
+        closed.push(frame.client);
+    }
+    closed.sort();
+    assert_eq!(closed, ["revoked-1", "revoked-2"]);
+    assert_eq!(
+        fixture.remote.status().await["connectionStatus"],
+        "connected"
+    );
+    assert_eq!(fixture.remote.status().await["connected"], true);
+    assert!(fixture.remote.device_exists(&healthy).await);
+
+    // Ignore anything buffered from the removed client, without resetting the
+    // host socket or disturbing another authenticated client on it.
+    fixture.send("data", "revoked-1", "{}".into()).await;
+    assert_eq!(
+        fixture.authenticate("probe", &healthy_key, None).await,
+        healthy
+    );
+    fixture.send("close", "probe", String::new()).await;
+    let challenge = fixture.open("rejected").await;
+    fixture
+        .hello("rejected", &revoked_key, &challenge, None)
+        .await;
+    let frame = fixture.frame().await;
+    assert_eq!(frame.kind, "close");
+    assert_eq!(frame.client, "rejected");
+
+    let restored = RemoteAccess::load(fixture.directory.path()).await.unwrap();
+    assert!(
+        restored
+            .authorize_device(&revoked_public, None, "revoked")
+            .await
+            .is_err()
+    );
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn queued_output_is_revocation_gated_and_cannot_target_a_reused_relay_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let remote = RemoteAccess::load(directory.path()).await.unwrap();
+    remote.state.lock().await.config.enabled = true;
+    let (_, public) = crypto::keypair();
+    let invitation = remote.invite().await.unwrap();
+    let revoked = remote
+        .authorize_device(&public, invitation["secret"].as_str(), "revoked")
+        .await
+        .unwrap();
+    let (frames, mut outgoing) = mpsc::channel(4);
+    let old = ClientOutput::new("reused".into(), frames.clone());
+    old.device.set(revoked.clone()).unwrap();
+    let healthy = ClientOutput::new("healthy".into(), frames.clone());
+    // A pending handshake's output must remain independent of the revoked peer.
+    fn client(output: &ClientOutput) -> Client {
+        let (incoming, _) = mpsc::channel(1);
+        let task = tokio::spawn(std::future::pending::<()>());
+        Client {
+            incoming,
+            task: task.abort_handle(),
+            device: output.device.clone(),
+        }
+    }
+    let mut clients = HashMap::from([
+        (old.client.clone(), client(&old)),
+        (healthy.client.clone(), client(&healthy)),
+    ]);
+    send(&old, json!({"late":"reply"})).await.unwrap();
+    send(&healthy, json!({"challenge":"fixture"}))
+        .await
+        .unwrap();
+    old.enqueue(Envelope::close(old.client.clone()))
+        .await
+        .unwrap();
+    send(&old, json!({"late":"notice"})).await.unwrap();
+    remote.revoke(&revoked).await.unwrap();
+
+    // Exercise egress before its revocation watcher removes the client.
+    let frame = remote
+        .authorized_output(outgoing.recv().await.unwrap(), &mut clients)
+        .await
+        .unwrap();
+    assert_eq!(frame.kind, "close");
+    assert_eq!(frame.client, old.client);
+    let frame = remote
+        .authorized_output(outgoing.recv().await.unwrap(), &mut clients)
+        .await
+        .unwrap();
+    assert_eq!(frame.kind, "data");
+    assert_eq!(frame.client, healthy.client);
+
+    let replacement = ClientOutput::new(old.client.clone(), frames);
+    clients.insert(replacement.client.clone(), client(&replacement));
+    for _ in 0..2 {
+        assert!(
+            remote
+                .authorized_output(outgoing.recv().await.unwrap(), &mut clients)
+                .await
+                .is_none()
+        );
+    }
+    assert!(clients.contains_key(&replacement.client));
+    assert!(clients.contains_key(&healthy.client));
 }
 
 #[tokio::test]
@@ -378,18 +524,16 @@ async fn shutdown_waits_for_accepted_pairing_write_and_memory_settlement() {
 
 #[tokio::test]
 async fn outgoing_envelope_limit_includes_serialization_and_does_not_poison_the_queue() {
-    let (out, mut incoming) = mpsc::channel(2);
+    let (frames, mut incoming) = mpsc::channel(2);
+    let bad = ClientOutput::new("bad".into(), frames.clone());
+    assert!(send(&bad, json!("x".repeat(MAX_FRAME))).await.is_err());
     assert!(
-        send(&out, "bad", json!("x".repeat(MAX_FRAME)))
-            .await
-            .is_err()
-    );
-    assert!(
-        send(&out, "bad", json!("\u{0001}".repeat(MAX_FRAME / 6)))
+        send(&bad, json!("\u{0001}".repeat(MAX_FRAME / 6)))
             .await
             .is_err()
     );
     assert!(incoming.try_recv().is_err());
-    send(&out, "good", json!({"ok":true})).await.unwrap();
-    assert_eq!(incoming.recv().await.unwrap().client, "good");
+    let good = ClientOutput::new("good".into(), frames);
+    send(&good, json!({"ok":true})).await.unwrap();
+    assert_eq!(incoming.recv().await.unwrap().envelope.client, "good");
 }

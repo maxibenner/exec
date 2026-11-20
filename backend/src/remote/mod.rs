@@ -52,7 +52,9 @@ struct State {
 pub(crate) struct RemoteAccess {
     path: PathBuf,
     state: Mutex<State>,
+    // Only relay configuration changes invalidate the shared host transport.
     revision: watch::Sender<u64>,
+    authorization_revision: watch::Sender<u64>,
     // Socket tasks only await these transactions; dropping that waiter cannot
     // release the state lock while its blocking atomic write is still running.
     transactions: tokio_util::task::TaskTracker,
@@ -145,6 +147,7 @@ impl RemoteAccess {
             Err(e) => return Err(e.into()),
         };
         let (revision, _) = watch::channel(0);
+        let (authorization_revision, _) = watch::channel(0);
         Ok(Arc::new(Self {
             path,
             state: Mutex::new(State {
@@ -153,6 +156,7 @@ impl RemoteAccess {
                 connection: ConnectionStatus::Disconnected,
             }),
             revision,
+            authorization_revision,
             transactions: tokio_util::task::TaskTracker::new(),
             authorization_slots: Arc::new(Semaphore::new(MAX_CLIENTS)),
             #[cfg(test)]
@@ -220,6 +224,7 @@ impl RemoteAccess {
                 state.config = config;
                 state.invitation = None;
                 remote.revision.send_modify(|r| *r += 1);
+                remote.authorization_revision.send_modify(|r| *r += 1);
                 Ok(())
             })
             .await
@@ -247,7 +252,7 @@ impl RemoteAccess {
                 config.devices.retain(|d| d.id != id);
                 remote.persist(&config).await?;
                 state.config = config;
-                remote.revision.send_modify(|r| *r += 1);
+                remote.authorization_revision.send_modify(|r| *r += 1);
                 Ok(())
             })
             .await
