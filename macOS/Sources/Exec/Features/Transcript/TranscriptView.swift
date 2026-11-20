@@ -53,16 +53,29 @@ private struct VirtualTranscript: NSViewRepresentable {
     private final class DocumentView: NSView {
         override var isFlipped: Bool { true }
     }
-    private final class ReaderScroller: NSScroller {
-        override class var isCompatibleWithOverlayScrollers: Bool { true }
+    /// Keep AppKit's actual NSScroller rendering path. Overlay-compatible
+    /// subclasses can receive an undersized native knob texture on newer macOS.
+    /// Only action delivery needs customization, not the control or its drawing.
+    @MainActor private final class ReaderScrollAction: NSObject {
+        weak var target: AnyObject?
+        var action: Selector?
         var track: ((() -> Void) -> Void)?
-        override func sendAction(_ action: Selector?, to target: Any?) -> Bool {
-            guard let track else { return super.sendAction(action, to: target) }
-            var sent = false
-            track { sent = super.sendAction(action, to: target) }
-            return sent
+
+        func attach(to scroller: NSScroller?) {
+            guard let scroller, scroller.target !== self else { return }
+            target = scroller.target
+            action = scroller.action
+            scroller.target = self
+            scroller.action = #selector(scroll(_:))
+        }
+
+        @objc private func scroll(_ sender: NSScroller) {
+            guard let action else { return }
+            let forward = { _ = NSApp.sendAction(action, to: self.target, from: sender) }
+            if let track { track(forward) } else { forward() }
         }
     }
+    private let readerScrollAction = ReaderScrollAction()
     private let content = DocumentView()
     private var thinkingFooter: NSHostingView<WorkingIndicator>?
     private var thinkingFooterHeight: CGFloat { thinkingFooter == nil ? 0 : 40 }
@@ -119,10 +132,9 @@ private struct VirtualTranscript: NSViewRepresentable {
         state.scrollView = self
         drawsBackground = false
         borderType = .noBorder
-        let scroller = ReaderScroller()
-        scroller.track = { [weak self] action in self?.withReaderScroll(action) }
-        verticalScroller = scroller
+        readerScrollAction.track = { [weak self] action in self?.withReaderScroll(action) }
         hasVerticalScroller = true
+        readerScrollAction.attach(to: verticalScroller)
         verticalScrollElasticity = .allowed
         autohidesScrollers = true
         automaticallyAdjustsContentInsets = false
@@ -212,6 +224,12 @@ private struct VirtualTranscript: NSViewRepresentable {
                 footer.animator().alphaValue = 1
             }
         }
+    }
+
+    override func tile() {
+        super.tile()
+        // AppKit can replace/reconfigure its controls when the style changes.
+        readerScrollAction.attach(to: verticalScroller)
     }
 
     override func layout() {
