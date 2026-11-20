@@ -45,6 +45,9 @@ struct GatedStore {
     records: Mutex<BTreeMap<String, ConversationRecord>>,
     save_gate: Gate,
     delete_gate: Gate,
+    creation_gate: Gate,
+    blocked_creation: Option<usize>,
+    child_creations: AtomicUsize,
     progress_saves: AtomicUsize,
     deletes: AtomicUsize,
     fail_save: bool,
@@ -79,10 +82,15 @@ impl Checkpoint for GatedStore {
                 return Err(Error::Storage);
             }
         }
+        let creation = (record.metadata.parent.is_some() && record.operation.is_none())
+            .then(|| self.child_creations.fetch_add(1, Ordering::SeqCst));
         self.records
             .lock()
             .unwrap()
             .insert(record.id.clone(), record);
+        if creation.is_some() && creation == self.blocked_creation {
+            self.creation_gate.hold().await;
+        }
         if progress && self.fail_save {
             Err(Error::Storage)
         } else {
@@ -629,7 +637,7 @@ async fn failure_or_individual_cancellation_publishes_early_without_cancelling_s
 }
 
 #[tokio::test]
-async fn parent_cancellation_preserves_published_results_and_retains_unfinished_children() {
+async fn parent_cancellation_saves_interrupted_results_before_removing_children() {
     let workspace = directory();
     let store = Arc::new(GatedStore::default());
     let (children, gates) = gated_children(2, false, false);
@@ -637,7 +645,7 @@ async fn parent_cancellation_preserves_published_results_and_retains_unfinished_
     scripts.extend(children);
     let provider = FakeProvider::new(scripts);
     let (manager, parent) = setup(store.clone(), provider.clone(), workspace.path()).await;
-    let run = manager.submit(&parent.id, "Delegate".into()).await.unwrap();
+    let mut run = manager.submit(&parent.id, "Delegate".into()).await.unwrap();
     for gate in &gates {
         wait(&gate.entered).await;
     }
@@ -645,18 +653,150 @@ async fn parent_cancellation_preserves_published_results_and_retains_unfinished_
     let fast = child_id(&manager, 1);
     gates[1].release.cancel();
     removed(&manager, &fast).await;
+    store.save_gate.arm();
+    store.delete_gate.arm();
     assert!(parent.cancel(&run.operation_id));
+    wait(&store.save_gate.entered).await;
+    assert!(manager.snapshot(&slow).is_ok());
+    pending(&mut run, &provider, 3, &parent);
+    store.save_gate.release.cancel();
+    wait(&store.delete_gate.entered).await;
+    let saved = results(&store.record(&parent.id).messages);
+    assert_eq!(saved.len(), 2);
+    assert_eq!(saved[0].session_id, slow);
+    assert_eq!(saved[0].outcome, ToolOutcome::Interrupted);
+    assert!(saved[0].text.contains("cancelled by user"));
+    assert_eq!(saved[1].session_id, fast);
+    assert_eq!(saved[1].outcome, ToolOutcome::Completed);
+    assert!(saved[1].text.contains("Answer 1"));
+    assert!(manager.snapshot(&slow).is_ok());
+    pending(&mut run, &provider, 3, &parent);
+    store.delete_gate.release.cancel();
     assert_eq!(complete(run).await.state, OperationState::Interrupted);
-    let saved = store.record(&parent.id);
-    saved.validate().unwrap();
-    assert_eq!(results(&saved.messages)[0].session_id, fast);
-    assert!(saved.messages.last().unwrap().text().contains("Answer 1"));
-    assert_eq!(
-        manager.snapshot(&slow).unwrap().operation.unwrap().state,
-        OperationState::Interrupted
-    );
+    store.record(&parent.id).validate().unwrap();
+    assert!(manager.snapshot(&slow).is_err());
+    assert_eq!(manager.list().unwrap().len(), 1);
     assert_eq!(outcomes(&parent), [ToolOutcome::Interrupted]);
     assert_eq!(provider.count(), 3);
+}
+
+#[tokio::test]
+async fn cancellation_during_creation_removes_acknowledged_children_without_starting_them() {
+    for blocked_creation in 0..3 {
+        let workspace = directory();
+        let store = Arc::new(GatedStore {
+            blocked_creation: Some(blocked_creation),
+            ..Default::default()
+        });
+        store.creation_gate.arm();
+        let provider = FakeProvider::new(vec![batch("batch", 3)]);
+        let (manager, parent) = setup(store.clone(), provider.clone(), workspace.path()).await;
+        let mut run = manager.submit(&parent.id, "Delegate".into()).await.unwrap();
+        wait(&store.creation_gate.entered).await;
+        assert!(parent.cancel(&run.operation_id));
+        pending(&mut run, &provider, 1, &parent);
+        store.creation_gate.release.cancel();
+        assert_eq!(complete(run).await.state, OperationState::Interrupted);
+        let saved = store.record(&parent.id);
+        saved.validate().unwrap();
+        let published = results(&saved.messages);
+        assert_eq!(published.len(), blocked_creation + 1);
+        for (index, result) in published.iter().enumerate() {
+            assert_eq!(result.task_index, index);
+            assert_eq!(result.outcome, ToolOutcome::Interrupted);
+            assert!(result.text.contains("cancelled before starting"));
+            assert!(result.text.contains("No child request was sent"));
+            assert!(manager.snapshot(&result.session_id).is_err());
+        }
+        assert!(matches!(
+            result_message(&parent.snapshot()),
+            Message::Tool {
+                details: Some(ToolDetails::Delegation { total: 3, .. }),
+                ..
+            }
+        ));
+        assert_eq!(
+            store.child_creations.load(Ordering::SeqCst),
+            blocked_creation + 1
+        );
+        assert_eq!(store.deletes.load(Ordering::SeqCst), blocked_creation + 1);
+        assert_eq!(manager.list().unwrap().len(), 1);
+        assert_eq!(provider.count(), 1);
+        manager.close().await.unwrap();
+        let restored = AgentManager::open(store, |_| (provider.clone(), vec![]))
+            .await
+            .unwrap();
+        assert_eq!(restored.list().unwrap().len(), 1);
+        assert_eq!(
+            restored.get(&parent.id).unwrap().snapshot().messages,
+            saved.messages
+        );
+        restored.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn cancelled_children_remain_inspectable_when_checkpoint_or_deletion_fails() {
+    for (fail_save, fail_after_write, fail_delete) in [
+        (true, false, false),
+        (true, true, false),
+        (false, false, true),
+    ] {
+        let workspace = directory();
+        let store = Arc::new(GatedStore {
+            fail_save,
+            fail_after_write,
+            fail_delete,
+            ..Default::default()
+        });
+        let (children, gates) = gated_children(2, false, false);
+        let mut scripts = vec![batch("batch", 2)];
+        scripts.extend(children);
+        let provider = FakeProvider::new(scripts);
+        let (manager, parent) = setup(store.clone(), provider.clone(), workspace.path()).await;
+        let run = manager.submit(&parent.id, "Delegate".into()).await.unwrap();
+        for gate in &gates {
+            wait(&gate.entered).await;
+        }
+        assert!(parent.cancel(&run.operation_id));
+        let operation = complete(run).await;
+        assert_ne!(operation.state, OperationState::Completed);
+        assert_eq!(operation.error, Some(Error::Storage.to_string()));
+        let published = results(&parent.snapshot().messages);
+        assert_eq!(published.len(), 2);
+        assert!(
+            published
+                .iter()
+                .all(|result| result.outcome == ToolOutcome::Interrupted)
+        );
+        assert_eq!(manager.list().unwrap().len(), if fail_save { 3 } else { 2 });
+        assert_eq!(
+            store.deletes.load(Ordering::SeqCst),
+            if fail_save { 0 } else { 2 }
+        );
+        assert_eq!(
+            store.progress_saves.load(Ordering::SeqCst),
+            if fail_save { 1 } else { 2 }
+        );
+        assert_eq!(
+            results(&store.record(&parent.id).messages).len(),
+            if fail_save {
+                usize::from(fail_after_write)
+            } else {
+                2
+            }
+        );
+        for child in manager
+            .list()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.metadata.parent.is_some())
+        {
+            assert_eq!(child.operation.unwrap().state, OperationState::Interrupted);
+        }
+        parent.record().validate().unwrap();
+        assert_eq!(provider.count(), 3);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

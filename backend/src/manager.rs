@@ -575,7 +575,9 @@ impl AgentManager {
         };
         let mut children = Vec::with_capacity(titles.len());
         for title in titles {
-            crate::check_cancel(&context.cancel)?;
+            if context.cancel.is_cancelled() {
+                break;
+            }
             let mut options = ConversationOptions::new(
                 provider.clone(),
                 parent.model.clone(),
@@ -592,6 +594,11 @@ impl AgentManager {
             });
             let child = self.create(options).await?;
             children.push((child, parent.configuration.workspace_instructions.clone()));
+        }
+        // Return every acknowledged child, even if cancellation stopped the batch
+        // during creation. The delegate must checkpoint their results and remove them.
+        if children.is_empty() {
+            crate::check_cancel(&context.cancel)?;
         }
         Ok(children)
     }
@@ -1260,7 +1267,8 @@ impl AgentManager {
                             .metadata
                             .parent
                             .is_some_and(|p| p.session_id == parent_id && p.tool_call_id == call_id)
-                            || snapshot.operation.is_none_or(|op| op.state.active())
+                            // A child cancelled during creation has no operation to settle.
+                            || snapshot.operation.is_some_and(|op| op.state.active())
                         {
                             return Err(Error::Busy);
                         }

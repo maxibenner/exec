@@ -333,6 +333,8 @@ async fn parent_cancellation_interrupts_a_child_approval_without_executing_it() 
     assert!(!child.resolve_approval(&pending.operation_id, &pending.id, true));
     assert_eq!(provider.count(), 2);
     assert!(!child.busy());
+    assert!(manager.get(&child.id).is_err());
+    assert_eq!(manager.list().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -374,9 +376,12 @@ async fn parent_keeps_ownership_until_child_tool_cleanup_finishes() {
         .await
         .unwrap();
     assert!(parent.busy() && child.busy());
+    assert!(manager.get(&child.id).is_ok());
     cleanup.cancel();
     assert_eq!(finish(run).await.state, OperationState::Interrupted);
     assert!(!parent.busy() && !child.busy());
+    assert!(manager.get(&child.id).is_err());
+    assert_eq!(manager.list().unwrap().len(), 1);
     assert_eq!(provider.count(), 2);
 }
 
@@ -464,24 +469,39 @@ async fn user_deletion_waits_for_cleanup_and_reports_child_cancellation_to_paren
 }
 
 #[tokio::test]
-async fn child_failure_returns_a_failed_tool_result_without_retrying() {
-    let workspace = directory();
-    let provider = FakeProvider::new(vec![
-        response(vec![delegate("d", "Work"), ProviderEvent::Done]),
-        script(|_| Box::pin(stream::iter(vec![Err(Error::Internal)]))),
-        answer(),
-    ]);
-    let manager = Arc::new(AgentManager::default());
-    let parent = root(&manager, provider.clone(), vec![], workspace.path()).await;
-    assert_eq!(
-        finish(manager.submit(&parent.id, "Delegate".into()).await.unwrap())
-            .await
-            .state,
-        OperationState::Completed
-    );
-    assert_eq!(manager.list().unwrap().len(), 1);
-    assert!(parent.snapshot().messages.iter().any(|m| matches!(m, Message::Tool { text, outcome: ToolOutcome::Failed, .. } if text.contains("Sub-agent session") && text.contains("failed") && text.contains("Do not retry"))));
-    assert_eq!(provider.count(), 3);
+async fn failed_or_cancelled_children_return_failed_tool_results_and_are_removed_without_retry() {
+    for cancel_child in [false, true] {
+        let workspace = directory();
+        let entered = CancellationToken::new();
+        let provider = FakeProvider::new(vec![
+            response(vec![delegate("d", "Work"), ProviderEvent::Done]),
+            if cancel_child {
+                waiting(entered.clone())
+            } else {
+                script(|_| Box::pin(stream::iter(vec![Err(Error::Internal)])))
+            },
+            answer(),
+        ]);
+        let manager = Arc::new(AgentManager::default());
+        let parent = root(&manager, provider.clone(), vec![], workspace.path()).await;
+        let run = manager.submit(&parent.id, "Delegate".into()).await.unwrap();
+        if cancel_child {
+            tokio::time::timeout(Duration::from_secs(5), entered.cancelled())
+                .await
+                .unwrap();
+            let child = child(&manager).await;
+            assert!(child.cancel(&child.snapshot().operation.unwrap().id));
+        }
+        assert_eq!(finish(run).await.state, OperationState::Completed);
+        assert_eq!(manager.list().unwrap().len(), 1);
+        let reason = if cancel_child {
+            "cancelled by user"
+        } else {
+            "failed"
+        };
+        assert!(parent.snapshot().messages.iter().any(|m| matches!(m, Message::Tool { text, outcome: ToolOutcome::Failed, .. } if text.contains("Sub-agent session") && text.contains(reason) && text.contains("Do not retry"))));
+        assert_eq!(provider.count(), 3);
+    }
 }
 
 #[tokio::test]

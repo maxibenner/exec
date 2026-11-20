@@ -135,23 +135,30 @@ async fn cancellation_waits_for_every_child_executor_cleanup() {
             .await
             .is_err()
     );
+    assert_eq!(manager.list().unwrap().len(), 3);
     cleanup.cancel();
     assert_eq!(complete(run).await.state, OperationState::Interrupted);
-    let children: Vec<_> = manager
-        .list()
-        .unwrap()
-        .into_iter()
-        .filter(|s| s.metadata.parent.is_some())
-        .collect();
-    assert_eq!(children.len(), 2);
-    for child in children {
-        let child = manager.get(&child.id).unwrap();
-        assert!(!child.busy());
-        assert_eq!(
-            child.snapshot().operation.unwrap().state,
-            OperationState::Interrupted
-        );
-    }
+    assert_eq!(manager.list().unwrap().len(), 1);
+    let snapshot = parent.snapshot();
+    let results = snapshot
+        .messages
+        .iter()
+        .find_map(|message| match message {
+            Message::Tool {
+                details: Some(ToolDetails::Delegation { results, .. }),
+                ..
+            } => Some(results),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(
+        results
+            .iter()
+            .all(|result| result.outcome == ToolOutcome::Interrupted)
+    );
+    assert_eq!(outcomes(&parent), [ToolOutcome::Interrupted]);
+    parent.record().validate().unwrap();
     assert_eq!(provider.count(), 3);
 }
 #[tokio::test]

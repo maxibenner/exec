@@ -589,7 +589,7 @@ task order; ordinary tool calls remain sequential. This reuses the existing agen
   replay protection remains operation-wide. Avoid conflicting writes to shared files.
 - Each settled child's bounded result is checkpointed in the parent's running tool message,
   then that child is deleted immediately, without waiting for its siblings. This includes
-  child failures and individual user cancellations. Failed checkpoints retain the child
+  child failures and user cancellations. Failed checkpoints retain the child
   and the in-memory result for inspection, block further saves/work on the parent, and
   never trigger cleanup or retries. Failed deletion retains the saved result and any
   session not actually removed; cleanup is not retried by the final-result hook. Automatic
@@ -600,13 +600,17 @@ task order; ordinary tool calls remain sequential. This reuses the existing agen
   single-child failure retains a failed tool outcome. Batch results report each child
   separately. Combined text is at most 32 KiB UTF-8, including task headings, child IDs,
   truncation markers and terminal notices, divided fairly among children.
-- Parent cancellation cancels unfinished children and waits for executor cleanup. Already
-  published results remain saved; unfinished children are retained unless the user
-  explicitly deletes the family. Restart retains partial results, marks unfinished
-  operations interrupted and resumes neither inference nor cleanup. Active forks omit
-  running partial tool messages and their unresolved calls, never turning them into
-  completed context. New turns/compaction on a child are blocked while its managing
-  operation is active; approval, steering and cancellation still use the child's own IDs.
+- Stopping the parent cancels unfinished children and waits for executor cleanup,
+  result checkpoints and child deletion. Completed answers remain saved; cancelled
+  children are removed only after their interrupted results are saved in the parent.
+  Cancellation during batch creation stops further creation and cleans up acknowledged
+  children without starting their inference. Storage failures retain affected sessions
+  for recovery, as above. Restart retains partial results and any remaining children,
+  marks unfinished operations interrupted and resumes neither inference nor cleanup.
+  Active forks omit running partial tool messages and their unresolved calls, never
+  turning them into completed context. New turns/compaction on a child are blocked while
+  its managing operation is active; approval, steering and cancellation still use the
+  child's own IDs.
 - Deleting a running child cancels its operation and waits for executor cleanup; its
   parent receives a `cancelled by user` tool result and continues without retrying.
   Deleting a parent cancels the entire family and deletes its sub-agents in the same

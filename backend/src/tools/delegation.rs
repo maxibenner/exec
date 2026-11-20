@@ -15,13 +15,12 @@ async fn run_child(
     let operation = tokio::select! { biased;
         _ = cancel.cancelled() => {
             child.cancel(&submission.operation_id);
-            // Keep owning the child until its tools have finished cleanup.
-            let _ = submission.completion.await;
-            return Err(Error::Cancelled);
+            // Keep owning the child until its tools have finished cleanup, and
+            // preserve its actual result if completion won the cancellation race.
+            submission.completion.await.map_err(|_| Error::Internal)?
         }
         result = &mut submission.completion => result.map_err(|_| Error::Internal)?,
     };
-    check_cancel(&cancel)?;
     if operation.state != OperationState::Completed {
         return Err(failure(format!(
             "Sub-agent session {} {}. It may have had effects. Its session is removed after this result is saved.",
@@ -150,10 +149,10 @@ impl Tool for Delegate {
             approval: None,
             execute: Box::new(move || {
                 Box::pin(async move {
+                    let total = tasks.len();
                     let children = manager
                         .create_children(&context, &titles, provider, tools)
                         .await?;
-                    let total = children.len();
                     let limit = (DELEGATION_RESULT_BYTES - 2 * (total - 1)) / total;
                     // Each future owns execution, checkpoint and cleanup. join_all polls
                     // them concurrently but retains every sibling even if one fails.
@@ -175,22 +174,24 @@ impl Tool for Delegate {
                                     context.cancel.clone(),
                                     limit - heading.len(),
                                 ).await;
-                                // Parent cancellation retains unfinished children for inspection.
-                                // Already published children remain safely deleted.
-                                if matches!(result, Err(Error::Cancelled)) {
-                                    return Ok(result);
-                                }
+                                // Cancellation still checkpoints the child result before deletion.
                                 let outcome = if result.is_ok() {
                                     ToolOutcome::Completed
-                                } else if child.snapshot().operation.is_some_and(|op| {
-                                    op.state == OperationState::Interrupted
-                                }) {
+                                } else if matches!(result, Err(Error::Cancelled))
+                                    || child.snapshot().operation.is_some_and(|op| {
+                                        op.state == OperationState::Interrupted
+                                    })
+                                {
                                     ToolOutcome::Interrupted
                                 } else {
                                     ToolOutcome::Failed
                                 };
                                 let text = match &result {
                                     Ok(text) => text.clone(),
+                                    Err(Error::Cancelled) => format!(
+                                        "Sub-agent session {} was cancelled before starting. No child request was sent. Do not retry without a new user request.",
+                                        child.id
+                                    ),
                                     Err(Error::Tool(message)) => {
                                         format!("{message}\nDo not retry without a new user request.")
                                     }
