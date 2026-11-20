@@ -96,7 +96,7 @@ import Observation
         openConversations = [current]
     }
     func restore() async throws {
-        try await sessions.restore()
+        guard try await sessions.restore() else { throw AgentHTTPError(status: 409, message: "Shared settings are busy.") }
         restoringDefaults = true
         let config = sessions.configuration
         automaticTitles = config.automaticTitles
@@ -139,7 +139,12 @@ import Observation
                         $0.defaultDisabledTools = disabledTools
                     }
                 }
-                catch { navigationError = error.localizedDescription; return }
+                catch {
+                    navigationError = error.localizedDescription
+                    // Only a newer explicit edit may follow a definite validation
+                    // rejection. An uncertain write still requires read-only recovery.
+                    guard (error as? AgentHTTPError)?.status == 400, revision != defaultsRevision else { return }
+                }
                 if revision == defaultsRevision { return }
             }
         }
@@ -279,7 +284,11 @@ import Observation
     private func catchUpSharedState() async throws -> Bool {
         guard !navigating, defaultsTask == nil else { return false }
         let revision = defaultsRevision
-        try await sessions.restore()
+        do {
+            guard try await sessions.restore() else { return false }
+        } catch let error as AgentHTTPError where error.status == 409 {
+            return false // The backend write has not settled; keep this catchup pending.
+        }
         try Task.checkCancellation()
         guard defaultsTask == nil, revision == defaultsRevision else { return false }
         let config = sessions.configuration
