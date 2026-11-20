@@ -149,8 +149,16 @@ private struct VirtualTranscript: NSViewRepresentable {
         if showsThinkingIndicator != (thinkingFooter != nil) {
             if showsThinkingIndicator {
                 let footer = NSHostingView(rootView: WorkingIndicator())
+                let shouldFade = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                footer.alphaValue = shouldFade ? 0 : 1
                 thinkingFooter = footer
                 content.addSubview(footer)
+                if shouldFade {
+                    NSAnimationContext.runAnimationGroup { context in
+                        context.duration = 0.2
+                        footer.animator().alphaValue = 1
+                    }
+                }
             } else {
                 thinkingFooter?.removeFromSuperview()
                 thinkingFooter = nil
