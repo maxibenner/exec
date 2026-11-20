@@ -239,6 +239,222 @@ async fn rotating_refresh_is_single_flight_and_persists_before_releasing_credent
     reopened.settle().await;
 }
 #[tokio::test]
+async fn present_malformed_refresh_tokens_never_fall_back_to_the_consumed_token() {
+    for refresh in [
+        None,
+        Some(Value::Null),
+        Some(json!(42)),
+        Some(json!(false)),
+        Some(json!([])),
+        Some(json!({})),
+        Some(json!("")),
+        Some(json!("invalid token")),
+    ] {
+        let root = support::directory();
+        let path = root.path().join("credentials.json");
+        save(&path, &session(true));
+        let mut value = json!({"access_token":access("synthetic-account"),"expires_in":3600});
+        let absent = refresh.is_none();
+        if let Some(refresh) = refresh {
+            value["refresh_token"] = refresh;
+        }
+        let transport = Fake::new(move |_| {
+            let value = value.clone();
+            async move { Ok(response(value)) }
+        });
+        let auth = Authentication::open(path.clone(), None, transport.clone())
+            .await
+            .unwrap();
+        let result = auth.credentials(CancellationToken::new()).await;
+        if absent {
+            assert_eq!(result.unwrap().refresh_token, "synthetic-refresh");
+        } else {
+            assert!(matches!(
+                result,
+                Err(Error::Provider(ProviderFailure::Authentication))
+            ));
+            assert!(auth.credentials(CancellationToken::new()).await.is_err());
+        }
+        let reopened = Authentication::open(path.clone(), None, transport.clone())
+            .await
+            .unwrap();
+        assert_eq!(reopened.connection().blocked, !absent);
+        assert_eq!(
+            reopened.credentials(CancellationToken::new()).await.is_ok(),
+            absent
+        );
+        let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["openai"]["requiresReconnect"], !absent);
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+        auth.settle().await;
+        reopened.settle().await;
+    }
+}
+
+#[tokio::test]
+async fn independent_authentication_owners_reload_under_shared_ownership() {
+    let root = support::directory();
+    let path = root.path().join("credentials.json");
+    save(&path, &session(true));
+    let entered = CancellationToken::new();
+    let release = CancellationToken::new();
+    let e = entered.clone();
+    let r = release.clone();
+    let transport = Fake::new(move |request| {
+        let entered = e.clone();
+        let release = r.clone();
+        async move {
+            if matches!(request.endpoint, Endpoint::Revoke) {
+                assert!(request.body.unwrap().contains("token=shared-rotation"));
+                return Ok(response(json!({})));
+            }
+            assert!(matches!(request.endpoint, Endpoint::Token));
+            entered.cancel();
+            release.cancelled().await;
+            Ok(response(
+                json!({"access_token":access("synthetic-account"),"refresh_token":"shared-rotation","expires_in":3600}),
+            ))
+        }
+    });
+    let first = Authentication::open(path.clone(), None, transport.clone())
+        .await
+        .unwrap();
+    let second = Authentication::open(path.clone(), None, transport.clone())
+        .await
+        .unwrap();
+    let a = {
+        let auth = first.clone();
+        tokio::spawn(async move { auth.credentials(CancellationToken::new()).await })
+    };
+    entered.cancelled().await;
+    let b = {
+        let auth = second.clone();
+        tokio::spawn(async move { auth.credentials(CancellationToken::new()).await })
+    };
+    // A provider lease must not block the other provider's field updates.
+    let deepseek = DeepSeekCredentials::open(path.clone(), None).await.unwrap();
+    deepseek
+        .set(Some("updated-during-refresh".into()))
+        .await
+        .unwrap();
+    assert!(!b.is_finished());
+    assert_eq!(transport.requests.lock().unwrap().len(), 1);
+    release.cancel();
+    assert_eq!(a.await.unwrap().unwrap().refresh_token, "shared-rotation");
+    assert_eq!(b.await.unwrap().unwrap().refresh_token, "shared-rotation");
+    assert_eq!(transport.requests.lock().unwrap().len(), 1);
+    // A stale owner must not return a removed session or revoke an old token.
+    first.disconnect().await.unwrap();
+    assert!(second.credentials(CancellationToken::new()).await.is_err());
+    let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert!(saved.get("openai").is_none());
+    assert_eq!(saved["deepseek"]["apiKey"], "updated-during-refresh");
+    assert_eq!(transport.requests.lock().unwrap().len(), 2);
+    first.settle().await;
+    second.settle().await;
+}
+
+// Subprocess fixtures receive only a temporary path and synthetic credentials.
+#[tokio::test]
+async fn refresh_ownership_fixture() {
+    let Some(path) = std::env::var_os("EXEC_TEST_REFRESH_OWNER_PATH") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    let root = path.parent().unwrap().to_owned();
+    let crash = std::env::var_os("EXEC_TEST_REFRESH_OWNER_CRASH").is_some();
+    let transport = Fake::new(move |request| {
+        let root = root.clone();
+        async move {
+            assert!(matches!(request.endpoint, Endpoint::Token));
+            tokio::fs::write(root.join("claimed"), b"ready")
+                .await
+                .unwrap();
+            if crash {
+                std::process::exit(0);
+            }
+            wait_for_fixture_file(&root.join("release")).await;
+            Ok(response(
+                json!({"access_token":access("synthetic-account"),"refresh_token":"process-rotation","expires_in":3600}),
+            ))
+        }
+    });
+    let auth = Authentication::open(path, None, transport.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        auth.credentials(CancellationToken::new())
+            .await
+            .unwrap()
+            .refresh_token,
+        "process-rotation"
+    );
+    assert_eq!(transport.requests.lock().unwrap().len(), 1);
+    auth.settle().await;
+}
+async fn wait_for_fixture_file(path: &std::path::Path) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !path.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+#[tokio::test]
+async fn shared_credentials_exclude_other_processes_and_keep_crash_markers() {
+    for crash in [false, true] {
+        let root = support::directory();
+        let path = root.path().join("credentials.json");
+        save(&path, &session(true));
+        let transport = Fake::new(|_| async { panic!("a second owner reused a rotating token") });
+        // Load stale credentials before the other process claims its refresh.
+        let auth = Authentication::open(path.clone(), None, transport.clone())
+            .await
+            .unwrap();
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "refresh_ownership_fixture", "--nocapture"])
+            .env_clear()
+            .env("EXEC_TEST_REFRESH_OWNER_PATH", &path)
+            .kill_on_drop(true);
+        if crash {
+            command.env("EXEC_TEST_REFRESH_OWNER_CRASH", "1");
+        }
+        let mut child = command.spawn().unwrap();
+        wait_for_fixture_file(&root.path().join("claimed")).await;
+        assert!(auth.credentials(CancellationToken::new()).await.is_err());
+        let deepseek = DeepSeekCredentials::open(path.clone(), None).await.unwrap();
+        deepseek
+            .set(Some("shared-process-update".into()))
+            .await
+            .unwrap();
+        tokio::fs::write(root.path().join("release"), b"ready")
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .success()
+        );
+        let result = auth.credentials(CancellationToken::new()).await;
+        if crash {
+            assert!(result.is_err());
+            assert!(auth.connection().blocked);
+        } else {
+            assert_eq!(result.unwrap().refresh_token, "process-rotation");
+        }
+        let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["openai"]["requiresReconnect"], crash);
+        assert_eq!(saved["deepseek"]["apiKey"], "shared-process-update");
+        assert!(transport.requests.lock().unwrap().is_empty());
+        auth.settle().await;
+    }
+}
+
+#[tokio::test]
 async fn ambiguous_refresh_blocks_reuse_across_restart_and_environment_never_rotates() {
     let root = support::directory();
     let path = root.path().join("credentials.json");

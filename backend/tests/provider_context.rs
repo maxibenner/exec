@@ -2,7 +2,12 @@
 mod http;
 mod support;
 use async_trait::async_trait;
-use exec_agent::{Error, core::*, manager::AgentManager, storage::JsonConversationStore};
+use exec_agent::{
+    Error,
+    core::*,
+    manager::AgentManager,
+    storage::{ConversationStore, JsonConversationStore},
+};
 use futures_util::stream::BoxStream;
 use http::*;
 use serde_json::json;
@@ -122,6 +127,176 @@ async fn thinking_state_continues_tools_and_survives_restart_without_entering_sn
     );
     assert_eq!(turns.load(Ordering::SeqCst), 3);
     manager.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn long_thinking_continuation_remains_restorable_after_crossing_256_tool_steps() {
+    let root = directory();
+    let workspace = directory();
+    let turns = Arc::new(AtomicUsize::new(0));
+    let count = turns.clone();
+    let transport = Transport::new(move |request| {
+        let turn = count.fetch_add(1, Ordering::SeqCst);
+        async move {
+            let body: serde_json::Value =
+                serde_json::from_str(request.body.as_ref().unwrap()).unwrap();
+            let assistants: Vec<_> = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message.get("tool_calls").is_some())
+                .collect();
+            assert_eq!(assistants.len(), if turn == 0 { 256 } else { 257 });
+            for message in assistants {
+                let id = message["tool_calls"][0]["id"].as_str().unwrap();
+                assert_eq!(message["reasoning_content"], format!("opaque-{id}"));
+            }
+            if turn == 0 {
+                Ok(wire(
+                    event(delta(
+                        json!({"reasoning_content":"opaque-call-256","tool_calls":[{"index":0,"id":"call-256","type":"function","function":{"name":"change","arguments":"{}"}}]}),
+                        Some("tool_calls"),
+                    )) + &event(json!("[DONE]")),
+                ))
+            } else {
+                Ok(wire(complete("Done")))
+            }
+        }
+    });
+    let p = Arc::new(provider(transport));
+    let tools = vec![support::tool(None, |_| async { Ok("result".into()) })];
+    let mut options = ConversationOptions::new(
+        p.clone(),
+        "deepseek-chat",
+        workspace.path().to_str().unwrap(),
+    );
+    options.tools = tools.clone();
+    options.settings.effort = Some("high".into());
+    let mut record = Conversation::new(options, None).unwrap().record();
+    record.configuration.as_mut().unwrap().instructions_frozen = true;
+    record.operation = Some(Operation {
+        id: new_id(),
+        state: OperationState::Completed,
+        error: None,
+    });
+    record.messages.push(Message::User {
+        id: new_id(),
+        text: "Long synthetic conversation".into(),
+        images: vec![],
+        files: vec![],
+    });
+    let mut reasoning = serde_json::Map::new();
+    for i in 0..256 {
+        let id = format!("call-{i}");
+        record.messages.push(Message::Assistant {
+            id: new_id(),
+            text: String::new(),
+            calls: vec![ToolCall {
+                id: id.clone(),
+                name: "change".into(),
+                arguments: Default::default(),
+            }],
+            status: MessageStatus::Completed,
+        });
+        record.messages.push(Message::Tool {
+            id: new_id(),
+            call_id: id.clone(),
+            text: "result".into(),
+            outcome: ToolOutcome::Completed,
+            details: None,
+        });
+        reasoning.insert(id.clone(), json!(format!("opaque-{id}")));
+    }
+    record.provider_state = Some(json!({"provider":"deepseek","version":1,"reasoning":reasoning}));
+    let id = record.id.clone();
+    let store = JsonConversationStore::open(root.path()).await.unwrap();
+    store.save(record).await.unwrap();
+    store.close().await.unwrap();
+    for input in ["cross the boundary", "continue after restart"] {
+        let manager = AgentManager::open(
+            JsonConversationStore::open(root.path()).await.unwrap(),
+            |_| (p.clone(), tools.clone()),
+        )
+        .await
+        .unwrap();
+        let mut library = manager.library_configuration().unwrap();
+        library.automatic_titles = false;
+        manager.update_library(library).await.unwrap();
+        assert_eq!(
+            settle(manager.submit(&id, input.into()).await.unwrap())
+                .await
+                .state,
+            OperationState::Completed
+        );
+        let conversation = manager.get(&id).unwrap();
+        assert_eq!(
+            conversation.record().provider_state.unwrap()["reasoning"]
+                .as_object()
+                .unwrap()
+                .len(),
+            257
+        );
+        assert!(
+            !serde_json::to_string(&conversation.snapshot())
+                .unwrap()
+                .contains("opaque-call-")
+        );
+        manager.close().await.unwrap();
+    }
+    assert_eq!(turns.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn thinking_checkpoints_prune_only_unreferenced_reasoning_and_reject_oversized_state() {
+    let transport = Transport::new(|_| async {
+        Ok(wire(
+            event(delta(
+                json!({"reasoning_content":"new reasoning","tool_calls":[{"index":0,"id":"new","type":"function","function":{"name":"change","arguments":"{}"}}]}),
+                Some("tool_calls"),
+            )) + &event(json!("[DONE]")),
+        ))
+    });
+    let p = provider(transport.clone());
+    let mut request = request();
+    request.effort = Some("high".into());
+    request.messages.extend([
+        ContextMessage::Assistant {
+            text: String::new(),
+            calls: vec![ToolCall {
+                id: "needed".into(),
+                name: "change".into(),
+                arguments: Default::default(),
+            }],
+        },
+        ContextMessage::Tool {
+            call_id: "needed".into(),
+            text: "result".into(),
+            outcome: ToolOutcome::Completed,
+        },
+    ]);
+    request.provider_state = Some(
+        json!({"provider":"deepseek","version":1,"reasoning":{"stale":"discard","needed":"retain"}}),
+    );
+    let events = collect(&p, request.clone()).await.unwrap();
+    let state = events
+        .iter()
+        .find_map(|event| match event {
+            ProviderEvent::Metadata { state, .. } => state.as_ref(),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        state["reasoning"],
+        json!({"needed":"retain","new":"new reasoning"})
+    );
+    request.provider_state = Some(
+        json!({"provider":"deepseek","version":1,"reasoning":{"a":"x".repeat(3*1024*1024),"b":"x".repeat(3*1024*1024),"c":"x".repeat(3*1024*1024)}}),
+    );
+    assert_eq!(
+        collect(&p, request).await.unwrap_err(),
+        Error::Provider(exec_agent::ProviderFailure::Request)
+    );
+    assert_eq!(transport.count(), 1);
 }
 
 #[tokio::test]

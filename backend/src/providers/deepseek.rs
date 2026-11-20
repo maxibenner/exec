@@ -110,6 +110,8 @@ fn valid_tool(s: &str) -> bool {
         && s.bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
 }
+const MAX_REASONING_BYTES: usize = 4 * 1024 * 1024;
+const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConversationState {
@@ -126,22 +128,39 @@ impl Default for ConversationState {
         }
     }
 }
+impl ConversationState {
+    fn validate(&self, failure: Failure) -> Result<()> {
+        // Bound the serialized state, not the number of tool steps: every emitted
+        // checkpoint must remain restorable, including continuations longer than 256 steps.
+        if self.provider != "deepseek"
+            || self.version != 1
+            || self.reasoning.iter().any(|(id, text)| {
+                id.is_empty() || id.len() > 256 || text.len() > MAX_REASONING_BYTES
+            })
+            || serde_json::to_vec(self).map_or(true, |bytes| bytes.len() > MAX_STATE_BYTES)
+        {
+            return Err(error(failure));
+        }
+        Ok(())
+    }
+    fn retain_context(&mut self, messages: &[ContextMessage]) {
+        let ids: HashSet<_> = messages
+            .iter()
+            .filter_map(|message| match message {
+                ContextMessage::Assistant { calls, .. } => calls.first().map(|call| &call.id),
+                _ => None,
+            })
+            .collect();
+        self.reasoning.retain(|id, _| ids.contains(id));
+    }
+}
 fn conversation_state(value: Option<&Value>) -> Result<ConversationState> {
     let state: ConversationState = value
         .map(|value| serde_json::from_value(value.clone()))
         .transpose()
         .map_err(|_| error(Failure::Request))?
         .unwrap_or_default();
-    if state.provider != "deepseek"
-        || state.version != 1
-        || state.reasoning.len() > 256
-        || state
-            .reasoning
-            .iter()
-            .any(|(id, text)| id.is_empty() || id.len() > 256 || text.len() > 4 * 1024 * 1024)
-    {
-        return Err(error(Failure::Request));
-    }
+    state.validate(Failure::Request)?;
     Ok(state)
 }
 #[derive(Default)]
@@ -245,7 +264,7 @@ impl Decoder {
             return Err(error(Failure::Unsupported));
         }
         self.reasoning.push_str(reasoning);
-        if self.reasoning.len() > 4 * 1024 * 1024 {
+        if self.reasoning.len() > MAX_REASONING_BYTES {
             return Err(invalid);
         }
         let content = optional_text(delta.get("content"))?;
@@ -558,7 +577,8 @@ impl ChatProvider for DeepSeekProvider {
         let provider = self.clone();
         Box::pin(async_stream::try_stream! {
             check_cancel(&request.cancel)?;let body=request_body(&request)?;
-            let state = conversation_state(request.provider_state.as_ref())?;
+            let mut state = conversation_state(request.provider_state.as_ref())?;
+            state.retain_context(&request.messages);
             let thinking = request.effort.as_deref() != Some("none");
             let cancel=request.cancel.child_token();let _guard=cancel.clone().drop_guard();
             let source_cancel=cancel.clone();
@@ -571,8 +591,8 @@ impl ChatProvider for DeepSeekProvider {
                         let done=matches!(event,ProviderEvent::Done);
                         if done && (!decoder.reasoning.is_empty() || decoder.usage.is_some()) {
                             if let Some(call) = decoder.calls.values().next() && !decoder.reasoning.is_empty() { state.reasoning.insert(call.id.clone(), decoder.reasoning.clone()); }
+                            state.validate(Failure::Response)?;
                             let state = serde_json::to_value(&state).map_err(|_| error(Failure::Response))?;
-                            if serde_json::to_vec(&state).map_err(|_| error(Failure::Response))?.len() > 8 * 1024 * 1024 { Err(error(Failure::Response))?; }
                             yield ProviderEvent::Metadata { state: Some(state), usage: decoder.usage.clone() };
                         }
                         yield event;if done{return;}

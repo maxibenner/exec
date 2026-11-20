@@ -271,6 +271,39 @@ impl Authentication {
             blocked: state.blocked || state.session.as_ref().is_some_and(|s| s.requires_reconnect),
         }
     }
+    /// Instance gates protect local state; this lease protects a shared credential path,
+    /// including owners in other profiles/processes. Always reload after taking ownership.
+    async fn ownership(&self) -> Result<Option<super::super::private_json::Lease>> {
+        if self.state.lock().unwrap().blocked {
+            return Err(failure());
+        }
+        if self.environment {
+            return Ok(None);
+        }
+        let lease = self.file.lease("openai").await?;
+        let result = self.file.load().await.and_then(|document| {
+            let session = document
+                .get("openai")
+                .cloned()
+                .map(serde_json::from_value::<Session>)
+                .transpose()
+                .map_err(|_| failure())?;
+            if let Some(session) = &session {
+                session.validate()?;
+            }
+            Ok(session)
+        });
+        let mut state = self.state.lock().unwrap();
+        match result {
+            Ok(session) => state.session = session,
+            Err(error) => {
+                state.session = None;
+                state.blocked = true;
+                return Err(error);
+            }
+        }
+        Ok(Some(lease))
+    }
     async fn save(&self, session: Option<Session>) -> Result<()> {
         let result = self
             .file
@@ -319,13 +352,13 @@ impl Authentication {
         if current.is_some_and(|s| s.account_id != account_id) {
             return Err(failure());
         }
-        let refresh = value
-            .get("refresh_token")
-            .and_then(Value::as_str)
-            .or_else(|| current.map(|s| s.refresh_token.as_str()))
-            .filter(|s| token(s))
-            .ok_or_else(failure)?
-            .to_owned();
+        let refresh = match value.get("refresh_token") {
+            Some(value) => value.as_str(),
+            None => current.map(|s| s.refresh_token.as_str()),
+        }
+        .filter(|s| token(s))
+        .ok_or_else(failure)?
+        .to_owned();
         let expires = value["expires_in"]
             .as_u64()
             .filter(|n| *n > 0 && *n <= 31_536_000)
@@ -345,6 +378,7 @@ impl Authentication {
         // An owned refresh completes its persistence even when inference is cancelled.
         let task = self.tasks.spawn(async move {
             let _gate = this.gate.lock().await;
+            let _ownership = this.ownership().await?;
             let current = {
                 let state = this.state.lock().unwrap();
                 if state.blocked {
@@ -398,9 +432,11 @@ impl Authentication {
             _ = cancel.cancelled() => return Err(Error::Cancelled),
             gate = self.gate.lock() => gate,
         };
-        if self.state.lock().unwrap().blocked {
-            return Err(failure());
-        }
+        let _ownership = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(Error::Cancelled),
+            ownership = self.ownership() => ownership?,
+        };
         match method {
             ConnectionMethod::Browser => self.connect_browser(challenge, cancel).await,
             ConnectionMethod::DeviceCode => {
@@ -566,6 +602,7 @@ impl Authentication {
             ));
         }
         let _gate = self.gate.lock().await;
+        let _ownership = self.ownership().await?;
         let current = self.state.lock().unwrap().session.clone();
         let revoked = if let Some(current) = current {
             let request = Request {
