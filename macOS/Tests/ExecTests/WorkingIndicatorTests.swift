@@ -15,7 +15,7 @@ import QuartzCore
         }
     }
 
-    func grayBasesRemainVisibleUnderBluePulses() throws {
+    func grayBasesRemainVisibleUnderAccentPulses() throws {
         _ = NSApplication.shared
         let view = WorkingIndicator.NeuralActivityView(frame: NSRect(x: 0, y: 0, width: 28, height: 16))
         view.reduceMotion = true
@@ -42,10 +42,14 @@ import QuartzCore
                 try expect(baseLayer.backgroundColor == bases[0].backgroundColor)
             }
             for pulse in pulses {
-                let blue = NSColor(cgColor: pulse.backgroundColor!)!.usingColorSpace(.sRGB)!
-                try expect(abs(blue.redComponent) < 0.001)
-                try expect(abs(blue.greenComponent - 122.0 / 255.0) < 0.001)
-                try expect(abs(blue.blueComponent - 1) < 0.001 && blue.alphaComponent == 1)
+                var accent: NSColor!
+                view.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    accent = NSColor.controlAccentColor.usingColorSpace(.sRGB)!
+                }
+                let actual = NSColor(cgColor: pulse.backgroundColor!)!.usingColorSpace(.sRGB)!
+                try expect(abs(actual.redComponent - accent.redComponent) < 0.001)
+                try expect(abs(actual.greenComponent - accent.greenComponent) < 0.001)
+                try expect(abs(actual.blueComponent - accent.blueComponent) < 0.001 && actual.alphaComponent == 1)
             }
             for opacity: Float in [0, 0.5, 1] {
                 CATransaction.begin()
@@ -73,7 +77,7 @@ import QuartzCore
                         try expect(appearance == .aqua ? (0.8...0.96).contains(pixel.redComponent)
                                                       : (0.15...0.45).contains(pixel.redComponent))
                     } else {
-                        // Color-managed blue overlays must change the dot's color,
+                        // Color-managed accent overlays must change the dot's color,
                         // never its opaque coverage or the underlying gray layer.
                         try expect(zip(actual, baseline).contains { abs($0 - $1) > 0.05 })
                     }

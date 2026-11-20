@@ -90,6 +90,10 @@ import CryptoKit
         commandTask?.cancel()
     }
     var isWorking: Bool { busy }
+    var showsThinkingIndicator: Bool {
+        !deletedRemotely && !isStopping && !isRestoringSession && !isCompacting &&
+            snapshot?.showsThinkingIndicator == true
+    }
     var canEditDraft: Bool { !isRestoringSession }
     var canSelectWorkspace: Bool {
         canRequestCommands && !deletedRemotely && !busy && !isSaving && !hasUnsavedChanges &&

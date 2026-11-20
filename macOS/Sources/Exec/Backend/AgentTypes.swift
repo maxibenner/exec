@@ -135,6 +135,14 @@ struct AgentSnapshot: Decodable, Sendable, Equatable {
 }
 
 extension AgentSnapshot {
+    /// Empty streaming placeholders cover reasoning and the gaps between tool rounds.
+    /// A nonempty streaming message is active text output; do not infer pauses with timers.
+    var showsThinkingIndicator: Bool {
+        operation?.state == "running" && approval == nil && activeToolCallID == nil && activeToolName == nil &&
+            !messages.contains { ($0.role == "assistant" && $0.status == "streaming" && !$0.text.isEmpty) ||
+                ($0.role == "tool" && $0.outcome == "running") }
+    }
+
     /// Reconcile by stable message ID; pending cards are projections, never a second tool runner.
     func transcript(images: [UUID: ImageAttachment], pendingIDs: inout [String: UUID]) throws -> [Message] {
         var calls: [String: ToolCall] = [:]

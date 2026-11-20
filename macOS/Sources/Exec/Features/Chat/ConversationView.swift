@@ -71,7 +71,8 @@ struct ConversationView: View {
         ZStack(alignment: .bottom) {
             // Keep the scroll surface full-height. The measured overlay height is
             // trailing document space, not a clipped viewport or safe-area inset.
-            TranscriptView(messages: panel.current.messages, state: presentation, bottomInset: composerHeight)
+            TranscriptView(messages: panel.current.messages, state: presentation, bottomInset: composerHeight,
+                           showsThinkingIndicator: panel.current.showsThinkingIndicator)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             VStack(spacing: 0) {
                 if let approval = panel.current.tools.pendingApproval {

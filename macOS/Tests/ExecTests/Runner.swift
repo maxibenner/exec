@@ -58,6 +58,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             return
         }
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Thinking footer follows response gaps and terminal states", { try ThinkingIndicatorTests().responseActivity() }),
+            ("Thinking footer belongs to transcript geometry", { try ThinkingIndicatorTests().documentFooter() }),
             ("Single-line and wrapped sidebar titles use consistent padding", { try SidebarTitleLayoutTests().singleAndWrappedTitlesUseTheSamePadding() }),
             ("Startup counts zero, one and multiple sessions", { try StartupSessionCountTests().countsZeroOneAndMultipleSessions() }),
             ("Startup ignores children and invalid files", { try StartupSessionCountTests().ignoresChildrenAndInvalidFiles() }),
@@ -134,7 +136,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Delegation cards preserve tasks and failures", { try DelegationTests().delegationPresentationPreservesTaskAndFailure() }),
             ("File drops copy bytes and preserve atomic mixed imports", { try await FileAttachmentTests().copiesFilesAndKeepsMixedImportsAtomic() }),
             ("Queued files retain their operation, restore cards and never replay", { try await FileAttachmentTests().queuesFilesWithoutReplayingOrChangingOperation() }),
-            ("Indicator gray bases stay visible under zero, partial and full blue pulses", { try WorkingIndicatorTests().grayBasesRemainVisibleUnderBluePulses() }),
+            ("Indicator gray bases stay visible under zero, partial and full accent pulses", { try WorkingIndicatorTests().grayBasesRemainVisibleUnderAccentPulses() }),
             ("Indicator layers animate, freeze and stop when hidden or detached", { try WorkingIndicatorTests().layerAnimationLifecycle() }),
             ("System-accent user bubbles support text and images in light and dark mode", { try await TranscriptTests().userBubblesSupportTextAndImagesInBothAppearances() }),
             ("Compaction and all tool headers keep stable activity geometry", { try TranscriptTests().activityIndicatorsKeepRowGeometry() }),

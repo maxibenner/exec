@@ -22,8 +22,10 @@ struct TranscriptView: View {
     let messages: [Message]
     let state: TranscriptState
     var bottomInset: CGFloat = 0
+    var showsThinkingIndicator = false
     var body: some View {
-        VirtualTranscript(messages: messages, state: state, jumpRequest: state.jumpRequest, bottomInset: bottomInset)
+        VirtualTranscript(messages: messages, state: state, jumpRequest: state.jumpRequest, bottomInset: bottomInset,
+                          showsThinkingIndicator: showsThinkingIndicator)
             .ignoresSafeArea(.container, edges: .top)
             .focusedSceneValue(\.transcriptNavigation, messages.contains { $0.role == .user } ? state : nil)
     }
@@ -34,9 +36,11 @@ private struct VirtualTranscript: NSViewRepresentable {
     let state: TranscriptState
     let jumpRequest: Int
     let bottomInset: CGFloat
+    let showsThinkingIndicator: Bool
     func makeNSView(context: Context) -> TranscriptScrollView { TranscriptScrollView(state: state) }
     func updateNSView(_ view: TranscriptScrollView, context: Context) {
-        view.update(messages: messages, jumpRequest: jumpRequest, bottomInset: bottomInset)
+        view.update(messages: messages, jumpRequest: jumpRequest, bottomInset: bottomInset,
+                    showsThinkingIndicator: showsThinkingIndicator)
     }
     static func dismantleNSView(_ view: TranscriptScrollView, coordinator: ()) { view.detach() }
 }
@@ -60,6 +64,10 @@ private struct VirtualTranscript: NSViewRepresentable {
         }
     }
     private let content = DocumentView()
+    private var thinkingFooter: NSHostingView<WorkingIndicator>?
+    private var thinkingFooterHeight: CGFloat { thinkingFooter == nil ? 0 : 40 }
+    var thinkingIndicatorFrame: CGRect? { thinkingFooter?.frame }
+
     private var trackingReaderScroll = false
     private var lastScrollY: CGFloat = 0
     private var wheelDirection: CGFloat = 0
@@ -136,7 +144,18 @@ private struct VirtualTranscript: NSViewRepresentable {
         if scrollerInsets.top != topInset { scrollerInsets.top = topInset }
     }
 
-    func update(messages: [Message], jumpRequest: Int, bottomInset: CGFloat = 0) {
+    func update(messages: [Message], jumpRequest: Int, bottomInset: CGFloat = 0,
+                showsThinkingIndicator: Bool = false) {
+        if showsThinkingIndicator != (thinkingFooter != nil) {
+            if showsThinkingIndicator {
+                let footer = NSHostingView(rootView: WorkingIndicator())
+                thinkingFooter = footer
+                content.addSubview(footer)
+            } else {
+                thinkingFooter?.removeFromSuperview()
+                thinkingFooter = nil
+            }
+        }
         self.bottomInset = max(0, bottomInset)
         // Empty inference placeholders have no visible content, but mounting them
         // adds row spacing and moves the bottom anchor between every tool result.
@@ -261,6 +280,8 @@ private struct VirtualTranscript: NSViewRepresentable {
         for row in rows.values { row.didInvalidateSize = nil; row.removeFromSuperview() }
         rows.removeAll()
         reuse.removeAll()
+        thinkingFooter?.removeFromSuperview()
+        thinkingFooter = nil
     }
     @objc private func scrolled() {
         let previousY = lastScrollY
@@ -643,8 +664,13 @@ private struct VirtualTranscript: NSViewRepresentable {
         // space, then extend naturally below the fold without moving the reader.
         let size = CGSize(width: contentSize.width,
                           height: max(contentSize.height + turnTop,
-                                      state.layout.totalHeight + bottomInset + topInset))
+                                      state.layout.totalHeight + thinkingFooterHeight + bottomInset + topInset))
         if content.frame.size != size { content.setFrameSize(size) }
+        // The layout already includes trailing message spacing. Place the indicator
+        // there, reserving its own height before the composer clearance.
+        thinkingFooter?.frame = CGRect(x: (contentSize.width - state.layout.width) / 2,
+                                      y: state.layout.totalHeight - 8 + topInset,
+                                      width: 28, height: 16)
     }
     private func restore(_ anchor: TranscriptLayout.Anchor?, pinBottom: Bool) {
         let maximum = max(0, content.bounds.height - contentView.bounds.height)
