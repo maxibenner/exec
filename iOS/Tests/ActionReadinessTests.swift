@@ -5,7 +5,7 @@ import ExecRemote
 
 /// Captures command bodies and independently gates acknowledgements and reads.
 /// Every matching request stays held until release, including concurrent reads.
-private actor ActionReadinessTransport: RemoteTransport {
+actor ActionReadinessTransport: RemoteTransport {
     struct Request: Sendable {
         let method: String
         let path: String
@@ -14,6 +14,8 @@ private actor ActionReadinessTransport: RemoteTransport {
     }
 
     private(set) var isConnected = false
+    private(set) var connectionAttempts = 0
+    private(set) var disconnections = 0
     private(set) var requests: [Request] = []
     var commands: [Request] { requests.filter { $0.method != "GET" } }
     private var failConnections = false
@@ -62,11 +64,16 @@ private actor ActionReadinessTransport: RemoteTransport {
         waiters[key]?.removeValue(forKey: id)?.resume(throwing: CancellationError())
     }
     func connect(_ host: PairedHost) async throws {
+        connectionAttempts += 1
         try await waitIfHeld("CONNECT ")
         if failConnections { throw RemoteFailure("Host unavailable.") }
         isConnected = true
     }
-    func disconnect() { isConnected = false }
+    func disconnect() async {
+        disconnections += 1
+        try? await waitIfHeld("DISCONNECT ")
+        isConnected = false
+    }
     func request(_ method: String, _ path: String, body: RemoteJSON?) async throws -> RemoteJSON {
         guard isConnected else { throw RemoteFailure("Disconnected.") }
         requests.append(Request(method: method, path: path, body: body))
@@ -99,7 +106,7 @@ private actor ActionReadinessTransport: RemoteTransport {
 }
 
 /// The buffer deadline is independent of the store's observation/backoff sleep.
-private actor ActionBufferClock {
+actor ActionBufferClock {
     private var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
     var waiting: Bool { !waiters.isEmpty }
     func sleep() async throws {

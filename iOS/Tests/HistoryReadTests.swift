@@ -61,6 +61,33 @@ import ExecRemote
         XCTAssertEqual(completed, ["GET " + syncPath])
     }
 
+    func testCancellingOneWaiterDoesNotBlockTeardownOrCancelTheSharedRead() async throws {
+        let transport = FakeTransport(), store = try makeStore(transport)
+        await transport.setConversation(snapshot("Baseline"))
+        await store.connect()
+        await transport.holdNextRequest("GET", syncPath, captureResponse: true)
+        let opening = store.open("session")
+        try await until { await transport.waitingForRequest }
+        var started = false, finished = false
+        let refresh = Task {
+            started = true
+            // Full refresh intentionally returns quietly on cancellation. It
+            // must still detach before the held common history request finishes.
+            try? await store.refresh()
+            finished = true
+        }
+        try await until { started }
+        refresh.cancel()
+        try await until { finished }
+        XCTAssertTrue(store.loadingConversations.contains("session"))
+        XCTAssertEqual(store.snapshot, .null)
+        let reads = await historyRequests(transport)
+        XCTAssertEqual(reads, ["GET " + syncPath])
+        await transport.releaseRequest(); await opening.value; await refresh.value
+        XCTAssertEqual(store.snapshot["title"].string, "Baseline")
+        XCTAssertFalse(store.loadingConversations.contains("session"))
+    }
+
     func testNoticePublishesJoinedBaselineBeforeHeldIncrementalFollowup() async throws {
         let transport = FakeTransport(), store = try makeStore(transport)
         await transport.enableChanges()

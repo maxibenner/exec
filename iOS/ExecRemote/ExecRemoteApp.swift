@@ -3,6 +3,18 @@ import UIKit
 import ExecRemote
 import ExecTranscript
 
+/// UIKit is confined to this adapter; store tests inject grants and expiration.
+@MainActor private struct ApplicationSendBackgroundTime: SendBackgroundTime {
+    func begin(expiration: @escaping @MainActor @Sendable () -> Void) -> (() -> Void)? {
+        let application = UIApplication.shared
+        let identifier = application.beginBackgroundTask(withName: "Send message") {
+            MainActor.assumeIsolated { expiration() }
+        }
+        guard identifier != .invalid else { return nil }
+        return { application.endBackgroundTask(identifier) }
+    }
+}
+
 enum ToolDisplayPreferences {
     static let descriptiveShellTitlesKey = "descriptiveShellTitles"
 }
@@ -18,16 +30,20 @@ enum ToolDisplayPreferences {
         #if DEBUG && targetEnvironment(simulator)
         if RemoteUIFixture.enabled { return RemoteUIFixture.makeStore() }
         #endif
-        return RemoteStore()
+        return RemoteStore(backgroundTime: ApplicationSendBackgroundTime())
     }()
     @Environment(\.scenePhase) private var phase
     var body: some Scene {
         WindowGroup {
             RootView(store: store)
                 .defaultAppStorage(preferences)
-                .task(id: phase) {
-                    if phase == .active { await store.observe() }
-                    else { await store.suspend() }
+                .onChange(of: phase, initial: true) { _, phase in
+                    switch phase {
+                    case .active: store.sceneChanged(.active)
+                    case .inactive: store.sceneChanged(.inactive)
+                    case .background: store.sceneChanged(.background)
+                    @unknown default: break
+                    }
                 }
         }
     }
@@ -462,7 +478,8 @@ private struct RemoteChatComposer: View {
     private var action: some View {
         Button {
             let stopping = stopping
-            Task { if stopping { await store.stop() } else { await store.send() } }
+            if stopping { Task { await store.stop() } }
+            else { store.beginSend() }
         } label: {
             Image(systemName: stopping ? "stop.fill" : "arrow.up")
                 .font(.body.weight(.semibold))
