@@ -114,6 +114,7 @@ extension RelayClient: RemoteTransport {}
     @ObservationIgnored private var transcriptViewStates: [String: TranscriptViewState] = [:]
     private var syncStates: [String: RemoteTranscriptSync] = [:]
     private var readTickets: [String: Int] = [:]
+    private(set) var loadingConversations: Set<String> = []
     private var loadingEarlier: Set<String> = []
     var hasEarlierMessages: Bool { selected.flatMap { syncStates[$0]?.hasEarlier } ?? false }
     private var hostGeneration = 0
@@ -312,7 +313,7 @@ extension RelayClient: RemoteTransport {}
         transcriptViewStates.removeAll()
         settings = RemoteSettingsDraft()
         recentConversations = RecentConversationCache()
-        syncStates = [:]; readTickets = [:]; loadingEarlier = []
+        syncStates = [:]; readTickets = [:]; loadingEarlier = []; loadingConversations = []
         conversationConnections = [:]; acceptedOperations = [:]; cancellingOperations = [:]; uncertainSends = []
         models = []; library = .null; hasLoadedLibrary = false
         optimisticMessages = [:]
@@ -369,6 +370,12 @@ extension RelayClient: RemoteTransport {}
         let generation = hostGeneration, readGeneration = snapshotGeneration, connection = connectionGeneration
         readTickets[id, default: 0] += 1
         let ticket = readTickets[id]
+        loadingConversations.insert(id)
+        defer {
+            if generation == hostGeneration, ticket == readTickets[id] {
+                loadingConversations.remove(id)
+            }
+        }
         let path = "/v1/conversations/\(id)/sync"
         let value: RemoteJSON
         do {

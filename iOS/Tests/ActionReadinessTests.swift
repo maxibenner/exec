@@ -171,6 +171,26 @@ private actor ActionBufferClock {
         throw RemoteFailure("Test synchronization failed.")
     }
 
+    func testProviderFailedTurnAllowsAnExplicitNewTurn() async throws {
+        let transport = ActionReadinessTransport(), store = try makeStore(transport)
+        let failure = "Provider connection failed; the request may have been processed. No retry was made."
+        let failed: RemoteJSON = .object([
+            "id": .string("session"), "messages": .array([]),
+            "operation": .object(["id": .string("failed-operation"), "state": .string("failed"),
+                                  "error": .string(failure)])
+        ])
+        await ready(store, transport, snapshot: failed)
+        let initialCommands = await transport.commands
+        XCTAssertTrue(initialCommands.isEmpty, "A failed provider operation must not be replayed automatically")
+        store.drafts["session"] = "Continue this conversation"
+        XCTAssertTrue(store.canSend)
+        XCTAssertFalse(store.canStop)
+        await store.send()
+        let commands = await transport.commands
+        XCTAssertEqual(commands.map(\.key), ["POST /v1/conversations/session/turns"],
+                       "Explicit continuation must start a new turn, not steer the failed operation")
+    }
+
     func testAuthenticatedHandshakeMakesConnectionReadyBeforeInitialReadsFinish() async throws {
         let transport = ActionReadinessTransport(), store = try makeStore(transport)
         XCTAssertFalse(store.hasLoadedLibrary)

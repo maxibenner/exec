@@ -83,7 +83,9 @@ import ExecRemote
         XCTAssertEqual(store.snapshot, .null)
         XCTAssertEqual(presentation.title, "Already on the list", "No read or observation callback is needed for the first title")
         try await waitForRead(transport)
+        XCTAssertTrue(store.loadingConversations.contains("session"))
         await transport.releaseRequest(); await opening.value
+        XCTAssertFalse(store.loadingConversations.contains("session"))
         presentation.update(store.displaySnapshot)
         XCTAssertEqual(presentation.title, "Authoritative snapshot title")
 

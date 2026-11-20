@@ -299,8 +299,13 @@ import UIKit
 
         app.buttons["session-fixture-2"].tap()
         XCTAssertTrue(app.navigationBars["Session 2"].waitForExistence(timeout: 2))
+        let spinner = app.activityIndicators["conversation-loading-spinner"]
+        XCTAssertTrue(spinner.waitForExistence(timeout: 3))
+        XCTAssertEqual(spinner.frame.midX, app.frame.midX, accuracy: 2)
+        XCTAssertEqual(spinner.frame.midY, app.frame.midY, accuracy: 40)
         XCTAssertTrue(app.navigationBars["Loaded Session 2"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.navigationBars["Loaded Session 1"].exists)
+        XCTAssertFalse(spinner.exists)
         app.navigationBars.buttons.firstMatch.tap()
         XCTAssertTrue(app.navigationBars["All Sessions"].waitForExistence(timeout: 5))
 
@@ -308,6 +313,7 @@ import UIKit
             app.buttons["session-fixture-\(index)"].tap()
             XCTAssertTrue(app.navigationBars["Loaded Session \(index)"].waitForExistence(timeout: 2),
                           "A cached matching snapshot must not revert to the differing catalog title.")
+            XCTAssertFalse(spinner.exists, "Cached history must not show a loading spinner.")
             app.navigationBars.buttons.firstMatch.tap()
             XCTAssertTrue(app.navigationBars["All Sessions"].waitForExistence(timeout: 5))
         }

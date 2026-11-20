@@ -245,7 +245,8 @@ private struct SessionNotice: View {
                 }
                 .padding(16)
                 .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 16))
+                .foregroundStyle(.red)
                 // Include padding and the empty column below the icon in a
                 // multiline notice's drag target, not just its rendered text.
                 .contentShape(Rectangle())
@@ -321,6 +322,7 @@ struct ConversationScreen: View {
     @Bindable var store: RemoteStore
     let conversationID: String
     @AppStorage(ToolDisplayPreferences.descriptiveShellTitlesKey) private var descriptiveShellTitles = false
+    @State private var showsLoadingSpinner = false
     @State private var composerHeight: CGFloat = 68
     @State private var presentation: ConversationPresentation
 
@@ -340,6 +342,8 @@ struct ConversationScreen: View {
     var body: some View {
         let current = currentPresentation
         let queued = store.pendingMessage.flatMap { $0.conversationID == conversationID ? $0.transcriptMessage : nil } ?? .null
+        let isLoading = current.snapshot == .null && store.selected == conversationID
+            && store.loadingConversations.contains(conversationID)
         ZStack {
             NativeTranscript(conversationID: conversationID, snapshot: current.snapshot,
                              showsThinkingIndicator: store.thinking.visible.contains(conversationID),
@@ -352,8 +356,22 @@ struct ConversationScreen: View {
                 // Replace only the empty UIKit transcript, not the composer's
                 // focus-owning overlay, when a cold session receives history.
                 .id(current.snapshot == .null && queued == .null)
+            if isLoading && showsLoadingSpinner {
+                ProgressView()
+                    .tint(.secondary)
+                    .accessibilityLabel("Loading conversation")
+                    .accessibilityIdentifier("conversation-loading-spinner")
+                    .allowsHitTesting(false)
+            }
         }
         .ignoresSafeArea(.container, edges: [.top, .bottom])
+        .task(id: isLoading) {
+            showsLoadingSpinner = false
+            guard isLoading else { return }
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            guard !Task.isCancelled else { return }
+            showsLoadingSpinner = true
+        }
         .navigationTitle(current.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.automatic, for: .navigationBar)
@@ -368,7 +386,9 @@ struct ConversationScreen: View {
             VStack(spacing: 10) {
                 if let failure = current.snapshot["operation"]["error"].string ?? current.snapshot["storageError"].string {
                     Text(failure).font(.caption).foregroundStyle(.red).textSelection(.enabled)
-                        .padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .padding(10)
+                        .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 12))
                 }
                 if current.snapshot["approval"] != .null {
                     let target = RemoteStore.ApprovalTarget(snapshot: current.snapshot)
