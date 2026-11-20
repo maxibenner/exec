@@ -11,6 +11,7 @@ import ExecRemote
         let started: Date
     }
     private static var turns: [String: Turn] = [:]
+    private static var failedEarlierRequests: Set<String> = []
 
     static func request(_ method: String, _ path: String, body: RemoteJSON?) async throws -> RemoteJSON? {
         guard enabled, path.hasPrefix("/v1/conversations/") else { return nil }
@@ -35,12 +36,18 @@ import ExecRemote
         let end: Int
         let reset: Bool
         if let before, let index = messages.firstIndex(where: { $0["id"].string == before }) {
-            if ProcessInfo.processInfo.arguments.contains("--transcript-paging") { try await Task.sleep(for: .seconds(4)) }
-            start = max(0, index - 8); end = index; reset = false
+            if ProcessInfo.processInfo.arguments.contains("--transcript-paging") {
+                try await Task.sleep(for: .seconds(4))
+            }
+            if ProcessInfo.processInfo.arguments.contains("--transcript-paging-fail-once"),
+               failedEarlierRequests.insert(id).inserted {
+                throw URLError(.networkConnectionLost)
+            }
+            start = max(0, index - 32); end = index; reset = false
         } else if let after, let index = messages.firstIndex(where: { $0["id"].string == after }) {
             start = index; end = messages.count; reset = false
         } else {
-            start = tools ? 0 : max(0, messages.count - 12); end = messages.count; reset = true
+            start = tools ? 0 : max(0, messages.count - 32); end = messages.count; reset = true
         }
         let duration: TimeInterval = ProcessInfo.processInfo.arguments.contains("--transcript-follow") ? 30 : 20
         let active = tools || turns[id].map { Date().timeIntervalSince($0.started) < duration } == true
@@ -55,7 +62,8 @@ import ExecRemote
                         "reset": .bool(reset), "prefix": messages.isEmpty ? .null : .string(String(repeating: "a", count: 64))])
     }
     private static func scrollMessages(_ id: String) -> [RemoteJSON] {
-        var messages: [RemoteJSON] = (1...24).map { index in
+        let count = ProcessInfo.processInfo.arguments.contains("--transcript-paging") ? 64 : 24
+        var messages: [RemoteJSON] = (1...count).map { index in
             .object(["id": .string("history-\(index)"), "role": .string(index.isMultiple(of: 2) ? "assistant" : "user"),
                      "text": .string("\(id) reading marker \(index)\nSynthetic history for paging and manual reading."), "status": .string("completed")])
         }

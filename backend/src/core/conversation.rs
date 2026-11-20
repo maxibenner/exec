@@ -321,7 +321,7 @@ impl Conversation {
     }
     /// Read and validate a cursor under one lock, cloning only the requested page.
     pub fn sync(&self, cursor: SyncCursor<'_>) -> Result<ConversationSync> {
-        use super::sync::PAGE_SIZE;
+        use super::sync::{AFTER_LOOKUP_SIZE, PAGE_SIZE};
         let mut state = self.state.lock().unwrap();
         let State {
             record, prefixes, ..
@@ -347,7 +347,7 @@ impl Conversation {
                     .iter()
                     .enumerate()
                     .rev()
-                    .take(PAGE_SIZE)
+                    .take(AFTER_LOOKUP_SIZE)
                     .find_map(|(i, m)| (m.id() == anchor).then_some(i));
                 match index {
                     Some(index) if prefixes.proof(messages, index) == prefix => {
@@ -2288,7 +2288,8 @@ mod tests {
             });
         }
         let first = c.sync(SyncCursor::Latest).unwrap();
-        assert_eq!(first.offset, 136);
+        assert_eq!(first.offset, 168);
+        assert_eq!(first.snapshot.messages.len(), 32);
         let anchor = first.snapshot.messages.last().unwrap().id().to_owned();
         let proof = first.prefix.unwrap();
         let previous = changes.borrow_and_update().clone();
@@ -2336,6 +2337,8 @@ mod tests {
             })
             .unwrap();
         assert!(reset.reset);
+        assert_eq!(reset.offset, 168);
+        assert_eq!(reset.snapshot.messages.len(), 32);
         let record = c.record();
         assert_eq!(
             reset.prefix.unwrap(),
@@ -2353,6 +2356,67 @@ mod tests {
         let empty = c.sync(SyncCursor::Latest).unwrap();
         assert_eq!(empty.total, 0);
         assert!(empty.prefix.is_none());
+    }
+
+    #[test]
+    fn sync_late_growth_preserves_incremental_catch_up_until_lookup_boundary() {
+        use sha2::{Digest, Sha256};
+        for growth in [0, 31, 32, 63, 64] {
+            let c = Conversation::new(
+                ConversationOptions::new(Arc::new(NoInference), "fake", "/test"),
+                None,
+            )
+            .unwrap();
+            {
+                let mut s = c.state();
+                s.record.messages = (0..200)
+                    .map(|n| Message::User {
+                        id: new_id(),
+                        text: format!("message {n}"),
+                        images: vec![],
+                        files: vec![],
+                    })
+                    .collect();
+            }
+            let initial = c.sync(SyncCursor::Latest).unwrap();
+            let anchor = initial.snapshot.messages.last().unwrap().id().to_owned();
+            let proof = initial.prefix.unwrap();
+            {
+                let mut s = c.state();
+                s.record.messages.extend((0..growth).map(|n| Message::User {
+                    id: new_id(),
+                    text: format!("late message {n}"),
+                    images: vec![],
+                    files: vec![],
+                }));
+            }
+            let page = c
+                .sync(SyncCursor::After {
+                    anchor: &anchor,
+                    prefix: &proof,
+                })
+                .unwrap();
+            let total = 200 + growth;
+            let reset = growth >= 64;
+            let offset = if reset { total - 32 } else { 199 };
+            assert_eq!(page.reset, reset, "growth {growth}");
+            assert_eq!(page.total, total);
+            assert_eq!(page.offset, offset);
+            assert_eq!(page.snapshot.messages.len(), total - offset);
+            let record = c.record();
+            assert_eq!(
+                page.snapshot.messages,
+                record.messages[offset..],
+                "catch-up must include the anchor and every appended message"
+            );
+            assert_eq!(
+                page.prefix.unwrap(),
+                format!(
+                    "{:x}",
+                    Sha256::digest(serde_json::to_vec(&record.messages[..total - 1]).unwrap())
+                )
+            );
+        }
     }
 
     #[test]

@@ -580,6 +580,8 @@ private actor ObservationClock {
         await transport.setConversation(snapshot(messages: messages)); await transport.emit(notice("2"))
         try await until { await transport.waitingForRequest }
         await store.loadEarlier()
+        XCTAssertTrue(store.hasEarlierMessages)
+        await store.loadEarlier()
         XCTAssertFalse(store.hasEarlierMessages)
         await transport.releaseRequest()
         try await until { store.lastChangeNotification == self.notice("2") }

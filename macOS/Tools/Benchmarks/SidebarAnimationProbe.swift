@@ -49,7 +49,7 @@ private actor SidebarProbeTransport: AgentTransport {
     }
 
     // Generate history off the main actor. Only the final streaming message changes;
-    // immutable prefixes support real 64-message backfill and overlapping suffix reads.
+    // immutable prefixes support real 32-message backfill and overlapping suffix reads.
     func configurePolling(messages count: Int, roots: [UUID], children: [AgentJSON], append: Bool) throws {
         appendOnTitle = append
         pollingRoots = Array(roots.prefix(2))
@@ -93,7 +93,7 @@ private actor SidebarProbeTransport: AgentTransport {
             let fields = query.split(separator: "&").map(String.init)
             if fields.count == 1, fields[0].hasPrefix("before="),
                let index = messages.firstIndex(where: { $0["id"].string == String(fields[0].dropFirst(7)) }), index > 0 {
-                offset = max(0, index - 64); end = index; reset = false; kind = "sync-before"
+                offset = max(0, index - 32); end = index; reset = false; kind = "sync-before"
             } else if fields.count == 2, fields[0].hasPrefix("after="), fields[1] == "prefix=\(prefixes[id] ?? "")",
                       let index = messages.firstIndex(where: { $0["id"].string == String(fields[0].dropFirst(6)) }), index == total - 1 {
                 offset = index; end = total; reset = false; kind = "sync-after"
@@ -119,7 +119,7 @@ private actor SidebarProbeTransport: AgentTransport {
                 snapshots[id] = snapshot
             } else { throw reject("GET", "invalid synthetic sync cursor") }
         } else {
-            offset = max(0, total - 64); end = total; reset = true; kind = "sync-initial"
+            offset = max(0, total - 32); end = total; reset = true; kind = "sync-initial"
         }
         let responseEnd = kind == "sync-after" ? messages.count : end
         return (.object(["snapshot": snapshot.probeSetting("messages", .array(Array(messages[offset..<responseEnd]))),

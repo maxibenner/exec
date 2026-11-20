@@ -247,22 +247,46 @@ import XCTest
         capture("stream-follow-after-explicit-bottom-scroll", app: app)
     }
 
-    func testPagingPreservesTheVisibleMessageAndPixelOffset() {
+    private func reachHistoryTop(_ app: XCUIApplication) {
+        // Native scroll-to-top is programmatic: it must never request a page.
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 180, dy: 10)).tap()
+        let first = app.tables["native-transcript"].cells["transcript-message-history-33"]
+        let top = app.navigationBars.firstMatch.frame.maxY
+        wait(NSPredicate { _, _ in first.exists && abs(first.frame.minY - top) < 5 }, on: first)
+    }
+
+    private func pullEarlier(_ table: XCUIElement) {
+        table.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+            .press(forDuration: 0.1, thenDragTo: table.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8)),
+                   withVelocity: .slow, thenHoldForDuration: 0.1)
+    }
+
+    func testPagingRequiresPullAndPreservesTheVisibleMessageAndPixelOffset() {
         let app = launch(["--transcript-paging"])
         let table = app.tables["native-transcript"]
-        let anchor = table.cells["transcript-message-history-13"]
-        let navigationBottom = app.navigationBars.firstMatch.frame.maxY
-        for _ in 0..<6 {
-            if anchor.exists, anchor.frame.minY > navigationBottom - 100, anchor.frame.minY < navigationBottom + 100 { break }
-            table.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
-                .press(forDuration: 0.1, thenDragTo: table.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7)),
-                       withVelocity: .slow, thenHoldForDuration: 0.4)
-        }
-        XCTAssertTrue(anchor.exists)
+        reachHistoryTop(app)
+        let anchor = table.cells["transcript-message-history-33"]
         let y = anchor.frame.minY
-        XCTAssertLessThan(y, navigationBottom + 120, "The paging gesture must reach the loaded history boundary.")
-        XCTAssertTrue(table.cells["transcript-message-history-12"].waitForExistence(timeout: 10))
+        let earlier = table.cells["transcript-message-history-32"]
+        XCTAssertFalse(earlier.waitForExistence(timeout: 5), "Reaching absolute top must not load older history")
+        pullEarlier(table)
+        // XCTest waits for the native pull animation to settle before returning
+        // from the gesture. Native tests assert the active spinner directly.
+        XCTAssertTrue(earlier.waitForExistence(timeout: 10))
+        wait(NSPredicate { _, _ in abs(anchor.frame.minY - y) < 3 }, on: anchor)
         XCTAssertEqual(anchor.frame.minY, y, accuracy: 3)
-        capture("paging-preserved-reading-anchor", app: app)
+        capture("pull-paging-preserved-reading-anchor", app: app)
+    }
+
+    func testFailedHistoryPullCanBeRetriedByAnotherPull() {
+        let app = launch(["--transcript-paging", "--transcript-paging-fail-once"])
+        let table = app.tables["native-transcript"]
+        reachHistoryTop(app)
+        pullEarlier(table)
+        let earlier = table.cells["transcript-message-history-32"]
+        XCTAssertFalse(earlier.waitForExistence(timeout: 6), "The first fixture page intentionally fails")
+        // No automatic retry on failure; a separate user gesture retries it.
+        pullEarlier(table)
+        XCTAssertTrue(earlier.waitForExistence(timeout: 10))
     }
 }

@@ -295,21 +295,64 @@ async fn sync_loads_older_pages_without_resending_the_entire_history() {
         f.client.submit(&c.id, "next").await.unwrap();
         terminal(&f.client, &c.id).await;
     }
+    let full = f.client.get(&c.id).await.unwrap();
     let latest = f.client.call("GET", &path, None).await.unwrap();
-    assert_eq!(latest["offset"], 2);
+    assert_eq!(latest["offset"], 34);
     assert_eq!(latest["total"], 66);
-    assert_eq!(latest["snapshot"]["messages"].as_array().unwrap().len(), 64);
-    let anchor = latest["snapshot"]["messages"][0]["id"].as_str().unwrap();
-    let older = f
-        .client
-        .call("GET", &format!("{path}?before={anchor}"), None)
-        .await
-        .unwrap();
-    assert_eq!(older["offset"], 0);
-    assert_eq!(older["snapshot"]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(latest["reset"], true);
+    assert_eq!(latest["snapshot"]["messages"].as_array().unwrap().len(), 32);
     assert_eq!(
-        older["snapshot"]["messages"][1]["id"],
-        f.client.get(&c.id).await.unwrap().messages[1].id()
+        latest["snapshot"]["messages"][0]["id"],
+        full.messages[34].id()
+    );
+    let mut anchor = latest["snapshot"]["messages"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (offset, count) in [(2, 32), (0, 2), (0, 0)] {
+        let older = f
+            .client
+            .call("GET", &format!("{path}?before={anchor}"), None)
+            .await
+            .unwrap();
+        assert_eq!(older["offset"], offset);
+        assert_eq!(older["total"], 66);
+        assert_eq!(older["reset"], false);
+        let messages = older["snapshot"]["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), count);
+        for (message, expected) in messages.iter().zip(&full.messages[offset..offset + count]) {
+            assert_eq!(message["id"], expected.id());
+        }
+        if count > 0 {
+            anchor = messages[0]["id"].as_str().unwrap().to_owned();
+        }
+    }
+    let tail = full.messages.last().unwrap().id();
+    let missing = new_id();
+    for query in [
+        format!("after={tail}&prefix={}", "0".repeat(64)),
+        format!(
+            "after={anchor}&prefix={}",
+            latest["prefix"].as_str().unwrap()
+        ),
+        format!(
+            "after={missing}&prefix={}",
+            latest["prefix"].as_str().unwrap()
+        ),
+    ] {
+        let reset = f
+            .client
+            .call("GET", &format!("{path}?{query}"), None)
+            .await
+            .unwrap();
+        assert_eq!(reset, latest);
+    }
+    assert_eq!(
+        f.client
+            .call("GET", &format!("{path}?before={missing}"), None)
+            .await
+            .unwrap_err(),
+        Error::Api(409)
     );
     f.service.close().await.unwrap();
 }

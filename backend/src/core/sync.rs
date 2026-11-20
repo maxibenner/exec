@@ -16,7 +16,10 @@ pub struct ConversationSync {
     pub reset: bool,
     pub prefix: Option<String>,
 }
-pub(super) const PAGE_SIZE: usize = 64;
+pub(super) const PAGE_SIZE: usize = 32;
+// Keep the catch-up window independent of backfill size: valid incremental
+// responses include the anchor and may intentionally exceed one page.
+pub(super) const AFTER_LOOKUP_SIZE: usize = 64;
 
 struct Prefix {
     // SHA state after '[' and the first n comma-separated messages, before ']'.

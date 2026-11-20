@@ -42,10 +42,12 @@ do not cause legacy full-snapshot events to be constructed.
 cloning messages or approvals; `/v1/conversations` keeps its previous JSON shape,
 ordering, and unreadable-session entries. The existing `list()` API is unchanged.
 
-`AgentManager::sync()` / `Conversation::sync()` build at most 64 messages directly
-under the state lock, preserving existing offsets, overlap/reset behavior, and
-SHA-256-of-JSON-array prefix strings. Incremental SHA states/proofs are cached per
-message boundary; a request's validation and outgoing proof share the cache.
+`AgentManager::sync()` / `Conversation::sync()` build latest, older and reset pages
+of at most 32 messages directly under the state lock, preserving existing offsets,
+overlap/reset behavior, and SHA-256-of-JSON-array prefix strings. Incremental `after`
+responses include their overlap anchor and every appended message, so may exceed
+32 messages; the separate 64-ID anchor lookup window is unchanged. Incremental SHA
+states/proofs are cached per message boundary; a request's validation and outgoing proof share the cache.
 Tail edits do not invalidate earlier prefixes; edits to historical messages and
 record replacement invalidate the affected suffix before it becomes readable.
 Warm unchanged/tail polling performs no history serialization/hashing and searches

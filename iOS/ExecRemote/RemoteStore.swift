@@ -114,8 +114,23 @@ extension RelayClient: RemoteTransport {}
     @ObservationIgnored private var transcriptViewStates: [String: TranscriptViewState] = [:]
     private var syncStates: [String: RemoteTranscriptSync] = [:]
     private var readTickets: [String: Int] = [:]
+    private struct ConversationReadContext: Equatable {
+        let host: Int
+        let connection: Int
+        let snapshot: Int
+    }
+    private struct ConversationRead {
+        let context: ConversationReadContext
+        let ticket: Int
+        let task: Task<Bool, Error>
+    }
+    @ObservationIgnored private var conversationReads: [String: ConversationRead] = [:]
+    private var conversationReadContext: ConversationReadContext {
+        .init(host: hostGeneration, connection: connectionGeneration, snapshot: snapshotGeneration)
+    }
     private(set) var loadingConversations: Set<String> = []
-    private var loadingEarlier: Set<String> = []
+    private var loadingEarlier: [String: UUID] = [:]
+    var isLoadingEarlierMessages: Bool { selected.map { loadingEarlier[$0] != nil } ?? false }
     var hasEarlierMessages: Bool { selected.flatMap { syncStates[$0]?.hasEarlier } ?? false }
     private var hostGeneration = 0
     private var connectionGeneration = 0
@@ -234,6 +249,7 @@ extension RelayClient: RemoteTransport {}
     }
     func connect(resetBackoff: Bool = true) async {
         guard var host, canReconnect, !Task.isCancelled else { return }
+        cancelConversationReads()
         connectionGeneration += 1
         snapshotGeneration += 1
         let generation = connectionGeneration
@@ -275,6 +291,7 @@ extension RelayClient: RemoteTransport {}
         await disconnectConnection()
     }
     private func disconnectConnection() async {
+        cancelConversationReads()
         thinking.reset()
         lastChangeNotification = nil
         connectionGeneration += 1
@@ -305,7 +322,14 @@ extension RelayClient: RemoteTransport {}
             throw error
         }
     }
+    private func cancelConversationReads() {
+        for read in conversationReads.values { read.task.cancel() }
+        conversationReads.removeAll()
+        loadingConversations.removeAll()
+        loadingEarlier.removeAll()
+    }
     private func clearConversationState() {
+        cancelConversationReads()
         cancelPendingMessage()
         hasConnectionFailure = false
         hostGeneration += 1
@@ -313,7 +337,7 @@ extension RelayClient: RemoteTransport {}
         transcriptViewStates.removeAll()
         settings = RemoteSettingsDraft()
         recentConversations = RecentConversationCache()
-        syncStates = [:]; readTickets = [:]; loadingEarlier = []; loadingConversations = []
+        syncStates = [:]; readTickets = [:]; loadingEarlier = [:]; loadingConversations = []
         conversationConnections = [:]; acceptedOperations = [:]; cancellingOperations = [:]; uncertainSends = []
         models = []; library = .null; hasLoadedLibrary = false
         optimisticMessages = [:]
@@ -366,10 +390,34 @@ extension RelayClient: RemoteTransport {}
         if let id = selected, !ids.contains(id) { selected = nil; snapshot = .null }
         return true
     }
-    @discardableResult private func refreshConversation(_ id: String) async throws -> Bool {
-        let generation = hostGeneration, readGeneration = snapshotGeneration, connection = connectionGeneration
+    /// Equivalent readers share one store-owned request. A notice received after
+    /// a read started may require a later read, but never invalidates the usable
+    /// baseline merely by queueing that follow-up.
+    @discardableResult private func refreshConversation(_ id: String, newerThan minimumTicket: Int? = nil) async throws -> Bool {
+        let context = conversationReadContext
+        while let read = conversationReads[id], read.context == context,
+              read.ticket == readTickets[id] {
+            let applied = try await read.task.value
+            guard let minimumTicket, read.ticket <= minimumTicket else { return applied }
+            guard applied, context == conversationReadContext, !Task.isCancelled else { return false }
+            // Recheck after awaiting: another waiter may already have started
+            // the fresh incremental read that this caller needs too.
+            if conversationReads[id]?.ticket == read.ticket { conversationReads.removeValue(forKey: id) }
+        }
+        guard context == conversationReadContext, !Task.isCancelled else { return false }
         readTickets[id, default: 0] += 1
-        let ticket = readTickets[id]
+        let ticket = readTickets[id]!
+        let task = Task { try await readConversation(id, context: context, ticket: ticket) }
+        conversationReads[id] = ConversationRead(context: context, ticket: ticket, task: task)
+        defer {
+            if conversationReads[id]?.context == context, conversationReads[id]?.ticket == ticket {
+                conversationReads.removeValue(forKey: id)
+            }
+        }
+        return try await task.value
+    }
+    private func readConversation(_ id: String, context: ConversationReadContext, ticket: Int) async throws -> Bool {
+        let generation = context.host, connection = context.connection, readGeneration = context.snapshot
         loadingConversations.insert(id)
         defer {
             if generation == hostGeneration, ticket == readTickets[id] {
@@ -414,10 +462,11 @@ extension RelayClient: RemoteTransport {}
         return true
     }
     func loadEarlier() async {
-        guard connected, let id = selected, !loadingEarlier.contains(id),
+        guard connected, let id = selected, loadingEarlier[id] == nil,
               let state = syncStates[id], let path = state.earlierPath("/v1/conversations/\(id)/sync") else { return }
-        loadingEarlier.insert(id)
-        defer { loadingEarlier.remove(id) }
+        let token = UUID()
+        loadingEarlier[id] = token
+        defer { if loadingEarlier[id] == token { loadingEarlier.removeValue(forKey: id) } }
         let generation = hostGeneration, readGeneration = snapshotGeneration, connection = connectionGeneration
         let first = state.snapshot["messages"].array.first?["id"].string
         do {
@@ -531,6 +580,9 @@ extension RelayClient: RemoteTransport {}
             throw RemoteFailure("Invalid change notification.")
         }
         let previous = lastChangeNotification
+        // Only a read started after this notice can establish its revision. A
+        // pre-existing baseline is still published before incremental catch-up.
+        let minimumReadTickets = readTickets
         let host = hostGeneration, connection = connectionGeneration
         let catchUp = previous == nil || previous?.epoch != notice.epoch
         // Do not acknowledge a revision whose read was invalidated by a send,
@@ -560,7 +612,7 @@ extension RelayClient: RemoteTransport {}
                     deferredHistoryRefreshes.insert(id)
                     continue // no spinning/reads while DELETE is pending
                 }
-                if try await refreshConversation(id) {
+                if try await refreshConversation(id, newerThan: minimumReadTickets[id]) {
                     deferredHistoryRefreshes.remove(id)
                 } else { applied = false }
             }

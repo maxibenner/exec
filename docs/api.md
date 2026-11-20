@@ -308,6 +308,7 @@ The server bounds TCP connections to 64 and separately admits at most 64 non-GET
 | PATCH | `/v1/conversations/:id` | `{disabledTools:[string]}` → `200 ConversationSnapshot`, after durable idle-only replacement |
 | PUT | `/v1/conversations/:id/settings` | `{systemPrompt,autoApprove}` → `200 ConversationSnapshot`, after durable idle-only replacement |
 | GET | `/v1/conversations/:id` | `ConversationSnapshot` |
+| GET | `/v1/conversations/:id/sync` | Latest 32 entries, older `?before=messageID`, or incremental `?after=messageID&prefix=proof` → `{snapshot,offset,total,reset,prefix}` |
 | PUT | `/v1/conversations/:id/title` | `{title}` → saved idle snapshot |
 | PUT | `/v1/conversations/:id/model` | `{model}` → saved idle snapshot |
 | PUT | `/v1/conversations/:id/workspace` | `{workspace}` → saved idle snapshot, only before the first accepted turn; otherwise 409 |
@@ -319,6 +320,14 @@ The server bounds TCP connections to 64 and separately admits at most 64 non-GET
 | POST | `/v1/conversations/:id/steer` | `{operationID,text,images?,files?:[assetID]}` → `202 {operationID,messageID}` |
 | POST | `/v1/conversations/:id/cancel` | `{operationID}` → `202 {accepted:true,operationID}` |
 | POST | `/v1/conversations/:id/approvals` | `{operationID,approvalID,approved:boolean}` → `{resolved:true}` |
+
+Sync's initial, older and reset pages contain at most 32 stored transcript entries,
+including user, assistant and tool-result entries. Incremental responses include the
+overlap message and all subsequent entries, so may exceed 32; the separate 64-ID
+`after` lookup window is unchanged. Prefix proofs and offsets do not depend on page
+size. Clients must honor `reset`, preserve the overlap, and stop requesting older pages
+when `offset` is zero. The iOS client fetches older pages only on an explicit pull down
+at the top, not merely when scrolling near it.
 
 Images may be uploaded while a turn is active, then queued through `/steer` as conversation-owned image references. Steering accepts text, images, or both, with the same eight-image/16 MiB limits as a new turn. Input is incorporated at the next safe runner boundary, not retroactively added to an in-flight provider request. The operation ID remains fixed across uploads: if that operation finishes or is cancelled, a rejected steering request must not be retried as a new turn. Accepted pending images survive cancellation/restart without automatically resuming inference.
 

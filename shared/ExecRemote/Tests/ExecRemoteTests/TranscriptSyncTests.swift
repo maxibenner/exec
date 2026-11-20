@@ -27,6 +27,21 @@ final class TranscriptSyncTests: XCTestCase {
         XCTAssertTrue(complete.refreshPath("/sync").contains("?after=c&prefix="))
     }
 
+    func testThirtyTwoEntryPagesPreserveLargerIncrementalCatchup() throws {
+        let messages = (0..<129).map { message("m\($0)") }
+        let initial = try RemoteTranscriptSync.initial(page(Array(messages[64..<96]), offset: 64, total: 96, reset: true))
+        XCTAssertEqual(initial.snapshot["messages"].array.count, 32)
+        let catchup = try initial.refreshed(page(Array(messages[95..<129]), offset: 95, total: 129, reset: false))
+        XCTAssertEqual(catchup.snapshot["messages"].array.count, 65, "Incremental responses must not be truncated to page size")
+        let older = try catchup.prepending(page(Array(messages[32..<64]), offset: 32, total: 129, reset: false))
+        XCTAssertTrue(older.hasEarlier)
+        let complete = try older.prepending(page(Array(messages[0..<32]), offset: 0, total: 129, reset: false))
+        XCTAssertFalse(complete.hasEarlier)
+        XCTAssertNil(complete.earlierPath("/sync"))
+        XCTAssertEqual(complete.snapshot["messages"].array, messages)
+        XCTAssertEqual(complete.refreshPath("/sync"), "/sync?after=m128&prefix=" + proof)
+    }
+
     func testGapsFailClosedAndResetsDiscardStaleHistory() throws {
         let first = try RemoteTranscriptSync.initial(page([message("a"), message("b")], offset: 0, total: 2, reset: true))
         XCTAssertThrowsError(try first.refreshed(page([message("d")], offset: 2, total: 3, reset: false)))

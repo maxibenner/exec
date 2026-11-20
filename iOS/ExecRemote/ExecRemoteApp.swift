@@ -351,7 +351,8 @@ struct ConversationScreen: View {
                              descriptiveShellTitles: descriptiveShellTitles,
                              viewState: store.transcriptViewState(for: conversationID),
                              saveViewState: { id, value in store.saveTranscriptViewState(value, for: id) },
-                             bottomPadding: composerHeight, hasEarlier: store.selected == conversationID && store.hasEarlierMessages,
+                             bottomPadding: composerHeight, hasEarlier: store.connected && store.selected == conversationID && store.hasEarlierMessages,
+                             isLoadingEarlier: store.selected == conversationID && store.isLoadingEarlierMessages,
                              loadEarlier: { Task { if store.selected == conversationID { await store.loadEarlier() } } })
                 // Replace only the empty UIKit transcript, not the composer's
                 // focus-owning overlay, when a cold session receives history.

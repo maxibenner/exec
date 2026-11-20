@@ -107,7 +107,7 @@ actor FakeTransport: RemoteTransport {
         let reset = resetNextSync || (query != nil && index == nil) || (!before && index.map { messages.count - $0 > 64 } == true)
         resetNextSync = false
         let end = before && !reset ? index ?? messages.count : messages.count
-        let offset = before && !reset ? max(0, end - 64) : (!reset && query != nil ? index ?? 0 : max(0, end - 64))
+        let offset = before && !reset ? max(0, end - 32) : (!reset && query != nil ? index ?? 0 : max(0, end - 32))
         var value: [String: RemoteJSON] = [:]
         if case .object(let fields) = conversation { value = fields }
         value["messages"] = .array(Array(messages[offset..<end]))
@@ -323,8 +323,9 @@ actor FakeTransport: RemoteTransport {
                 else { await store.poll() }
             }
             try await until { await transport.waitingForRequest }
-            // A newer read supersedes the old ticket, even on the same connection.
-            if path.hasSuffix("/sync") { await store.open("session").value }
+            // Catalog reads still supersede. Equivalent history reads now share
+            // the request; leaving its destination suppresses a late open error.
+            if path.hasSuffix("/sync") { store.selected = nil }
             else { await store.poll() }
             await transport.failNext("GET", path)
             await transport.releaseRequest(); await stale.value
@@ -541,24 +542,37 @@ actor FakeTransport: RemoteTransport {
         await transport.setConversation(conversation(original))
         await store.poll()
         await store.open("session").value
-        XCTAssertEqual(store.snapshot["messages"].array.count, 64)
-        XCTAssertEqual(store.snapshot["messages"].array.first?["id"].string, "message-16")
+        XCTAssertEqual(store.snapshot["messages"].array.count, 32)
+        XCTAssertEqual(store.snapshot["messages"].array.first?["id"].string, "message-48")
         XCTAssertTrue(store.hasEarlierMessages)
 
         await transport.setConversation(conversation(Array(original.dropLast()) + [message(79, text: "Streaming update"), message(80)]))
         await store.poll()
-        XCTAssertEqual(store.snapshot["messages"].array.count, 65)
-        XCTAssertEqual(store.snapshot["messages"].array[63]["text"].string, "Streaming update")
+        XCTAssertEqual(store.snapshot["messages"].array.count, 33)
+        XCTAssertEqual(store.snapshot["messages"].array[31]["text"].string, "Streaming update")
         let requests = await transport.requests
         XCTAssertTrue(requests.contains { $0.hasPrefix("GET /v1/conversations/session/sync?after=message-79&prefix=") })
 
+        let olderPath = "/v1/conversations/session/sync?before=message-48"
+        await transport.holdNextRequest("GET", olderPath)
+        let older = Task { await store.loadEarlier() }
+        try await until { await transport.waitingForRequest }
+        XCTAssertTrue(store.isLoadingEarlierMessages)
+        await store.loadEarlier() // A second pull cannot queue another page.
+        let olderRequests = await transport.requests.filter { $0 == "GET " + olderPath }
+        XCTAssertEqual(olderRequests.count, 1)
+        await transport.releaseRequest(); await older.value
+        XCTAssertFalse(store.isLoadingEarlierMessages)
+        XCTAssertTrue(store.hasEarlierMessages)
+        XCTAssertEqual(store.snapshot["messages"].array.count, 65)
+        XCTAssertEqual(store.snapshot["messages"].array.first?["id"].string, "message-16")
         await store.loadEarlier()
         XCTAssertFalse(store.hasEarlierMessages)
         XCTAssertEqual(store.snapshot["messages"].array.count, 81)
         XCTAssertEqual(store.snapshot["messages"].array.first?["id"].string, "message-0")
         await transport.forceReset()
         await store.poll()
-        XCTAssertEqual(store.snapshot["messages"].array.count, 64)
+        XCTAssertEqual(store.snapshot["messages"].array.count, 32)
         XCTAssertTrue(store.hasEarlierMessages)
     }
 

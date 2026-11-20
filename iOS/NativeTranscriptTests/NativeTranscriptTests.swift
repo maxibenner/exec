@@ -49,6 +49,95 @@ import ExecRemote
         try XCTUnwrap(table.rowTop?(toolID)) - table.contentOffset.y
     }
 
+    func testEarlierHistoryRequiresNativeRefreshAndRearmsAfterFailure() async throws {
+        let (window, table, coordinator) = mount()
+        defer { coordinator.detach(table); window.isHidden = true }
+        update(coordinator, table)
+        try await settle(table)
+        var requests = 0
+        func configure(_ loading: Bool, hasEarlier: Bool = true) {
+            table.configureEarlierHistory(conversationID: "fixture", hasEarlier: hasEarlier,
+                                          isLoadingEarlier: loading, loadEarlier: { requests += 1 })
+        }
+        configure(false)
+        let refresh = try XCTUnwrap(table.refreshControl)
+        table.beginReaderScroll()
+        table.setContentOffset(CGPoint(x: 0, y: -table.adjustedContentInset.top), animated: false)
+        table.readerDidScroll()
+        table.endReaderScroll()
+        try await settle(table)
+        XCTAssertEqual(requests, 0, "Reaching the top or laying out must not request history")
+        refresh.beginRefreshing()
+        XCTAssertEqual(requests, 0, "Programmatic spinner changes must not request history")
+        // Drive the native control target directly: this hostless test runner
+        // has no UIApplication to dispatch UIControl.sendActions.
+        table.pulledEarlierHistory()
+        table.pulledEarlierHistory()
+        XCTAssertEqual(requests, 1, "Latch before the store publishes its loading flag")
+        configure(true)
+        table.pulledEarlierHistory()
+        XCTAssertEqual(requests, 1)
+        XCTAssertTrue(refresh.isRefreshing)
+        configure(false) // Failure: unchanged snapshot, still has earlier history.
+        XCTAssertFalse(refresh.isRefreshing)
+        refresh.beginRefreshing()
+        table.pulledEarlierHistory()
+        XCTAssertEqual(requests, 2, "A new deliberate pull may retry after failure")
+        configure(true)
+        configure(false, hasEarlier: false)
+        XCTAssertFalse(refresh.isRefreshing)
+        XCTAssertNil(table.refreshControl)
+        refresh.beginRefreshing()
+        table.pulledEarlierHistory()
+        XCTAssertEqual(requests, 2, "Exhaustion must not request another page")
+        XCTAssertFalse(refresh.isRefreshing)
+        configure(false)
+        refresh.beginRefreshing()
+        table.pulledEarlierHistory()
+        configure(true)
+        table.configureEarlierHistory(conversationID: "other", hasEarlier: true,
+                                      isLoadingEarlier: false, loadEarlier: { requests += 1 })
+        XCTAssertFalse(refresh.isRefreshing, "Switching conversations must end the old spinner")
+        refresh.beginRefreshing()
+        table.pulledEarlierHistory()
+        XCTAssertEqual(requests, 4, "A new conversation must not inherit the old request latch")
+        table.stopEarlierHistory()
+        XCTAssertFalse(refresh.isRefreshing)
+        XCTAssertNil(table.refreshControl)
+    }
+
+    func testEarlierPrependPreservesTopRowAfterSpinnerCompletion() async throws {
+        let (window, table, coordinator) = mount()
+        defer { coordinator.detach(table); window.isHidden = true }
+        update(coordinator, table)
+        try await settle(table)
+        table.configureEarlierHistory(conversationID: "fixture", hasEarlier: true,
+                                      isLoadingEarlier: false, loadEarlier: {})
+        table.beginReaderScroll()
+        table.setContentOffset(CGPoint(x: 0, y: -table.adjustedContentInset.top), animated: false)
+        table.endReaderScroll()
+        try await settle(table)
+        let before = try XCTUnwrap(table.rowTop?("history-1")) - table.contentOffset.y
+        let refresh = try XCTUnwrap(table.refreshControl)
+        refresh.beginRefreshing()
+        table.pulledEarlierHistory()
+        table.configureEarlierHistory(conversationID: "fixture", hasEarlier: true,
+                                      isLoadingEarlier: true, loadEarlier: {})
+        let older: RemoteJSON = .object(["id": .string("older"), "role": .string("user"),
+                                        "text": .string(String(repeating: "Earlier history\n", count: 20))])
+        let prepended: RemoteJSON = .object(["id": .string("fixture"),
+                                            "messages": .array([older] + snapshot()["messages"].array)])
+        table.configureEarlierHistory(conversationID: "fixture", hasEarlier: false,
+                                      isLoadingEarlier: false, loadEarlier: {})
+        coordinator.update(conversationID: "fixture", snapshot: prepended, queuedMessage: .null,
+                           cancelQueuedMessage: { _ in }, showsThinkingIndicator: false, descriptiveShellTitles: false,
+                           viewState: TranscriptViewState(generation: 0), table: table)
+        try await settle(table)
+        XCTAssertFalse(refresh.isRefreshing)
+        XCTAssertEqual(table.scrollState.intent, .reading)
+        XCTAssertEqual(try XCTUnwrap(table.rowTop?("history-1")) - table.contentOffset.y, before, accuracy: 1)
+    }
+
     func testGroupedDisclosureAnchorsThroughStreamingInsetsAndCollapse() async throws {
         let (window, table, coordinator) = mount()
         defer { coordinator.detach(table); window.isHidden = true }

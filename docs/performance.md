@@ -55,7 +55,7 @@ presentation-layer opacity does not prove visible text fading or GPU frame caden
 
 The default phases use empty transcripts and explicit catalog refreshes. They do not
 establish reliability while loading or streaming conversations. Use the polling workload
-for the production two-second catalog loop, 200 ms active transcript readers, 64-message
+for the production two-second catalog loop, 200 ms active transcript readers, 32-message
 backfill, streaming suffix updates, and title wrapping during child insertion/removal:
 
 ```sh

@@ -22,6 +22,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
     let saveViewState: (String, TranscriptViewState) -> Void
     let bottomPadding: CGFloat
     let hasEarlier: Bool
+    let isLoadingEarlier: Bool
     let loadEarlier: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIViewController(context: Context) -> UITableViewController {
@@ -49,8 +50,8 @@ struct NativeTranscript: UIViewControllerRepresentable {
         guard let table = controller.tableView as? TranscriptTableView else { return }
         table.contentInset.bottom = bottomPadding + 12
         table.verticalScrollIndicatorInsets.bottom = bottomPadding
-        table.hasEarlier = hasEarlier
-        table.loadEarlier = loadEarlier
+        table.configureEarlierHistory(conversationID: conversationID, hasEarlier: hasEarlier,
+                                      isLoadingEarlier: isLoadingEarlier, loadEarlier: loadEarlier)
         context.coordinator.update(conversationID: conversationID, snapshot: snapshot,
                                    queuedMessage: queuedMessage, cancelQueuedMessage: cancelQueuedMessage,
                                    showsThinkingIndicator: showsThinkingIndicator, descriptiveShellTitles: descriptiveShellTitles,
@@ -292,6 +293,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
             savePresentation(table)
             attached = false
             pendingUpdate = nil; currentUpdate = nil; source = nil; saveViewState = nil
+            table.stopEarlierHistory()
             table.delegate = nil
         }
         private func primeInitialPosition(_ table: TranscriptTableView) {
@@ -412,8 +414,12 @@ private struct MobileToolCard: View {
 }
 
 @MainActor final class TranscriptTableView: UITableView {
-    var hasEarlier = false
-    var loadEarlier: (() -> Void)?
+    private var hasEarlier = false
+    private var isLoadingEarlier = false
+    private var loadEarlier: (() -> Void)?
+    private var pagingConversationID: String?
+    private var requestedEarlier = false
+    private let earlierRefreshControl = UIRefreshControl()
     var rowTop: ((String) -> CGFloat?)?
     var turnTop: ((String) -> CGFloat?)?
     var readingPosition: (() -> TranscriptViewportAnchor?)?
@@ -435,7 +441,6 @@ private struct MobileToolCard: View {
     }
     private var readingAnchor: TranscriptViewportAnchor?
     private var restoringReadingAnchor = false
-    private var requestedEarlier = false
     private var previousSize = CGSize.zero
     private var previousContentHeight: CGFloat = 0
     private var previousInsets = UIEdgeInsets.zero
@@ -465,11 +470,70 @@ private struct MobileToolCard: View {
 
     override init(frame: CGRect, style: UITableView.Style) {
         super.init(frame: frame, style: style)
+        alwaysBounceVertical = true
+        earlierRefreshControl.accessibilityIdentifier = "transcript-earlier-refresh"
+        earlierRefreshControl.accessibilityLabel = "Loading earlier messages"
+        earlierRefreshControl.addTarget(self, action: #selector(pulledEarlierHistory), for: .valueChanged)
         NotificationCenter.default.addObserver(self, selector: #selector(motionPolicyChanged),
             name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError("Use init(frame:style:)") }
     deinit { NotificationCenter.default.removeObserver(self) }
+
+    /// Only UIRefreshControl's native pull gesture emits valueChanged. Neither
+    /// beginRefreshing(), reaching the top, nor layout/offset changes request data.
+    @objc func pulledEarlierHistory() {
+        guard earlierRefreshControl.isRefreshing else { return }
+        guard hasEarlier, !isLoadingEarlier, !requestedEarlier, let loadEarlier else {
+            if !isLoadingEarlier && !requestedEarlier { earlierRefreshControl.endRefreshing() }
+            return
+        }
+        requestedEarlier = true // Close the gap before the store publishes loading.
+        scrollState.readerScrolled(towardLatest: false, atBottom: false)
+        if let anchor = readingAnchor ?? readingPosition?() {
+            // Native refresh expands adjustedContentInset before valueChanged.
+            // Use the reading anchor from before that expansion, not a later row
+            // now reported beneath the spinner's extra inset.
+            readingAnchor = TranscriptViewportAnchor(rowID: anchor.rowID, offset: min(0, anchor.offset))
+        }
+        loadEarlier()
+    }
+
+    func configureEarlierHistory(conversationID: String?, hasEarlier: Bool,
+                                 isLoadingEarlier: Bool, loadEarlier: @escaping () -> Void) {
+        let changedConversation = pagingConversationID != conversationID
+        if changedConversation { stopEarlierHistory() }
+        pagingConversationID = conversationID
+        let completed = self.isLoadingEarlier && !isLoadingEarlier
+        let exhausted = !hasEarlier && (self.hasEarlier || requestedEarlier)
+        self.hasEarlier = hasEarlier
+        self.isLoadingEarlier = isLoadingEarlier
+        self.loadEarlier = loadEarlier
+        if completed || (exhausted && !isLoadingEarlier) {
+            requestedEarlier = false
+            earlierRefreshControl.endRefreshing()
+            restoringReadingAnchor = scrollState.intent == .reading && readingAnchor != nil
+            scheduleAlignment(immediate: true)
+        }
+        // Keep an active control until its request finishes, even if that page
+        // exhausts history. No refresh control is needed once history is complete.
+        let enabled = conversationID != nil && (hasEarlier || isLoadingEarlier || requestedEarlier)
+        if enabled && refreshControl == nil { refreshControl = earlierRefreshControl }
+        if !enabled && refreshControl != nil { refreshControl = nil }
+        // External loading does not synthesize a pull or move the viewport.
+        if isLoadingEarlier && !earlierRefreshControl.isRefreshing {
+            earlierRefreshControl.beginRefreshing()
+        }
+    }
+
+    func stopEarlierHistory() {
+        requestedEarlier = false
+        isLoadingEarlier = false
+        hasEarlier = false
+        loadEarlier = nil
+        earlierRefreshControl.endRefreshing()
+        refreshControl = nil
+    }
 
     func resetScroll() {
         cancelScrollAnimation()
@@ -477,7 +541,6 @@ private struct MobileToolCard: View {
         scrollState = TranscriptScrollState()
         readingAnchor = nil
         restoringReadingAnchor = false
-        requestedEarlier = false
         thinkingView?.removeFromSuperview()
         thinkingView = nil
         tableFooterView = nil
@@ -519,6 +582,9 @@ private struct MobileToolCard: View {
         if restoringReadingAnchor { alignViewport() }
     }
     func rememberReadingPosition() {
+        // Refresh inset expansion and rubber-band rebound are not a new reading
+        // position. Keep the pre-page row anchor until the native spinner ends.
+        guard !earlierRefreshControl.isRefreshing else { return }
         if !restoringReadingAnchor, scrollState.intent == .reading, let anchor = readingPosition?() { readingAnchor = anchor }
     }
     /// Capture the disclosed header before SwiftUI/self-sizing changes its group.
@@ -600,12 +666,6 @@ private struct MobileToolCard: View {
         if restoringReadingAnchor, let anchor = readingAnchor {
             readingAnchor = TranscriptViewportAnchor(rowID: anchor.rowID, offset: anchor.offset - delta)
         } else { rememberReadingPosition() }
-        if contentOffset.y > -adjustedContentInset.top + 250 { requestedEarlier = false }
-        if isDragging, readerDirection < 0, hasEarlier, !requestedEarlier,
-           contentOffset.y < -adjustedContentInset.top + 120 {
-            requestedEarlier = true
-            loadEarlier?()
-        }
     }
     func endReaderScroll() {
         readerActive = false
@@ -665,7 +725,8 @@ private struct MobileToolCard: View {
     }
     private func alignViewport() {
         alignmentScheduled = false
-        guard alignmentNeeded, contentReady, !updatingContent,
+        guard !(requestedEarlier && earlierRefreshControl.isRefreshing),
+              alignmentNeeded, contentReady, !updatingContent,
               restoringReadingAnchor || (!isTracking && !isDragging && !isDecelerating),
               window != nil, bounds.height > 0 else { return }
         settling = true
