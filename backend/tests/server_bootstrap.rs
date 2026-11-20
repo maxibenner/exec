@@ -147,3 +147,161 @@ async fn token_file_bootstrap_persists_api_credentials_and_restarts_cleanly() {
         );
     }
 }
+
+// Exercise the image-declared environment in fresh subprocesses, without Docker.
+// Only paths and the port are substituted so credentials stay in this fixture.
+fn container_command(root: &Path, port: u16, binary: &str) -> Command {
+    let mut command = command(root, port, binary);
+    command.env_remove("EXEC_AGENT_TOKEN_FILE");
+    let environment = include_str!("../Dockerfile")
+        .split_once("\nENV ")
+        .unwrap()
+        .1
+        .split_once("\nUSER ")
+        .unwrap()
+        .0;
+    assert!(
+        environment.contains("EXEC_AGENT_DEFAULT_TOKEN_FILE=/var/lib/exec/profile/admin-token")
+    );
+    assert!(!environment.contains("EXEC_AGENT_TOKEN_FILE="));
+    for assignment in environment.split_whitespace().filter(|s| *s != "\\") {
+        let (name, value) = assignment.split_once('=').unwrap();
+        command.env(name, value);
+    }
+    command
+        .env("HOME", root.join("home"))
+        .env(
+            "EXEC_AGENT_DEFAULT_TOKEN_FILE",
+            root.join("profile/default-token"),
+        )
+        .env("EXEC_AGENT_PORT", port.to_string());
+    command
+}
+
+#[tokio::test]
+async fn container_default_and_explicit_sources_agree_across_init_server_health_and_admin() {
+    for source in ["default", "environment", "file"] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        for name in ["home", "profile", "workspace"] {
+            fs::create_dir(root.join(name)).unwrap();
+        }
+        let profile = root.join("profile");
+        fs::set_permissions(&profile, fs::Permissions::from_mode(0o700)).unwrap();
+        let default = profile.join("default-token");
+        let explicit = profile.join("explicit-token");
+        let token = "cd".repeat(32);
+        if source != "default" {
+            // Ignore an invalid/stale default; do not read, repair or rotate it.
+            fs::write(&default, b"invalid-default").unwrap();
+            fs::write(&explicit, &token).unwrap();
+            fs::set_permissions(&explicit, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = reservation.local_addr().unwrap().port();
+        let configured = |binary| {
+            let mut command = container_command(root, port, binary);
+            match source {
+                "environment" => {
+                    command.env("EXEC_AGENT_TOKEN", &token);
+                }
+                "file" => {
+                    command.env("EXEC_AGENT_TOKEN_FILE", &explicit);
+                }
+                _ => {}
+            }
+            command
+        };
+        let admin = || configured(env!("CARGO_BIN_EXE_exec-agent-admin"));
+        assert!(run(admin(), &["init-token"], None).await.is_empty());
+        let original = fs::read(&default).unwrap();
+        assert!(run(admin(), &["init-token"], None).await.is_empty());
+        if source == "default" {
+            assert_eq!(original.len(), 64);
+            assert_eq!(fs::metadata(&default).unwrap().mode() & 0o777, 0o600);
+        } else {
+            assert_eq!(original, b"invalid-default");
+        }
+        drop(reservation);
+        let mut child = configured(env!("CARGO_BIN_EXE_exec-agent"))
+            .arg("--profile")
+            .arg(&profile)
+            .spawn()
+            .unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        assert_eq!(
+            timeout(LIMIT, lines.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .as_deref(),
+            Some("ready")
+        );
+        assert_eq!(json(run(admin(), &["health"], None).await)["version"], 1);
+        deepseek(
+            json(run(admin(), &["providers", "list"], None).await),
+            false,
+        );
+        // SAFETY: this PID belongs to our still-owned, unreaped subprocess.
+        assert_eq!(
+            unsafe { libc::kill(child.id().unwrap() as i32, libc::SIGTERM) },
+            0
+        );
+        assert!(
+            timeout(LIMIT, child.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(fs::read(&default).unwrap(), original);
+        if source != "default" {
+            assert_eq!(fs::read_to_string(&explicit).unwrap(), token);
+        }
+    }
+}
+
+#[tokio::test]
+async fn container_explicit_dual_sources_including_empty_file_fail_everywhere() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    for name in ["home", "profile", "workspace"] {
+        fs::create_dir(root.join(name)).unwrap();
+    }
+    let profile = root.join("profile");
+    fs::set_permissions(&profile, fs::Permissions::from_mode(0o700)).unwrap();
+    let token = "ab".repeat(32);
+    for file in [
+        String::new(),
+        profile.join("explicit-token").display().to_string(),
+    ] {
+        for (binary, args) in [
+            (env!("CARGO_BIN_EXE_exec-agent-admin"), vec!["init-token"]),
+            (env!("CARGO_BIN_EXE_exec-agent-admin"), vec!["health"]),
+            (
+                env!("CARGO_BIN_EXE_exec-agent-admin"),
+                vec!["providers", "list"],
+            ),
+            (
+                env!("CARGO_BIN_EXE_exec-agent"),
+                vec!["--profile", profile.to_str().unwrap()],
+            ),
+        ] {
+            let output = timeout(
+                LIMIT,
+                container_command(root, 8765, binary)
+                    .env("EXEC_AGENT_TOKEN", &token)
+                    .env("EXEC_AGENT_TOKEN_FILE", &file)
+                    .args(args)
+                    .output(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            assert!(!String::from_utf8_lossy(&output.stderr).contains(&token));
+        }
+    }
+    assert_eq!(fs::read_dir(&profile).unwrap().count(), 0);
+}

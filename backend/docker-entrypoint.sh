@@ -2,6 +2,8 @@
 set -euo pipefail
 umask 077
 
+# The shared resolver selects an explicit token/file before the image's default
+# file location, including for later docker exec administration and health checks.
 # Create only when absent; the admin CLI must also validate any existing token.
 exec-agent-admin init-token
 # Keep administration and health checks on the same private endpoint. Configure the

@@ -14,7 +14,7 @@ RUN apt-get update \
 COPY --from=builder /build/target/release/exec-agent /build/target/release/exec-agent-admin /usr/local/bin/
 COPY --chmod=0555 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 ENV HOME=/workspaces \
-    EXEC_AGENT_TOKEN_FILE=/var/lib/exec/profile/admin-token \
+    EXEC_AGENT_DEFAULT_TOKEN_FILE=/var/lib/exec/profile/admin-token \
     EXEC_AGENT_HOST=127.0.0.1 \
     EXEC_AGENT_PORT=8765
 USER 10001:10001

@@ -14,6 +14,8 @@ use std::{
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+const UNKNOWN_LOGIN: &str = "Login outcome is unknown; the attempt may still be active or credentials may have been saved. No retry was made. Run exec-agent-admin providers login-status and exec-agent-admin providers status before another login. Cancel only the exact observed attempt ID; do not replay a cancellation blindly.";
+
 #[derive(Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 enum State {
@@ -54,16 +56,20 @@ pub(super) async fn connect(api: &Api, signals: Signals) -> Result<()> {
             "/v1/providers/openai/connect",
             Some(json!({"method":"device_code"})),
         )
-        .await?;
+        .await
+        .map_err(|_| UNKNOWN_LOGIN)?;
     if !exec_agent::core::valid_id(&challenge.attempt.id) || challenge.attempt.provider != "openai"
     {
-        return Err(INVALID_RESPONSE);
+        // Without a trustworthy ID, neither cancellation nor replay is safe.
+        return Err(UNKNOWN_LOGIN);
     }
     let id = challenge.attempt.id.clone();
     let mut active = challenge.attempt.state == State::Running;
     let result = follow(api, challenge, &signals.cancel, &mut active).await;
-    if active && result.is_err() {
-        let _ = cancel_and_observe(api, &id).await;
+    if active && let Err(error) = result {
+        eprintln!("exec-agent-admin: Login monitoring stopped: {error}");
+        // A signal is not evidence of interruption: completion may win the race.
+        return settled(cancel_and_observe(api, &id, Some("openai")).await?);
     }
     result
 }
@@ -101,7 +107,7 @@ async fn follow(
         .as_secs();
     let remaining = code.expires_at.saturating_sub(now).min(900);
     if remaining == 0 {
-        return Err("The device login challenge expired; cancellation was requested.");
+        return Err("The device login challenge expired.");
     }
     let deadline = Instant::now() + Duration::from_secs(remaining);
     terminal::require_interactive()?;
@@ -110,7 +116,7 @@ async fn follow(
         // Challenge material is written only here, and only to an interactive terminal.
         writeln!(stdout, "Open {url}\nEnter code: {}", code.user_code)
             .and_then(|_| stdout.flush())
-            .map_err(|_| "Cannot display the login challenge; cancellation was requested.")?;
+            .map_err(|_| "Cannot display the login challenge.")?;
     }
     tokio::time::timeout_at(deadline, async {
         loop {
@@ -119,7 +125,8 @@ async fn follow(
                 _ = cancel.cancelled() => return Err(terminal::INTERRUPTED),
                 result = api.request(Method::GET, "/v1/connection-attempt", None) => result?,
             };
-            let current = current.ok_or("The connection attempt is unavailable; inspect provider status.")?;
+            let current =
+                current.ok_or("The connection attempt is unavailable; inspect provider status.")?;
             if current.id != challenge.attempt.id || current.provider != "openai" {
                 return Err("The connection attempt changed; no other attempt was cancelled.");
             }
@@ -133,15 +140,21 @@ async fn follow(
                 _ = tokio::time::sleep(Duration::from_secs(2)) => {},
             }
         }
-    }).await.map_err(|_| "Device login timed out; cancellation was requested. Inspect provider status before continuing.")?
+    })
+    .await
+    .map_err(|_| "Device login monitoring timed out.")?
 }
 
 fn settled(state: State) -> Result<()> {
     match state {
-        State::Completed => output(&json!({"id":"openai","connected":true})),
-        State::Failed => Err("OpenAI connection failed. No retry was made."),
-        State::Interrupted => Err("OpenAI connection was interrupted."),
-        State::Running => Err(INVALID_RESPONSE),
+        State::Completed => output(&json!({"id":"openai","connected":true,"state":"completed"})),
+        State::Failed => Err(
+            "OpenAI connection attempt settled as failed. No retry was made. Run exec-agent-admin providers status before another login.",
+        ),
+        State::Interrupted => Err(
+            "OpenAI connection attempt settled as interrupted. Run exec-agent-admin providers status before another login.",
+        ),
+        State::Running => Err(UNKNOWN_LOGIN),
     }
 }
 
@@ -159,33 +172,50 @@ pub(super) async fn status(api: &Api) -> Result<()> {
 }
 
 pub(super) async fn cancel(api: &Api, id: &str) -> Result<()> {
-    cancel_and_observe(api, id).await?;
-    output(&json!({"attemptID":id,"cancellationRequested":true}))
+    let state = cancel_and_observe(api, id, None).await?;
+    output(&json!({"attemptID":id,"cancellationRequested":true,"state":state}))
 }
 
-async fn cancel_and_observe(api: &Api, id: &str) -> Result<()> {
+async fn cancel_and_observe(api: &Api, id: &str, provider: Option<&str>) -> Result<State> {
     // Exactly one cancellation mutation, even if it fails or further signals arrive.
-    let _: Value = api
-        .request(
+    let acknowledgement = api
+        .request::<Value>(
             Method::POST,
             "/v1/connection-attempt/cancel",
             Some(json!({"operationID":id})),
         )
-        .await?;
-    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        .await
+        .and_then(|value| {
+            if value["accepted"] == true {
+                Ok(())
+            } else {
+                Err(INVALID_RESPONSE)
+            }
+        });
+    if let Err(error) = acknowledgement {
+        // A rejection/lost acknowledgement can race with credential persistence.
+        // Report it, but still observe; never resend the cancellation.
+        eprintln!("exec-agent-admin: Cancellation request was not acknowledged: {error}");
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let Ok(Some(current)) = api
+            let current = api
                 .request::<Option<Attempt>>(Method::GET, "/v1/connection-attempt", None)
                 .await
-            else {
-                break;
-            };
-            if current.id != id || current.provider != "openai" || current.state != State::Running {
-                break;
+                .map_err(|_| UNKNOWN_LOGIN)?
+                .ok_or(UNKNOWN_LOGIN)?;
+            if current.id != id
+                || !matches!(current.provider.as_str(), "openai" | "deepseek")
+                || provider.is_some_and(|expected| current.provider != expected)
+            {
+                return Err(UNKNOWN_LOGIN);
+            }
+            if current.state != State::Running {
+                return Ok(current.state);
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     })
-    .await;
-    Ok(())
+    .await
+    .map_err(|_| UNKNOWN_LOGIN)?
 }

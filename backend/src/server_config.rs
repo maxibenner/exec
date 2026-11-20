@@ -18,11 +18,13 @@ fn input() -> Result<Option<TokenInput>> {
     configured_input(
         std::env::var("EXEC_AGENT_TOKEN"),
         std::env::var("EXEC_AGENT_TOKEN_FILE"),
+        std::env::var("EXEC_AGENT_DEFAULT_TOKEN_FILE"),
     )
 }
 fn configured_input(
     token: std::result::Result<String, std::env::VarError>,
     file: std::result::Result<String, std::env::VarError>,
+    default_file: std::result::Result<String, std::env::VarError>,
 ) -> Result<Option<TokenInput>> {
     fn value(value: std::result::Result<String, std::env::VarError>) -> Result<Option<String>> {
         match value {
@@ -31,12 +33,18 @@ fn configured_input(
             Err(_) => Err(Error::Invalid(INVALID)),
         }
     }
+    fn file_input(path: String) -> Result<TokenInput> {
+        if !Path::new(&path).is_absolute() {
+            return Err(Error::Invalid(INVALID));
+        }
+        Ok(TokenInput::File(path.into()))
+    }
+    // An image default is only a location, not a second explicit credential source.
+    // Empty or invalid explicit settings still fail closed; never fall back from them.
     match (value(token)?, value(file)?) {
         (Some(token), None) => Ok(Some(TokenInput::Environment(validate(&token)?))),
-        (None, Some(file)) if Path::new(&file).is_absolute() => {
-            Ok(Some(TokenInput::File(file.into())))
-        }
-        (None, None) => Ok(None),
+        (None, Some(file)) => file_input(file).map(Some),
+        (None, None) => value(default_file)?.map(file_input).transpose(),
         _ => Err(Error::Invalid(INVALID)),
     }
 }
@@ -139,13 +147,44 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     #[test]
-    fn configuration_rejects_ambiguity_and_invalid_values() {
+    fn configuration_distinguishes_defaults_from_explicit_sources() {
         let absent = || Err(std::env::VarError::NotPresent);
-        assert!(configured_input(Ok("ab".repeat(32)), absent()).is_ok());
-        assert!(configured_input(absent(), Ok("/private/token".into())).is_ok());
-        assert!(configured_input(Ok("ab".repeat(32)), Ok("/private/token".into())).is_err());
-        assert!(configured_input(Ok(String::new()), absent()).is_err());
-        assert!(configured_input(absent(), Ok("relative/token".into())).is_err());
+        let default = || Ok("/private/default-token".into());
+        assert!(matches!(
+            configured_input(Ok("ab".repeat(32)), absent(), default()).unwrap(),
+            Some(TokenInput::Environment(_))
+        ));
+        assert!(matches!(
+            configured_input(absent(), Ok("/private/token".into()), default()).unwrap(),
+            Some(TokenInput::File(path)) if path == Path::new("/private/token")
+        ));
+        assert!(matches!(
+            configured_input(absent(), absent(), default()).unwrap(),
+            Some(TokenInput::File(path)) if path == Path::new("/private/default-token")
+        ));
+        assert!(
+            configured_input(absent(), absent(), absent())
+                .unwrap()
+                .is_none()
+        );
+        for file in ["/private/token", "", "relative/token"] {
+            assert!(configured_input(Ok("ab".repeat(32)), Ok(file.into()), default()).is_err());
+        }
+        assert!(configured_input(Ok(String::new()), absent(), default()).is_err());
+        for invalid in ["", "relative/token"] {
+            assert!(configured_input(absent(), Ok(invalid.into()), default()).is_err());
+            assert!(configured_input(absent(), absent(), Ok(invalid.into())).is_err());
+        }
+        let non_unicode = || {
+            Err(std::env::VarError::NotUnicode(std::ffi::OsString::from(
+                "invalid",
+            )))
+        };
+        assert!(configured_input(non_unicode(), absent(), default()).is_err());
+        assert!(configured_input(absent(), non_unicode(), default()).is_err());
+        assert!(configured_input(absent(), absent(), non_unicode()).is_err());
+        // An unused fallback cannot invalidate a correctly provisioned explicit token.
+        assert!(configured_input(Ok("ab".repeat(32)), absent(), non_unicode()).is_ok());
     }
     #[test]
     fn initialization_is_private_and_never_rotates() {
