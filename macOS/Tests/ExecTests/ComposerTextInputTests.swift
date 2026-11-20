@@ -172,13 +172,14 @@ struct ComposerTextInputTests {
         try expect(submitted == 1)
     }
 
-    func drawsConsistentBlueCaret() throws {
+    func drawsConsistentCaret() throws {
         _ = NSApplication.shared
         let view = ComposerTextInput.EditorScrollView()
-        try expect(view.editor.insertionPointColor == AppColors.nativeBlue)
-        // Draw offscreen without depending on the active app or blink phase.
+        try expect(view.editor.insertionPointColor == NSColor.controlAccentColor)
+        // Draw offscreen with a fixed test color, independent of the system accent,
+        // active app and blink phase. Do not change the user's appearance settings.
         let editor = CaretDrawingEditor(usingTextLayoutManager: false)
-        editor.insertionPointColor = view.editor.insertionPointColor
+        editor.insertionPointColor = AppColors.nativeBlue
         editor.frame = NSRect(x: 0, y: 0, width: 100, height: 30)
         for scale in [1, 2] {
             for x: CGFloat in [-0.5, 24.5] {

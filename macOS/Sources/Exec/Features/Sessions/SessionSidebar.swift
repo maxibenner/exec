@@ -25,7 +25,6 @@ struct SessionSidebar: View {
     @State private var renaming = false
     @State private var renameID: UUID?
     @State private var renameTitle = ""
-    @State private var rowBackgroundWidths: [UUID: CGFloat] = [:]
     private var rowAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.25) }
     private var groups: [SidebarSessionGroup] { SidebarSessionGroup.snapshot(store) }
 
@@ -68,12 +67,15 @@ struct SessionSidebar: View {
                         .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
                     ForEach(group.children) { child in
                         SessionChildRowContent(child: child, store: store)
+                            // Include the native row gutters in the background, then
+                            // cancel that padding so the connector/text do not move.
+                            .padding(.horizontal, 16)
                             .contentShape(Rectangle())
                             .background {
                                 RoundedRectangle(cornerRadius: 4)
                                     .fill(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear)
-                                    .frame(width: rowBackgroundWidths[session.id])
                             }
+                            .padding(.horizontal, -16)
                             .modifier(SidebarChildAppearance(visible: revealedChildIDs.contains(child.id), animation: rowAnimation) {
                                 revealedChildIDs.insert(child.id)
                             })
@@ -103,9 +105,6 @@ struct SessionSidebar: View {
                     RoundedRectangle(cornerRadius: 6)
                         .fill(store.sidebarSelectionID == session.id
                               ? Color.primary.opacity(0.08) : Color.clear)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
-                            rowBackgroundWidths[session.id] = $0
-                        }
                 )
                 .moveDisabled(!store.canReorderSessions)
             }

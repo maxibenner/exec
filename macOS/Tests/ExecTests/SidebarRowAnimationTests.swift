@@ -22,12 +22,13 @@ import SwiftUI
             Text(verbatim: child.title)
             Spacer(minLength: 0)
         }.font(.caption2).fixedSize())
+        let connectorWidth = NSFont.preferredFont(forTextStyle: .caption2).capHeight * 0.85
         for scheme in [ColorScheme.light, .dark] {
-            // Measure the real production leaf, without List's combined AX label
-            // or gestures. Its ideal width must include both 6-point insets.
+            // Include the drawn connector, its 6-point spacing and trailing inset.
+            // The leading gutter belongs to the selection background, not the leaf.
             let natural = NSHostingView(rootView: SessionChildRowContent(child: child, store: library)
                 .fixedSize().environment(\.colorScheme, scheme))
-            try expect(abs(natural.fittingSize.width - unpadded.fittingSize.width - 12) < 1)
+            try expect(abs(natural.fittingSize.width - unpadded.fittingSize.width - connectorWidth - 12) < 1)
             for width in [CGFloat(180), 300] {
                 let host = NSHostingView(rootView: SessionChildRowContent(child: child, store: library)
                     .frame(width: width).environment(\.colorScheme, scheme))
