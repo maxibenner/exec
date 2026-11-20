@@ -5,13 +5,16 @@ import SwiftUI
 struct ChatWindowLayout<Sidebar: View, Detail: View>: View {
     @State private var columnVisibility: NavigationSplitViewVisibility
     private let sidebarRevealRequest: Int
+    private let onSidebarVisibilityChange: (Bool) -> Void
     private let sidebar: Sidebar
     private let detail: Detail
 
     init(initiallyShowsSidebar: Bool, sidebarRevealRequest: Int = 0,
+         onSidebarVisibilityChange: @escaping (Bool) -> Void = { _ in },
          @ViewBuilder sidebar: () -> Sidebar, @ViewBuilder detail: () -> Detail) {
         _columnVisibility = State(initialValue: initiallyShowsSidebar ? .all : .detailOnly)
         self.sidebarRevealRequest = sidebarRevealRequest
+        self.onSidebarVisibilityChange = onSidebarVisibilityChange
         self.sidebar = sidebar()
         self.detail = detail()
     }
@@ -31,6 +34,10 @@ struct ChatWindowLayout<Sidebar: View, Detail: View>: View {
                 .background(SidebarResizeBehavior())
         }
         .navigationSplitViewStyle(.balanced)
+        .onChange(of: columnVisibility) { _, visibility in
+            // Persist native toolbar/menu toggles as well as creation reveals.
+            onSidebarVisibilityChange(visibility != .detailOnly)
+        }
         .onChange(of: sidebarRevealRequest) { _, _ in
             guard columnVisibility != .all else { return }
             withAnimation { columnVisibility = .all }
