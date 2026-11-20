@@ -6,6 +6,24 @@
         <description>Stable updates for Exec on macOS.</description>
         <language>en</language>
         <item>
+            <title>0.1.11</title>
+            <pubDate>Fri, 20 Nov 2026 17:45:56 -0500</pubDate>
+            <link>https://github.com/maxibenner/exec</link>
+            <sparkle:version>14</sparkle:version>
+            <sparkle:shortVersionString>0.1.11</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[- Replaced routine conversation polling with more efficient change notifications.
+- Improved the macOS sidebar, composer, scrolling, and system-accent styling.
+- Added message queueing during compaction, unsent-draft warnings, and fixes for stopping and sub-agent handling.
+- Improved remote pairing, connection recovery, and device revocation.
+- Expanded iOS with per-session tools, queued messages, and better transcript, settings, and connection handling.
+- Added Docker/Compose deployment, a local administration CLI, and headless provider login.
+- Added private per-session diagnostics with clearer provider and network errors.
+]]></description>
+            <enclosure url="https://github.com/maxibenner/exec/releases/download/v0.1.11/Exec-0.1.11-macOS-arm64.zip" length="12638688" type="application/octet-stream" sparkle:edSignature="vr9XggS9JX+oY/LA4av8MDLWUtlkUqOXoU+2q5qozh+q+AXPCrxPb7kaF0FBgrT+QlnzEF1RZvdWbGZfyljgBw=="/>
+        </item>
+        <item>
             <title>0.1.10</title>
             <pubDate>Wed, 18 Nov 2026 12:42:05 -0500</pubDate>
             <link>https://github.com/maxibenner/exec</link>
