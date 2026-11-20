@@ -9,16 +9,19 @@ import Foundation
     private var writeFailure: Error?
     private var generation = 0
     init(api: AgentAPI, preferences: UserDefaults) { self.api = api; self.preferences = preferences }
-    func restore() async throws {
+    @discardableResult func restore() async throws -> Bool {
         // Refresh never waits on a caller's held write. A stale read must neither
         // replace an acknowledgement nor unlock an uncertain write.
-        guard write == nil else { return }
+        guard write == nil else { return false }
         let generation = self.generation
+        // The backend rejects GET as Busy until its pending write settles. Only a
+        // successful, still-current read can clear an uncertain mutation.
         let value = try await api.get("/v1/library").decoded(AgentLibraryConfiguration.self)
-        if generation == self.generation {
-            configuration = value
-            writeFailure = nil
-        }
+        try Task.checkCancellation()
+        guard generation == self.generation else { return false }
+        configuration = value
+        writeFailure = nil
+        return true
     }
     func list() async throws -> [SessionSummary] {
         let summaries = try await api.get("/v1/conversations").array.map(SessionSummary.init)
