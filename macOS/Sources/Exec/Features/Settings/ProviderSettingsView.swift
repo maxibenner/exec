@@ -97,6 +97,13 @@ struct ProviderSettingsView: View {
         HStack {
             Spacer(minLength: 0)
             ControlGroup {
+                Button {
+                    guard let selection else { return }
+                    store.disconnect(providerID: selection)
+                } label: { Image(systemName: "minus").frame(width: 16, height: 18) }
+                .disabled(!store.canDisconnectProvider || !connected.contains { $0.id == selection })
+                .help("Remove Provider")
+                .accessibilityLabel("Remove Provider")
                 Group {
                     if available.isEmpty {
                         // A disabled Menu in a ControlGroup keeps its enabled appearance.
@@ -118,13 +125,6 @@ struct ProviderSettingsView: View {
                 .disabled(store.accountBusy || !store.canNavigate)
                 .help("Add Provider")
                 .accessibilityLabel("Add Provider")
-                Button {
-                    guard let selection else { return }
-                    store.disconnect(providerID: selection)
-                } label: { Image(systemName: "minus").frame(width: 16, height: 18) }
-                .disabled(!store.canDisconnectProvider || !connected.contains { $0.id == selection })
-                .help("Remove Provider")
-                .accessibilityLabel("Remove Provider")
             }
             .fixedSize()
         }
