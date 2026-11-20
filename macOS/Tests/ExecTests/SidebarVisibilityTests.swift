@@ -4,33 +4,51 @@ import SwiftUI
 
 @MainActor struct SidebarVisibilityTests {
     func appliesInitialVisibilityBeforeOrderingWindowFront() async throws {
-        for count in [0, 1, 2] {
-            let fixture = Fixture(sessionCount: count)
-            defer { fixture.dispose() }
+        let suite = "exec-sidebar-visibility-\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
 
-            try expect(!fixture.window.isVisible)
-            try await fixture.expectSidebar(visible: count > 1)
-            try expect(!fixture.window.isVisible)
+        for savedVisibility: Bool? in [nil, false, true] {
+            preferences.removeObject(forKey: SidebarVisibilityPreference.preferenceKey)
+            if let savedVisibility {
+                SidebarVisibilityPreference(preferences: preferences).isVisible = savedVisibility
+            }
+            for count in [0, 1, 2] {
+                let fixture = Fixture(sessionCount: count, preferences: preferences)
+                defer { fixture.dispose() }
 
-            fixture.window.orderFront(nil)
-            try await fixture.expectSidebar(visible: count > 1)
+                try expect(!fixture.window.isVisible)
+                try await fixture.expectSidebar(visible: savedVisibility ?? false)
+                try expect(!fixture.window.isVisible)
+
+                fixture.window.orderFront(nil)
+                try await fixture.expectSidebar(visible: savedVisibility ?? false)
+                if savedVisibility == nil {
+                    try expect(preferences.object(forKey: SidebarVisibilityPreference.preferenceKey) == nil)
+                }
+            }
         }
     }
 
     func nativeToggleSurvivesContentCountAndFocusChanges() async throws {
+        let suite = "exec-sidebar-visibility-\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+
         // Exercise both opening an initially closed sidebar and closing an open one.
-        for count in [1, 2] {
-            let fixture = Fixture(sessionCount: count)
+        for initiallyVisible in [false, true] {
+            SidebarVisibilityPreference(preferences: preferences).isVisible = initiallyVisible
+            let fixture = Fixture(sessionCount: 1, preferences: preferences)
             defer { fixture.dispose() }
-            let split = try await fixture.expectSidebar(visible: count > 1)
+            let split = try await fixture.expectSidebar(visible: initiallyVisible)
             fixture.window.orderFront(nil)
             split.toggleSidebar(nil)
-            let manuallyVisible = count == 1
+            let manuallyVisible = !initiallyVisible
             try await fixture.expectSidebar(visible: manuallyVisible, sameController: split)
 
-            // Recompute the root, including initiallyShowsSidebar changing true -> false.
-            // Neither that input nor ordinary detail updates may reset the user's choice.
-            for updatedCount in [2, 1] {
+            // Refresh the root, including additions and removing every session.
+            // Neither catalog changes nor detail focus may reset the user's choice.
+            for updatedCount in [2, 1, 0, 3, 0] {
                 fixture.model.sessionCount = updatedCount
                 fixture.model.contentRevision += 1
                 try await fixture.expectSidebar(visible: manuallyVisible, sameController: split)
@@ -40,36 +58,87 @@ import SwiftUI
         }
     }
 
-    func revealRequestsOpenOnceAndRespectSubsequentManualClose() async throws {
-        let fixture = Fixture(sessionCount: 1)
-        defer { fixture.dispose() }
-        let split = try await fixture.expectSidebar(visible: false)
-        fixture.window.orderFront(nil)
+    func nativeTogglesPersistAcrossWindowRemounts() async throws {
+        let suite = "exec-sidebar-visibility-\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
 
-        fixture.model.sidebarRevealRequest += 1
-        try await fixture.expectSidebar(visible: true, sameController: split)
-        fixture.model.contentRevision += 1
-        try await fixture.expectSidebar(visible: true, sameController: split)
+        for count in [0, 1] {
+            for initiallyVisible in [false, true] {
+                SidebarVisibilityPreference(preferences: preferences).isVisible = initiallyVisible
+                do {
+                    let fixture = Fixture(sessionCount: count, preferences: preferences)
+                    defer { fixture.dispose() }
+                    let split = try await fixture.expectSidebar(visible: initiallyVisible)
+                    fixture.window.orderFront(nil)
+                    let menuItem = NSMenuItem(title: "Toggle Sidebar",
+                                              action: #selector(NSSplitViewController.toggleSidebar(_:)),
+                                              keyEquivalent: "")
+                    try expect(NSApp.sendAction(menuItem.action!, to: split, from: menuItem))
+                    try await fixture.expectSidebar(visible: !initiallyVisible, sameController: split)
+                }
 
-        split.toggleSidebar(nil)
-        try await fixture.expectSidebar(visible: false, sameController: split)
-        for count in [2, 1] {
-            fixture.model.sessionCount = count
-            fixture.model.contentRevision += 1
-            try await fixture.expectSidebar(visible: false, sameController: split)
-            try fixture.clickAndFocusDetail()
-            try await fixture.expectSidebar(visible: false, sameController: split)
+                // Recreate both the native window and preference reader, as at relaunch.
+                let restored = Fixture(sessionCount: count, preferences: UserDefaults(suiteName: suite)!)
+                defer { restored.dispose() }
+                try await restored.expectSidebar(visible: !initiallyVisible)
+                try expect(!restored.window.isVisible)
+                restored.window.orderFront(nil)
+                try await restored.expectSidebar(visible: !initiallyVisible)
+            }
         }
-        try expect(fixture.model.sidebarRevealRequest == 1)
+    }
 
-        fixture.model.sidebarRevealRequest += 1
-        try await fixture.expectSidebar(visible: true, sameController: split)
+    func revealRequestsOpenOnceAndRespectSubsequentManualClose() async throws {
+        let suite = "exec-sidebar-visibility-\(UUID())"
+        let preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+
+        do {
+            let fixture = Fixture(sessionCount: 1, preferences: preferences)
+            defer { fixture.dispose() }
+            let split = try await fixture.expectSidebar(visible: false)
+            fixture.window.orderFront(nil)
+
+            fixture.model.sessionCount = 2
+            fixture.model.sidebarRevealRequest += 1
+            try await fixture.expectSidebar(visible: true, sameController: split)
+            fixture.model.contentRevision += 1
+            try await fixture.expectSidebar(visible: true, sameController: split)
+        }
+
+        do {
+            // The automatic open survives a remount, even after all sessions disappear.
+            let fixture = Fixture(sessionCount: 0, preferences: UserDefaults(suiteName: suite)!, sidebarRevealRequest: 1)
+            defer { fixture.dispose() }
+            let split = try await fixture.expectSidebar(visible: true)
+            fixture.window.orderFront(nil)
+            split.toggleSidebar(nil)
+            try await fixture.expectSidebar(visible: false, sameController: split)
+            for count in [2, 1, 0] {
+                fixture.model.sessionCount = count
+                fixture.model.contentRevision += 1
+                try await fixture.expectSidebar(visible: false, sameController: split)
+                try fixture.clickAndFocusDetail()
+                try await fixture.expectSidebar(visible: false, sameController: split)
+            }
+            try expect(fixture.model.sidebarRevealRequest == 1)
+        }
+
+        // A previously consumed reveal must not replay over a saved manual close.
+        let restored = Fixture(sessionCount: 1, preferences: UserDefaults(suiteName: suite)!, sidebarRevealRequest: 1)
+        defer { restored.dispose() }
+        let split = try await restored.expectSidebar(visible: false)
+        restored.window.orderFront(nil)
+        restored.model.sidebarRevealRequest += 1
+        try await restored.expectSidebar(visible: true, sameController: split)
     }
 
     @MainActor @Observable final class Model: NSObject {
+        let sidebarVisibility: SidebarVisibilityPreference
         var sessionCount: Int
         var contentRevision = 0
-        var sidebarRevealRequest = 0
+        var sidebarRevealRequest: Int
         var clicks = 0
         let button = NSButton(title: "Update detail", target: nil, action: nil)
         let editor = NSTextField(string: "Isolated draft")
@@ -78,8 +147,10 @@ import SwiftUI
             "Sessions: \(sessionCount), content: \(contentRevision), clicks: \(clicks)"
         }
 
-        init(sessionCount: Int) {
+        init(sessionCount: Int, preferences: UserDefaults, sidebarRevealRequest: Int) {
+            self.sidebarVisibility = SidebarVisibilityPreference(preferences: preferences)
             self.sessionCount = sessionCount
+            self.sidebarRevealRequest = sidebarRevealRequest
             super.init()
             button.target = self
             button.action = #selector(updateDetail)
@@ -92,8 +163,9 @@ import SwiftUI
         let model: Model
 
         var body: some View {
-            ChatWindowLayout(initiallyShowsSidebar: model.sessionCount > 1,
-                             sidebarRevealRequest: model.sidebarRevealRequest) {
+            ChatWindowLayout(initiallyShowsSidebar: model.sidebarVisibility.isVisible,
+                             sidebarRevealRequest: model.sidebarRevealRequest,
+                             onSidebarVisibilityChange: { model.sidebarVisibility.isVisible = $0 }) {
                 Text("Sessions: \(model.sessionCount)")
             } detail: {
                 DetailControls(model: model, summary: model.summary)
@@ -124,9 +196,9 @@ import SwiftUI
         let model: Model
         let window: NSWindow
 
-        init(sessionCount: Int) {
+        init(sessionCount: Int, preferences: UserDefaults, sidebarRevealRequest: Int = 0) {
             _ = NSApplication.shared
-            model = Model(sessionCount: sessionCount)
+            model = Model(sessionCount: sessionCount, preferences: preferences, sidebarRevealRequest: sidebarRevealRequest)
             window = NSWindow(contentViewController: NSHostingController(rootView: Root(model: model)))
             window.isReleasedWhenClosed = false
             window.animationBehavior = .none
@@ -170,12 +242,18 @@ import SwiftUI
             if let sameController { try expect(split === sameController) }
             // Prove that the changed root contents actually reached the native host.
             try expect(model.button.title == model.summary)
+            func expectCollapsedState() throws {
+                guard sidebar.isCollapsed == !visible else {
+                    throw CheckFailure(description: "Native sidebar expected visible=\(visible), collapsed=\(sidebar.isCollapsed), ordered=\(window.isVisible), \(model.summary)")
+                }
+            }
             for _ in 0..<5 {
                 window.contentView?.layoutSubtreeIfNeeded()
-                try expect(sidebar.isCollapsed == !visible)
+                try expectCollapsedState()
                 try await Task.sleep(for: .milliseconds(20))
             }
-            try expect(sidebar.isCollapsed == !visible)
+            try expectCollapsedState()
+            try expect(model.sidebarVisibility.isVisible == visible)
             return split
         }
 
