@@ -142,9 +142,48 @@ final class RemoteTests: XCTestCase, @unchecked Sendable {
         await client.disconnect(); host.invitation.secret = nil
         try await client.connect(host) // Persistent device identity, no invitation reuse.
         let device = try await local("GET","/v1/remote")["devices"].array.first!["id"].string!
-        _ = try await local("DELETE","/v1/remote/devices/\(device)")
+        try await second.connect(host) // Two live sessions of the device being revoked.
+        let survivorValue = try await local("POST","/v1/remote/invitations",.object([:]))
+        let survivorInvitation = try PairingInvitation.parse(String(decoding:JSONEncoder().encode(survivorValue),as:UTF8.self))
+        let survivorHost = PairedHost(invitation:survivorInvitation,deviceName:"Revocation survivor")
+        let survivor = RelayClient()
+        try await survivor.connect(survivorHost)
+        let survivorDeadline = Task {
+            try await Task.sleep(for: .seconds(15))
+            await survivor.disconnect()
+        }
+        defer { survivorDeadline.cancel() }
+        guard let survivingChanges = try await survivor.changes() else {
+            XCTFail("Current backend did not enable change notifications"); return
+        }
+        var survivingNotifications = survivingChanges.makeAsyncIterator()
+        let beforeRevocation = try await survivingNotifications.next()
+        XCTAssertNotNil(beforeRevocation)
+
+        let revoked = try await local("DELETE","/v1/remote/devices/\(device)")
+        XCTAssertEqual(revoked["connectionStatus"].string,"connected")
+        XCTAssertTrue(revoked["connected"].bool)
         do { _ = try await client.request("GET","/v1/health"); XCTFail("Revoked socket remained authorized") } catch {}
+        do { _ = try await second.request("GET","/v1/health"); XCTFail("Revoked sibling socket remained authorized") } catch {}
+        // No reconnect: requests and the existing encrypted observation must both
+        // survive another device's revocation on their original HPKE contexts.
+        let survivorHealth = try await survivor.request("GET","/v1/health")
+        XCTAssertEqual(survivorHealth["version"].number,1)
+        _ = try await local("PATCH","/v1/library",.object(["automaticTitles":.bool(true)]))
+        var sawUpdate = false
+        while let notice = try await survivingNotifications.next() {
+            if notice.catalog != beforeRevocation?.catalog { sawUpdate = true; break }
+        }
+        XCTAssertTrue(sawUpdate)
+        let survivorLibrary = try await survivor.request("GET","/v1/library")
+        XCTAssertTrue(survivorLibrary["automaticTitles"].bool)
+        do { try await client.connect(host); XCTFail("Revoked identity reconnected without a new invitation") } catch {}
+        let finalStatus = try await local("GET","/v1/remote")
+        XCTAssertEqual(finalStatus["connectionStatus"].string,"connected")
+        XCTAssertEqual(finalStatus["devices"].array.count,1)
         await client.disconnect()
+        await second.disconnect()
+        await survivor.disconnect()
     }
     #endif
 }
