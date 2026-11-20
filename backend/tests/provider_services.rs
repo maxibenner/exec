@@ -149,7 +149,13 @@ async fn malformed_balance_and_failed_search_never_retry_or_leak_provider_bodies
         )
         .await
         .unwrap_err();
-    assert_eq!(error, Error::Provider(ProviderFailure::RateLimit));
+    assert_eq!(
+        error,
+        Error::ProviderDetailed {
+            reason: ProviderFailure::RateLimit,
+            detail: exec_agent::ProviderDiagnostic::HttpStatus { status: 429 },
+        }
+    );
     assert!(!error.to_string().contains("private raw body"));
     assert_eq!(transport.count(), 1);
 }
