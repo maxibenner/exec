@@ -72,7 +72,7 @@ impl fmt::Display for Error {
             Self::Api(status) => {
                 return write!(
                     f,
-                    "Service rejected request (HTTP {status}). Inspect conversation state before continuing."
+                    "Service request failed (HTTP {status}). It may have taken effect. Inspect conversation state before continuing."
                 );
             }
             Self::Provider(code) => match code {

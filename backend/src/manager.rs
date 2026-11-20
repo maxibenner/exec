@@ -211,14 +211,20 @@ impl AgentManager {
     }
     fn provider_epoch(&self) -> Result<u64> {
         let catalog = self.catalog.lock().unwrap();
-        if catalog.closed || catalog.account_busy {
+        if catalog.closed {
+            return Err(Error::Closed);
+        }
+        if catalog.account_busy {
             return Err(Error::Busy);
         }
         Ok(catalog.account_epoch)
     }
     fn check_provider_epoch(&self, epoch: u64) -> Result<()> {
         let catalog = self.catalog.lock().unwrap();
-        if catalog.closed || catalog.account_busy || catalog.account_epoch != epoch {
+        if catalog.closed {
+            return Err(Error::Closed);
+        }
+        if catalog.account_busy || catalog.account_epoch != epoch {
             return Err(Error::Cancelled);
         }
         Ok(())
@@ -422,10 +428,14 @@ impl AgentManager {
     pub fn library_configuration(&self) -> Result<LibraryConfiguration> {
         let c = self.catalog.lock().unwrap();
         if c.closed {
-            return Err(Error::Invalid("Agent manager is closed."));
+            return Err(Error::Closed);
         }
         if c.library_error {
             return Err(Error::Storage);
+        }
+        // Only a settled read can resolve a caller's lost write acknowledgement.
+        if c.library_busy {
+            return Err(Error::Busy);
         }
         Ok(c.library.clone())
     }

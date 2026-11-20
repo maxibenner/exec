@@ -32,6 +32,18 @@ Remote routes are deny-by-default: health, models, library reads/targeted patche
 
 Remote `DELETE /v1/conversations/:id` uses the existing durable deletion handler; active work still rejects with 409. The iOS list uses standard full-swipe destructive actions without an extra confirmation dialog. Mac catalog refresh removes deleted conversations. An unsent Mac-local draft is retained as an explicitly read-only **Unsent draft** entry for copying, never resubmitted or silently discarded by another device's deletion.
 
+## Request delivery outcomes
+
+`RelayClient` supplies `RemoteFailure.kind` from delivery evidence, not error text or connection status:
+
+- `.notDispatched`: disconnected preflight, full queue, oversized/unencodable request, pre-handoff sealing/encoding failure, or a queued request discarded when the connection ends. No command reached the socket handoff.
+- `.rejected`: a complete authenticated API error explicitly contains `"delivery":"rejected"`. The backend adds this optional, backward-compatible metadata only at proven pre-effect service gates; it is not inferred from status codes.
+- `.uncertain`: any failure after handing the active request to the socket, including send failure, lost/malformed reply or request timeout. API errors without recognized metadata also remain uncertain, including legacy errors, 500s and storage-recovery 409s. The safe API diagnostic is preserved.
+
+Active and queued requests on the same lost connection can therefore have different kinds. No outcome authorizes automatic command replay. Queued cancellation still prevents sealing; cancellation after dispatch detaches the caller while the ordered pump drains the accepted response and advances HPKE. Reconnection never carries old commands forward.
+
+`GET /v1/library` returns 409 during a pending write rather than an old value. Only a fresh settled successful read may recover a lost client-write acknowledgement; a failed storage acknowledgement requires profile reload before authoritative reads succeed. See [API settlement and error metadata](api.md).
+
 ## Synchronization and load
 
 The Mac keeps its existing per-conversation NDJSON subscriptions and refreshes the shared catalog/defaults every two seconds. The iOS client polls the catalog, defaults and selected snapshot every 1.5 seconds while foregrounded. Both fetch authoritative state after reconnection. `PATCH /v1/library` validates only explicitly supplied fields and merges against the latest configuration under the manager's catalog lock; conflicting busy writes are rejected, not retried. `PUT` remains supported for existing trusted clients.

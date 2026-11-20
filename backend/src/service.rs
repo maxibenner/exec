@@ -246,22 +246,53 @@ async fn serve_connection(
     tokio::select! { biased; _ = host.stop.cancelled() => {}, _ = connection.as_mut() => {} }
 }
 #[derive(Debug)]
-struct ApiError(u16, &'static str);
+struct ApiError {
+    status: u16,
+    message: String,
+    rejected: bool,
+}
 type ApiResult<T> = std::result::Result<T, ApiError>;
+impl ApiError {
+    // Use only at a boundary which proves this request produced no effects.
+    fn rejected(status: u16, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            rejected: true,
+        }
+    }
+    fn uncertain(status: u16, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            rejected: false,
+        }
+    }
+    fn response(self) -> Response<Body> {
+        let mut body = json!({"error": self.message});
+        if self.rejected {
+            body["delivery"] = json!("rejected");
+        }
+        json_response(self.status, body)
+    }
+}
 impl From<Error> for ApiError {
     fn from(error: Error) -> Self {
+        // Runtime errors can follow durable writes, cancellation or provider I/O.
+        // Do not derive no-effect evidence from an error category or HTTP status.
         match error {
-            Error::ConversationNotFound => Self(404, "Conversation not found."),
+            Error::ConversationNotFound => Self::uncertain(404, "Conversation not found."),
             Error::Closed | Error::Invalid("Agent manager is closed.") => {
-                Self(503, "Service is closed.")
+                Self::uncertain(503, "Service is closed.")
             }
-            Error::Busy => Self(409, "Conversation is busy."),
-            Error::WorkspaceLocked => Self(
+            Error::Busy => Self::uncertain(409, "Conversation is busy."),
+            Error::WorkspaceLocked => Self::uncertain(
                 409,
                 "Workspace cannot be changed after the first accepted turn.",
             ),
-            Error::Invalid(message) => Self(400, message),
-            _ => Self(
+            Error::Invalid(message) => Self::uncertain(400, message),
+            Error::Storage | Error::Provider(_) => Self::uncertain(500, error.to_string()),
+            _ => Self::uncertain(
                 500,
                 "Service request failed. Inspect conversation state before continuing.",
             ),
@@ -283,8 +314,9 @@ async fn dispatch(
 ) -> Response<Body> {
     match handle(host, request, cancel, false).await {
         Ok(response) => response,
-        Err(ApiError(status, error)) => {
-            let mut response = json_response(status, json!({"error":error}));
+        Err(error) => {
+            let status = error.status;
+            let mut response = error.response();
             if status == 401 || status == 403 {
                 response
                     .headers_mut()
@@ -309,31 +341,32 @@ async fn body<T: serde::de::DeserializeOwned>(
         .and_then(|h| h.to_str().ok())
         != Some("application/json")
     {
-        return Err(ApiError(415, "Use application/json."));
+        return Err(ApiError::rejected(415, "Use application/json."));
     }
     // Reading/validating an incomplete body is not an accepted mutation. Stop
     // promptly on disconnect/shutdown; never cancel the subsequent durable write.
     let bytes = tokio::select! { biased;
-        _ = cancel.cancelled() => return Err(ApiError(408, "Request interrupted.")),
+        _ = cancel.cancelled() => return Err(ApiError::rejected(408, "Request interrupted.")),
         result = tokio::time::timeout(
             Duration::from_secs(15),
             to_bytes(request.into_body(), 12 * 1024 * 1024),
         ) => result
-            .map_err(|_| ApiError(408, "Request timed out."))?
-            .map_err(|_| ApiError(413, "Request is too large."))?,
+            .map_err(|_| ApiError::rejected(408, "Request timed out."))?
+            .map_err(|_| ApiError::rejected(413, "Request is too large."))?,
     };
-    serde_json::from_slice(&bytes).map_err(|_| ApiError(400, "Invalid JSON or request fields."))
+    serde_json::from_slice(&bytes)
+        .map_err(|_| ApiError::rejected(400, "Invalid JSON or request fields."))
 }
 fn identifier(id: &str) -> ApiResult<()> {
     if valid_id(id) {
         Ok(())
     } else {
-        Err(ApiError(400, "Invalid identifier."))
+        Err(ApiError::rejected(400, "Invalid identifier."))
     }
 }
 fn text(value: &str, max: usize) -> ApiResult<()> {
     if value.trim().is_empty() || value.encode_utf16().count() > max || value.contains('\0') {
-        Err(ApiError(400, "Invalid string field."))
+        Err(ApiError::rejected(400, "Invalid string field."))
     } else {
         Ok(())
     }
@@ -454,14 +487,14 @@ fn sync_cursor(query: Option<&str>) -> ApiResult<SyncCursor<'_>> {
         Some(query) if query.starts_with("after=") => {
             let (anchor, prefix) = query["after=".len()..]
                 .split_once("&prefix=")
-                .ok_or(ApiError(400, "Invalid sync cursor."))?;
+                .ok_or(ApiError::rejected(400, "Invalid sync cursor."))?;
             identifier(anchor)?;
             if prefix.len() != 64 || !prefix.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err(ApiError(400, "Invalid sync cursor."));
+                return Err(ApiError::rejected(400, "Invalid sync cursor."));
             }
             Ok(SyncCursor::After { anchor, prefix })
         }
-        _ => Err(ApiError(400, "Invalid sync cursor.")),
+        _ => Err(ApiError::rejected(400, "Invalid sync cursor.")),
     }
 }
 
@@ -522,7 +555,10 @@ async fn handle(
 ) -> ApiResult<Response<Body>> {
     if request.headers().contains_key("origin") || request.headers().contains_key("sec-fetch-site")
     {
-        return Err(ApiError(403, "Browser requests are not supported."));
+        return Err(ApiError::rejected(
+            403,
+            "Browser requests are not supported.",
+        ));
     }
     let native = request.uri().path().starts_with("/v1/native/")
         || (request.method() == "PUT"
@@ -535,7 +571,7 @@ async fn handle(
             .map(|p| p.as_str())
             .unwrap_or("");
         if !crate::remote::permits(request.method().as_str(), path) {
-            return Err(ApiError(
+            return Err(ApiError::rejected(
                 403,
                 "This operation is unavailable to remote devices.",
             ));
@@ -544,10 +580,10 @@ async fn handle(
         host.options
             .access
             .authorize(request.headers(), native)
-            .map_err(|(status, message)| ApiError(status, message))?;
+            .map_err(|(status, message)| ApiError::rejected(status, message))?;
     }
     if host.stop.is_cancelled() {
-        return Err(ApiError(503, "Service is stopping."));
+        return Err(ApiError::rejected(503, "Service is stopping."));
     }
     // Acquire inside the tracked handler, after authorization and before body
     // allocation or effects. Disconnects cannot release an accepted write's slot.
@@ -556,7 +592,7 @@ async fn handle(
         None
     } else {
         Some(host.mutations.clone().try_acquire_owned().map_err(|_| {
-            ApiError(
+            ApiError::rejected(
                 503,
                 "Service mutation capacity is full. No work was accepted.",
             )
@@ -564,11 +600,11 @@ async fn handle(
     };
     let route = request.uri().path().to_owned();
     if request.uri().query().is_some() && !route.ends_with("/sync") {
-        return Err(ApiError(404, "Route not found."));
+        return Err(ApiError::rejected(404, "Route not found."));
     }
     let method = request.method().as_str().to_owned();
     if route.starts_with("/v1/remote") {
-        let remote = host.remote.as_ref().ok_or(ApiError(
+        let remote = host.remote.as_ref().ok_or(ApiError::rejected(
             404,
             "Remote access requires a persistent profile.",
         ))?;
@@ -590,7 +626,7 @@ async fn handle(
                 remote.revoke(id).await?;
                 return Ok(json_response(200, remote.status().await));
             }
-            _ => return Err(ApiError(404, "Route not found.")),
+            _ => return Err(ApiError::rejected(404, "Route not found.")),
         }
     }
     if method == "GET" && route == "/v1/changes" {
@@ -656,7 +692,7 @@ async fn handle(
     if method == "POST" && route == "/v1/native/results" {
         let input: crate::native::NativeReply = body(request, &request_cancel).await?;
         options.manager.native().reply(input).map_err(|_| {
-            ApiError(
+            ApiError::uncertain(
                 409,
                 "Native request is no longer active or does not match this request and action.",
             )
@@ -678,7 +714,7 @@ async fn handle(
     if method == "GET" && route == "/v1/models" {
         let cancel = request_cancel.child_token();
         let _guard = cancel.clone().drop_guard();
-        let models = tokio::select! {biased;_=cancel.cancelled()=>return Err(ApiError(503,"Service is stopping.")),value=tokio::time::timeout(Duration::from_secs(120),options.manager.discover_models(options.provider.clone(), cancel.clone()))=>value.map_err(|_|ApiError(500,"Model discovery failed."))??};
+        let models = tokio::select! {biased;_=cancel.cancelled()=>return Err(ApiError::uncertain(503,"Service is stopping.")),value=tokio::time::timeout(Duration::from_secs(120),options.manager.discover_models(options.provider.clone(), cancel.clone()))=>value.map_err(|_|ApiError::uncertain(500,"Model discovery failed."))??};
         return Ok(json_response(200, models));
     }
     if method == "GET"
@@ -693,7 +729,7 @@ async fn handle(
         identifier(id)?;
         let input: ReadLog = body(request, &request_cancel).await?;
         if input.max_bytes == 0 || input.max_bytes > 32768 {
-            return Err(ApiError(400, "Read 1–32768 log bytes."));
+            return Err(ApiError::rejected(400, "Read 1–32768 log bytes."));
         }
         let chunk = options
             .manager
@@ -701,9 +737,9 @@ async fn handle(
             .await
             .map_err(|error| match error {
                 Error::Invalid("Log is not referenced by an available conversation.") => {
-                    ApiError(404, "Log not found.")
+                    ApiError::uncertain(404, "Log not found.")
                 }
-                Error::Invalid(message) => ApiError(400, message),
+                Error::Invalid(message) => ApiError::uncertain(400, message),
                 other => ApiError::from(other),
             })?;
         return Ok(json_response(200, chunk));
@@ -711,7 +747,7 @@ async fn handle(
     if method == "POST" && route == "/v1/fetch" {
         let input: Fetch = body(request, &request_cancel).await?;
         crate::content_fetch::public_url(&input.url).map_err(|_| {
-            ApiError(
+            ApiError::rejected(
                 400,
                 "Use a public HTTPS URL without credentials on port 443.",
             )
@@ -725,7 +761,8 @@ async fn handle(
     if method == "POST" && route == "/v1/search" {
         let search: Search = body(request, &request_cancel).await?;
         text(&search.model, 128)?;
-        search_query(&search.query).map_err(|_| ApiError(400, "Invalid search query."))?;
+        search_query(&search.query)
+            .map_err(|_| ApiError::rejected(400, "Invalid search query."))?;
         return Ok(json_response(
             200,
             options
@@ -745,7 +782,7 @@ async fn handle(
             .and_then(|s| s.strip_suffix("/balance"))
     {
         if id.is_empty() || id.contains('/') {
-            return Err(ApiError(404, "Provider not found."));
+            return Err(ApiError::rejected(404, "Provider not found."));
         }
         return Ok(json_response(
             200,
@@ -805,19 +842,19 @@ async fn handle(
     }
     if let Some(id) = route.strip_prefix("/v1/providers/") {
         if id.is_empty() || id.contains('/') {
-            return Err(ApiError(404, "Provider not found."));
+            return Err(ApiError::rejected(404, "Provider not found."));
         }
         let credential = match method.as_str() {
             "PUT" => Some(body::<Connect>(request, &request_cancel).await?.api_key),
             "DELETE" => None,
-            _ => return Err(ApiError(404, "Route not found.")),
+            _ => return Err(ApiError::rejected(404, "Route not found.")),
         };
         let connections = options
             .manager
             .set_credential(options.provider.clone(), id, credential)
             .await
             .map_err(|error| match error {
-                Error::Invalid(message) => ApiError(400, message),
+                Error::Invalid(message) => ApiError::uncertain(400, message),
                 other => ApiError::from(other),
             })?;
         return Ok(json_response(200, connections));
@@ -836,13 +873,13 @@ async fn handle(
                 let config: LibraryConfiguration = body(request, &request_cancel).await?;
                 config
                     .validate()
-                    .map_err(|_| ApiError(400, "Invalid library configuration."))?;
+                    .map_err(|_| ApiError::rejected(400, "Invalid library configuration."))?;
                 Ok(json_response(
                     200,
                     options.manager.update_library(config).await?,
                 ))
             }
-            _ => Err(ApiError(404, "Route not found.")),
+            _ => Err(ApiError::rejected(404, "Route not found.")),
         };
     }
     if route == "/v1/conversations" {
@@ -889,14 +926,14 @@ async fn handle(
                 )
                 .await
                 .map_err(|error| match error {
-                    Error::Invalid(message) => ApiError(400, message),
+                    Error::Invalid(message) => ApiError::uncertain(400, message),
                     other => ApiError::from(other),
                 })?;
             return Ok(json_response(201, created.snapshot()));
         }
     }
     let Some(tail) = route.strip_prefix("/v1/conversations/") else {
-        return Err(ApiError(404, "Route not found."));
+        return Err(ApiError::rejected(404, "Route not found."));
     };
     let parts: Vec<_> = tail.split('/').collect();
     if method == "DELETE" && parts.len() == 3 && parts[1] == "images" {
@@ -907,7 +944,7 @@ async fn handle(
             .release_image(parts[0], parts[2])
             .await
             .map_err(|e| match e {
-                Error::Invalid(message) => ApiError(409, message),
+                Error::Invalid(message) => ApiError::uncertain(409, message),
                 other => other.into(),
             })?;
         return Ok(json_response(200, json!({"released":true})));
@@ -937,7 +974,7 @@ async fn handle(
             .contains(s)
         })
     {
-        return Err(ApiError(404, "Route not found."));
+        return Err(ApiError::rejected(404, "Route not found."));
     }
     identifier(parts[0])?;
     if options
@@ -950,7 +987,7 @@ async fn handle(
             options.manager.delete(parts[0]).await?;
             return Ok(json_response(200, json!({"deleted":true})));
         }
-        return Err(ApiError(
+        return Err(ApiError::rejected(
             409,
             "Conversation is unreadable. Its file is preserved; inspect it before explicit deletion.",
         ));
@@ -961,7 +998,7 @@ async fn handle(
             .manager
             .sync(parts[0], sync_cursor(request.uri().query())?)
             .map_err(|error| match error {
-                Error::Invalid(message) => ApiError(409, message),
+                Error::Invalid(message) => ApiError::uncertain(409, message),
                 other => other.into(),
             })?;
         return Ok(json_response(200, page));
@@ -993,7 +1030,7 @@ async fn handle(
     if method == "POST" && action == Some("clear") {
         let _: Empty = body(request, &request_cancel).await?;
         if host.stop.is_cancelled() {
-            return Err(ApiError(503, "Service is stopping."));
+            return Err(ApiError::rejected(503, "Service is stopping."));
         }
         let snapshot = options
             .manager
@@ -1001,9 +1038,11 @@ async fn handle(
             .await
             .map_err(|error| match error {
                 Error::Invalid("Conversation not found.") => {
-                    ApiError(404, "Conversation not found.")
+                    ApiError::uncertain(404, "Conversation not found.")
                 }
-                Error::Storage => ApiError(409, "Conversation requires storage recovery."),
+                Error::Storage => {
+                    ApiError::uncertain(409, "Conversation requires storage recovery.")
+                }
                 other => ApiError::from(other),
             })?;
         return Ok(json_response(200, snapshot));
@@ -1013,7 +1052,7 @@ async fn handle(
         ("PATCH", None) => {
             let patch: PatchSession = body(request, &request_cancel).await?;
             if host.stop.is_cancelled() {
-                return Err(ApiError(503, "Service is stopping."));
+                return Err(ApiError::rejected(503, "Service is stopping."));
             }
             Ok(json_response(
                 200,
@@ -1024,7 +1063,7 @@ async fn handle(
         }
         ("DELETE", None) => {
             if host.stop.is_cancelled() {
-                return Err(ApiError(503, "Service is stopping."));
+                return Err(ApiError::rejected(503, "Service is stopping."));
             }
             options.manager.delete(parts[0]).await?;
             Ok(json_response(200, json!({"deleted":true})))
@@ -1039,7 +1078,7 @@ async fn handle(
             };
             metadata
                 .validate()
-                .map_err(|_| ApiError(400, "Invalid title."))?;
+                .map_err(|_| ApiError::rejected(400, "Invalid title."))?;
             Ok(json_response(
                 200,
                 options.manager.rename(parts[0], input.title).await?,
@@ -1057,7 +1096,7 @@ async fn handle(
             let input: SelectWorkspace = body(request, &request_cancel).await?;
             text(&input.workspace, 4096)?;
             if host.stop.is_cancelled() {
-                return Err(ApiError(503, "Service is stopping."));
+                return Err(ApiError::rejected(503, "Service is stopping."));
             }
             Ok(json_response(
                 200,
@@ -1082,9 +1121,9 @@ async fn handle(
             let settings: SessionSettings = body(request, &request_cancel).await?;
             settings
                 .validate()
-                .map_err(|_| ApiError(400, "Invalid session settings."))?;
+                .map_err(|_| ApiError::rejected(400, "Invalid session settings."))?;
             if host.stop.is_cancelled() {
-                return Err(ApiError(503, "Service is stopping."));
+                return Err(ApiError::rejected(503, "Service is stopping."));
             }
             Ok(json_response(
                 200,
@@ -1096,18 +1135,20 @@ async fn handle(
             if submit.images.is_empty() && submit.files.is_empty() {
                 text(&submit.text, 128 * 1024)?;
             } else if submit.text.len() > 128 * 1024 || submit.text.contains('\0') {
-                return Err(ApiError(400, "Invalid message."));
+                return Err(ApiError::rejected(400, "Invalid message."));
             }
             if host.stop.is_cancelled() {
-                return Err(ApiError(503, "Service is stopping."));
+                return Err(ApiError::rejected(503, "Service is stopping."));
             }
             let run = options
                 .manager
                 .submit_attachments(parts[0], submit.text, submit.images, submit.files)
                 .await
                 .map_err(|error| match error {
-                    Error::Invalid(message) => ApiError(400, message),
-                    Error::Storage => ApiError(409, "Conversation requires storage recovery."),
+                    Error::Invalid(message) => ApiError::uncertain(400, message),
+                    Error::Storage => {
+                        ApiError::uncertain(409, "Conversation requires storage recovery.")
+                    }
                     other => ApiError::from(other),
                 })?;
             Ok(json_response(202, json!({"operationID":run.operation_id})))
@@ -1132,11 +1173,11 @@ async fn handle(
             let input: UploadAsset = body(request, &request_cancel).await?;
             use base64::Engine;
             if input.base64.len() > MAX_FILE_BYTES.div_ceil(3) * 4 {
-                return Err(ApiError(400, "File exceeds 8 MiB."));
+                return Err(ApiError::rejected(400, "File exceeds 8 MiB."));
             }
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(&input.base64)
-                .map_err(|_| ApiError(400, "Invalid file data."))?;
+                .map_err(|_| ApiError::rejected(400, "Invalid file data."))?;
             let file = options
                 .manager
                 .upload_file(parts[0], input.name, bytes)
@@ -1146,7 +1187,7 @@ async fn handle(
         ("POST", Some("images")) => {
             let input: UploadAsset = body(request, &request_cancel).await?;
             let bytes = crate::images::decode_base64(&input.base64)
-                .map_err(|_| ApiError(400, "Invalid image data."))?;
+                .map_err(|_| ApiError::rejected(400, "Invalid image data."))?;
             let image = options
                 .manager
                 .upload_image(parts[0], input.name, bytes)
@@ -1175,7 +1216,10 @@ async fn handle(
             let cancel: Cancel = body(request, &request_cancel).await?;
             identifier(&cancel.operation_id)?;
             if !conversation.cancel(&cancel.operation_id) {
-                return Err(ApiError(409, "Operation is no longer cancellable."));
+                return Err(ApiError::uncertain(
+                    409,
+                    "Operation is no longer cancellable.",
+                ));
             }
             Ok(json_response(
                 202,
@@ -1191,11 +1235,14 @@ async fn handle(
                 &resolve.approval_id,
                 resolve.approved,
             ) {
-                return Err(ApiError(409, "Approval is stale or already resolved."));
+                return Err(ApiError::uncertain(
+                    409,
+                    "Approval is stale or already resolved.",
+                ));
             }
             Ok(json_response(200, json!({"resolved":true})))
         }
-        _ => Err(ApiError(405, "Method not allowed.")),
+        _ => Err(ApiError::rejected(405, "Method not allowed.")),
     }
 }
 
@@ -1209,7 +1256,7 @@ pub(crate) async fn remote_request(host: Arc<Host>, request: Request<Body>) -> R
         .spawn(async move {
             match handle(host, request, cancel, true).await {
                 Ok(response) => response,
-                Err(ApiError(status, message)) => json_response(status, json!({"error":message})),
+                Err(error) => error.response(),
             }
         })
         .await
@@ -1313,8 +1360,8 @@ mod change_tests {
                 503
             );
         }
-        assert_eq!(ApiError::from(Error::Internal).0, 500);
-        assert_eq!(ApiError::from(Error::Storage).0, 500);
+        assert_eq!(ApiError::from(Error::Internal).status, 500);
+        assert_eq!(ApiError::from(Error::Storage).status, 500);
     }
 
     #[tokio::test]
@@ -1366,16 +1413,20 @@ mod change_tests {
                 .body(Body::from(r#"{"title":"accepted"}"#))
                 .unwrap()
         };
-        assert_eq!(
-            dispatch(host.clone(), valid_request(), CancellationToken::new())
-                .await
-                .status(),
-            503
-        );
-        assert_eq!(
-            remote_request(host.clone(), valid_request()).await.status(),
-            503
-        );
+        for response in [
+            dispatch(host.clone(), valid_request(), CancellationToken::new()).await,
+            remote_request(host.clone(), valid_request()).await,
+        ] {
+            assert_eq!(response.status(), 503);
+            let body: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap())
+                    .unwrap();
+            assert_eq!(body["delivery"], "rejected");
+            assert_eq!(
+                body["error"],
+                "Service mutation capacity is full. No work was accepted."
+            );
+        }
         // Only the transport caller is aborted, before a body has been accepted.
         caller.abort();
         assert!(caller.await.unwrap_err().is_cancelled());
@@ -1396,6 +1447,131 @@ mod change_tests {
             Some("accepted")
         );
         manager.close().await.unwrap();
+    }
+
+    #[derive(Default)]
+    struct MetadataGate {
+        entered: CancellationToken,
+        release: CancellationToken,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl MetadataGate {
+        async fn hold(&self) {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.entered.cancel();
+            self.release.cancelled().await;
+        }
+    }
+    #[async_trait::async_trait]
+    impl ChatProvider for MetadataGate {
+        fn stream(
+            &self,
+            _: ProviderRequest,
+        ) -> futures_util::stream::BoxStream<'static, Result<ProviderEvent>> {
+            panic!("metadata tests must not infer")
+        }
+        async fn models(&self, _: CancellationToken) -> Result<Vec<ChatModel>> {
+            self.hold().await;
+            Ok(vec![])
+        }
+        async fn account_balances(
+            &self,
+            _: &str,
+            _: CancellationToken,
+        ) -> Result<Vec<AccountBalance>> {
+            self.hold().await;
+            Ok(vec![])
+        }
+        async fn account_usage(&self, _: &str, _: CancellationToken) -> Result<AccountUsage> {
+            self.hold().await;
+            Ok(AccountUsage {
+                windows: vec![],
+                fetched_at: 0,
+                stale: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_reads_report_closed_before_dispatch_and_after_gated_completion() {
+        for route in [
+            "/v1/models",
+            "/v1/providers/fake/balance",
+            "/v1/providers/fake/usage",
+        ] {
+            for close_before in [true, false] {
+                let manager = Arc::new(AgentManager::default());
+                let provider = Arc::new(MetadataGate::default());
+                let host = Arc::new(Host {
+                    options: ServiceOptions {
+                        manager: manager.clone(),
+                        provider: provider.clone(),
+                        tools: vec![],
+                        address: "127.0.0.1:0".parse().unwrap(),
+                        access: HttpAccess::externally_secured(None).unwrap(),
+                    },
+                    remote: None,
+                    stop: CancellationToken::new(),
+                    handlers: tokio_util::task::TaskTracker::new(),
+                    mutations: Arc::new(tokio::sync::Semaphore::new(64)),
+                });
+                if close_before {
+                    manager.close().await.unwrap();
+                }
+                let request = Request::builder().uri(route).body(Body::empty()).unwrap();
+                let caller = tokio::spawn(dispatch(host, request, CancellationToken::new()));
+                if !close_before {
+                    tokio::time::timeout(Duration::from_secs(2), provider.entered.cancelled())
+                        .await
+                        .unwrap();
+                    manager.close().await.unwrap();
+                    provider.release.cancel();
+                }
+                let response = tokio::time::timeout(Duration::from_secs(2), caller)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    503,
+                    "{route}, closed before dispatch: {close_before}"
+                );
+                let body: serde_json::Value =
+                    serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap())
+                        .unwrap();
+                assert_eq!(body["error"], "Service is closed.");
+                assert!(body.get("delivery").is_none());
+                assert_eq!(
+                    provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+                    usize::from(!close_before)
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_error_serialization_never_claims_no_effects_and_retains_safe_diagnostics() {
+        for error in [
+            Error::Internal,
+            Error::Storage,
+            Error::Busy,
+            Error::Closed,
+            Error::Invalid("Safe runtime validation."),
+            Error::Provider(crate::ProviderFailure::Transport),
+        ] {
+            let expected = match &error {
+                Error::Storage | Error::Provider(_) => Some(error.to_string()),
+                _ => None,
+            };
+            let response = ApiError::from(error).response();
+            let body: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap())
+                    .unwrap();
+            assert!(body.get("delivery").is_none());
+            if let Some(expected) = expected {
+                assert_eq!(body["error"], expected);
+            }
+        }
     }
 
     struct NoInference;
