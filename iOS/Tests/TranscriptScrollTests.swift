@@ -169,6 +169,29 @@ final class TranscriptScrollTests: XCTestCase {
         XCTAssertNil(store.transcriptViewState(for: "same-id")?.anchor)
     }
 
+    func testDisclosureLeavesFollowingAndOnlyExplicitBottomReentryResumes() {
+        var state = TranscriptScrollState()
+        let history = rows([message("question"), message("answer", "assistant")])
+        _ = state.update(rows: history)
+        state.disclosedTool()
+        XCTAssertEqual(state.intent, .reading)
+        // Group expansion, collapse, streaming and geometry are not reader input.
+        _ = state.update(rows: history)
+        _ = state.update(rows: rows([message("question"), message("answer", "assistant", text: "Growing")]))
+        state.disclosedTool()
+        XCTAssertEqual(state.intent, .reading)
+        state.readerScrolled(towardLatest: false, atBottom: true)
+        XCTAssertEqual(state.intent, .reading)
+        state.readerScrolled(towardLatest: true, atBottom: false)
+        XCTAssertEqual(state.intent, .reading)
+        state.readerScrolled(towardLatest: true, atBottom: true)
+        XCTAssertEqual(state.intent, .latest)
+        state.submitted("local-question")
+        state.disclosedTool()
+        XCTAssertEqual(state.intent, .reading)
+        XCTAssertEqual(state.reservedTurnID, "local-question", "Do not collapse reserved response space underneath a reader")
+    }
+
     func testResponseConsumesReservationAndKeyboardUsesUnobscuredViewport() {
         let target = TranscriptScrollGeometry.turnOffset(rowTop: 1_000, topInset: 100)
         XCTAssertEqual(target, 892)

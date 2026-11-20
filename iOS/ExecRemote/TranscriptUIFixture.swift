@@ -64,7 +64,7 @@ import ExecRemote
             let count = min(60, max(1, Int(Date().timeIntervalSince(turn.started) / interval) + 1))
             let text = (1...count).map { "Response paragraph \($0). This synthetic answer grows while the reader keeps a stable viewport." }.joined(separator: "\n\n")
             messages += [.object(["id": .string("submitted-user"), "role": .string("user"), "text": .string(turn.text)]),
-                         .object(["id": .string("streaming-answer"), "role": .string("assistant"), "text": .string(text)])]
+                         .object(["id": .string("streaming-answer"), "role": .string("assistant"), "text": .string(text), "status": .string(count < 60 ? "streaming" : "completed")])]
         }
         return messages
     }

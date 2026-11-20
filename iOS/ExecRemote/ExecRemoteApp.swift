@@ -3,12 +3,6 @@ import UIKit
 import ExecRemote
 import ExecTranscript
 
-enum AppColors {
-    // Match the Mac app's fixed iMessage blue, independent of system accent/appearance.
-    static let nativeBlue = UIColor(red: 0, green: 122.0 / 255.0, blue: 1, alpha: 1)
-    static let blue = Color(uiColor: nativeBlue)
-}
-
 enum ToolDisplayPreferences {
     static let descriptiveShellTitlesKey = "descriptiveShellTitles"
 }
@@ -348,6 +342,7 @@ struct ConversationScreen: View {
         let queued = store.pendingMessage.flatMap { $0.conversationID == conversationID ? $0.transcriptMessage : nil } ?? .null
         ZStack {
             NativeTranscript(conversationID: conversationID, snapshot: current.snapshot,
+                             showsThinkingIndicator: store.thinking.visible.contains(conversationID),
                              queuedMessage: queued, cancelQueuedMessage: { store.cancelPendingMessage(rowID: $0) },
                              descriptiveShellTitles: descriptiveShellTitles,
                              viewState: store.transcriptViewState(for: conversationID),

@@ -3,11 +3,18 @@ import UIKit
 import ExecRemote
 import ExecTranscript
 
+enum AppColors {
+    // Match the Mac app's fixed iMessage blue, independent of system accent/appearance.
+    static let nativeBlue = UIColor(red: 0, green: 122.0 / 255.0, blue: 1, alpha: 1)
+    static let blue = Color(uiColor: nativeBlue)
+}
+
 /// UIKit owns virtualization and reuse. One host measures each adjacent tool
 /// group; message rows use selectable TextKit with the shared Markdown parser.
 struct NativeTranscript: UIViewControllerRepresentable {
     let conversationID: String?
     let snapshot: RemoteJSON
+    let showsThinkingIndicator: Bool
     let queuedMessage: RemoteJSON
     let cancelQueuedMessage: (String) -> Void
     let descriptiveShellTitles: Bool
@@ -30,8 +37,6 @@ struct NativeTranscript: UIViewControllerRepresentable {
         table.estimatedRowHeight = 120
         table.keyboardDismissMode = .interactive
         table.allowsSelection = false
-        table.register(MessageCell.self, forCellReuseIdentifier: "message")
-        table.register(UITableViewCell.self, forCellReuseIdentifier: "tool")
         let coordinator = context.coordinator
         coordinator.attach(table, saveViewState: saveViewState)
         controller.saveViewState = { [weak coordinator, weak table] in
@@ -48,7 +53,8 @@ struct NativeTranscript: UIViewControllerRepresentable {
         table.loadEarlier = loadEarlier
         context.coordinator.update(conversationID: conversationID, snapshot: snapshot,
                                    queuedMessage: queuedMessage, cancelQueuedMessage: cancelQueuedMessage,
-                                   descriptiveShellTitles: descriptiveShellTitles, viewState: viewState, table: table)
+                                   showsThinkingIndicator: showsThinkingIndicator, descriptiveShellTitles: descriptiveShellTitles,
+                                   viewState: viewState, table: table)
     }
     static func dismantleUIViewController(_ controller: UITableViewController, coordinator: Coordinator) {
         if let table = controller.tableView as? TranscriptTableView { coordinator.detach(table) }
@@ -57,6 +63,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
         private struct Update {
             let conversationID: String?
             let snapshot: RemoteJSON
+            let showsThinkingIndicator: Bool
             let queuedMessage: RemoteJSON
             let cancelQueuedMessage: (String) -> Void
             let descriptiveShellTitles: Bool
@@ -83,6 +90,8 @@ struct NativeTranscript: UIViewControllerRepresentable {
         private var saveViewState: ((String, TranscriptViewState) -> Void)?
 
         func attach(_ table: TranscriptTableView, saveViewState: @escaping (String, TranscriptViewState) -> Void) {
+            table.register(MessageCell.self, forCellReuseIdentifier: "message")
+            table.register(UITableViewCell.self, forCellReuseIdentifier: "tool")
             attached = true
             self.saveViewState = saveViewState
             table.delegate = self
@@ -166,16 +175,22 @@ struct NativeTranscript: UIViewControllerRepresentable {
         }
         private func binding(_ rowID: String, table: UITableView) -> Binding<Bool> {
             Binding(get: { [weak self] in self?.expansion[rowID] ?? false }, set: { [weak self, weak table] value in
-                guard let self, let table = table as? TranscriptTableView, let group = self.itemForRow[rowID] else { return }
-                self.expansion[rowID] = value
-                self.dirtyGroups.insert(group)
-                self.scheduleUpdate(table)
+                guard let table = table as? TranscriptTableView else { return }
+                self?.setExpanded(value, rowID: rowID, table: table)
             })
         }
+        func setExpanded(_ value: Bool, rowID: String, table: TranscriptTableView) {
+            guard let group = itemForRow[rowID], (expansion[rowID] ?? false) != value else { return }
+            table.beginDisclosure(rowID: rowID)
+            expansion[rowID] = value
+            dirtyGroups.insert(group)
+            scheduleUpdate(table)
+        }
         func update(conversationID: String?, snapshot: RemoteJSON, queuedMessage: RemoteJSON,
-                    cancelQueuedMessage: @escaping (String) -> Void, descriptiveShellTitles: Bool,
+                    cancelQueuedMessage: @escaping (String) -> Void, showsThinkingIndicator: Bool, descriptiveShellTitles: Bool,
                     viewState: TranscriptViewState?, table: TranscriptTableView) {
-            pendingUpdate = Update(conversationID: conversationID, snapshot: snapshot, queuedMessage: queuedMessage,
+            pendingUpdate = Update(conversationID: conversationID, snapshot: snapshot,
+                                   showsThinkingIndicator: showsThinkingIndicator, queuedMessage: queuedMessage,
                                    cancelQueuedMessage: cancelQueuedMessage,
                                    descriptiveShellTitles: descriptiveShellTitles, viewState: viewState)
             scheduleUpdate(table)
@@ -201,7 +216,8 @@ struct NativeTranscript: UIViewControllerRepresentable {
             let dirty = dirtyGroups
             dirtyGroups.removeAll()
             let validSnapshot = update.snapshot["id"].string == update.conversationID && update.conversationID != nil
-            guard changedConversation || changedDisplay || next != items || !dirty.isEmpty || (!hasSnapshot && validSnapshot) else { return }
+            guard changedConversation || changedDisplay || currentUpdate?.showsThinkingIndicator != update.showsThinkingIndicator
+                    || next != items || !dirty.isEmpty || (!hasSnapshot && validSnapshot) else { return }
             applying = true
             if changedConversation {
                 savePresentation(table)
@@ -214,6 +230,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
             let previousQueuedID = changedConversation ? nil : currentUpdate?.queuedMessage["id"].string
             currentUpdate = update
             table.beginContentUpdate()
+            table.setThinkingIndicator(update.showsThinkingIndicator)
             let rows = projected.flatMap(\.rows)
             if initial {
                 presentation = update.viewState
@@ -432,6 +449,12 @@ private struct MobileToolCard: View {
     var animatingScroll: Bool { scrollAnimator != nil }
     private var readerActive = false
     private var readerDirection: CGFloat = 0
+    private var readerTranslation: CGFloat = 0
+    private var readerContentSize = CGSize.zero
+    private var readerViewportSize = CGSize.zero
+    private var readerInsets = UIEdgeInsets.zero
+    private var thinkingView: UIView?
+    private var thinkingHeight: CGFloat { thinkingView == nil ? 0 : 36 }
     private var lastReaderOffset: CGFloat = 0
     private var reduceMotion: Bool {
         #if DEBUG && targetEnvironment(simulator)
@@ -455,6 +478,8 @@ private struct MobileToolCard: View {
         readingAnchor = nil
         restoringReadingAnchor = false
         requestedEarlier = false
+        thinkingView?.removeFromSuperview()
+        thinkingView = nil
         tableFooterView = nil
         immediateAlignment = true
         suppressOpeningAnimation = true
@@ -496,11 +521,53 @@ private struct MobileToolCard: View {
     func rememberReadingPosition() {
         if !restoringReadingAnchor, scrollState.intent == .reading, let anchor = readingPosition?() { readingAnchor = anchor }
     }
+    /// Capture the disclosed header before SwiftUI/self-sizing changes its group.
+    /// Collapse also stays in reading mode; clamping a shorter document is not
+    /// an explicit request to follow subsequent output.
+    func beginDisclosure(rowID: String) {
+        cancelScrollAnimation()
+        readerActive = false
+        scrollState.disclosedTool()
+        if let top = rowTop?(rowID) {
+            readingAnchor = TranscriptViewportAnchor(rowID: rowID,
+                offset: top - contentOffset.y - adjustedContentInset.top)
+        } else { readingAnchor = readingPosition?() }
+        restoringReadingAnchor = readingAnchor != nil
+        scheduleAlignment(immediate: true)
+    }
+    func setThinkingIndicator(_ visible: Bool) {
+        guard visible != (thinkingView != nil) else { return }
+        if visible {
+            // Explicit sRGB iMessage blue, never a semantic/system accent.
+            let blue = AppColors.nativeBlue
+            let view = UIHostingConfiguration {
+                MobileWorkingIndicator(tintColor: blue)
+            }.margins(.all, 0).makeContentView()
+            view.frame = CGRect(x: 16, y: 10, width: 28, height: 16)
+            view.accessibilityIdentifier = "transcript-thinking"
+            let footer = tableFooterView ?? UIView()
+            footer.addSubview(view)
+            thinkingView = view
+            tableFooterView = footer
+            if !reduceMotion {
+                view.alpha = 0
+                UIView.animate(withDuration: 0.4) { view.alpha = 1 }
+            }
+        } else {
+            thinkingView?.removeFromSuperview()
+            thinkingView = nil
+        }
+        scheduleAlignment()
+    }
     func beginReaderScroll() {
         cancelScrollAnimation()
         readerActive = true
         readerDirection = 0
         lastReaderOffset = contentOffset.y
+        readerTranslation = panGestureRecognizer.translation(in: self).y
+        readerContentSize = contentSize
+        readerViewportSize = bounds.size
+        readerInsets = adjustedContentInset
         scrollState.readerScrolled(towardLatest: false, atBottom: false)
         rememberReadingPosition()
     }
@@ -511,8 +578,19 @@ private struct MobileToolCard: View {
         guard readerActive, !correctingOffset, !updatingContent, isDragging || isDecelerating else { return }
         let delta = contentOffset.y - lastReaderOffset
         lastReaderOffset = contentOffset.y
-        guard previousSize == bounds.size, previousInsets == adjustedContentInset else { return }
-        if isDragging { setReaderDirection(-panGestureRecognizer.velocity(in: self).y) }
+        let translation = panGestureRecognizer.translation(in: self).y
+        let movedFinger = abs(translation - readerTranslation) > 0.1
+        let geometryChanged = readerContentSize != contentSize || readerViewportSize != bounds.size
+            || readerInsets != adjustedContentInset
+        readerTranslation = translation
+        readerContentSize = contentSize
+        readerViewportSize = bounds.size
+        readerInsets = adjustedContentInset
+        guard !geometryChanged else { return }
+        if isDragging {
+            guard movedFinger else { return }
+            setReaderDirection(-panGestureRecognizer.velocity(in: self).y)
+        }
         guard abs(delta) > 0.1, readerDirection != 0 else { return }
         let bottom = TranscriptScrollGeometry.bottom(contentHeight: contentSize.height, viewportHeight: bounds.height,
                                                        topInset: adjustedContentInset.top, bottomInset: adjustedContentInset.bottom)
@@ -677,10 +755,10 @@ private struct MobileToolCard: View {
         let oldHeight = tableFooterView?.frame.height ?? 0
         let height: CGFloat
         if let id = scrollState.reservedTurnID, let top = turnTop?(id) {
-            height = TranscriptScrollGeometry.reservation(
+            height = max(thinkingHeight, TranscriptScrollGeometry.reservation(
                 turnOffset: TranscriptScrollGeometry.turnOffset(rowTop: top, topInset: adjustedContentInset.top),
-                naturalHeight: contentSize.height - oldHeight, viewportHeight: bounds.height, bottomInset: adjustedContentInset.bottom)
-        } else { height = 0 }
+                naturalHeight: contentSize.height - oldHeight, viewportHeight: bounds.height, bottomInset: adjustedContentInset.bottom))
+        } else { height = thinkingHeight }
         guard abs(height - oldHeight) > 0.5 else { return }
         let footer = tableFooterView ?? UIView()
         footer.frame = CGRect(x: 0, y: 0, width: bounds.width, height: height)

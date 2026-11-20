@@ -25,7 +25,7 @@ extension RelayClient: RemoteTransport {}
     static let hostConnectionRequiredMessage = "Connect to the host first."
 
     var host: PairedHost?
-    var connected = false
+    var connected = false { didSet { if !connected { thinking.reset() } } }
     private(set) var isConnecting = false
     private(set) var hasLoadedLibrary = false
     // This aggregate is for diagnostics/tests, never for admitting UI actions.
@@ -42,6 +42,7 @@ extension RelayClient: RemoteTransport {}
     private var mutations: Set<MutationScope> = []
     private var sending: [String: UUID] = [:]
     private var acceptedOperations: [String: String] = [:]
+    let thinking: ThinkingIndicatorLifecycle
     private var cancellingOperations: [String: String] = [:]
     private var uncertainSends: Set<String> = []
     private var conversationConnections: [String: Int] = [:]
@@ -87,10 +88,14 @@ extension RelayClient: RemoteTransport {}
             snapshot = selected.flatMap { recentConversations.visit($0) } ?? .null
             syncStates = syncStates.filter { recentConversations.contains($0.key) }
             transcriptViewStates = transcriptViewStates.filter { recentConversations.contains($0.key) }
+            thinking.retain { recentConversations.contains($0) }
         }
     }
     var snapshot: RemoteJSON = .null {
-        didSet { recentConversations.update(snapshot) }
+        didSet {
+            recentConversations.update(snapshot)
+            updateThinking(snapshot)
+        }
     }
     var drafts: [String:String] = [:]
     private var optimisticMessages: [String: RemoteOptimisticMessages] = [:]
@@ -127,10 +132,16 @@ extension RelayClient: RemoteTransport {}
          saveHost: @escaping (PairedHost) throws -> Void = { try DeviceStore.save($0) },
          forgetHost: @escaping () throws -> Void = { try DeviceStore.forget() },
          sleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
+         thinkingSleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
          bufferSleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(30)) }) {
+        self.thinking = ThinkingIndicatorLifecycle(sleep: thinkingSleep)
         self.client = client; self.saveHost = saveHost; self.forgetHost = forgetHost
         self.sleep = sleep; self.bufferSleep = bufferSleep
         do { host = try loadHost() } catch { self.error = error.localizedDescription }
+    }
+    private func updateThinking(_ value: RemoteJSON) {
+        let id = value["id"].string ?? ""
+        thinking.update(value, suppressed: !connected || cancellingOperations[id] != nil || isUpdatingConversation(id))
     }
     var active: Bool { RemoteMessageSubmission.isActive(snapshot) || currentOperationID != nil }
     private var currentOperationID: String? {
@@ -263,6 +274,7 @@ extension RelayClient: RemoteTransport {}
         await disconnectConnection()
     }
     private func disconnectConnection() async {
+        thinking.reset()
         lastChangeNotification = nil
         connectionGeneration += 1
         snapshotGeneration += 1
@@ -296,6 +308,7 @@ extension RelayClient: RemoteTransport {}
         cancelPendingMessage()
         hasConnectionFailure = false
         hostGeneration += 1
+        thinking.reset()
         transcriptViewStates.removeAll()
         settings = RemoteSettingsDraft()
         recentConversations = RecentConversationCache()
@@ -347,6 +360,7 @@ extension RelayClient: RemoteTransport {}
         deferredHistoryRefreshes = deferredHistoryRefreshes.filter { recentConversations.contains($0) }
         syncStates = syncStates.filter { recentConversations.contains($0.key) }
         transcriptViewStates = transcriptViewStates.filter { recentConversations.contains($0.key) }
+        thinking.retain { recentConversations.contains($0) }
         optimisticMessages = optimisticMessages.filter { ids.contains($0.key) }
         if let id = selected, !ids.contains(id) { selected = nil; snapshot = .null }
         return true
@@ -380,6 +394,7 @@ extension RelayClient: RemoteTransport {}
             }
         }
         recentConversations.update(state.snapshot)
+        updateThinking(state.snapshot)
         optimisticMessages[id]?.reconcile(state)
         // Transcript notices can arrive without a catalog revision. Keep the
         // row authoritative when returning to the session list.
@@ -658,6 +673,7 @@ extension RelayClient: RemoteTransport {}
             snapshotGeneration += 1
             deletions.accept(id)
             recentConversations.remove(id)
+            thinking.remove(id)
             transcriptViewStates.removeValue(forKey: id)
             deferredHistoryRefreshes.remove(id)
             syncStates.removeValue(forKey: id)
@@ -851,9 +867,11 @@ extension RelayClient: RemoteTransport {}
     func stop() async {
         guard canStop, let id = selected, let operation = currentOperationID else { return }
         if pendingMessage?.conversationID == id { cancelPendingMessage() }
+        thinking.remove(id)
         await mutate("POST", "/v1/conversations/\(id)/cancel", .object(["operationID": .string(operation)])) { _ in
             self.cancellingOperations[id] = operation
         }
+        if let value = syncStates[id]?.snapshot { updateThinking(value) }
     }
     func approve(_ target: ApprovalTarget, approved: Bool) async {
         guard canApprove(target) else { return }

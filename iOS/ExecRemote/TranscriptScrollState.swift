@@ -80,6 +80,8 @@ struct TranscriptScrollState {
         }
     }
 
+    mutating func disclosedTool() { intent = .reading }
+
     mutating func readerScrolled(towardLatest: Bool, atBottom: Bool) {
         if towardLatest && atBottom {
             intent = .latest
