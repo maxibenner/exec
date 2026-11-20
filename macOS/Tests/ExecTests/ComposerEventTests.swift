@@ -330,7 +330,9 @@ struct ComposerEventTests {
                 h.model.focusRequest = (h.model.focusRequest ?? 0) + 1
                 try await h.settle()
             }
-            try expect(h.window.firstResponder === view.editor && h.model.focused)
+            try h.check(h.window.firstResponder === view.editor && h.model.focused,
+                        background ? "Composer background click did not focus editor" : "Composer focus request did not focus editor",
+                        view: view)
             try saved.check(view, background ? "background focus" : "keyboard focus request")
             try await h.clickEditor(view)
             try expect(view.editor.selectedRange().length == 0 && view.editor.selectedRange() != saved.selection)
