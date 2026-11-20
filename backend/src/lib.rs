@@ -25,6 +25,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     Cancelled,
     Busy,
+    ProviderInUse,
     ConversationNotFound,
     Closed,
     WorkspaceLocked,
@@ -59,6 +60,9 @@ impl fmt::Display for Error {
             Self::Cancelled => "Operation interrupted.",
             Self::Busy => {
                 "Conversation is busy. Wait for execution or configuration changes to settle."
+            }
+            Self::ProviderInUse => {
+                "Removing this provider requires confirmation to stop all sessions using it."
             }
             Self::ConversationNotFound => "Conversation not found.",
             Self::Closed => "Agent manager is closed.",

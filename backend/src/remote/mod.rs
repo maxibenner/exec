@@ -591,6 +591,9 @@ mod tests {
         ] {
             assert!(!permits("POST", path));
         }
+        // Provider removal (including confirmed cancellation) remains administrator-only.
+        assert!(!permits("DELETE", "/v1/providers/openai"));
+        assert!(!permits("DELETE", "/v1/providers/deepseek"));
         assert!(validate_relay("ws://example.com", true).is_err());
         assert!(validate_relay("ws://127.0.0.1:8787", false).is_err());
         assert!(validate_relay("wss://example.com", false).is_ok());

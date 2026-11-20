@@ -85,6 +85,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Command-Q awaits shutdown without blocking AppKit", { try await QuitLifecycleTests().commandQuitAwaitsShutdown() })
         ]
         let allChecks: [(String, @MainActor () async throws -> Void)] = [
+            ("Provider removal cancellation has no effects and bounds duplicates", { try await ProviderRemovalTests().confirmationCancellationHasNoEffectsAndDuplicatesAreBounded() }),
+            ("Provider removal preserves history and permits another model", { try await ProviderRemovalTests().confirmedRemovalDiscardsOnlyAffectedQueuedWorkAndAllowsModelChange() }),
+            ("Provider removal leaves unrelated running sessions alone", { try await ProviderRemovalTests().unrelatedRunningSessionsDoNotPromptOrStop() }),
             ("Thinking footer follows response gaps and terminal states", { try ThinkingIndicatorTests().responseActivity() }),
             ("Thinking footer belongs to transcript geometry", { try await ThinkingIndicatorTests().documentFooter() }),
             ("Thinking timing follows background session observation", { try await ThinkingIndicatorTests().backgroundObservation() }),

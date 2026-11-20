@@ -8,6 +8,7 @@ import Observation
     enum SettingsTab: CaseIterable { case modelsAndTools, tools, systemPrompt, accounts, remoteAccess, usage, updates }
     var settingsTab = SettingsTab.modelsAndTools
     var connectionError: String?
+    private(set) var pendingProviderRemoval: ProviderConnection?
     private(set) var openingSessionID: UUID?
     private(set) var navigating = false
     private(set) var authenticating = false
@@ -199,6 +200,7 @@ import Observation
     var canNavigate: Bool { !authenticating && (!navigating || openingSessionID != nil) }
     private var canModify: Bool { !navigating && !authenticating }
     var canReorderSessions: Bool { canModify }
+    var canDisconnectProvider: Bool { canModify && defaultsTask == nil && pendingProviderRemoval == nil }
     var accountBusy: Bool { authenticating || defaultsTask != nil || conversations.contains { $0.busy || $0.isSaving } }
     var hasUnsavedChanges: Bool { conversations.contains { $0.hasUnsavedChanges } }
     var hasUnsentDrafts: Bool { conversations.contains { $0.hasUnsentDraft } }
@@ -311,10 +313,32 @@ import Observation
         accountOperation { try await self.provider.connect(id: providerID, credential: credential) }
     }
     func disconnect(providerID: String) {
-        accountOperation { try await self.provider.disconnect(id: providerID) }
+        guard canDisconnectProvider else { return }
+        removeProvider(providerID, stopRunning: false)
     }
-    private func accountOperation(_ operation: @escaping @MainActor () async throws -> Void) {
-        guard canModify, !accountBusy else { return }
+    func cancelProviderRemoval() { pendingProviderRemoval = nil }
+    func confirmProviderRemoval(providerID: String) {
+        pendingProviderRemoval = nil
+        guard canDisconnectProvider else { return }
+        removeProvider(providerID, stopRunning: true)
+    }
+    private func removeProvider(_ id: String, stopRunning: Bool) {
+        accountOperation(allowRunning: true) {
+            let paused = stopRunning ? self.conversations.filter { $0.pauseForProviderRemoval(id) } : []
+            defer { for item in paused { item.finishProviderRemoval() } }
+            // A send may still be uploading or awaiting its single acceptance receipt.
+            // Keep preparation paused until it settles so it cannot dispatch after removal.
+            for item in paused { await item.waitUntilIdle() }
+            do { try await self.provider.disconnect(id: id, stopRunning: stopRunning) }
+            catch let error as AgentHTTPError where !stopRunning && error.status == 409 && error.code == "provider_in_use" {
+                // The backend checked all sessions atomically, including nonresident/iOS work.
+                // No cancellation or credential write occurred. Consent is a new user action.
+                self.pendingProviderRemoval = self.connections.first { $0.id == id }
+            }
+        }
+    }
+    private func accountOperation(allowRunning: Bool = false, _ operation: @escaping @MainActor () async throws -> Void) {
+        guard canModify, allowRunning || !accountBusy else { return }
         authenticating = true
         accountGeneration += 1
         modelTask?.cancel()

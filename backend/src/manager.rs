@@ -20,6 +20,7 @@ struct Catalog {
     library_busy: bool,
     library_error: bool,
     account_busy: bool,
+    disconnecting_sessions: HashSet<String>,
     account_epoch: u64,
     connection_attempt: Option<ConnectionAttempt>,
     connection_cancel: Option<tokio_util::sync::CancellationToken>,
@@ -393,28 +394,105 @@ impl AgentManager {
         id: &str,
         credential: Option<String>,
     ) -> Result<Vec<ProviderConnection>> {
-        {
+        self.change_credential(provider, id, credential, false)
+            .await
+    }
+    pub async fn disconnect_provider(
+        self: &Arc<Self>,
+        provider: Arc<dyn ChatProvider>,
+        id: &str,
+        stop_running: bool,
+    ) -> Result<Vec<ProviderConnection>> {
+        self.change_credential(provider, id, None, stop_running)
+            .await
+    }
+    async fn change_credential(
+        self: &Arc<Self>,
+        provider: Arc<dyn ChatProvider>,
+        id: &str,
+        credential: Option<String>,
+        stop_running: bool,
+    ) -> Result<Vec<ProviderConnection>> {
+        let (affected, reservations, provider_reservation) = {
             let mut catalog = self.catalog.lock().unwrap();
             if catalog.closed {
-                return Err(Error::Invalid("Agent manager is closed."));
+                return Err(Error::Closed);
             }
-            if catalog.account_busy
-                || !catalog.mutating.is_empty()
-                || catalog.conversations.values().any(|c| c.busy())
-            {
+            if catalog.account_busy || !catalog.mutating.is_empty() || catalog.forking > 0 {
                 return Err(Error::Busy);
             }
+            let removing = credential.is_none();
+            let connections = provider.connections();
+            if removing && !connections.is_empty() {
+                let connection = connections
+                    .iter()
+                    .find(|c| c.id == id)
+                    .ok_or(Error::Invalid("Unknown provider."))?;
+                if !connection.manageable {
+                    return Err(Error::Invalid(
+                        "Provider credentials are externally managed or blocked.",
+                    ));
+                }
+            }
+            if !removing && catalog.conversations.values().any(|c| c.busy()) {
+                return Err(Error::Busy);
+            }
+            // Reserve before inspecting identity/activity, excluding submissions and
+            // model changes through retained handles as well as manager entry points.
+            let reserved = catalog
+                .conversations
+                .values()
+                .map(|c| Ok((c.clone(), c.reserve_delete()?)))
+                .collect::<Result<Vec<_>>>()?;
+            let (affected, reservations): (Vec<_>, Vec<_>) = reserved
+                .into_iter()
+                .filter(|(c, _)| c.uses_provider(id))
+                .unzip();
+            if removing
+                && !stop_running
+                && affected
+                    .iter()
+                    .any(|c| c.snapshot().operation.is_some_and(|op| op.state.active()))
+            {
+                return Err(Error::ProviderInUse);
+            }
+            let provider_reservation = removing
+                .then(|| provider.reserve_disconnect(id))
+                .transpose()?;
+            catalog.disconnecting_sessions = affected.iter().map(|c| c.id.clone()).collect();
             catalog.account_busy = true;
-        }
+            catalog.account_epoch = catalog.account_epoch.wrapping_add(1);
+            for conversation in &affected {
+                if let Some(op) = conversation.snapshot().operation {
+                    conversation.cancel(&op.id);
+                }
+            }
+            (affected, reservations, provider_reservation)
+        };
         let manager = self.clone();
         let id = id.to_owned();
+        // The accepted transaction owns cleanup even if its HTTP caller detaches.
         tokio::spawn(async move {
-            let result = AssertUnwindSafe(provider.set_credential(&id, credential))
-                .catch_unwind()
-                .await
-                .unwrap_or(Err(Error::Internal));
+            let result = AssertUnwindSafe(async {
+                for conversation in &affected {
+                    conversation.settle_active().await;
+                }
+                if affected
+                    .iter()
+                    .any(|c| c.snapshot().storage_error.is_some())
+                {
+                    return Err(Error::Storage);
+                }
+                provider.set_credential(&id, credential).await
+            })
+            .catch_unwind()
+            .await
+            .unwrap_or(Err(Error::Internal));
             {
                 let mut catalog = manager.catalog.lock().unwrap();
+                drop(provider_reservation);
+                drop(reservations);
+                catalog.disconnecting_sessions.clear();
                 catalog.account_busy = false;
                 catalog.account_epoch = catalog.account_epoch.wrapping_add(1);
                 manager.changes.provider_metadata_changed();
@@ -1228,6 +1306,11 @@ impl AgentManager {
     async fn delete_session(&self, id: &str, returned_child: Option<(&str, &str)>) -> Result<()> {
         let (mut reserved, mut conversations) = {
             let mut catalog = self.catalog.lock().unwrap();
+            // Provider removal preserves affected child records too. Their results
+            // are already checkpointed by the parent; do not turn cleanup into failure.
+            if returned_child.is_some() && catalog.disconnecting_sessions.contains(id) {
+                return Ok(());
+            }
             // Explicit deletion already owns cleanup, or has finished it.
             if returned_child.is_some()
                 && (catalog.mutating.contains(id) || !catalog.conversations.contains_key(id))
@@ -1236,7 +1319,7 @@ impl AgentManager {
             }
             let ids = Self::deletion_family(&catalog, id);
             if catalog.closed
-                || catalog.account_busy
+                || (catalog.account_busy && returned_child.is_none())
                 || catalog.forking > 0
                 || ids.iter().any(|id| catalog.mutating.contains(id))
             {

@@ -47,8 +47,9 @@ import CryptoKit
     private var compactionTask: Task<UUID?, Never>?
     private var commandTask: Task<Void, Never>?
     private var pendingCommands: [(key: String, action: @MainActor () async throws -> Void)] = []
+    private var providerRemovalPending = false
     private var commandsClosed = false { didSet { updateThinkingIndicator() } }
-    var canRequestCommands: Bool { !commandsClosed && !isRestoringSession && !configurationUncertain }
+    var canRequestCommands: Bool { !commandsClosed && !providerRemovalPending && !isRestoringSession && !configurationUncertain }
 
     /// Coalesce repeat actions, bind them to this conversation, and never send an idle-only
     /// mutation against a running backend operation. Settings use their latest chosen value.
@@ -59,14 +60,14 @@ import CryptoKit
         drainCommands()
     }
     private func drainCommands() {
-        guard !commandsClosed, !configurationUncertain, !backendBusy, !isSaving, commandTask == nil,
+        guard !commandsClosed, !providerRemovalPending, !configurationUncertain, !backendBusy, !isSaving, commandTask == nil,
               currentSessionID != nil || workspaceChosen || !pendingCommands.isEmpty,
               settingsDirty || !pendingCommands.isEmpty else { return }
         commandTask = Task {
             defer { commandTask = nil; updateSleepActivity() }
             await saveTask?.value
             do {
-                while !backendBusy && !commandsClosed {
+                while !backendBusy && !commandsClosed && !providerRemovalPending {
                     try Task.checkCancellation()
                     if settingsDirty {
                         isSaving = true
@@ -83,6 +84,25 @@ import CryptoKit
                 self.error = error.localizedDescription
             }
         }
+    }
+    /// Discard queued actions like Stop, without deleting history or closing the presentation.
+    func pauseForProviderRemoval(_ id: String) -> Bool {
+        let model = snapshot?.model ?? selectedModel
+        let search = snapshot?.configuration.settings.searchModel ?? searchModel
+        guard provider.providerID(for: model) == id
+            || (!disabledTools.contains("web_search") && provider.providerID(for: search) == id)
+            || ((snapshot?.activeToolName == "generate_image" || snapshot?.approval?.call.name == "generate_image") && connectionsSupportImages(id)) else { return false }
+        providerRemovalPending = true
+        pendingCommands.removeAll()
+        commandTask?.cancel()
+        return true
+    }
+    private func connectionsSupportImages(_ id: String) -> Bool {
+        provider.connections.contains { $0.id == id && $0.supportsImageGeneration }
+    }
+    func finishProviderRemoval() {
+        providerRemovalPending = false
+        drainCommands()
     }
     func cancelPendingCommands() {
         commandsClosed = true
@@ -240,7 +260,7 @@ import CryptoKit
     func scheduleSave(force: Bool = false) {
         settingsDirty = true
         commitInheritedWorkspace = commitInheritedWorkspace || force
-        guard !busy, !isSaving, saveTask == nil, !commandsClosed else { return }
+        guard !busy, !providerRemovalPending, !isSaving, saveTask == nil, !commandsClosed else { return }
         saveTask = Task {
             defer { saveTask = nil; drainCommands() }
             do { try await saveIfIdle() }
@@ -248,7 +268,7 @@ import CryptoKit
         }
     }
     func saveIfIdle(force: Bool = false) async throws {
-        guard !busy, !isSaving else { return }
+        guard !busy, !providerRemovalPending, !isSaving else { return }
         isSaving = true
         defer { isSaving = false; drainCommands() }
         try await persistConfiguration(allowInheritedWorkspace: force)
@@ -485,12 +505,12 @@ import CryptoKit
         }
     }
 
-    private var canPrepareSubmission: Bool { !isStopping && !commandsClosed && !hasUnsavedChanges && !Task.isCancelled }
+    private var canPrepareSubmission: Bool { !isStopping && !commandsClosed && !providerRemovalPending && !hasUnsavedChanges && !Task.isCancelled }
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let pendingCompaction = compactionTask
-        guard !text.isEmpty || !draftImages.isEmpty || !draftFiles.isEmpty, canEditDraft, !commandsClosed, !isStopping, !isImportingAttachments, !submitting, !isSaving, commandTask == nil || pendingCompaction != nil, clearTask == nil, hasUsableModel else { return }
+        guard !text.isEmpty || !draftImages.isEmpty || !draftFiles.isEmpty, canEditDraft, !commandsClosed, !providerRemovalPending, !isStopping, !isImportingAttachments, !submitting, !isSaving, commandTask == nil || pendingCompaction != nil, clearTask == nil, hasUsableModel else { return }
         let steeringOperationID = operationActive ? snapshot?.operation?.id : nil
         let inputImages = draftImages
         let inputFiles = draftFiles

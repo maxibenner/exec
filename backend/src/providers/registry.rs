@@ -5,7 +5,7 @@ use futures_util::{StreamExt, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     sync::{Arc, Mutex},
 };
 use tokio_util::sync::CancellationToken;
@@ -91,7 +91,18 @@ pub struct ProviderRegistry {
     default: String,
     providers: BTreeMap<String, Arc<dyn ChatProvider>>,
     discovery: Mutex<Discovery>,
+    access: BTreeMap<String, Arc<tokio::sync::RwLock<()>>>,
+    disconnecting: Arc<Mutex<HashSet<String>>>,
     cache: Option<super::private_json::PrivateJson>,
+}
+struct DisconnectReservation {
+    id: String,
+    disconnecting: Arc<Mutex<HashSet<String>>>,
+}
+impl Drop for DisconnectReservation {
+    fn drop(&mut self) {
+        self.disconnecting.lock().unwrap().remove(&self.id);
+    }
 }
 impl ProviderRegistry {
     pub fn new(default: &str, entries: Vec<(String, Arc<dyn ChatProvider>)>) -> Result<Self> {
@@ -122,8 +133,13 @@ impl ProviderRegistry {
         }
         Ok(Self {
             default: default.into(),
+            access: providers
+                .keys()
+                .map(|id| (id.clone(), Arc::new(tokio::sync::RwLock::new(()))))
+                .collect(),
             providers,
             discovery: Mutex::new(Discovery::default()),
+            disconnecting: Arc::default(),
             cache: None,
         })
     }
@@ -209,6 +225,20 @@ impl ProviderRegistry {
             .find(|m| m.id == format!("{id}/{model}"))
             .cloned()
     }
+    // Keep every provider request alive through its cleanup before credential writes.
+    // try_read never queues new inference behind a disconnect or silently replays it.
+    fn read_access(&self, id: &str) -> Result<tokio::sync::OwnedRwLockReadGuard<()>> {
+        let disconnecting = self.disconnecting.lock().unwrap();
+        if disconnecting.contains(id) {
+            return Err(Error::Busy);
+        }
+        self.access
+            .get(id)
+            .ok_or(Error::Invalid("Unknown provider."))?
+            .clone()
+            .try_read_owned()
+            .map_err(|_| Error::Busy)
+    }
     fn route(&self, model: &str) -> Result<(String, String, Arc<dyn ChatProvider>)> {
         if !valid_model_id(model) {
             return Err(Error::Invalid("Invalid model."));
@@ -249,8 +279,18 @@ impl ProviderRegistry {
 }
 #[async_trait]
 impl ChatProvider for ProviderRegistry {
+    fn provider_id(&self, model: &str) -> Option<String> {
+        self.route(model).ok().map(|(id, _, _)| id)
+    }
+    fn image_generation_provider_id(&self) -> Option<String> {
+        self.providers
+            .iter()
+            .find(|(_, p)| p.supports_image_generation())
+            .map(|(id, _)| id.clone())
+    }
     async fn prepare_model(&self, model: &str, cancel: CancellationToken) -> Result<()> {
-        let (_, bare, provider) = self.route(model)?;
+        let (id, bare, provider) = self.route(model)?;
+        let _access = self.read_access(&id)?;
         if !provider.supports_compaction(&bare) || self.context_window(model).is_none() {
             provider.prepare_model(&bare, cancel).await?;
         }
@@ -266,6 +306,7 @@ impl ChatProvider for ProviderRegistry {
     }
     async fn accepts_images(&self, model: &str, cancel: CancellationToken) -> Result<bool> {
         let (id, bare, provider) = self.route(model)?;
+        let _access = self.read_access(&id)?;
         if let Some(accepts) = self
             .cached_model(&id, &bare, provider.as_ref())
             .and_then(|m| m.accepts_images)
@@ -290,12 +331,11 @@ impl ChatProvider for ProviderRegistry {
         input: ImageGeneration,
         cancel: CancellationToken,
     ) -> Result<GeneratedImage> {
-        self.providers
-            .values()
-            .find(|p| p.supports_image_generation())
-            .ok_or(Error::Provider(crate::ProviderFailure::Unsupported))?
-            .generate_image(input, cancel)
-            .await
+        let id = self
+            .image_generation_provider_id()
+            .ok_or(Error::Provider(crate::ProviderFailure::Unsupported))?;
+        let _access = self.read_access(&id)?;
+        self.providers[&id].generate_image(input, cancel).await
     }
     fn metadata_identity(&self, id: &str) -> Option<String> {
         self.providers.get(id)?.metadata_identity(id)
@@ -312,6 +352,7 @@ impl ChatProvider for ProviderRegistry {
     }
     async fn compact(&self, mut request: ProviderRequest) -> Result<Value> {
         let (id, model, provider) = self.route(&request.model)?;
+        let _access = self.read_access(&id)?;
         let mut contexts = self.contexts(request.provider_state.take())?;
         request.model = model;
         request.provider_state = contexts.contexts.get(&id).cloned();
@@ -335,6 +376,7 @@ impl ChatProvider for ProviderRegistry {
             .providers
             .get(id)
             .ok_or(Error::Invalid("Unknown provider."))?;
+        let _access = self.access[id].write().await;
         self.invalidate(id);
         let result = provider.connect(id, method, challenge, cancel).await;
         self.invalidate(id);
@@ -343,6 +385,7 @@ impl ChatProvider for ProviderRegistry {
     }
     async fn account_usage(&self, id: &str, cancel: CancellationToken) -> Result<AccountUsage> {
         check_cancel(&cancel)?;
+        let _access = self.read_access(id)?;
         let provider = self
             .providers
             .get(id)
@@ -446,7 +489,24 @@ impl ChatProvider for ProviderRegistry {
     fn supports_web_search(&self) -> bool {
         self.providers.values().any(|p| p.supports_web_search())
     }
+    fn reserve_disconnect(&self, id: &str) -> Result<Box<dyn Send>> {
+        if !self.providers.contains_key(id) {
+            return Err(Error::Invalid("Unknown provider."));
+        }
+        if !self.disconnecting.lock().unwrap().insert(id.into()) {
+            return Err(Error::Busy);
+        }
+        Ok(Box::new(DisconnectReservation {
+            id: id.into(),
+            disconnecting: self.disconnecting.clone(),
+        }))
+    }
     async fn set_credential(&self, id: &str, credential: Option<String>) -> Result<()> {
+        let gate = self
+            .access
+            .get(id)
+            .ok_or(Error::Invalid("Unknown provider."))?;
+        let _access = gate.write().await;
         let provider = self
             .providers
             .get(id)
@@ -477,7 +537,8 @@ impl ChatProvider for ProviderRegistry {
         query: String,
         cancel: CancellationToken,
     ) -> Result<WebSearchResult> {
-        let (_, model, provider) = self.route(model)?;
+        let (id, model, provider) = self.route(model)?;
+        let _access = self.read_access(&id)?;
         provider.search_web(&model, query, cancel).await
     }
     async fn account_balances(
@@ -486,6 +547,7 @@ impl ChatProvider for ProviderRegistry {
         cancel: CancellationToken,
     ) -> Result<Vec<AccountBalance>> {
         check_cancel(&cancel)?;
+        let _access = self.read_access(id)?;
         let provider = self
             .providers
             .get(id)
@@ -568,11 +630,12 @@ impl ChatProvider for ProviderRegistry {
     fn stream(&self, mut request: ProviderRequest) -> BoxStream<'static, Result<ProviderEvent>> {
         let prepared = (|| {
             let (id, model, provider) = self.route(&request.model)?;
+            let access = self.read_access(&id)?;
             let contexts = self.contexts(request.provider_state.take())?;
-            Ok::<_, Error>((id, model, provider, contexts))
+            Ok::<_, Error>((id, model, provider, contexts, access))
         })();
         Box::pin(async_stream::try_stream! {
-            let (id,model,provider,mut contexts) = prepared?;
+            let (id,model,provider,mut contexts,_access) = prepared?;
             request.model = model; request.provider_state = contexts.contexts.get(&id).cloned();
             let cancel = request.cancel.clone(); check_cancel(&cancel)?;
             let mut source = provider.stream(request);
@@ -596,6 +659,7 @@ impl ChatProvider for ProviderRegistry {
         let mut saves = Vec::new();
         for (id, provider) in &self.providers {
             check_cancel(&cancel)?;
+            let _access = self.read_access(id)?;
             let connections = provider.connections();
             if !connections.is_empty() && !connections.iter().any(|c| c.connected) {
                 continue;

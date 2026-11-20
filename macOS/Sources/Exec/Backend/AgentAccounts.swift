@@ -67,8 +67,8 @@ import Observation
         } else { throw ExecError("Unknown provider.") }
         try await refreshConnections()
     }
-    func disconnect(id: String) async throws {
-        do { _ = try await api.request("DELETE", "/v1/providers/\(id)") }
+    func disconnect(id: String, stopRunning: Bool = false) async throws {
+        do { _ = try await api.request("DELETE", "/v1/providers/\(id)", .object(["stopRunning": .bool(stopRunning)])) }
         catch { try? await refreshConnections(); throw error }
         try await refreshConnections()
     }

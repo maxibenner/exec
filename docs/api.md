@@ -260,6 +260,28 @@ Proven pre-effect service gates (authorization/allowlist, admission, routing and
 
 Model discovery, balance and usage reads return 503 when the manager is closed, including when it closes while a provider read is pending. Account mutation conflicts remain distinct from closure.
 
+Provider removal checks running work atomically. Bodyless DELETE and `{stopRunning:false}` return
+`409 {"error":"…","code":"provider_in_use","delivery":"rejected"}` if relevant sessions are active,
+without cancellation or credential changes. Clients must obtain explicit confirmation before a new
+DELETE with `{stopRunning:true}`: it stops **all** sessions using that provider, including other windows,
+nonresident sessions and remote clients. Idle removal does not require confirmation. Relevant work
+includes the session model, enabled configured web-search provider, and image generation executing or
+awaiting approval. Accepted removal owns cancellation, tool/provider cleanup and final session persistence
+before credential deletion, even if the caller disconnects. A failed final checkpoint prevents credential
+deletion and requires storage recovery; no write is replayed. Session records and transcripts remain
+available; a different provider/model can be selected once idle. Affected child records are retained when
+delegation settles during removal. Unrelated providers' running sessions are not cancelled.
+
+Duplicate account mutations return 409 while the transaction is pending; new manager operations remain
+blocked until it settles. The registry excludes new target-provider requests throughout the disconnect
+transaction and awaits existing requests before deleting credentials. Credential writes keep their existing
+private, atomic storage and rotating-token serialization. No inference, token exchange or uncertain removal
+is retried. A failed response may follow cancellation or even local disconnection: inspect state rather than
+resubmitting. Authentication/credential replacement retains its existing idle-only policy. Provider
+administration is still excluded from the iOS remote allowlist; iOS observes interrupted sessions through
+the existing sync contract and can select a remaining model. This is one administrator/profile boundary,
+not new per-client tenant isolation.
+
 The server bounds TCP connections to 64 and separately admits at most 64 non-GET command handlers across HTTP and remote transport, including body reads. Excess commands return 503 before body parsing or effects; there is no admission wait queue. A tracked handler owns its admission permit until it finishes, even after the caller disconnects. Incomplete body reads are cancelled on disconnect/shutdown, but accepted mutations are never aborted to free capacity. GET reads remain outside the command budget. Shutdown waits for accepted writes; stalled storage can therefore delay shutdown indefinitely. A lost response is not permission to retry a mutation automatically.
 
 | Method | Path | Body / response |
@@ -267,7 +289,7 @@ The server bounds TCP connections to 64 and separately admits at most 64 non-GET
 | GET | `/v1/health` | `{version:1, toolsEnabled:boolean}` |
 | GET | `/v1/providers` | Provider status array; no secrets or account identifiers |
 | PUT | `/v1/providers/:id` | `{apiKey}` → provider statuses after private JSON save |
-| DELETE | `/v1/providers/:id` | Disconnect JSON-backed provider → statuses |
+| DELETE | `/v1/providers/:id` | Optional `{stopRunning:false}`; confirmed `{stopRunning:true}` cancels affected sessions before disconnect → statuses |
 | GET | `/v1/library` | Shared defaults and ordering |
 | PUT | `/v1/library` | `{defaultModel,settings,order}` → saved configuration |
 | GET | `/v1/models` | Neutral model array: `id`, `name`, optional `contextWindow`, `maxOutputTokens` |
