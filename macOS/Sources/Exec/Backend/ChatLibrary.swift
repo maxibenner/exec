@@ -649,6 +649,12 @@ import Observation
         canModify && sessionList.contains { $0.id == id }
     }
 
+    /// Only the target's own composer text counts, never a subagent's draft.
+    func needsDraftDeletionConfirmation(for id: UUID) -> Bool {
+        guard let target = conversation(id), !target.isSubagent else { return false }
+        return target.draft.count > 15
+    }
+
     func deleteSession(_ id: UUID) {
         guard canDeleteSession(id) else { return }
         let wasDetached = detachedSessionIDs.contains(id)

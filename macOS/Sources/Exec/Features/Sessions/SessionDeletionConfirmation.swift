@@ -1,8 +1,18 @@
 import AppKit
 
 /// Only explicit UI deletion uses this policy; backend cleanup never prompts.
-@MainActor enum SessionDeletionConfirmation {
-    static func isRequired(for id: UUID, in library: ChatLibrary) -> Bool {
+@MainActor struct SessionDeletionConfirmation {
+    private let stopsRunningWork: Bool
+    private let discardsUnsentDraft: Bool
+
+    init(for id: UUID, in library: ChatLibrary) {
+        stopsRunningWork = Self.isFamilyRunning(id, in: library)
+        discardsUnsentDraft = library.needsDraftDeletionConfirmation(for: id)
+    }
+
+    var isRequired: Bool { stopsRunningWork || discardsUnsentDraft }
+
+    private static func isFamilyRunning(_ id: UUID, in library: ChatLibrary) -> Bool {
         var remaining = [id]
         var visited: Set<UUID> = []
         while let next = remaining.popLast() {
@@ -13,10 +23,13 @@ import AppKit
         return false
     }
 
-    static func makeAlert() -> NSAlert {
+    func makeAlert() -> NSAlert {
         let alert = NSAlert()
-        alert.messageText = "Delete running session?"
-        alert.informativeText = "This will stop its work."
+        alert.messageText = stopsRunningWork ? "Delete running session?" : "Delete session?"
+        var reasons: [String] = []
+        if stopsRunningWork { reasons.append("This will stop its work.") }
+        if discardsUnsentDraft { reasons.append("Its unsent message will be discarded.") }
+        alert.informativeText = reasons.joined(separator: "\n\n")
         alert.alertStyle = .warning
         let delete = alert.addButton(withTitle: "Delete")
         delete.hasDestructiveAction = true

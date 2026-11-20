@@ -25,6 +25,167 @@ import AppKit
 }
 
 @MainActor struct SessionDeletionTests {
+    func draftWarningUsesCharacterCountAboveFifteen() async throws {
+        for character in ["a", "👩🏽‍💻"] {
+            for count in [15, 16] {
+                let fixture = try LifecycleFixture()
+                try await fixture.start()
+                defer { fixture.close() }
+                let library = fixture.library
+                library.current.draft = String(repeating: character, count: count)
+                let windows = SessionWindows(library: library)
+                let prompt = DeletionPrompt()
+                defer { prompt.cancelAll() }
+                windows.confirmSessionDeletion = prompt.present
+                try await fixture.transport.responses.reply("/v1/conversations", .array([fixture.other]))
+
+                windows.requestSessionDeletion(fixture.parentID)
+                if count > 15 {
+                    try expect(windows.isConfirmingDeletion && !library.navigating)
+                    try await prompt.waitUntilPresented()
+                    try expect(prompt.alerts[0].messageText == "Delete session?")
+                    try expect(prompt.alerts[0].informativeText == "Its unsent message will be discarded.")
+                    let requests = await fixture.transport.responses.requests
+                    try expect(!requests.contains { $0.method == "DELETE" })
+                    try await prompt.finish(.alertFirstButtonReturn, in: windows)
+                } else {
+                    try expect(library.navigating && !windows.isConfirmingDeletion)
+                    await library.waitForNavigation()
+                    try expect(prompt.alerts.isEmpty)
+                }
+                let deleted = await fixture.transport.responses.requests.filter { $0.method == "DELETE" }.map(\.path)
+                try expect(deleted == [AgentAPI.path(fixture.parentID)])
+                try expect(library.currentSessionID == fixture.otherID)
+            }
+        }
+    }
+
+    func draftWarningUsesOnlyTargetRegularSession() async throws {
+        for targetHasLongDraft in [false, true] {
+            let fixture = try LifecycleFixture()
+            try await fixture.start()
+            defer { fixture.close() }
+            let library = fixture.library
+            let target = library.current
+            target.draft = String(repeating: "t", count: targetHasLongDraft ? 16 : 15)
+            library.openSession(fixture.otherID)
+            await library.waitForNavigation()
+            let current = library.current
+            let currentDraft = String(repeating: "c", count: targetHasLongDraft ? 15 : 16)
+            current.draft = currentDraft
+            let windows = SessionWindows(library: library)
+            let prompt = DeletionPrompt()
+            defer { prompt.cancelAll() }
+            windows.confirmSessionDeletion = prompt.present
+            try await fixture.transport.responses.reply("/v1/conversations", .array([fixture.other]))
+
+            windows.requestSessionDeletion(fixture.parentID)
+            if targetHasLongDraft {
+                windows.requestSessionDeletion(fixture.parentID)
+                windows.requestSessionDeletion(fixture.otherID)
+                try await prompt.waitUntilPresented()
+                try expect(prompt.alerts.count == 1 && !library.navigating)
+                try expect(prompt.alerts[0].informativeText == "Its unsent message will be discarded.")
+                try await prompt.finish(.alertFirstButtonReturn, in: windows)
+            } else {
+                try expect(!windows.isConfirmingDeletion && library.navigating)
+                await library.waitForNavigation()
+                try expect(prompt.alerts.isEmpty)
+            }
+            let deleted = await fixture.transport.responses.requests.filter { $0.method == "DELETE" }.map(\.path)
+            try expect(deleted == [AgentAPI.path(fixture.parentID)])
+            try expect(library.current === current && current.draft == currentDraft)
+            try expect(!library.sessionList.contains { $0.id == fixture.parentID })
+        }
+    }
+
+    func subagentDraftsNeverTriggerWarnings() async throws {
+        for deleteParent in [false, true] {
+            let fixture = try LifecycleFixture()
+            try await fixture.start()
+            defer { fixture.close() }
+            let library = fixture.library
+            library.current.draft = String(repeating: "p", count: deleteParent ? 15 : 16)
+            library.openSession(fixture.childID)
+            await library.waitForNavigation()
+            let child = library.current
+            child.draft = "A long unsent subagent message"
+            if !deleteParent { library.openSession(fixture.parentID) }
+            await library.waitForNavigation()
+            let windows = SessionWindows(library: library)
+            var prompts = 0
+            windows.confirmSessionDeletion = { _, _ in prompts += 1; return .alertSecondButtonReturn }
+            let remaining = deleteParent ? [fixture.other] : [fixture.root, fixture.other]
+            try await fixture.transport.responses.reply("/v1/conversations", .array(remaining))
+
+            let id = deleteParent ? fixture.parentID : fixture.childID
+            windows.requestSessionDeletion(id)
+            try expect(library.navigating && !windows.isConfirmingDeletion)
+            await library.waitForNavigation()
+            let deleted = await fixture.transport.responses.requests.filter { $0.method == "DELETE" }.map(\.path)
+            try expect(prompts == 0 && deleted == [AgentAPI.path(id)])
+            try expect(!library.openConversations.contains { $0 === child })
+        }
+    }
+
+    func combinedWarningCancellationLeavesSessionFamilyUntouched() async throws {
+        let fixture = try LifecycleFixture(running: true)
+        try await fixture.start()
+        defer { fixture.close() }
+        let library = fixture.library
+        let parent = library.current
+        parent.draft = "Keep this unsent parent input"
+        library.openSession(fixture.childID)
+        await library.waitForNavigation()
+        let child = library.current
+        child.draft = "Keep this unsent child input"
+        let sessions = library.sessionList
+        let residents = library.openConversations.map(ObjectIdentifier.init)
+        let messages = [parent.messages.map(\.id), child.messages.map(\.id)]
+        let writesBefore = await fixture.transport.responses.requests.filter { $0.method != "GET" }.count
+        let windows = SessionWindows(library: library)
+        let prompt = DeletionPrompt()
+        defer { prompt.cancelAll() }
+        windows.confirmSessionDeletion = prompt.present
+
+        windows.requestSessionDeletion(fixture.parentID)
+        try await prompt.waitUntilPresented()
+        try expect(prompt.alerts.count == 1 && !library.navigating && child.busy)
+        try expect(prompt.alerts[0].messageText == "Delete running session?")
+        try expect(prompt.alerts[0].informativeText == "This will stop its work.\n\nIts unsent message will be discarded.")
+        try await prompt.finish(.alertSecondButtonReturn, in: windows)
+        try expect(library.current === child && child.busy && library.sessionList == sessions)
+        try expect(library.openConversations.map(ObjectIdentifier.init) == residents)
+        try expect([parent.messages.map(\.id), child.messages.map(\.id)] == messages)
+        try expect(parent.draft == "Keep this unsent parent input" && child.draft == "Keep this unsent child input")
+        let writesAfter = await fixture.transport.responses.requests.filter { $0.method != "GET" }.count
+        try expect(writesAfter == writesBefore)
+    }
+
+    func automaticCleanupNeverPromptsForLongDrafts() async throws {
+        let fixture = try LifecycleFixture()
+        try await fixture.start()
+        defer { fixture.close() }
+        let library = fixture.library
+        let parent = library.current
+        parent.draft = "Keep this unsent parent input"
+        library.openSession(fixture.childID)
+        await library.waitForNavigation()
+        let child = library.current
+        child.draft = "Keep this unsent child input"
+        let windows = SessionWindows(library: library)
+        var prompts = 0
+        windows.confirmSessionDeletion = { _, _ in prompts += 1; return .alertSecondButtonReturn }
+
+        try await fixture.transport.responses.reply("/v1/conversations", .array([fixture.other]))
+        try await library.refreshSharedState()
+        try expect(parent.deletedRemotely && child.deletedRemotely)
+        try expect(parent.draft == "Keep this unsent parent input" && child.draft == "Keep this unsent child input")
+        try expect(prompts == 0 && !windows.isConfirmingDeletion)
+        let requests = await fixture.transport.responses.requests
+        try expect(!requests.contains { $0.method == "DELETE" || $0.method == "POST" })
+    }
+
     func cancellationLeavesRunningWorkUntouched() async throws {
         let fixture = try LifecycleFixture(running: true)
         try await fixture.start()
@@ -96,9 +257,9 @@ import AppKit
         for state in ["running", "awaiting_approval", "cancelling"] {
             activeParent["operation"] = .object(["id": fixture.root["operation"]["id"], "state": .string(state)])
             try library.current.apply(AgentJSON.object(activeParent).decoded(AgentSnapshot.self))
-            try expect(SessionDeletionConfirmation.isRequired(for: fixture.parentID, in: library))
+            try expect(SessionDeletionConfirmation(for: fixture.parentID, in: library).isRequired)
             // A running ancestor is not part of an idle child's deletion family.
-            try expect(!SessionDeletionConfirmation.isRequired(for: fixture.childID, in: library))
+            try expect(!SessionDeletionConfirmation(for: fixture.childID, in: library).isRequired)
         }
         try library.current.apply(fixture.root.decoded(AgentSnapshot.self))
         guard case .object(var fields) = fixture.child,
@@ -116,7 +277,7 @@ import AppKit
         try await library.refreshSharedState()
         try expect(!library.isSessionRunning(fixture.parentID) && !library.isSessionRunning(fixture.childID))
         try expect(!library.openConversations.contains { $0.currentSessionID == descendantID })
-        try expect(!SessionDeletionConfirmation.isRequired(for: fixture.otherID, in: library))
+        try expect(!SessionDeletionConfirmation(for: fixture.otherID, in: library).isRequired)
         let windows = SessionWindows(library: library)
         var prompts = 0
         windows.confirmSessionDeletion = { _, _ in prompts += 1; return .alertSecondButtonReturn }

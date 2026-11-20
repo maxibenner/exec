@@ -98,7 +98,7 @@ import AppKit
         try expect(!library.openConversations.contains { $0.currentSessionID == fixture.childID })
         try expect(library.isSessionWaiting(fixture.childID) && library.isSessionRunning(fixture.childID))
         try expect(library.hasRunningOperations)
-        try expect(SessionDeletionConfirmation.isRequired(for: fixture.parentID, in: library))
+        try expect(SessionDeletionConfirmation(for: fixture.parentID, in: library).isRequired)
         let windows = SessionWindows(library: library)
         var prompts: [String] = []
         windows.confirmSessionDeletion = { alert, _ in
@@ -115,13 +115,13 @@ import AppKit
         library.openSession(fixture.childID)
         await library.waitForNavigation()
         try expect(library.current.isWaiting && library.current.busy && library.hasRunningOperations)
-        try expect(SessionDeletionConfirmation.isRequired(for: fixture.childID, in: library))
+        try expect(SessionDeletionConfirmation(for: fixture.childID, in: library).isRequired)
         let completed = try snapshot(fixture.child, state: "completed", active: false, outcome: "completed")
         try await fixture.transport.responses.reply(AgentAPI.path(fixture.childID), completed)
         try library.current.apply(completed.decoded(AgentSnapshot.self))
         // The newer resident snapshot wins over a stale waiting catalog entry.
         try expect(!library.isSessionWaiting(fixture.childID) && !library.isSessionRunning(fixture.childID))
         try expect(!library.hasRunningOperations)
-        try expect(!SessionDeletionConfirmation.isRequired(for: fixture.parentID, in: library))
+        try expect(!SessionDeletionConfirmation(for: fixture.parentID, in: library).isRequired)
     }
 }
