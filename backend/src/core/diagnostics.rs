@@ -1,6 +1,6 @@
 //! Content-free, session-owned troubleshooting records. Never serialize error text,
 //! provider payloads, instructions, tool arguments, or account information here.
-use crate::{Error, ProviderFailure};
+use crate::{Error, ProviderDiagnostic, ProviderFailure};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -66,8 +66,14 @@ pub enum DiagnosticFailure {
     Internal,
     Invalid,
     Tool,
-    Provider { reason: ProviderFailure },
-    Api { status: u16 },
+    Provider {
+        reason: ProviderFailure,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<ProviderDiagnostic>,
+    },
+    Api {
+        status: u16,
+    },
 }
 impl From<&Error> for DiagnosticFailure {
     fn from(error: &Error) -> Self {
@@ -79,7 +85,14 @@ impl From<&Error> for DiagnosticFailure {
             Error::Internal | Error::Closed => Self::Internal,
             Error::Invalid(_) | Error::ConversationNotFound => Self::Invalid,
             Error::Tool(_) => Self::Tool,
-            Error::Provider(reason) => Self::Provider { reason: *reason },
+            Error::Provider(reason) => Self::Provider {
+                reason: *reason,
+                detail: None,
+            },
+            Error::ProviderDetailed { reason, detail } => Self::Provider {
+                reason: *reason,
+                detail: Some(*detail),
+            },
             Error::Api(status) => Self::Api { status: *status },
         }
     }

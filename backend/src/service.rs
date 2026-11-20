@@ -297,7 +297,9 @@ impl From<Error> for ApiError {
                 "Workspace cannot be changed after the first accepted turn.",
             ),
             Error::Invalid(message) => Self::uncertain(400, message),
-            Error::Storage | Error::Provider(_) => Self::uncertain(500, error.to_string()),
+            Error::Storage | Error::Provider(_) | Error::ProviderDetailed { .. } => {
+                Self::uncertain(500, error.to_string())
+            }
             _ => Self::uncertain(
                 500,
                 "Service request failed. Inspect conversation state before continuing.",
@@ -1594,9 +1596,15 @@ mod change_tests {
             Error::Closed,
             Error::Invalid("Safe runtime validation."),
             Error::Provider(crate::ProviderFailure::Transport),
+            Error::ProviderDetailed {
+                reason: crate::ProviderFailure::Transport,
+                detail: crate::ProviderDiagnostic::HttpStatus { status: 503 },
+            },
         ] {
             let expected = match &error {
-                Error::Storage | Error::Provider(_) => Some(error.to_string()),
+                Error::Storage | Error::Provider(_) | Error::ProviderDetailed { .. } => {
+                    Some(error.to_string())
+                }
                 _ => None,
             };
             let response = ApiError::from(error).response();

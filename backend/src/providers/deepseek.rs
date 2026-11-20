@@ -1,5 +1,9 @@
 use super::response_stream::{ByteStream, read_json, read_sse};
-use crate::{Error, ProviderFailure as Failure, Result, check_cancel, core::*};
+use crate::provider_diagnostics::{http_error, transport_error};
+use crate::{
+    Error, ProviderFailure as Failure, ProviderTransportPhase as Phase, Result, check_cancel,
+    core::*,
+};
 use async_trait::async_trait;
 use futures_util::{StreamExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
@@ -38,7 +42,7 @@ impl ReqwestTransport {
                 .retry(reqwest::retry::never())
                 .no_proxy()
                 .build()
-                .map_err(|_| error(Failure::Transport))?,
+                .map_err(|e| transport_error(e, Phase::Setup))?,
         })
     }
 }
@@ -68,7 +72,7 @@ impl HttpTransport for ReqwestTransport {
         } else {
             self.client.get(url).header("Accept", "application/json")
         };
-        let response = tokio::select! {biased;_=cancel.cancelled()=>return Err(Error::Cancelled),r=builder.bearer_auth(key).header("Cache-Control","no-store").send()=>r.map_err(|_|error(Failure::Transport))?};
+        let response = tokio::select! {biased;_=cancel.cancelled()=>return Err(Error::Cancelled),r=builder.bearer_auth(key).header("Cache-Control","no-store").send()=>r.map_err(|e| transport_error(e, Phase::Send))?};
         Ok(HttpResponse {
             status: response.status().as_u16(),
             content_type: response
@@ -79,7 +83,7 @@ impl HttpTransport for ReqwestTransport {
             body: Box::pin(
                 response
                     .bytes_stream()
-                    .map(|r| r.map_err(|_| error(Failure::Transport))),
+                    .map(|r| r.map_err(|e| transport_error(e, Phase::Body))),
             ),
         })
     }
@@ -477,21 +481,24 @@ impl DeepSeekProvider {
             .request(path, key, body, cancel)
             .await
             .map_err(|e| {
-                if e == Error::Cancelled {
+                if matches!(e, Error::Cancelled | Error::ProviderDetailed { .. }) {
                     e
                 } else {
                     error(Failure::Transport)
                 }
             })?;
         if !(200..300).contains(&response.status) {
-            return Err(error(match response.status {
-                401 | 403 => Failure::Authentication,
-                402 => Failure::Quota,
-                429 => Failure::RateLimit,
-                408 | 504 => Failure::Timeout,
-                400..=499 => Failure::Request,
-                _ => Failure::Transport,
-            }));
+            return Err(http_error(
+                match response.status {
+                    401 | 403 => Failure::Authentication,
+                    402 => Failure::Quota,
+                    429 => Failure::RateLimit,
+                    408 | 504 => Failure::Timeout,
+                    400..=499 => Failure::Request,
+                    _ => Failure::Transport,
+                },
+                response.status,
+            ));
         }
         Ok(response)
     }

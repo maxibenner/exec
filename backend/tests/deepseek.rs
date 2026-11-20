@@ -193,6 +193,9 @@ async fn http_failures_sanitized_body_discarded_no_retry() {
         (429, Failure::RateLimit),
         (500, Failure::Transport),
         (302, Failure::Transport),
+        (403, Failure::Authentication),
+        (408, Failure::Timeout),
+        (504, Failure::Timeout),
     ] {
         let dropped = Arc::new(AtomicBool::new(false));
         let observed = dropped.clone();
@@ -205,7 +208,13 @@ async fn http_failures_sanitized_body_discarded_no_retry() {
             }
         });
         let error = collect(&provider(t.clone()), request()).await.unwrap_err();
-        assert_eq!(error, Error::Provider(code));
+        assert_eq!(
+            error,
+            Error::ProviderDetailed {
+                reason: code,
+                detail: exec_agent::ProviderDiagnostic::HttpStatus { status },
+            }
+        );
         assert!(!error.to_string().contains("synthetic-test-key"));
         assert_eq!(t.count(), 1);
         assert!(dropped.load(Ordering::SeqCst));

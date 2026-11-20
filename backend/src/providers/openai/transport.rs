@@ -1,6 +1,7 @@
 //! Fixed-origin, credential-redacting OpenAI transport. No redirects, proxies or retries.
 use super::super::deepseek::HttpResponse;
-use crate::{Error, ProviderFailure as Failure, Result};
+use crate::provider_diagnostics::{http_error, transport_error};
+use crate::{Error, ProviderFailure as Failure, ProviderTransportPhase as Phase, Result};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use std::time::Duration;
@@ -41,7 +42,7 @@ impl Http {
                 .no_proxy()
                 .connect_timeout(Duration::from_secs(15))
                 .build()
-                .map_err(|_| Error::Provider(Failure::Transport))?,
+                .map_err(|e| transport_error(e, Phase::Setup))?,
         })
     }
 }
@@ -114,7 +115,7 @@ impl Transport for Http {
         if matches!(request.endpoint, Endpoint::Images) {
             builder = builder.header("x-codex-image-turn-id", crate::core::new_id());
         }
-        let response = tokio::select! {biased;_=cancel.cancelled()=>return Err(Error::Cancelled), response=builder.send()=>response.map_err(|_|Error::Provider(Failure::Transport))?};
+        let response = tokio::select! {biased;_=cancel.cancelled()=>return Err(Error::Cancelled), response=builder.send()=>response.map_err(|e| transport_error(e, Phase::Send))?};
         Ok(HttpResponse {
             status: response.status().as_u16(),
             content_type: response
@@ -125,7 +126,7 @@ impl Transport for Http {
             body: Box::pin(
                 response
                     .bytes_stream()
-                    .map(|r| r.map_err(|_| Error::Provider(Failure::Transport))),
+                    .map(|r| r.map_err(|e| transport_error(e, Phase::Body))),
             ),
         })
     }
@@ -133,10 +134,10 @@ impl Transport for Http {
 pub(crate) fn status(status: u16) -> Result<()> {
     match status {
         200..=299 => Ok(()),
-        401 | 403 => Err(Error::Provider(Failure::Authentication)),
-        429 => Err(Error::Provider(Failure::RateLimit)),
-        400..=499 => Err(Error::Provider(Failure::Request)),
-        _ => Err(Error::Provider(Failure::Transport)),
+        401 | 403 => Err(http_error(Failure::Authentication, status)),
+        429 => Err(http_error(Failure::RateLimit, status)),
+        400..=499 => Err(http_error(Failure::Request, status)),
+        _ => Err(http_error(Failure::Transport, status)),
     }
 }
 pub(crate) async fn json(
@@ -183,6 +184,33 @@ pub(super) async fn json_body(response: HttpResponse, limit: usize) -> Result<se
 mod tests {
     use super::*;
     use futures_util::stream;
+
+    #[test]
+    fn http_status_details_preserve_failure_category_without_response_content() {
+        for (status_code, reason) in [
+            (302, Failure::Transport),
+            (400, Failure::Request),
+            (401, Failure::Authentication),
+            (403, Failure::Authentication),
+            (429, Failure::RateLimit),
+            (500, Failure::Transport),
+            (503, Failure::Transport),
+            (504, Failure::Transport),
+        ] {
+            let error = status(status_code).unwrap_err();
+            assert_eq!(
+                error,
+                Error::ProviderDetailed {
+                    reason,
+                    detail: crate::ProviderDiagnostic::HttpStatus {
+                        status: status_code
+                    },
+                }
+            );
+            assert_eq!(error.to_string(), Error::Provider(reason).to_string());
+        }
+        assert!(status(200).is_ok());
+    }
 
     #[tokio::test]
     async fn json_media_type_is_case_insensitive_but_not_a_prefix_match() {

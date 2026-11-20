@@ -177,6 +177,16 @@ folder before removing the transcript, including for unreadable transcripts and 
 sessions without a diagnostic folder. Unsafe targets or unexpected folder contents
 are refused rather than followed or recursively removed.
 
+Provider failures retain their existing `reason` and may add a typed `detail`:
+`{"kind":"http_status","status":503}` identifies the actual provider HTTP status,
+while `{"kind":"transport","phase":"send","cause":"connect"}` distinguishes
+connection failures from response-body failures. Transport phases are `setup`, `send`
+and `body`; causes are `timeout`, `connect`, `request`, `body`, `decode` or `other`,
+classified only from the HTTP client's typed predicates. These are not raw exception
+messages: URLs, headers and response bodies are never logged. A connect failure does
+not establish whether DNS, TLS or another connection step failed. Older entries without
+`detail` remain readable. User-facing error categories and no-retry behavior are unchanged.
+
 Insecure/symlinked profile directories are refused, never silently made private.
 
 ## Backend launcher

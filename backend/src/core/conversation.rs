@@ -1539,7 +1539,7 @@ impl Conversation {
             if let Err(error) = &result
                 && (!cancel.is_cancelled() || *error == Error::Storage)
             {
-                s.record.operation.as_mut().unwrap().error = Some(match error { Error::Provider(_) | Error::Storage | Error::Invalid("Agent step limit reached. No further request was sent.") => error.to_string(), _ => "Provider operation failed or returned an incomplete response. It was not retried.".into() });
+                s.record.operation.as_mut().unwrap().error = Some(match error { Error::Provider(_) | Error::ProviderDetailed { .. } | Error::Storage | Error::Invalid("Agent step limit reached. No further request was sent.") => error.to_string(), _ => "Provider operation failed or returned an incomplete response. It was not retried.".into() });
             }
             // Invalidate before mutating any incomplete historical messages/results.
             if let Some(index) = s.record.messages.iter().position(|m| {

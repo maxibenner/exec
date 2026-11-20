@@ -17,6 +17,9 @@ pub mod tools;
 mod workspace_instructions;
 mod workspace_picker;
 
+mod provider_diagnostics;
+pub use provider_diagnostics::{ProviderDiagnostic, ProviderTransportKind, ProviderTransportPhase};
+
 use std::fmt;
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -34,6 +37,10 @@ pub enum Error {
     Invalid(&'static str),
     Tool(String),
     Provider(ProviderFailure),
+    ProviderDetailed {
+        reason: ProviderFailure,
+        detail: ProviderDiagnostic,
+    },
     Api(u16),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -79,6 +86,7 @@ impl fmt::Display for Error {
                     "Service request failed (HTTP {status}). It may have taken effect. Inspect conversation state before continuing."
                 );
             }
+            Self::ProviderDetailed { reason, .. } => return Self::Provider(*reason).fmt(f),
             Self::Provider(code) => match code {
                 ProviderFailure::Authentication => {
                     "Provider authentication failed. Check the configured credential. No retry was made."

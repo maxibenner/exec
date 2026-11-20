@@ -126,6 +126,7 @@ async fn empty_response_after_completed_tool_is_precise_private_and_recoverable(
     let failed_message = messages.last().unwrap().id();
     let reason = DiagnosticFailure::Provider {
         reason: ProviderFailure::EmptyResponse,
+        detail: None,
     };
     let (before, previous) = diagnostics(&profile, &c.id);
     assert_trace(
