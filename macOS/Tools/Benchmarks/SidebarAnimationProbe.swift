@@ -179,7 +179,13 @@ private actor SidebarProbeTransport: AgentTransport {
     }
     nonisolated func events(_ method: String, _ path: String, body: Data?) -> AsyncThrowingStream<Data, Error> {
         AsyncThrowingStream { continuation in
-            Task { continuation.finish(throwing: await self.reject(method, path)) }
+            if method == "GET", path == "/v1/changes", body == nil {
+                // Exercise the supported legacy polling path with the synthetic
+                // catalog above, rather than treating a known route as a fault.
+                continuation.finish(throwing: AgentHTTPError(status: 404, message: "Synthetic polling backend"))
+            } else {
+                Task { continuation.finish(throwing: await self.reject(method, path)) }
+            }
         }
     }
     nonisolated static func snapshot(_ id: UUID, title: String, parent: UUID? = nil, activity: Double = 1000) -> AgentJSON {
@@ -250,6 +256,8 @@ private struct ProbeWindow: View {
         let table: String
         let focus: String
         var duplicateMarkers: [String]? = nil
+        var composerFocused: Bool? = nil
+        var hasComposerFocus: Bool { composerFocused ?? focus.hasPrefix("Editor@") }
     }
     struct Mutation: Codable {
         let time: Double // Absolute uptime, aligned with Phase.startedAt.
@@ -352,7 +360,7 @@ private struct ProbeWindow: View {
             animations: Array(Set(keys)).sorted(), rows: table?.numberOfRows ?? -1,
             selection: table?.selectedRow ?? -1, table: table.map { String(describing: ObjectIdentifier($0)) } ?? "none",
             focus: host.window?.firstResponder.map { "\(type(of: $0))@\(ObjectIdentifier($0))" } ?? "none",
-            duplicateMarkers: duplicates.sorted())
+            duplicateMarkers: duplicates.sorted(), composerFocused: host.window?.firstResponder is ComposerTextInput.Editor)
     }
     @MainActor static func measure(_ name: String, host: NSView,
                                    change: @escaping @MainActor () async throws -> Void) async throws -> Phase {
@@ -424,7 +432,7 @@ private struct ProbeWindow: View {
             }
             if phase.mutations != nil {
                 failures += assessStress(phase, reduced: report.reduceMotion).issues.map { "\(phase.name): \($0)" }
-                if !report.simpleDetail, !after.focus.contains("FieldEditor") {
+                if !report.simpleDetail, !after.hasComposerFocus {
                     failures.append("\(phase.name): composer focus was not restored")
                 }
                 continue
@@ -442,7 +450,7 @@ private struct ProbeWindow: View {
                 failures.append("\(phase.name): a settled row remained invisible or empty")
             }
             if phase.name.hasPrefix("children-"), !report.simpleDetail,
-               (!before.focus.contains("FieldEditor") || after.focus != before.focus) {
+               (!before.hasComposerFocus || after.focus != before.focus) {
                 failures.append("\(phase.name): composer focus was not preserved")
             }
             if phase.name == "children-swap" || phase.name == "parent-remote-swap" || phase.name == "parent-move-and-echo" {
@@ -524,6 +532,32 @@ private struct ProbeWindow: View {
             }
         }
         return failures
+    }
+
+    /// Negative control: keep native animation keys and correct final positions,
+    /// but replace every intermediate frame with an instantaneous endpoint jump.
+    /// This prevents the regression gate itself from degrading to endpoint checks.
+    static func verifySnapDetection(_ report: Report) throws {
+        guard !report.reduceMotion, report.stress == nil, report.polling == nil else {
+            throw ExecError("Detector verification needs the default motion workload")
+        }
+        let phases = report.phases.map { phase in
+            guard let first = phase.samples.first, let last = phase.samples.last else { return phase }
+            let snapped = phase.samples.dropFirst().map { frame in
+                Sample(time: frame.time, markers: last.markers, animations: frame.animations,
+                       rows: last.rows, selection: frame.selection, table: frame.table,
+                       focus: frame.focus, duplicateMarkers: frame.duplicateMarkers,
+                       composerFocused: frame.composerFocused)
+            }
+            return Phase(name: phase.name, samples: [first] + snapped, startedAt: phase.startedAt)
+        }
+        let issues = failures(in: Report(operatingSystem: report.operatingSystem, reduceMotion: false,
+                                        simpleDetail: report.simpleDetail, phases: phases))
+        guard issues.contains(where: { $0.contains("snapped instead of moving") }),
+              issues.contains(where: { $0.contains("appeared/disappeared without fading") }) else {
+            throw ExecError("Animation checks accepted instantaneous movement or visibility")
+        }
+        print("PASS negative controls: instantaneous reordering and appearance were rejected")
     }
 
     /// Per-mutation windows catch transient rows that endpoint-only checks miss.
@@ -677,7 +711,7 @@ private struct ProbeWindow: View {
                 }
             } else { issues.append("\(phase.name): missing title geometry evidence") }
             if !report.simpleDetail, !polling.navigate,
-               phase.samples.contains(where: { !$0.focus.contains("FieldEditor") || $0.focus != before.focus }) {
+               phase.samples.contains(where: { !$0.hasComposerFocus || $0.focus != before.focus }) {
                 issues.append("\(phase.name): composer focus changed without navigation")
             }
         }
@@ -851,6 +885,7 @@ private struct ProbeWindow: View {
             print("\(issues.isEmpty ? "PASS" : "FAIL") saved report: \(issues.count) check failures")
             printIssues(issues, report: report)
             if arguments.contains("--check"), !issues.isEmpty { throw ExecError("Saved animation checks failed") }
+            if arguments.contains("--verify-detectors") { try verifySnapDetection(report) }
             return
         }
         let stress = try Stress(arguments)
@@ -1008,5 +1043,6 @@ private struct ProbeWindow: View {
         print("\(issues.isEmpty ? "PASS" : "FAIL"): \(phases.count) phases, \(issues.count) check failures")
         printIssues(issues, report: report)
         if args.contains("--check"), !issues.isEmpty { throw ExecError("Sidebar animation checks failed") }
+        if args.contains("--verify-detectors") { try verifySnapDetection(report) }
     }
 }

@@ -14,10 +14,16 @@ renderer; do not use this ten-animation window for performance comparisons.
 ## Sidebar animation checks
 
 ```sh
-./scripts/probe-sidebar.sh --check --output .build/sidebar-motion.json
+./scripts/probe-sidebar.sh --check --verify-detectors --output .build/sidebar-motion.json
 .build/sidebar-animation-probe --check --reduce-motion --output .build/sidebar-reduced.json
 .build/sidebar-animation-probe --check --dark --narrow --output .build/sidebar-dark-narrow.json
 ```
+
+The normal `./scripts/test.sh` run includes the default motion and Reduce Motion
+workloads. `--verify-detectors` also checks a deliberately snapped copy of the sampled
+report: correct endpoints and native animation keys must not pass without intermediate
+movement and fading. These are regression checks on sampled geometry, not proof of
+GPU frame cadence or physical drag smoothness.
 
 Opens an isolated window containing the production sidebar, split view and chat detail,
 including composer focus restoration. A fake transport and temporary preferences supply
