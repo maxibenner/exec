@@ -41,22 +41,24 @@ public struct PairedHost: Codable, Sendable {
 }
 
 /// RFC 9180 authenticated HPKE; sequence counters are owned by CryptoKit.
-/// A fresh server challenge binds the contexts to one live connection.
+/// Wire handshake v2 binds responses to both the host challenge and the client's
+/// fresh encapsulated key. Invitation format v1 and persistent identities remain valid.
 struct SecureChannel {
+    static let version = 2
     private var sender: HPKE.Sender
     private var recipient: HPKE.Recipient?
     private let privateKey: Curve25519.KeyAgreement.PrivateKey
     private let hostKey: Curve25519.KeyAgreement.PublicKey
-    private let challenge: String
+    private let responseInfo: Data
     private static let suite = HPKE.Ciphersuite.Curve25519_SHA256_ChachaPoly
     init(host: PairedHost, challenge: String) throws {
         guard challenge.count == 64, challenge.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
               let hostBytes = Data(base64Encoded: host.invitation.hostKey) else { throw RemoteFailure("Invalid host handshake.") }
-        self.challenge = challenge
         privateKey = try .init(rawRepresentation: host.devicePrivateKey)
         hostKey = try .init(rawRepresentation: hostBytes)
         sender = try HPKE.Sender(recipientKey: hostKey, ciphersuite: Self.suite,
-            info: Data("exec-remote-v1:client:\(challenge)".utf8), authenticatedBy: privateKey)
+            info: Data("exec-remote-v2:client:\(challenge)".utf8), authenticatedBy: privateKey)
+        responseInfo = Data("exec-remote-v2:host:\(challenge):\(sender.encapsulatedKey.base64EncodedString())".utf8)
     }
     mutating func seal(_ value: RemoteJSON, initial: Bool = false) throws -> RemoteJSON {
         var packet: [String: RemoteJSON] = ["ciphertext": .string(try sender.seal(JSONEncoder().encode(value)).base64EncodedString())]
@@ -74,7 +76,7 @@ struct SecureChannel {
         if recipient == nil {
             guard let enc = packet["encapsulatedKey"].string.flatMap({ Data(base64Encoded: $0) }) else { throw RemoteFailure("Missing host identity proof.") }
             recipient = try HPKE.Recipient(privateKey: privateKey, ciphersuite: Self.suite,
-                info: Data("exec-remote-v1:host:\(challenge)".utf8), encapsulatedKey: enc, authenticatedBy: hostKey)
+                info: responseInfo, encapsulatedKey: enc, authenticatedBy: hostKey)
         } else if packet["encapsulatedKey"] != .null { throw RemoteFailure("Unexpected handshake.") }
         return try JSONDecoder().decode(RemoteJSON.self, from: recipient!.open(encrypted))
     }
@@ -247,7 +249,7 @@ public actor RelayClient {
                 // The handshake owns receives until the pump starts; never two readers.
                 let challenge = try await Self.receive(socket)
                 guard generation == expected else { throw CancellationError() }
-                guard challenge["version"].number == 1, let nonce = challenge["challenge"].string else { throw RemoteFailure("Incompatible relay connection.") }
+                guard challenge["version"].number == Double(SecureChannel.version), let nonce = challenge["challenge"].string else { throw RemoteFailure("Incompatible relay connection. Update both the agent and client; handshake v2 is required.") }
                 var channel = try SecureChannel(host: host, challenge: nonce)
                 let hello: RemoteJSON = .object(["name": .string(host.deviceName), "invitation": .optional(host.invitation.secret)])
                 try await socket.send(Self.text(channel.seal(hello, initial: true)))
@@ -255,10 +257,10 @@ public actor RelayClient {
                 let ready = try channel.open(await Self.receive(socket))
                 try Task.checkCancellation()
                 guard generation == expected else { throw CancellationError() }
-                guard case .object(let fields) = ready, fields["ready"] == .bool(true) else { throw RemoteFailure("Pairing was rejected.") }
-                // Authenticated opt-in only. Missing means an old host; never probe
-                // its allowlist (which returns 403 before route lookup). Ignore new
-                // unrelated fields but reject malformed known capabilities.
+                guard case .object(let fields) = ready, fields["ready"] == .bool(true), fields["version"]?.number == Double(SecureChannel.version) else { throw RemoteFailure("Pairing was rejected.") }
+                // Authenticated opt-in only. Missing means no change support;
+                // never probe its allowlist (which may return 403 before lookup).
+                // Ignore new unrelated fields but reject malformed capabilities.
                 if let capability = fields["changeNotifications"] {
                     guard case .bool(let enabled) = capability else { throw Self.interrupted }
                     supportsChanges = enabled
@@ -280,7 +282,7 @@ public actor RelayClient {
         } catch {
             fail(Self.interrupted, generation: expected)
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
-            throw RemoteFailure("Could not connect or authenticate. Check that the agent and relay are running; create a new invitation if this device is not paired.")
+            throw RemoteFailure("Could not connect or authenticate. Handshake v2 requires an updated agent and client. Check that the agent and relay are running; create a new invitation if this device is not paired.")
         }
     }
 

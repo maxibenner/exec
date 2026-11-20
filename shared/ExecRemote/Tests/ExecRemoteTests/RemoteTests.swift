@@ -44,7 +44,7 @@ final class RemoteTests: XCTestCase, @unchecked Sendable {
             process.environment = environment; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
             try process.run(); return process
         }
-        let relayProcess = try launch(relay, [], ["EXEC_RELAY_BIND":"127.0.0.1:\(relayPort)"])
+        let relayProcess = try launch(relay, [], ["EXEC_RELAY_BIND":"127.0.0.1:\(relayPort)", "EXEC_RELAY_LOCAL_DEVELOPMENT":"1"])
         defer { if relayProcess.isRunning { relayProcess.terminate(); relayProcess.waitUntilExit() } }
         let agent = try launch(backend, ["--profile",directory.path,"--port",String(apiPort)], ["EXEC_AGENT_TOKEN":token,"HOME":directory.path])
         defer { if agent.isRunning { agent.terminate(); agent.waitUntilExit() } }
@@ -80,6 +80,22 @@ final class RemoteTests: XCTestCase, @unchecked Sendable {
         try await client.connect(host)
         let health = try await client.request("GET","/v1/health")
         XCTAssertEqual(health["version"].number,1)
+        // Two healthy encrypted clients survive an unpaired route-knowing peer
+        // sending a legal 1 MiB payload that cannot fit its relay envelope.
+        let second = RelayClient()
+        try await second.connect(host)
+        let attacker = session.webSocketTask(with: URL(string:"ws://127.0.0.1:\(relayPort)/v1/client/\(invitation.route)")!)
+        attacker.maximumMessageSize = 1024 * 1024
+        attacker.resume()
+        _ = try await attacker.receive() // host challenge, never a credential
+        try await attacker.send(.string(String(repeating:"x",count:1024 * 1024)))
+        do { _ = try await attacker.receive(); XCTFail("Oversize envelope offender was not closed") } catch {}
+        attacker.cancel(with:.goingAway,reason:nil)
+        let firstStillHealthy = try await client.request("GET","/v1/health")
+        let secondStillHealthy = try await second.request("GET","/v1/health")
+        XCTAssertEqual(firstStillHealthy["version"].number,1)
+        XCTAssertEqual(secondStillHealthy["version"].number,1)
+        await second.disconnect()
         // Exercise actual encrypted push frames interleaved with API replies on
         // the same socket. Bound the fixture if a missing invalidation would hang.
         let deadline = Task {

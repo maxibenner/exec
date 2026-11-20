@@ -58,6 +58,9 @@ private final class SocketFactory: @unchecked Sendable {
 private actor FakeHost {
     nonisolated let pipe: FramePipe
     nonisolated let paired: PairedHost
+    nonisolated let challengeFrame: String
+    private(set) var readyFrame: String?
+    private(set) var initialClientKey: String?
     private let key: Curve25519.KeyAgreement.PrivateKey
     private let challenge = String(repeating: "c", count: 64)
     private let readyFields: [String: RemoteJSON]
@@ -71,19 +74,23 @@ private actor FakeHost {
         key = Curve25519.KeyAgreement.PrivateKey()
         pipe = FramePipe(delayClose: delayClose)
         paired = PairedHost(invitation: PairingInvitation(version: 1, relay: "wss://fixture.invalid", route: String(repeating: "a", count: 64), hostKey: key.publicKey.rawRepresentation.base64EncodedString(), secret: nil, expires: 0, localDevelopment: false), deviceName: "In-memory fixture")
-        pipe.push(String(decoding: try JSONEncoder().encode(RemoteJSON.object(["version": .number(1), "challenge": .string(challenge)])), as: UTF8.self))
+        challengeFrame = String(decoding: try JSONEncoder().encode(RemoteJSON.object(["version": .number(2), "challenge": .string(challenge)])), as: UTF8.self)
+        pipe.push(challengeFrame)
     }
     func receive(_ text: String) throws {
         let packet = try JSONDecoder().decode(RemoteJSON.self, from: Data(text.utf8))
         if recipient == nil {
             let peer = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(base64Encoded: packet["publicKey"].string!)!)
+            let clientKey = packet["encapsulatedKey"].string!
+            initialClientKey = clientKey
             recipient = try HPKE.Recipient(privateKey: key, ciphersuite: .Curve25519_SHA256_ChachaPoly,
-                info: Data("exec-remote-v1:client:\(challenge)".utf8), encapsulatedKey: Data(base64Encoded: packet["encapsulatedKey"].string!)!, authenticatedBy: peer)
+                info: Data("exec-remote-v2:client:\(challenge)".utf8), encapsulatedKey: Data(base64Encoded: clientKey)!, authenticatedBy: peer)
             _ = try recipient!.open(Data(base64Encoded: packet["ciphertext"].string!)!)
             sender = try HPKE.Sender(recipientKey: peer, ciphersuite: .Curve25519_SHA256_ChachaPoly,
-                info: Data("exec-remote-v1:host:\(challenge)".utf8), authenticatedBy: key)
+                info: Data("exec-remote-v2:host:\(challenge):\(clientKey)".utf8), authenticatedBy: key)
             var ready = readyFields
             ready["ready"] = .bool(true); ready["deviceID"] = .string(UUID().uuidString)
+            if ready["version"] == nil { ready["version"] = .number(2) }
             try frame(.object(ready), initial: true)
         } else {
             let plaintext = try recipient!.open(Data(base64Encoded: packet["ciphertext"].string!)!)
@@ -101,7 +108,9 @@ private actor FakeHost {
         let ciphertext = try sender!.seal(JSONEncoder().encode(value))
         var packet: [String: RemoteJSON] = ["ciphertext": .string(ciphertext.base64EncodedString())]
         if initial { packet["encapsulatedKey"] = .string(sender!.encapsulatedKey.base64EncodedString()) }
-        pipe.push(String(decoding: try JSONEncoder().encode(RemoteJSON.object(packet)), as: UTF8.self))
+        let text = String(decoding: try JSONEncoder().encode(RemoteJSON.object(packet)), as: UTF8.self)
+        if initial { readyFrame = text }
+        pipe.push(text)
     }
     func reply(_ command: RemoteJSON, _ value: RemoteJSON = .object(["ok": .bool(true)]), status: Int = 200) throws {
         try chunk(command, JSONEncoder().encode(value), status: status)
@@ -113,6 +122,18 @@ private actor FakeHost {
         .object(["epoch": .string("epoch"), "catalog": .string(revision), "conversations": .object(["session": .string(revision)])])
     }
     func notice(_ revision: String) throws { try frame(.object(["notification": Self.change(revision)])) }
+}
+
+// Malicious relay: records frames and replays them without contacting the host.
+private final class RecordedHandshakeSocket: RelaySocket, @unchecked Sendable {
+    private let pipe = FramePipe()
+    private let lock = NSLock()
+    private var sent: [String] = []
+    var sentFrames: [String] { lock.withLock { sent } }
+    init(_ frames: [String]) { for frame in frames { pipe.push(frame) } }
+    func send(_ text: String) async throws { lock.withLock { sent.append(text) } }
+    func receive() async throws -> String { try await pipe.receive() }
+    func close() { pipe.close() }
 }
 
 private final class DispatchHook: @unchecked Sendable {
@@ -159,7 +180,48 @@ final class RelayChangesTests: XCTestCase, @unchecked Sendable {
         throw RemoteFailure("Test synchronization failed.")
     }
 
-    func testOldAuthenticatedReadyWithoutCapabilityNeverProbesIts403Allowlist() async throws {
+    func testRecordedChallengeAndEncryptedReadyCannotAuthenticateAFreshConnection() async throws {
+        let (original, host) = try await connected()
+        let recordedReady = await host.readyFrame
+        let originalClientKey = await host.initialClientKey
+        await original.disconnect()
+        let replay = RecordedHandshakeSocket([host.challengeFrame, try XCTUnwrap(recordedReady)])
+        let client = RelayClient(makeSocket: { _ in replay })
+        do { try await client.connect(host.paired); XCTFail("Recorded handshake authenticated") } catch {}
+        let connected = await client.isConnected
+        XCTAssertFalse(connected)
+        XCTAssertEqual(replay.sentFrames.count, 1, "Only the new hello may leave the unauthenticated connection")
+        let newHello = try JSONDecoder().decode(RemoteJSON.self, from: Data(try XCTUnwrap(replay.sentFrames.first).utf8))
+        XCTAssertNotEqual(newHello["encapsulatedKey"].string, originalClientKey)
+        do { _ = try await client.request("DELETE", "/v1/conversations/never"); XCTFail("Replay enabled API dispatch") } catch {}
+        XCTAssertEqual(replay.sentFrames.count, 1)
+    }
+
+    func testLegacyOrUnknownHandshakeVersionIsRejectedWithoutSendingHello() async throws {
+        let host = try FakeHost()
+        for version in [1, 3] {
+            let frame: RemoteJSON = .object(["version": .number(Double(version)), "challenge": .string(String(repeating: "c", count: 64))])
+            let socket = RecordedHandshakeSocket([String(decoding: try JSONEncoder().encode(frame), as: UTF8.self)])
+            let client = RelayClient(makeSocket: { _ in socket })
+            do { try await client.connect(host.paired); XCTFail("Incompatible handshake accepted") } catch {}
+            let connected = await client.isConnected
+            XCTAssertFalse(connected)
+            XCTAssertTrue(socket.sentFrames.isEmpty)
+        }
+    }
+
+    func testAuthenticatedReadyMustDeclareV2BeforeAPIOrCapabilityAcceptance() async throws {
+        for version: RemoteJSON in [.number(1), .number(3), .null, .string("2")] {
+            let host = try FakeHost(readyFields: ["version": version, "changeNotifications": .bool(true)])
+            let client = RelayClient(makeSocket: { _ in FakeSocket(host) })
+            do { try await client.connect(host.paired); XCTFail("Incompatible ready accepted") } catch {}
+            let connected = await client.isConnected, commands = await host.commands
+            XCTAssertFalse(connected)
+            XCTAssertTrue(commands.isEmpty)
+        }
+    }
+
+    func testV2AuthenticatedReadyWithoutCapabilityNeverProbesItsAllowlist() async throws {
         for fields: [String: RemoteJSON] in [[:], ["changeNotifications": .bool(false)], ["futureCapability": .object([:])]] {
             let host = try FakeHost(readyFields: fields), socket = FakeSocket(host)
             let client = RelayClient(livenessTimeout: .milliseconds(50), makeSocket: { _ in socket })

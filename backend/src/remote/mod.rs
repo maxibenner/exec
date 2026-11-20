@@ -51,6 +51,11 @@ pub(crate) struct RemoteAccess {
     path: PathBuf,
     state: Mutex<State>,
     revision: watch::Sender<u64>,
+    // Socket tasks only await these transactions; dropping that waiter cannot
+    // release the state lock while its blocking atomic write is still running.
+    transactions: tokio_util::task::TaskTracker,
+    #[cfg(test)]
+    write_pause: std::sync::Mutex<Option<Arc<WritePause>>>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -144,11 +149,16 @@ impl RemoteAccess {
                 connection: ConnectionStatus::Disconnected,
             }),
             revision,
+            transactions: tokio_util::task::TaskTracker::new(),
+            #[cfg(test)]
+            write_pause: std::sync::Mutex::new(None),
         }))
     }
     async fn persist(&self, config: &Configuration) -> Result<()> {
         let path = self.path.clone();
         let data = serde_json::to_vec(config).map_err(|_| Error::Storage)?;
+        #[cfg(test)]
+        let pause = self.write_pause.lock().unwrap().take();
         tokio::task::spawn_blocking(move || -> Result<()> {
             use std::io::Write;
             let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
@@ -160,6 +170,10 @@ impl RemoteAccess {
                     .open(&temporary)?;
                 file.write_all(&data)?;
                 file.sync_all()?;
+                #[cfg(test)]
+                if let Some(pause) = pause {
+                    pause.wait();
+                }
                 std::fs::rename(&temporary, &path)?;
                 std::fs::File::open(path.parent().ok_or(Error::Storage)?)?.sync_all()?;
                 Ok(())
@@ -180,25 +194,31 @@ impl RemoteAccess {
             "invitationActive":state.config.enabled && state.invitation.as_ref().is_some_and(|invitation| invitation.expires > now()),
             "devices":state.config.devices.iter().map(|d| json!({"id":d.id,"name":d.name})).collect::<Vec<_>>()})
     }
-    pub(crate) async fn configure(&self, input: Configure) -> Result<()> {
+    pub(crate) async fn configure(self: &Arc<Self>, input: Configure) -> Result<()> {
         if input.enabled || !input.relay.is_empty() {
             validate_relay(&input.relay, input.local_development)?;
         }
-        let mut state = self.state.lock().await;
-        let mut config = state.config.clone();
-        config.relay = input.relay.trim_end_matches('/').to_owned();
-        config.enabled = input.enabled;
-        config.local_development = input.local_development;
-        self.persist(&config).await?;
-        state.connection = if config.enabled {
-            ConnectionStatus::Connecting
-        } else {
-            ConnectionStatus::Disconnected
-        };
-        state.config = config;
-        state.invitation = None;
-        self.revision.send_modify(|r| *r += 1);
-        Ok(())
+        let remote = self.clone();
+        self.transactions
+            .spawn(async move {
+                let mut state = remote.state.lock().await;
+                let mut config = state.config.clone();
+                config.relay = input.relay.trim_end_matches('/').to_owned();
+                config.enabled = input.enabled;
+                config.local_development = input.local_development;
+                remote.persist(&config).await?;
+                state.connection = if config.enabled {
+                    ConnectionStatus::Connecting
+                } else {
+                    ConnectionStatus::Disconnected
+                };
+                state.config = config;
+                state.invitation = None;
+                remote.revision.send_modify(|r| *r += 1);
+                Ok(())
+            })
+            .await
+            .map_err(|_| Error::Storage)?
     }
     pub(crate) async fn invite(&self) -> Result<Value> {
         let mut state = self.state.lock().await;
@@ -212,21 +232,49 @@ impl RemoteAccess {
         state.invitation = Some(Invitation { secret, expires });
         Ok(value)
     }
-    pub(crate) async fn revoke(&self, id: &str) -> Result<()> {
-        let mut state = self.state.lock().await;
-        let mut config = state.config.clone();
-        config.devices.retain(|d| d.id != id);
-        self.persist(&config).await?;
-        state.config = config;
-        self.revision.send_modify(|r| *r += 1);
-        Ok(())
+    pub(crate) async fn revoke(self: &Arc<Self>, id: &str) -> Result<()> {
+        let remote = self.clone();
+        let id = id.to_owned();
+        self.transactions
+            .spawn(async move {
+                let mut state = remote.state.lock().await;
+                let mut config = state.config.clone();
+                config.devices.retain(|d| d.id != id);
+                remote.persist(&config).await?;
+                state.config = config;
+                remote.revision.send_modify(|r| *r += 1);
+                Ok(())
+            })
+            .await
+            .map_err(|_| Error::Storage)?
     }
     async fn authorize_device(
+        self: &Arc<Self>,
+        public: &str,
+        invitation: Option<&str>,
+        name: &str,
+    ) -> Result<String> {
+        let remote = self.clone();
+        let public = public.to_owned();
+        let invitation = invitation.map(str::to_owned);
+        let name = name.to_owned();
+        self.transactions
+            .spawn(async move {
+                remote
+                    .accept_device(&public, invitation.as_deref(), &name)
+                    .await
+            })
+            .await
+            .map_err(|_| Error::Storage)?
+    }
+    async fn accept_device(
         &self,
         public: &str,
         invitation: Option<&str>,
         name: &str,
     ) -> Result<String> {
+        // This tracked task owns validation, invitation consumption, the write,
+        // and memory settlement under one lock, independent of socket lifetime.
         let mut state = self.state.lock().await;
         if !state.config.enabled {
             return Err(Error::Invalid("Remote access is disabled."));
@@ -340,6 +388,36 @@ pub(crate) fn permits(method: &str, path: &str) -> bool {
 }
 
 #[cfg(test)]
+#[derive(Default)]
+struct WritePause {
+    entered: tokio::sync::Notify,
+    released: std::sync::Mutex<bool>,
+    ready: std::sync::Condvar,
+}
+#[cfg(test)]
+impl WritePause {
+    fn wait(&self) {
+        self.entered.notify_one();
+        let released = self.released.lock().unwrap();
+        // A failed assertion must not leave the test runtime blocked forever.
+        let (released, _) = self
+            .ready
+            .wait_timeout_while(released, std::time::Duration::from_secs(10), |released| {
+                !*released
+            })
+            .unwrap();
+        assert!(
+            *released,
+            "test did not release delayed configuration write"
+        );
+    }
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.ready.notify_all();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -450,6 +528,40 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+    #[tokio::test]
+    async fn failed_pairing_write_consumes_invitation_without_authorizing_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = RemoteAccess::load(dir.path()).await.unwrap();
+        remote
+            .configure(Configure {
+                relay: "ws://127.0.0.1:8787".into(),
+                enabled: true,
+                local_development: true,
+            })
+            .await
+            .unwrap();
+        let invitation = remote.invite().await.unwrap();
+        let (_, public) = crypto::keypair();
+        // Force the atomic rename to fail without touching permissions or any
+        // user's profile. The temporary write must be cleaned up and settled.
+        std::fs::remove_file(&remote.path).unwrap();
+        std::fs::create_dir(&remote.path).unwrap();
+        assert!(
+            remote
+                .authorize_device(&public, invitation["secret"].as_str(), "fixture")
+                .await
+                .is_err()
+        );
+        assert_eq!(remote.status().await["invitationActive"], false);
+        assert!(remote.state.lock().await.config.devices.is_empty());
+        assert!(
+            remote
+                .authorize_device(&public, invitation["secret"].as_str(), "reused")
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
     #[test]
     fn rejects_admin_routes_and_plaintext_production() {

@@ -1,6 +1,7 @@
 //! RFC 9180 authenticated HPKE, matching CryptoKit's Curve25519_SHA256_ChachaPoly.
-//! Each direction has its own ordered context. A fresh host challenge binds every
-//! connection, so captured handshakes/commands cannot be replayed on another socket.
+//! Each direction has its own ordered context. The host challenge binds client
+//! commands; the host response also binds the client's fresh encapsulated key,
+//! so even a malicious relay replaying a challenge cannot replay an old ready.
 use crate::{Error, Result};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use hpke::{
@@ -35,8 +36,15 @@ pub fn public_key(private: &str) -> Result<String> {
     let key = Private::from_bytes(&decode(private)?).map_err(|_| Error::Storage)?;
     Ok(encode(&Kem::sk_to_pk(&key).to_bytes()))
 }
-fn info(challenge: &str, direction: &str) -> Vec<u8> {
-    format!("exec-remote-v1:{direction}:{challenge}").into_bytes()
+pub const VERSION: u64 = 2;
+
+/// The client KEM output is fresh for every handshake, even if the relay replays
+/// the host's challenge. It is authenticated by successfully opening the hello.
+pub fn response_context(challenge: &str, client_encapsulated: &str) -> String {
+    format!("{challenge}:{client_encapsulated}")
+}
+fn info(context: &str, direction: &str) -> Vec<u8> {
+    format!("exec-remote-v{VERSION}:{direction}:{context}").into_bytes()
 }
 pub fn receiver(
     private: &str,
@@ -103,5 +111,47 @@ mod tests {
         assert!(open(&mut replay, &packet).is_err());
         let mut impostor = receiver(&b, &wrong, &enc, "challenge", "client").unwrap();
         assert!(open(&mut impostor, &packet).is_err());
+    }
+    #[test]
+    fn legacy_v1_hello_is_not_accepted_by_v2() {
+        let (host, host_public) = keypair();
+        let (client, client_public) = keypair();
+        let private = Private::from_bytes(&decode(&client).unwrap()).unwrap();
+        let public = Public::from_bytes(&decode(&client_public).unwrap()).unwrap();
+        let peer = Public::from_bytes(&decode(&host_public).unwrap()).unwrap();
+        let (enc, mut tx) = hpke::setup_sender::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
+            &OpModeS::Auth((private, public)),
+            &peer,
+            b"exec-remote-v1:client:challenge",
+            &mut rand::rngs::OsRng,
+        )
+        .unwrap();
+        let hello = seal(&mut tx, br#"{"name":"legacy"}"#).unwrap();
+        let mut rx = receiver(
+            &host,
+            &client_public,
+            &encode(&enc.to_bytes()),
+            "challenge",
+            "client",
+        )
+        .unwrap();
+        assert!(open(&mut rx, &hello).is_err());
+    }
+    #[test]
+    fn recorded_host_ready_cannot_authenticate_a_fresh_client_context() {
+        let (host, host_public) = keypair();
+        let (client, client_public) = keypair();
+        let (old_enc, _) = sender(&client, &host_public, "replayed-challenge", "client").unwrap();
+        let (new_enc, _) = sender(&client, &host_public, "replayed-challenge", "client").unwrap();
+        assert_ne!(old_enc, new_enc);
+        let old_context = response_context("replayed-challenge", &old_enc);
+        let new_context = response_context("replayed-challenge", &new_enc);
+        let (host_enc, mut tx) = sender(&host, &client_public, &old_context, "host").unwrap();
+        let ready = seal(&mut tx, br#"{"ready":true,"version":2}"#).unwrap();
+        let mut original =
+            receiver(&client, &host_public, &host_enc, &old_context, "host").unwrap();
+        assert!(open(&mut original, &ready).is_ok());
+        let mut replay = receiver(&client, &host_public, &host_enc, &new_context, "host").unwrap();
+        assert!(open(&mut replay, &ready).is_err());
     }
 }
