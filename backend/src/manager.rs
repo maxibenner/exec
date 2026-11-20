@@ -195,9 +195,18 @@ impl AgentManager {
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<Vec<ChatModel>> {
         let epoch = self.provider_epoch()?;
+        // A provider can update one cache and then suspend on another. The HTTP
+        // caller may drop this future on disconnect or timeout without polling it
+        // again, so invalidation must also happen when discovery is dropped.
+        struct InvalidateMetadata<'a>(&'a ChangeHub);
+        impl Drop for InvalidateMetadata<'_> {
+            fn drop(&mut self) {
+                self.0.provider_metadata_changed();
+            }
+        }
+        let invalidation = InvalidateMetadata(&self.changes);
         let result = provider.models(cancel).await;
-        // Provider caches may have changed even if discovery only partly succeeded.
-        self.changes.provider_metadata_changed();
+        drop(invalidation);
         self.check_provider_epoch(epoch)?;
         result
     }
@@ -825,12 +834,7 @@ impl AgentManager {
         name: String,
         bytes: Vec<u8>,
     ) -> Result<FileRef> {
-        if !valid_file_name(&name) || bytes.len() > MAX_FILE_BYTES {
-            return Err(Error::Invalid(
-                "Use a valid filename and a file no larger than 8 MiB.",
-            ));
-        }
-        let conversation = self.get(id)?;
+        self.get(id)?;
         let files = {
             let c = self.catalog.lock().unwrap();
             if c.closed || c.account_busy || c.mutating.contains(id) {
@@ -841,16 +845,17 @@ impl AgentManager {
                 .ok_or(Error::Invalid("File storage is unavailable."))?
         };
         let asset_id = new_id();
+        let prepared = files
+            .prepare(id.to_owned(), asset_id.clone(), name, bytes)
+            .await?;
+        let conversation = self.get(id)?;
         let resource = ResourceRef {
-            id: asset_id.clone(),
+            id: asset_id,
             call_id: String::new(),
             kind: ResourceKind::File,
         };
-        let session = id.to_owned();
         conversation
-            .store_resource(resource, async move {
-                files.put(session, asset_id, name, bytes).await
-            })
+            .store_resource(resource, async move { files.put_prepared(prepared).await })
             .await
     }
     pub async fn update_settings(
@@ -865,48 +870,48 @@ impl AgentManager {
     pub fn snapshot(&self, id: &str) -> Result<ConversationSnapshot> {
         let catalog = self.catalog.lock().unwrap();
         if catalog.closed {
-            return Err(Error::Invalid("Agent manager is closed."));
+            return Err(Error::Closed);
         }
         Ok(catalog
             .conversations
             .get(id)
-            .ok_or(Error::Invalid("Conversation not found."))?
+            .ok_or(Error::ConversationNotFound)?
             .snapshot())
     }
     pub fn sync(&self, id: &str, cursor: SyncCursor<'_>) -> Result<ConversationSync> {
         let catalog = self.catalog.lock().unwrap();
         if catalog.closed {
-            return Err(Error::Invalid("Agent manager is closed."));
+            return Err(Error::Closed);
         }
         catalog
             .conversations
             .get(id)
-            .ok_or(Error::Invalid("Conversation not found."))?
+            .ok_or(Error::ConversationNotFound)?
             .sync(cursor)
     }
     pub fn observe(&self, id: &str) -> Result<(ConversationSnapshot, EventReceiver)> {
         let catalog = self.catalog.lock().unwrap();
         if catalog.closed {
-            return Err(Error::Invalid("Agent manager is closed."));
+            return Err(Error::Closed);
         }
         Ok(catalog
             .conversations
             .get(id)
-            .ok_or(Error::Invalid("Conversation not found."))?
+            .ok_or(Error::ConversationNotFound)?
             .subscribe())
     }
     pub fn get(&self, id: &str) -> Result<Arc<Conversation>> {
         let c = self.catalog.lock().unwrap();
         if c.closed {
-            return Err(Error::Invalid("Agent manager is closed."));
+            return Err(Error::Closed);
         }
         if c.mutating.contains(id) {
-            return Err(Error::Invalid("Conversation catalog operation is pending."));
+            return Err(Error::Busy);
         }
         c.conversations
             .get(id)
             .cloned()
-            .ok_or(Error::Invalid("Conversation not found."))
+            .ok_or(Error::ConversationNotFound)
     }
     pub fn native(&self) -> Arc<crate::native::NativeHub> {
         self.catalog.lock().unwrap().native.clone()
@@ -941,7 +946,7 @@ impl AgentManager {
         name: String,
         bytes: Vec<u8>,
     ) -> Result<ImageRef> {
-        let conversation = self.get(id)?;
+        self.get(id)?;
         let images = {
             let c = self.catalog.lock().unwrap();
             if c.closed || c.account_busy || c.mutating.contains(id) {
@@ -952,18 +957,17 @@ impl AgentManager {
                 .ok_or(Error::Invalid("Image storage is unavailable."))?
         };
         let asset_id = new_id();
+        let prepared = images.prepare(asset_id.clone(), name, bytes).await?;
+        let conversation = self.get(id)?;
         let resource = ResourceRef {
-            id: asset_id.clone(),
+            id: asset_id,
             call_id: String::new(),
             kind: ResourceKind::Image,
         };
-        // Conversation ownership blocks deletion until storage settles, but leaves
-        // reads and explicit cancellation available during an active upload.
+        // Validate before checkpointing ownership. Once storage starts, retain the
+        // reservation on uncertain failures and keep deletion blocked until it settles.
         conversation
-            .store_resource(
-                resource,
-                async move { images.put(asset_id, name, bytes).await },
-            )
+            .store_resource(resource, async move { images.put_prepared(prepared).await })
             .await
     }
     pub async fn release_image(self: &Arc<Self>, id: &str, asset: &str) -> Result<()> {

@@ -51,6 +51,8 @@ pub(crate) struct Host {
     options: ServiceOptions,
     stop: CancellationToken,
     handlers: tokio_util::task::TaskTracker,
+    // Independent of TCP/tunnel lifetimes: accepted writes own their capacity.
+    mutations: Arc<tokio::sync::Semaphore>,
 }
 impl Host {
     pub(crate) fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<ChangeNotification> {
@@ -165,6 +167,7 @@ async fn start_service_with_remote(
         options,
         stop: stop.clone(),
         handlers: tokio_util::task::TaskTracker::new(),
+        mutations: Arc::new(tokio::sync::Semaphore::new(64)),
     });
     let task = tokio::spawn(async move {
         let remote_task = host.remote.as_ref().map(|remote| {
@@ -248,6 +251,10 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
 impl From<Error> for ApiError {
     fn from(error: Error) -> Self {
         match error {
+            Error::ConversationNotFound => Self(404, "Conversation not found."),
+            Error::Closed | Error::Invalid("Agent manager is closed.") => {
+                Self(503, "Service is closed.")
+            }
             Error::Busy => Self(409, "Conversation is busy."),
             Error::WorkspaceLocked => Self(
                 409,
@@ -292,7 +299,10 @@ async fn dispatch(
         }
     }
 }
-async fn body<T: serde::de::DeserializeOwned>(request: Request<Body>) -> ApiResult<T> {
+async fn body<T: serde::de::DeserializeOwned>(
+    request: Request<Body>,
+    cancel: &CancellationToken,
+) -> ApiResult<T> {
     if request
         .headers()
         .get("content-type")
@@ -301,13 +311,17 @@ async fn body<T: serde::de::DeserializeOwned>(request: Request<Body>) -> ApiResu
     {
         return Err(ApiError(415, "Use application/json."));
     }
-    let bytes = tokio::time::timeout(
-        Duration::from_secs(15),
-        to_bytes(request.into_body(), 12 * 1024 * 1024),
-    )
-    .await
-    .map_err(|_| ApiError(408, "Request timed out."))?
-    .map_err(|_| ApiError(413, "Request is too large."))?;
+    // Reading/validating an incomplete body is not an accepted mutation. Stop
+    // promptly on disconnect/shutdown; never cancel the subsequent durable write.
+    let bytes = tokio::select! { biased;
+        _ = cancel.cancelled() => return Err(ApiError(408, "Request interrupted.")),
+        result = tokio::time::timeout(
+            Duration::from_secs(15),
+            to_bytes(request.into_body(), 12 * 1024 * 1024),
+        ) => result
+            .map_err(|_| ApiError(408, "Request timed out."))?
+            .map_err(|_| ApiError(413, "Request is too large."))?,
+    };
     serde_json::from_slice(&bytes).map_err(|_| ApiError(400, "Invalid JSON or request fields."))
 }
 fn identifier(id: &str) -> ApiResult<()> {
@@ -535,6 +549,19 @@ async fn handle(
     if host.stop.is_cancelled() {
         return Err(ApiError(503, "Service is stopping."));
     }
+    // Acquire inside the tracked handler, after authorization and before body
+    // allocation or effects. Disconnects cannot release an accepted write's slot.
+    // All non-GET commands share this budget across local and remote transports.
+    let _mutation_permit = if request.method() == "GET" {
+        None
+    } else {
+        Some(host.mutations.clone().try_acquire_owned().map_err(|_| {
+            ApiError(
+                503,
+                "Service mutation capacity is full. No work was accepted.",
+            )
+        })?)
+    };
     let route = request.uri().path().to_owned();
     if request.uri().query().is_some() && !route.ends_with("/sync") {
         return Err(ApiError(404, "Route not found."));
@@ -548,11 +575,13 @@ async fn handle(
         match (method.as_str(), route.as_str()) {
             ("GET", "/v1/remote") => return Ok(json_response(200, remote.status().await)),
             ("PUT", "/v1/remote") => {
-                remote.configure(body(request).await?).await?;
+                remote
+                    .configure(body(request, &request_cancel).await?)
+                    .await?;
                 return Ok(json_response(200, remote.status().await));
             }
             ("POST", "/v1/remote/invitations") => {
-                let _: Empty = body(request).await?;
+                let _: Empty = body(request, &request_cancel).await?;
                 return Ok(json_response(200, remote.invite().await?));
             }
             ("DELETE", path) if path.starts_with("/v1/remote/devices/") => {
@@ -579,7 +608,7 @@ async fn handle(
     }
     let options = &host.options;
     if method == "POST" && route == "/v1/workspaces/browse" {
-        let input: crate::workspace_picker::Browse = body(request).await?;
+        let input: crate::workspace_picker::Browse = body(request, &request_cancel).await?;
         return Ok(json_response(
             200,
             crate::workspace_picker::browse(input, request_cancel).await?,
@@ -591,7 +620,7 @@ async fn handle(
         struct Register {
             os_screen_permission: bool,
         }
-        let input: Register = body(request).await?;
+        let input: Register = body(request, &request_cancel).await?;
         let mut connection = options
             .manager
             .native()
@@ -617,7 +646,7 @@ async fn handle(
             frontend_id: String,
             granted: bool,
         }
-        let input: Permission = body(request).await?;
+        let input: Permission = body(request, &request_cancel).await?;
         options
             .manager
             .native()
@@ -625,7 +654,7 @@ async fn handle(
         return Ok(json_response(200, json!({"accepted":true})));
     }
     if method == "POST" && route == "/v1/native/results" {
-        let input: crate::native::NativeReply = body(request).await?;
+        let input: crate::native::NativeReply = body(request, &request_cancel).await?;
         options.manager.native().reply(input).map_err(|_| {
             ApiError(
                 409,
@@ -662,7 +691,7 @@ async fn handle(
         && let Some(id) = route.strip_prefix("/v1/logs/")
     {
         identifier(id)?;
-        let input: ReadLog = body(request).await?;
+        let input: ReadLog = body(request, &request_cancel).await?;
         if input.max_bytes == 0 || input.max_bytes > 32768 {
             return Err(ApiError(400, "Read 1–32768 log bytes."));
         }
@@ -680,7 +709,7 @@ async fn handle(
         return Ok(json_response(200, chunk));
     }
     if method == "POST" && route == "/v1/fetch" {
-        let input: Fetch = body(request).await?;
+        let input: Fetch = body(request, &request_cancel).await?;
         crate::content_fetch::public_url(&input.url).map_err(|_| {
             ApiError(
                 400,
@@ -694,7 +723,7 @@ async fn handle(
         return Ok(json_response(200, result));
     }
     if method == "POST" && route == "/v1/search" {
-        let search: Search = body(request).await?;
+        let search: Search = body(request, &request_cancel).await?;
         text(&search.model, 128)?;
         search_query(&search.query).map_err(|_| ApiError(400, "Invalid search query."))?;
         return Ok(json_response(
@@ -730,7 +759,7 @@ async fn handle(
         return Ok(json_response(200, options.manager.connection_attempt()));
     }
     if method == "POST" && route == "/v1/connection-attempt/cancel" {
-        let input: Cancel = body(request).await?;
+        let input: Cancel = body(request, &request_cancel).await?;
         identifier(&input.operation_id)?;
         options.manager.cancel_connection(&input.operation_id)?;
         return Ok(json_response(202, json!({"accepted":true})));
@@ -746,7 +775,7 @@ async fn handle(
             #[serde(default)]
             method: ConnectionMethod,
         }
-        let input: Authenticate = body(request).await?;
+        let input: Authenticate = body(request, &request_cancel).await?;
         return Ok(json_response(
             202,
             options
@@ -779,7 +808,7 @@ async fn handle(
             return Err(ApiError(404, "Provider not found."));
         }
         let credential = match method.as_str() {
-            "PUT" => Some(body::<Connect>(request).await?.api_key),
+            "PUT" => Some(body::<Connect>(request, &request_cancel).await?.api_key),
             "DELETE" => None,
             _ => return Err(ApiError(404, "Route not found.")),
         };
@@ -797,14 +826,14 @@ async fn handle(
         return match method.as_str() {
             "GET" => Ok(json_response(200, options.manager.library_configuration()?)),
             "PATCH" => {
-                let patch: serde_json::Value = body(request).await?;
+                let patch: serde_json::Value = body(request, &request_cancel).await?;
                 Ok(json_response(
                     200,
                     options.manager.patch_library(patch).await?,
                 ))
             }
             "PUT" => {
-                let config: LibraryConfiguration = body(request).await?;
+                let config: LibraryConfiguration = body(request, &request_cancel).await?;
                 config
                     .validate()
                     .map_err(|_| ApiError(400, "Invalid library configuration."))?;
@@ -843,7 +872,7 @@ async fn handle(
             return Ok(json_response(200, summaries));
         }
         if method == "POST" {
-            let create: Create = body(request).await?;
+            let create: Create = body(request, &request_cancel).await?;
             if let Some(model) = &create.model {
                 text(model, 128)?;
             }
@@ -932,28 +961,16 @@ async fn handle(
             .manager
             .sync(parts[0], sync_cursor(request.uri().query())?)
             .map_err(|error| match error {
-                Error::Invalid("Conversation not found.") => {
-                    ApiError(404, "Conversation not found.")
-                }
                 Error::Invalid(message) => ApiError(409, message),
                 other => other.into(),
             })?;
         return Ok(json_response(200, page));
     }
     if method == "GET" && action.is_none() {
-        return Ok(json_response(
-            200,
-            options
-                .manager
-                .snapshot(parts[0])
-                .map_err(|_| ApiError(404, "Conversation not found."))?,
-        ));
+        return Ok(json_response(200, options.manager.snapshot(parts[0])?));
     }
     if method == "GET" && action == Some("events") {
-        let (snapshot, mut receiver) = options
-            .manager
-            .observe(parts[0])
-            .map_err(|_| ApiError(404, "Conversation not found."))?;
+        let (snapshot, mut receiver) = options.manager.observe(parts[0])?;
         let stop = host.stop.clone();
         let frames = async_stream::stream! {
             yield Ok::<_,std::io::Error>(format!("{}\n",serde_json::to_string(&ServiceEvent::Snapshot{snapshot}).unwrap()));
@@ -974,7 +991,7 @@ async fn handle(
             .unwrap());
     }
     if method == "POST" && action == Some("clear") {
-        let _: Empty = body(request).await?;
+        let _: Empty = body(request, &request_cancel).await?;
         if host.stop.is_cancelled() {
             return Err(ApiError(503, "Service is stopping."));
         }
@@ -991,13 +1008,10 @@ async fn handle(
             })?;
         return Ok(json_response(200, snapshot));
     }
-    let conversation = options
-        .manager
-        .get(parts[0])
-        .map_err(|_| ApiError(404, "Conversation not found."))?;
+    let conversation = options.manager.get(parts[0])?;
     match (method.as_str(), action) {
         ("PATCH", None) => {
-            let patch: PatchSession = body(request).await?;
+            let patch: PatchSession = body(request, &request_cancel).await?;
             if host.stop.is_cancelled() {
                 return Err(ApiError(503, "Service is stopping."));
             }
@@ -1016,7 +1030,7 @@ async fn handle(
             Ok(json_response(200, json!({"deleted":true})))
         }
         ("PUT", Some("title")) => {
-            let input: Rename = body(request).await?;
+            let input: Rename = body(request, &request_cancel).await?;
             let metadata = SessionMetadata {
                 title: Some(input.title.clone()),
                 manually_named: true,
@@ -1032,7 +1046,7 @@ async fn handle(
             ))
         }
         ("PUT", Some("model")) => {
-            let input: SelectModel = body(request).await?;
+            let input: SelectModel = body(request, &request_cancel).await?;
             text(&input.model, 128)?;
             Ok(json_response(
                 200,
@@ -1040,7 +1054,7 @@ async fn handle(
             ))
         }
         ("PUT", Some("workspace")) => {
-            let input: SelectWorkspace = body(request).await?;
+            let input: SelectWorkspace = body(request, &request_cancel).await?;
             text(&input.workspace, 4096)?;
             if host.stop.is_cancelled() {
                 return Err(ApiError(503, "Service is stopping."));
@@ -1054,7 +1068,7 @@ async fn handle(
             ))
         }
         ("POST", Some("fork")) => {
-            let _: Empty = body(request).await?;
+            let _: Empty = body(request, &request_cancel).await?;
             Ok(json_response(
                 201,
                 options
@@ -1065,7 +1079,7 @@ async fn handle(
             ))
         }
         ("PUT", Some("settings")) => {
-            let settings: SessionSettings = body(request).await?;
+            let settings: SessionSettings = body(request, &request_cancel).await?;
             settings
                 .validate()
                 .map_err(|_| ApiError(400, "Invalid session settings."))?;
@@ -1078,7 +1092,7 @@ async fn handle(
             ))
         }
         ("POST", Some("turns")) => {
-            let submit: Submit = body(request).await?;
+            let submit: Submit = body(request, &request_cancel).await?;
             if submit.images.is_empty() && submit.files.is_empty() {
                 text(&submit.text, 128 * 1024)?;
             } else if submit.text.len() > 128 * 1024 || submit.text.contains('\0') {
@@ -1099,7 +1113,7 @@ async fn handle(
             Ok(json_response(202, json!({"operationID":run.operation_id})))
         }
         ("POST", Some("compact")) => {
-            let _: Empty = body(request).await?;
+            let _: Empty = body(request, &request_cancel).await?;
             let run = options.manager.compact(parts[0])?;
             Ok(json_response(202, json!({"operationID":run.operation_id})))
         }
@@ -1108,14 +1122,14 @@ async fn handle(
             options.manager.desktop_permission(parts[0])?,
         )),
         ("PUT", Some("desktop")) => {
-            let input: crate::native::DesktopPermission = body(request).await?;
+            let input: crate::native::DesktopPermission = body(request, &request_cancel).await?;
             Ok(json_response(
                 200,
                 options.manager.set_desktop_permission(parts[0], input)?,
             ))
         }
         ("POST", Some("files")) => {
-            let input: UploadAsset = body(request).await?;
+            let input: UploadAsset = body(request, &request_cancel).await?;
             use base64::Engine;
             if input.base64.len() > MAX_FILE_BYTES.div_ceil(3) * 4 {
                 return Err(ApiError(400, "File exceeds 8 MiB."));
@@ -1130,7 +1144,7 @@ async fn handle(
             Ok(json_response(201, file))
         }
         ("POST", Some("images")) => {
-            let input: UploadAsset = body(request).await?;
+            let input: UploadAsset = body(request, &request_cancel).await?;
             let bytes = crate::images::decode_base64(&input.base64)
                 .map_err(|_| ApiError(400, "Invalid image data."))?;
             let image = options
@@ -1140,7 +1154,7 @@ async fn handle(
             Ok(json_response(201, image))
         }
         ("POST", Some("steer")) => {
-            let input: Steer = body(request).await?;
+            let input: Steer = body(request, &request_cancel).await?;
             identifier(&input.operation_id)?;
             let id = options
                 .manager
@@ -1158,7 +1172,7 @@ async fn handle(
             ))
         }
         ("POST", Some("cancel")) => {
-            let cancel: Cancel = body(request).await?;
+            let cancel: Cancel = body(request, &request_cancel).await?;
             identifier(&cancel.operation_id)?;
             if !conversation.cancel(&cancel.operation_id) {
                 return Err(ApiError(409, "Operation is no longer cancellable."));
@@ -1169,7 +1183,7 @@ async fn handle(
             ))
         }
         ("POST", Some("approvals")) => {
-            let resolve: Resolve = body(request).await?;
+            let resolve: Resolve = body(request, &request_cancel).await?;
             identifier(&resolve.operation_id)?;
             identifier(&resolve.approval_id)?;
             if !conversation.resolve_approval(
@@ -1264,6 +1278,126 @@ mod change_tests {
         assert!(frames.next().await.is_none());
     }
 
+    #[tokio::test]
+    async fn closed_lookups_are_unavailable_and_internal_errors_are_not_absence() {
+        let manager = Arc::new(AgentManager::default());
+        manager.close().await.unwrap();
+        let host = Arc::new(Host {
+            options: ServiceOptions {
+                manager,
+                provider: Arc::new(NoInference),
+                tools: vec![],
+                address: "127.0.0.1:0".parse().unwrap(),
+                access: HttpAccess::externally_secured(None).unwrap(),
+            },
+            remote: None,
+            stop: CancellationToken::new(),
+            handlers: tokio_util::task::TaskTracker::new(),
+            mutations: Arc::new(tokio::sync::Semaphore::new(64)),
+        });
+        for (method, suffix) in [
+            ("GET", ""),
+            ("GET", "/events"),
+            ("GET", "/sync"),
+            ("PUT", "/title"),
+        ] {
+            let request = Request::builder()
+                .method(method)
+                .uri(format!("/v1/conversations/{}{suffix}", new_id()))
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(
+                dispatch(host.clone(), request, CancellationToken::new())
+                    .await
+                    .status(),
+                503
+            );
+        }
+        assert_eq!(ApiError::from(Error::Internal).0, 500);
+        assert_eq!(ApiError::from(Error::Storage).0, 500);
+    }
+
+    #[tokio::test]
+    async fn incomplete_body_cancellation_releases_shared_admission_without_mutation() {
+        let manager = Arc::new(AgentManager::default());
+        let provider = Arc::new(NoInference);
+        let conversation = manager
+            .create(ConversationOptions::new(provider.clone(), "test", "/test"))
+            .await
+            .unwrap();
+        let before = conversation.snapshot();
+        let host = Arc::new(Host {
+            options: ServiceOptions {
+                manager: manager.clone(),
+                provider,
+                tools: vec![],
+                address: "127.0.0.1:0".parse().unwrap(),
+                access: HttpAccess::externally_secured(None).unwrap(),
+            },
+            remote: None,
+            stop: CancellationToken::new(),
+            handlers: tokio_util::task::TaskTracker::new(),
+            mutations: Arc::new(tokio::sync::Semaphore::new(1)),
+        });
+        let route = format!("/v1/conversations/{}/title", conversation.id);
+        let (entered, reading) = tokio::sync::oneshot::channel();
+        let stream = async_stream::stream! {
+            entered.send(()).unwrap();
+            std::future::pending::<()>().await;
+            yield Ok::<_, std::io::Error>(bytes::Bytes::new());
+        };
+        let request = Request::builder()
+            .method("PUT")
+            .uri(&route)
+            .header("Content-Type", "application/json")
+            .body(Body::from_stream(stream))
+            .unwrap();
+        let caller = tokio::spawn(remote_request(host.clone(), request));
+        tokio::time::timeout(Duration::from_secs(2), reading)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(host.mutations.available_permits(), 0);
+        let valid_request = || {
+            Request::builder()
+                .method("PUT")
+                .uri(&route)
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"title":"accepted"}"#))
+                .unwrap()
+        };
+        assert_eq!(
+            dispatch(host.clone(), valid_request(), CancellationToken::new())
+                .await
+                .status(),
+            503
+        );
+        assert_eq!(
+            remote_request(host.clone(), valid_request()).await.status(),
+            503
+        );
+        // Only the transport caller is aborted, before a body has been accepted.
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        host.handlers.close();
+        tokio::time::timeout(Duration::from_secs(2), host.handlers.wait())
+            .await
+            .unwrap();
+        assert_eq!(host.mutations.available_permits(), 1);
+        assert_eq!(conversation.snapshot(), before);
+        assert_eq!(
+            dispatch(host, valid_request(), CancellationToken::new())
+                .await
+                .status(),
+            200
+        );
+        assert_eq!(
+            conversation.snapshot().metadata.title.as_deref(),
+            Some("accepted")
+        );
+        manager.close().await.unwrap();
+    }
+
     struct NoInference;
     #[async_trait::async_trait]
     impl ChatProvider for NoInference {
@@ -1347,6 +1481,7 @@ mod change_tests {
             remote: None,
             stop: CancellationToken::new(),
             handlers: tokio_util::task::TaskTracker::new(),
+            mutations: Arc::new(tokio::sync::Semaphore::new(64)),
         });
         let cancel = CancellationToken::new();
         let request = Request::builder()

@@ -15,6 +15,11 @@ pub struct ImageStore {
     identity: Arc<Metadata>,
     validation: Arc<tokio::sync::Semaphore>,
 }
+/// Fully decoded and validated, but not yet owned or published on disk.
+pub(crate) struct PreparedImage {
+    image: ImageRef,
+    bytes: Vec<u8>,
+}
 fn failure() -> Error {
     Error::Invalid("Image storage is unavailable or image data is invalid.")
 }
@@ -104,19 +109,37 @@ impl ImageStore {
         }
         Ok(self.root.join(format!("{id}.image")))
     }
-    pub async fn put(&self, id: String, name: String, bytes: Vec<u8>) -> Result<ImageRef> {
+    pub(crate) async fn prepare(
+        &self,
+        id: String,
+        name: String,
+        bytes: Vec<u8>,
+    ) -> Result<PreparedImage> {
+        // Do not queue unbounded decoder work, or reserve ownership while decoding.
+        // The worker retains capacity even if its caller goes away.
         let permit = self
             .validation
             .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| failure())?;
-        let store = self.clone();
+            .try_acquire_owned()
+            .map_err(|_| Error::Busy)?;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let image = describe(id.clone(), name, &bytes)?;
+            let image = describe(id, name, &bytes)?;
+            Ok(PreparedImage { image, bytes })
+        })
+        .await
+        .map_err(|_| Error::Internal)?
+    }
+    pub async fn put(&self, id: String, name: String, bytes: Vec<u8>) -> Result<ImageRef> {
+        self.put_prepared(self.prepare(id, name, bytes).await?)
+            .await
+    }
+    pub(crate) async fn put_prepared(&self, prepared: PreparedImage) -> Result<ImageRef> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || -> Result<ImageRef> {
+            let PreparedImage { image, bytes } = prepared;
             store.check()?;
-            let path = store.path(&id)?;
+            let path = store.path(&image.id)?;
             // Publish only a fully synced immutable file. Interrupted staging is never promoted.
             let temp = store.root.join(format!(".{}.tmp", new_id()));
             let mut file = OpenOptions::new()
@@ -136,7 +159,9 @@ impl ImageStore {
             result
         })
         .await
-        .map_err(|_| failure())?
+        .map_err(|_| Error::Storage)?
+        // Once publication starts, failure does not prove that no write occurred.
+        .map_err(|_| Error::Storage)
     }
     pub async fn read(&self, id: &str) -> Result<ImageData> {
         let permit = self
@@ -226,4 +251,34 @@ pub fn decode_base64(value: &str) -> Result<Vec<u8>> {
         return Err(failure());
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn preparation_rejects_excess_decode_work_without_queueing_or_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ImageStore::open(root.path().join("images")).await.unwrap();
+        let permits = store
+            .validation
+            .clone()
+            .acquire_many_owned(2)
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            store.prepare(new_id(), "image.png".into(), vec![]),
+        )
+        .await
+        .expect("preparation must not wait for capacity");
+        assert!(matches!(result, Err(Error::Busy)));
+        drop(permits);
+        assert!(matches!(
+            store.prepare(new_id(), "image.png".into(), vec![]).await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(fs::read_dir(&store.root).unwrap().count(), 0);
+    }
 }
