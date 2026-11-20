@@ -10,9 +10,15 @@ import Foundation
     private var generation = 0
     init(api: AgentAPI, preferences: UserDefaults) { self.api = api; self.preferences = preferences }
     func restore() async throws {
+        // Refresh never waits on a caller's held write. A stale read must neither
+        // replace an acknowledgement nor unlock an uncertain write.
+        guard write == nil else { return }
         let generation = self.generation
         let value = try await api.get("/v1/library").decoded(AgentLibraryConfiguration.self)
-        if generation == self.generation { configuration = value }
+        if generation == self.generation {
+            configuration = value
+            writeFailure = nil
+        }
     }
     func list() async throws -> [SessionSummary] {
         let summaries = try await api.get("/v1/conversations").array.map(SessionSummary.init)
@@ -26,9 +32,13 @@ import Foundation
     func select(_ id: UUID?) { preferences.set(id?.uuidString, forKey: "agentSelectedSession") }
     func update(_ change: @escaping @MainActor (inout AgentLibraryConfiguration) -> Void) async throws {
         generation += 1
+        let revision = generation
         let previous = write
         let next = Task { @MainActor in
-            try await previous?.value
+            defer { if generation == revision { write = nil } }
+            // Serialize explicit changes, but do not chain a definite rejection forever.
+            // Only an ambiguous write blocks later changes until an authoritative restore.
+            _ = try? await previous?.value
             if let writeFailure { throw writeFailure }
             var value = configuration
             change(&value)
@@ -41,7 +51,12 @@ import Foundation
             if !settings.isEmpty { patch["settings"] = .object(settings) }
             if patch.isEmpty { return }
             do { configuration = try await api.request("PATCH", "/v1/library", .object(patch)).decoded(AgentLibraryConfiguration.self) }
-            catch { writeFailure = error; throw error }
+            catch {
+                // This endpoint validates before writing and reports rejection as HTTP 400.
+                // Transport, storage and malformed acknowledgement failures may have committed.
+                if (error as? AgentHTTPError)?.status != 400 { writeFailure = error }
+                throw error
+            }
         }
         write = next
         try await next.value
