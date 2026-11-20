@@ -19,7 +19,7 @@ import SwiftUI
             window.contentView = host
             defer { window.orderOut(nil); window.contentView = nil }
             host.layoutSubtreeIfNeeded()
-            try expect(abs(host.bounds.width - 320) < 1)
+            try expect(abs(host.bounds.width - 292) < 1)
             try expect(host.bounds.height > 300 && host.bounds.height < 400)
 
             // Render only this synthetic view. The white QR container must reach
@@ -28,7 +28,7 @@ import SwiftUI
                 throw CheckFailure(description: "Pairing popup could not render")
             }
             host.cacheDisplay(in: host.bounds, to: bitmap)
-            for x in [32.0, 288.0] {
+            for x in [32.0, 260.0] {
                 guard let color = bitmap.colorAt(x: Int(x * CGFloat(bitmap.pixelsWide) / host.bounds.width),
                                                  y: bitmap.pixelsHigh / 2)?.usingColorSpace(.deviceRGB) else {
                     throw CheckFailure(description: "Missing pairing QR container pixels")

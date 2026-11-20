@@ -17,17 +17,19 @@ struct PairingQRCodePopup: View {
                 .background(.white, in: RoundedRectangle(cornerRadius: 12))
                 .accessibilityLabel("Pairing QR code")
             HStack {
-                Button("Copy", action: copyToClipboard)
-                Spacer()
                 Button("Cancel", role: .cancel, action: dismiss)
                     .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Copy", action: copyToClipboard)
+                    .buttonStyle(.borderedProminent)
+                    .tint(AppColors.blue)
             }
         }
         .buttonStyle(.bordered)
         .tint(nil)
         .accentColor(nil)
         .padding(24)
-        .frame(width: 320)
+        .frame(width: 292) // 220-point code, 12-point white border, 24-point card insets.
         .background {
             let shape = RoundedRectangle(cornerRadius: 20)
             if #available(macOS 26.0, *) {
