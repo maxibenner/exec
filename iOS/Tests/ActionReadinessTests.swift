@@ -17,15 +17,16 @@ private actor ActionReadinessTransport: RemoteTransport {
     private(set) var requests: [Request] = []
     var commands: [Request] { requests.filter { $0.method != "GET" } }
     private var failConnections = false
-    private var failures: [String: Bool] = [:]
+    private var failures: [String: (disconnect: Bool, failure: RemoteFailure)] = [:]
     private var snapshots: [String: RemoteJSON] = [:]
     private var held: Set<String> = []
     private var waiters: [String: [UUID: CheckedContinuation<Void, Error>]] = [:]
 
     func setFailConnections(_ value: Bool) { failConnections = value }
     func setSnapshot(_ value: RemoteJSON) { snapshots[value["id"].string!] = value }
-    func failNext(_ method: String, _ path: String, disconnect: Bool = true) {
-        failures[method + " " + path] = disconnect
+    func failNext(_ method: String, _ path: String, disconnect: Bool = true,
+                  kind: RemoteFailure.Kind = .uncertain, message: String? = nil) {
+        failures[method + " " + path] = (disconnect, RemoteFailure(message ?? (disconnect ? "Interrupted." : "Request rejected."), kind: kind))
     }
     func hold(_ method: String, _ path: String) { held.insert(method + " " + path) }
     func waiting(_ method: String, _ path: String) -> Bool {
@@ -71,9 +72,9 @@ private actor ActionReadinessTransport: RemoteTransport {
         requests.append(Request(method: method, path: path, body: body))
         let key = method + " " + path
         try await waitIfHeld(key)
-        if let disconnect = failures.removeValue(forKey: key) {
-            if disconnect { isConnected = false }
-            throw RemoteFailure(disconnect ? "Interrupted." : "Request rejected.")
+        if let failure = failures.removeValue(forKey: key) {
+            if failure.disconnect { isConnected = false }
+            throw failure.failure
         }
         guard isConnected else { throw RemoteFailure("Disconnected.") }
         switch (method, path) {
@@ -273,6 +274,54 @@ private actor ActionBufferClock {
         XCTAssertEqual(cancel?.body?["operationID"].string, "sent-operation")
         await transport.release("GET", sync)
         await sending.value; await stopping.value
+    }
+
+    func testAuthoritativeResetAfterAcceptanceRetiresOptimisticHistoryAndOperation() async throws {
+        for canonical in [snapshot(), snapshot(operation: "newer", state: "completed")] {
+            let transport = ActionReadinessTransport(), store = try makeStore(transport)
+            await ready(store, transport)
+            await transport.hold("POST", turns)
+            await transport.hold("GET", sync)
+            store.drafts["session"] = "Accepted then cleared"
+            let send = Task { await store.send() }; defer { send.cancel() }
+            try await until { await transport.waiting("POST", self.turns) }
+            await transport.release("POST", turns)
+            try await until { await transport.waiting("GET", self.sync) }
+            XCTAssertTrue(store.awaitingSendSnapshot)
+            XCTAssertTrue(store.canStop)
+            await transport.setSnapshot(canonical)
+            await transport.release("GET", sync)
+            await send.value
+            XCTAssertFalse(store.awaitingSendSnapshot)
+            XCTAssertEqual(store.displaySnapshot["operation"], canonical["operation"])
+            XCTAssertTrue(TranscriptItem.project(store.displaySnapshot).isEmpty)
+            XCTAssertFalse(store.active)
+            XCTAssertFalse(store.canStop)
+            store.selected = "other"; store.selected = "session"
+            XCTAssertTrue(TranscriptItem.project(store.displaySnapshot).isEmpty, "A cache visit must not resurrect cleared input")
+            let commands = await transport.commands
+            XCTAssertEqual(commands.map(\.path), [turns])
+        }
+    }
+
+    func testCanonicalClearBeforeLateAcknowledgementWinsEvenWhenReadbackFails() async throws {
+        let transport = ActionReadinessTransport(), store = try makeStore(transport)
+        await ready(store, transport)
+        await transport.hold("POST", turns)
+        store.drafts["session"] = "Cleared before acknowledgement"
+        let send = Task { await store.send() }; defer { send.cancel() }
+        try await until { await transport.waiting("POST", self.turns) }
+        await store.open("session").value // A current authoritative clear while the reply is delayed.
+        await transport.failNext("GET", sync, disconnect: false)
+        await transport.release("POST", turns)
+        await send.value
+        XCTAssertFalse(store.awaitingSendSnapshot)
+        XCTAssertFalse(store.active, "A late reply must not install a phantom accepted operation")
+        XCTAssertFalse(store.canStop)
+        XCTAssertTrue(TranscriptItem.project(store.displaySnapshot).isEmpty)
+        XCTAssertNotNil(store.visibleError)
+        let commands = await transport.commands
+        XCTAssertEqual(commands.map(\.path), [turns])
     }
 
     func testColdOfflineBufferHasOneSlotAndExplicitCancelRestoresBeforeNewerDraft() async throws {
@@ -571,6 +620,69 @@ private actor ActionBufferClock {
         XCTAssertNil(store.pendingMessage)
     }
 
+    func testDefiniteSendFailuresRestoreDraftsAndRemainEditableWithoutARevisionOrRead() async throws {
+        let cases: [(RemoteFailure.Kind, String)] = [
+            (.notDispatched, "The request is too large."), (.rejected, "The operation is no longer active.")
+        ]
+        for (kind, message) in cases {
+            let transport = ActionReadinessTransport(), store = try makeStore(transport)
+            await ready(store, transport)
+            let before = await transport.requests.count
+            await transport.hold("POST", turns)
+            await transport.failNext("POST", turns, disconnect: false, kind: kind, message: message)
+            store.drafts["session"] = "First"
+            let send = Task { await store.send() }; defer { send.cancel() }
+            try await until { await transport.waiting("POST", self.turns) }
+            store.drafts["session"] = "Dependent"
+            await store.send()
+            store.drafts["session"] = "Newest"
+            await transport.release("POST", turns)
+            await send.value
+            XCTAssertTrue(store.canSend, "Definite failures must not wait for an unrelated revision")
+            XCTAssertFalse(store.awaitingSendSnapshot)
+            XCTAssertNil(store.pendingMessage)
+            XCTAssertEqual(store.drafts["session"], "First\n\nDependent\n\nNewest")
+            XCTAssertTrue(store.visibleError?.contains(message) == true)
+            XCTAssertTrue(store.visibleError?.contains("back in the draft") == true)
+            XCTAssertFalse(store.visibleError?.contains("could not be confirmed") == true)
+            let attempts = await Array(transport.requests.dropFirst(before))
+            XCTAssertEqual(attempts.map(\.key), ["POST " + turns], "No read is needed to establish definite rejection")
+            await store.poll()
+            let commands = await transport.commands
+            XCTAssertEqual(commands.map(\.path), [turns], "Recovery must never replay a rejected command")
+        }
+    }
+
+    func testUncertainHealthySendPerformsOneReadWithoutWaitingForRevisionOrReplaying() async throws {
+        let transport = ActionReadinessTransport(), store = try makeStore(transport)
+        await ready(store, transport)
+        let before = await transport.requests.count
+        // An unclassified error remains uncertain even when the socket stays open.
+        await transport.failNext("POST", turns, disconnect: false, message: "Acknowledgement lost.")
+        await transport.hold("GET", sync)
+        store.drafts["session"] = "Possibly delivered"
+        let send = Task { await store.send() }; defer { send.cancel() }
+        try await until { await transport.waiting("GET", self.sync) }
+        XCTAssertFalse(store.canSend)
+        XCTAssertFalse(store.hasPendingCommands)
+        XCTAssertTrue(store.visibleError?.contains("Message delivery could not be confirmed") == true)
+        XCTAssertTrue(store.visibleError?.contains("Acknowledgement lost.") == true)
+        var canonical = snapshot(operation: "possibly-accepted", state: "completed")
+        if case .object(var fields) = canonical {
+            fields["messages"] = .array([.object(["id": .string("accepted"), "role": .string("user"), "text": .string("Possibly delivered")])])
+            canonical = .object(fields)
+        }
+        await transport.setSnapshot(canonical)
+        await transport.release("GET", sync)
+        await send.value
+        XCTAssertTrue(store.canSend, "One authoritative read must unblock even without a change stream/revision")
+        XCTAssertEqual(store.snapshot, canonical)
+        XCTAssertEqual(store.drafts["session"], "Possibly delivered")
+        XCTAssertNotNil(store.visibleError, "The user still needs to inspect delivery before resubmitting the restored draft")
+        let attempts = await Array(transport.requests.dropFirst(before))
+        XCTAssertEqual(attempts.map(\.key), ["POST " + turns, "GET " + sync])
+    }
+
     func testUncertainPrecedingSendRestoresDependentBufferAndNeverReplays() async throws {
         let transport = ActionReadinessTransport(), store = try makeStore(transport)
         await ready(store, transport)
@@ -639,6 +751,47 @@ private actor ActionBufferClock {
         }
     }
 
+    func testApprovalUsesOnlyTheDisplayedTripleAcrossReplacementAndNavigation() async throws {
+        let transport = ActionReadinessTransport(), store = try makeStore(transport)
+        let original = snapshot(operation: "operation", state: "awaiting_approval", approval: true)
+        await ready(store, transport, snapshot: original)
+        let displayed = try XCTUnwrap(RemoteStore.ApprovalTarget(snapshot: store.displaySnapshot))
+        let replacements: [RemoteJSON] = [
+            snapshot(operation: "replacement", state: "awaiting_approval", approval: true),
+            .object(["id": .string("session"),
+                     "operation": original["operation"],
+                     "approval": .object(["id": .string("replacement"), "operationID": .string("operation")])]),
+            snapshot(operation: "operation", state: "completed"),
+            .object(["id": .string("other"), "operation": original["operation"], "approval": original["approval"]]),
+            // An internally inconsistent approval must not authorize a different operation.
+            .object(["id": .string("session"), "operation": snapshot(operation: "replacement")["operation"],
+                     "approval": original["approval"]])
+        ]
+        for replacement in replacements {
+            store.snapshot = original
+            store.selected = "session"
+            // This task cannot enter until after the displayed value has changed.
+            let tap = Task { await store.approve(displayed, approved: true) }
+            store.snapshot = replacement
+            await tap.value
+        }
+        store.snapshot = original
+        let navigatingTap = Task { await store.approve(displayed, approved: false) }
+        store.selected = "other"
+        store.snapshot = .object(["id": .string("other"), "operation": original["operation"], "approval": original["approval"]])
+        await navigatingTap.value
+        let rejectedCommands = await transport.commands
+        XCTAssertTrue(rejectedCommands.isEmpty, "Stale approval intent must never be rebound")
+
+        store.selected = "session"; store.snapshot = original
+        await store.approve(displayed, approved: false)
+        let commands = await transport.commands
+        XCTAssertEqual(commands.map(\.path), ["/v1/conversations/session/approvals"])
+        XCTAssertEqual(commands.first?.body, .object([
+            "approvalID": .string("approval"), "operationID": .string("operation"), "approved": .bool(false)
+        ]))
+    }
+
     func testApprovalLockAndCancellingOperationPreventSteering() async throws {
         let transport = ActionReadinessTransport(), store = try makeStore(transport)
         await ready(store, transport, snapshot: snapshot(operation: "operation", state: "awaiting_approval", approval: true))
@@ -647,7 +800,8 @@ private actor ActionBufferClock {
         XCTAssertTrue(store.canStop)
         let approvals = "/v1/conversations/session/approvals"
         await transport.hold("POST", approvals)
-        let approving = Task { await store.approve(true) }; defer { approving.cancel() }
+        let target = try XCTUnwrap(RemoteStore.ApprovalTarget(snapshot: store.displaySnapshot))
+        let approving = Task { await store.approve(target, approved: true) }; defer { approving.cancel() }
         try await until { await transport.waiting("POST", approvals) }
         XCTAssertTrue(store.isUpdatingConversation("session"))
         XCTAssertFalse(store.canApprove)
@@ -659,7 +813,7 @@ private actor ActionBufferClock {
         XCTAssertFalse(store.canSend)
         XCTAssertFalse(store.canStop)
         XCTAssertFalse(store.canApprove)
-        await store.send(); await store.stop(); await store.approve(true)
+        await store.send(); await store.stop(); await store.approve(target, approved: true)
         XCTAssertNil(store.pendingMessage)
         XCTAssertEqual(store.drafts["session"], "Do not steer while cancelling")
         let commands = await transport.commands

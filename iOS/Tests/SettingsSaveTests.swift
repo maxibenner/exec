@@ -13,11 +13,16 @@ private actor SettingsTransport: RemoteTransport {
     private var saveWaiter: CheckedContinuation<Void, Never>?
     private var saveFailure: String?
     private var failLibraryReads = false
+    private var holdLibrary = false
+    private var libraryWaiter: CheckedContinuation<Void, Never>?
+    var waitingForLibrary: Bool { libraryWaiter != nil }
     var waitingForSave: Bool { saveWaiter != nil }
+    func holdLibraryRead() { holdLibrary = true }
+    func releaseLibraryRead() { holdLibrary = false; libraryWaiter?.resume(); libraryWaiter = nil }
     func holdNextSave() { holdSave = true }
     func releaseSave() { saveWaiter?.resume(); saveWaiter = nil }
     func rejectNextSave() { saveFailure = "Host rejected the settings." }
-    func rejectLibraryReads() { failLibraryReads = true }
+    func rejectLibraryReads(_ value: Bool = true) { failLibraryReads = value }
     func setPrompt(_ prompt: String) {
         merge(.object(["settings": .object(["systemPrompt": .string(prompt)])]))
     }
@@ -42,6 +47,7 @@ private actor SettingsTransport: RemoteTransport {
         switch (method, path) {
         case ("GET", "/v1/models"), ("GET", "/v1/conversations"): return .array([])
         case ("GET", "/v1/library"):
+            if holdLibrary { await withCheckedContinuation { libraryWaiter = $0 } }
             if failLibraryReads { throw RemoteFailure("Could not refresh the library.") }
             return library
         default: throw RemoteFailure("Unexpected fixture request.")
@@ -60,7 +66,7 @@ private actor SettingsTransport: RemoteTransport {
 }
 
 @MainActor final class SettingsSaveTests: XCTestCase {
-    private func makeStore(_ transport: SettingsTransport) async throws -> RemoteStore {
+    private func makeStore(_ transport: SettingsTransport, connect: Bool = true) async throws -> RemoteStore {
         let invitation = try RemoteJSON.object([
             "version": .number(1), "relay": .string("wss://example.invalid"),
             "route": .string(String(repeating: "a", count: 64)),
@@ -69,8 +75,11 @@ private actor SettingsTransport: RemoteTransport {
         ]).decoded(PairingInvitation.self)
         let host = PairedHost(invitation: invitation, deviceName: "Settings fixture")
         let store = RemoteStore(client: transport, loadHost: { host }, saveHost: { _ in }, forgetHost: {})
-        await store.connect()
-        XCTAssertTrue(store.connected)
+        addTeardownBlock { await transport.releaseLibraryRead(); await transport.releaseSave() }
+        if connect {
+            await store.connect()
+            XCTAssertTrue(store.connected)
+        }
         store.showSettings()
         return store
     }
@@ -80,6 +89,48 @@ private actor SettingsTransport: RemoteTransport {
             await Task.yield()
         }
         XCTFail("The settings PATCH did not start.")
+    }
+
+    func testSharedSettingsWaitForSuccessfulInitialReadWithoutBlockingDismissal() async throws {
+        let transport = SettingsTransport(), store = try await makeStore(transport, connect: false)
+        await transport.holdLibraryRead()
+        await transport.rejectLibraryReads()
+        let connection = Task { await store.connect() }; defer { connection.cancel() }
+        for _ in 0..<1000 {
+            if await transport.waitingForLibrary { break }
+            await Task.yield()
+        }
+        let waiting = await transport.waitingForLibrary
+        XCTAssertTrue(waiting)
+        XCTAssertTrue(store.connected, "Authentication can finish before the initial library read")
+        XCTAssertFalse(store.hasLoadedLibrary)
+        XCTAssertFalse(store.canEditSharedSettings)
+        // Neither a direct store call nor a stale UI task may write unloaded defaults.
+        await store.mutate("PATCH", "/v1/library", .object(["automaticTitles": .bool(false)]))
+        store.settings.prompt = "Uninitialized default must not be saved"
+        XCTAssertNil(store.finishSettings())
+        XCTAssertFalse(store.settings.isPresented, "Done remains available before shared settings load")
+        await transport.releaseLibraryRead()
+        await connection.value
+        store.showSettings(); store.refreshSettings()
+        XCTAssertFalse(store.hasLoadedLibrary, "A failed read must not unlock shared writes")
+        XCTAssertFalse(store.canEditSharedSettings)
+        await store.mutate("PATCH", "/v1/library", .object(["settings": .object(["autoApprove": .bool(false)])]))
+        XCTAssertNil(store.finishSettings())
+        let earlyPatches = await transport.patches
+        XCTAssertTrue(earlyPatches.isEmpty)
+
+        await transport.rejectLibraryReads(false)
+        try await store.refresh()
+        store.showSettings(); store.refreshSettings(editing: true)
+        XCTAssertTrue(store.canEditSharedSettings)
+        XCTAssertEqual(store.settings.prompt, "Saved prompt", "Initialize from the first authoritative library, not defaults")
+        XCTAssertEqual(store.settings.actionTitle, "Done")
+        store.settings.prompt = "Intentional edit"
+        let save = try XCTUnwrap(store.finishSettings())
+        await save.value
+        let patches = await transport.patches
+        XCTAssertEqual(patches, [.object(["settings": .object(["systemPrompt": .string("Intentional edit")])])])
     }
 
     func testCleanDoneAndRevertedDraftCloseOfflineWithoutPatch() async throws {

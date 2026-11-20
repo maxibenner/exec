@@ -6,6 +6,9 @@ public struct RemoteTranscriptSync {
     public let snapshot: RemoteJSON
     public let offset: Int
     public let total: Int
+    /// Whether the latest authoritative refresh replaced the loaded history.
+    /// A reset can be a clear or a bounded suffix that excludes accepted input.
+    public let didReset: Bool
     private let prefix: String?
 
     public var hasEarlier: Bool { offset > 0 }
@@ -13,7 +16,7 @@ public struct RemoteTranscriptSync {
     public static func initial(_ response: RemoteJSON) throws -> Self {
         let page = try Page(response)
         guard page.reset, page.offset + page.messages.count == page.total else { throw RemoteFailure("Invalid conversation page.") }
-        return Self(snapshot: page.snapshot, offset: page.offset, total: page.total, prefix: page.prefix)
+        return Self(snapshot: page.snapshot, offset: page.offset, total: page.total, didReset: true, prefix: page.prefix)
     }
 
     public func refreshed(_ response: RemoteJSON) throws -> Self {
@@ -25,7 +28,7 @@ public struct RemoteTranscriptSync {
               page.offset + page.messages.count == page.total,
               page.snapshot["id"] == snapshot["id"] else { throw RemoteFailure("Conversation updates are out of order. Refresh the conversation.") }
         return Self(snapshot: page.snapshot.withMessages(Array(messages.dropLast()) + page.messages),
-                    offset: offset, total: page.total, prefix: page.prefix)
+                    offset: offset, total: page.total, didReset: false, prefix: page.prefix)
     }
 
     public func prepending(_ response: RemoteJSON) throws -> Self {
@@ -34,7 +37,7 @@ public struct RemoteTranscriptSync {
               page.offset + page.messages.count == offset, page.total >= total,
               !page.messages.isEmpty else { throw RemoteFailure("Conversation history changed. Refresh the conversation.") }
         return Self(snapshot: snapshot.withMessages(page.messages + snapshot["messages"].array),
-                    offset: page.offset, total: total, prefix: prefix)
+                    offset: page.offset, total: total, didReset: false, prefix: prefix)
     }
 
     public func refreshPath(_ base: String) -> String {
