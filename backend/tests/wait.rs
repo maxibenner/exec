@@ -87,6 +87,12 @@ impl ConversationStore for MemoryStore {
     async fn load(&self) -> Result<Vec<ConversationRecord>> {
         Ok(self.0.lock().unwrap().clone())
     }
+    async fn prepare_delete(&self, _: exec_agent::storage::DeletionManifest) -> Result<()> {
+        Ok(()) // Isolated memory fixture, with no managed assets.
+    }
+    async fn complete_delete(&self, _: String) -> Result<()> {
+        Ok(())
+    }
     async fn delete(&self, id: String) -> Result<()> {
         self.0.lock().unwrap().retain(|record| record.id != id);
         Ok(())

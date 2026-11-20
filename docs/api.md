@@ -207,8 +207,11 @@ previous (possibly now interrupted) transcript remains published with `storageEr
 and subsequent work/writes are blocked. Accepted cancellation, settlement and the clear
 save finish if the caller disconnects; do not automatically retry an uncertain command.
 
-Clear drops this session's resource references only. It does **not** remove attachment,
-image, shell-log, or workspace files, which other sessions/forks may still reference.
+Clear removes usable resource references from the snapshot, but retains a private, durable
+cleanup ledger in the session record. It does **not** immediately remove attachment,
+image, shell-log, or workspace files. Deleting the session later cleans up ledger assets
+only when no surviving session/fork owns them; unreadable records defer cleanup. A fork
+made after clear does not inherit that hidden cleanup ledger.
 Observers receive a full `snapshot` frame after settlement. `/sync` with an old `after`
 anchor returns `reset:true`, `offset:0`, `total:0`, `prefix:null`, and the empty snapshot
 when cleared, including repeated requests with the same cursor. Clients must replace,
@@ -568,6 +571,11 @@ Read-only catalog access (`AgentManager::snapshot` / `observe`, HTTP snapshot, `
 removal. The mutation-capable `get` handle and all mutation reservations stay guarded.
 After removal, new reads return 404; a failed deletion leaves the session inspectable.
 
+Sub-agents cannot use `generate_image` or `take_screenshot`: both definitions and
+executors are removed from new and restored child sessions. Delegation currently returns
+text, not durable managed-image ownership. Generate/capture images in the parent session
+instead; child asset transfer is not supported.
+
 ## Session library
 
 `metadata` contains `title` (nullable before first input), `manuallyNamed` and `activityAt`
@@ -591,6 +599,33 @@ the private conversation store. Failed library writes block library mutations/de
 creation until reload; existing conversation execution is independent. Corrupt library data
 fails startup rather than silently resetting preferences. Clients retain their own selected
 session, drafts, windows and scroll state.
+
+Accepted library updates/patches, session creation, forks and deletions own their settlement
+and publication even if an embedded caller drops its future (or an HTTP client disconnects).
+Detaching is not cancellation and is not authorization to resubmit. A failed creation/fork
+acknowledgement may follow a committed write; its session remains catalogued but closed to
+new work until explicit deletion or reload, preserving potentially shared asset ownership.
+
+### Deletion recovery
+
+Before removing a transcript, the manager saves a private `conversations/.<id>.deleting`
+manifest containing only that session's known asset ownership and parent ID. The manifest
+survives until assets are removed or have another durable owner. Neither restart nor a
+failed acknowledgement automatically retries deletion. In particular, an explicit retry of
+DELETE can confirm an already-missing transcript **only** with owned deletion intent;
+ordinary missing records are not silently accepted.
+
+If asset storage is unavailable, another record is unreadable, a possible owner has an
+unacknowledged creation/fork write, or cleanup fails, the manifest remains recoverable.
+Uncertain in-memory ownership alone cannot retire durable cleanup intent. Pending cleanup
+IDs whose transcripts are gone appear in the existing
+`unreadable:true` catalog entries and reject ordinary reads/work. Inspect the profile, repair
+or explicitly delete blocking unreadable records, then explicitly DELETE the pending ID
+again. Deleting a parent also includes pending child manifests after restart. Do not delete
+manifests to dismiss these entries: doing so discards cleanup ownership. Corrupt or unsafe
+manifests fail startup without overwriting them. Explicit recovery tolerates partially
+committed asset unlinks, but never sweeps unreferenced assets, follows unsafe links, or
+guesses ownership from corrupt transcripts.
 
 
 ## Credential lifecycle

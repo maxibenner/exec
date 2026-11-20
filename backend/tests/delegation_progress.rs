@@ -95,6 +95,12 @@ impl ConversationStore for GatedStore {
     async fn load(&self) -> Result<Vec<ConversationRecord>> {
         Ok(self.records.lock().unwrap().values().cloned().collect())
     }
+    async fn prepare_delete(&self, _: exec_agent::storage::DeletionManifest) -> Result<()> {
+        Ok(()) // In-memory fixture; crash recovery is exercised with the JSON store.
+    }
+    async fn complete_delete(&self, _: String) -> Result<()> {
+        Ok(())
+    }
     async fn delete(&self, id: String) -> Result<()> {
         let record = self.record(&id);
         if let Some(parent) = record.metadata.parent

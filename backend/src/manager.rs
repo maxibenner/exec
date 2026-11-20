@@ -1,4 +1,8 @@
-use crate::{Error, Result, core::*, storage::ConversationStore};
+use crate::{
+    Error, Result,
+    core::*,
+    storage::{ConversationStore, DeletionManifest},
+};
 use futures_util::FutureExt;
 use std::panic::AssertUnwindSafe;
 use std::{
@@ -20,21 +24,24 @@ struct Catalog {
     connection_attempt: Option<ConnectionAttempt>,
     connection_cancel: Option<tokio_util::sync::CancellationToken>,
     unreadable: HashSet<String>,
+    uncertain_creations: HashSet<String>,
+    deletions: BTreeMap<String, DeletionManifest>,
     logs: Option<Arc<crate::shell_logs::ShellLogStore>>,
     forking: usize,
     images: Option<Arc<crate::images::ImageStore>>,
     files: Option<Arc<crate::files::FileStore>>,
 }
+#[derive(Clone)]
 pub struct AgentManager {
     changes: Arc<ChangeHub>,
-    catalog: Mutex<Catalog>,
+    catalog: Arc<Mutex<Catalog>>,
     store: Option<Arc<dyn ConversationStore>>,
 }
 impl Default for AgentManager {
     fn default() -> Self {
         Self {
             changes: Arc::new(ChangeHub::default()),
-            catalog: Mutex::new(Catalog::default()),
+            catalog: Arc::new(Mutex::new(Catalog::default())),
             store: None,
         }
     }
@@ -65,12 +72,19 @@ impl AgentManager {
     ) -> Result<Arc<Self>> {
         let manager = Arc::new(Self {
             changes: Arc::new(ChangeHub::default()),
-            catalog: Mutex::new(Catalog::default()),
+            catalog: Arc::new(Mutex::new(Catalog::default())),
             store: Some(store.clone()),
         });
         let restore = async {
             let library = store.load_library().await?;
             manager.catalog.lock().unwrap().library = library;
+            let deletions: BTreeMap<_, _> = store
+                .load_deletions()
+                .await?
+                .into_iter()
+                .map(|manifest| (manifest.id.clone(), manifest))
+                .collect();
+            manager.catalog.lock().unwrap().deletions = deletions.clone();
             let catalog = store.load_catalog().await?;
             manager.catalog.lock().unwrap().unreadable = catalog.unreadable.into_iter().collect();
             for mut record in catalog.records {
@@ -83,10 +97,7 @@ impl AgentManager {
                 options.tools = if record.metadata.parent.is_none() {
                     manager.delegation_tools(options.provider.clone(), tools)
                 } else {
-                    tools
-                        .into_iter()
-                        .filter(|tool| tool.definition().name != "delegate")
-                        .collect()
+                    Self::child_tools(tools)
                 };
                 options.checkpoint = Some(store.clone());
                 // Apply the current session budget to restored sessions as well.
@@ -94,7 +105,10 @@ impl AgentManager {
                 record.max_steps = options.max_steps;
                 let active = record.operation.as_ref().is_some_and(|o| o.state.active());
                 let conversation = Conversation::new(options, Some(record))?;
-                if active || budget_changed {
+                if deletions.contains_key(&conversation.id) {
+                    // Recovery is explicit: never resume work or retry an uncertain deletion.
+                    conversation.dispose()?;
+                } else if active || budget_changed {
                     store.save(conversation.record()).await?;
                 }
                 conversation.attach_changes(&manager.changes);
@@ -117,6 +131,9 @@ impl AgentManager {
         Ok(manager)
     }
     pub async fn create(&self, mut options: ConversationOptions) -> Result<Arc<Conversation>> {
+        if options.metadata.parent.is_some() {
+            options.tools = Self::child_tools(options.tools);
+        }
         options.images = self
             .catalog
             .lock()
@@ -147,20 +164,37 @@ impl AgentManager {
             }
             c.mutating.insert(conversation.id.clone());
         }
-        let saved = if let Some(store) = &self.store {
-            store.save(conversation.record()).await
-        } else {
-            Ok(())
-        };
+        let manager = self.clone();
+        tokio::spawn(async move { manager.save_conversation(conversation).await })
+            .await
+            .map_err(|_| Error::Internal)?
+    }
+    /// Called only by an owned catalog task, including fork's resource reservation.
+    async fn save_conversation(
+        &self,
+        conversation: Arc<Conversation>,
+    ) -> Result<Arc<Conversation>> {
+        let saved = AssertUnwindSafe(async {
+            if let Some(store) = &self.store {
+                store.save(conversation.record()).await?;
+            }
+            Ok::<_, Error>(())
+        })
+        .catch_unwind()
+        .await
+        .unwrap_or(Err(Error::Storage));
         let mut c = self.catalog.lock().unwrap();
         c.mutating.remove(&conversation.id);
-        if let Err(error) = saved {
+        if saved.is_err() {
+            // The write may have committed. Keep uncertain ownership visible and
+            // closed to work until explicit deletion or a profile reopen.
             conversation.dispose()?;
-            return Err(error);
+            c.uncertain_creations.insert(conversation.id.clone());
         }
         conversation.attach_changes(&self.changes);
         c.conversations
             .insert(conversation.id.clone(), conversation.clone());
+        saved?;
         Ok(conversation)
     }
     pub async fn fetch_content(
@@ -438,21 +472,43 @@ impl AgentManager {
             library.validate()?;
             c.library_busy = true;
         }
-        let saved = if let Some(store) = &self.store {
-            store.save_library(library.clone()).await
-        } else {
-            Ok(())
-        };
-        let mut c = self.catalog.lock().unwrap();
-        c.library_busy = false;
-        if saved.is_err() {
-            c.library_error = true;
-            self.changes.catalog_changed();
-            return Err(Error::Storage);
-        }
-        c.library = library.clone();
-        self.changes.catalog_changed();
-        Ok(library)
+        let manager = self.clone();
+        tokio::spawn(async move {
+            let saved = AssertUnwindSafe(async {
+                if let Some(store) = &manager.store {
+                    store.save_library(library.clone()).await?;
+                }
+                Ok::<_, Error>(())
+            })
+            .catch_unwind()
+            .await
+            .unwrap_or(Err(Error::Storage));
+            let mut c = manager.catalog.lock().unwrap();
+            c.library_busy = false;
+            if saved.is_err() {
+                c.library_error = true;
+            } else {
+                c.library = library.clone();
+            }
+            manager.changes.catalog_changed();
+            saved.map_err(|_| Error::Storage)?;
+            Ok(library)
+        })
+        .await
+        .map_err(|_| Error::Internal)?
+    }
+    fn child_tools(tools: Vec<Arc<dyn Tool>>) -> Vec<Arc<dyn Tool>> {
+        // Delegation currently returns text, not durable managed-image ownership.
+        // Remove executors as well as definitions; a hallucinated call cannot run.
+        tools
+            .into_iter()
+            .filter(|tool| {
+                !matches!(
+                    tool.definition().name.as_str(),
+                    "delegate" | "generate_image" | "take_screenshot"
+                )
+            })
+            .collect()
     }
     fn delegation_tools(
         self: &Arc<Self>,
@@ -499,11 +555,7 @@ impl AgentManager {
                 parent.model.clone(),
                 parent.workspace.clone(),
             );
-            options.tools = tools
-                .iter()
-                .filter(|tool| tool.definition().name != "delegate")
-                .cloned()
-                .collect();
+            options.tools = Self::child_tools(tools.clone());
             options.settings = parent.configuration.settings.clone();
             options.metadata.disabled_tools = parent.metadata.disabled_tools.clone();
             options.metadata.title = Some(title.clone());
@@ -615,7 +667,7 @@ impl AgentManager {
             }
             let family: Vec<_> = ids
                 .iter()
-                .map(|id| catalog.conversations[id].clone())
+                .filter_map(|id| catalog.conversations.get(id).cloned())
                 .collect();
             let reservations = family
                 .iter()
@@ -640,8 +692,10 @@ impl AgentManager {
                 // Delegation creation already in flight may have inserted more children.
                 // Parent settlement has awaited their executors; reserve survivors too.
                 for id in Self::deletion_family(&catalog, &conversation.id) {
-                    if !family.iter().any(|session| session.id == id) {
-                        reservations.push(catalog.conversations[&id].reserve_idle()?);
+                    if !family.iter().any(|session| session.id == id)
+                        && let Some(session) = catalog.conversations.get(&id)
+                    {
+                        reservations.push(session.reserve_idle()?);
                     }
                 }
                 conversation.start_clear(reservations)?
@@ -668,25 +722,40 @@ impl AgentManager {
                 .ok_or(Error::Invalid("Conversation not found."))?
                 .fork_record()?;
             catalog.forking += 1;
+            catalog.mutating.insert(record.id.clone());
             record
         };
-        let mut options =
-            ConversationOptions::new(provider, record.model.clone(), record.workspace.clone());
-        options.tools = self.delegation_tools(options.provider.clone(), tools);
-        options.images = self
-            .catalog
-            .lock()
-            .unwrap()
-            .images
-            .clone()
-            .map(|s| s as Arc<dyn ImageReader>);
-        options.checkpoint = self.store.clone().map(|s| s as Arc<dyn Checkpoint>);
-        let result = match Conversation::new(options, Some(record)) {
-            Ok(conversation) => self.insert_conversation(conversation).await,
-            Err(error) => Err(error),
-        };
-        self.catalog.lock().unwrap().forking -= 1;
-        result
+        let manager = self.clone();
+        tokio::spawn(async move {
+            let fork_id = record.id.clone();
+            let result = AssertUnwindSafe(async {
+                let mut options = ConversationOptions::new(
+                    provider,
+                    record.model.clone(),
+                    record.workspace.clone(),
+                );
+                options.tools = manager.delegation_tools(options.provider.clone(), tools);
+                options.images = manager
+                    .catalog
+                    .lock()
+                    .unwrap()
+                    .images
+                    .clone()
+                    .map(|s| s as Arc<dyn ImageReader>);
+                options.checkpoint = manager.store.clone().map(|s| s as Arc<dyn Checkpoint>);
+                let conversation = Conversation::new(options, Some(record))?;
+                manager.save_conversation(conversation).await
+            })
+            .catch_unwind()
+            .await
+            .unwrap_or(Err(Error::Internal));
+            let mut catalog = manager.catalog.lock().unwrap();
+            catalog.forking -= 1;
+            catalog.mutating.remove(&fork_id);
+            result
+        })
+        .await
+        .map_err(|_| Error::Internal)?
     }
 
     /// Load project instructions only for the first accepted turn, then freeze them.
@@ -986,7 +1055,7 @@ impl AgentManager {
                 if record.messages.iter().chain(&record.pending_input).any(|m|match m{Message::User{images,..}=>images.iter().any(|i|i.id==remove),Message::Tool{details:Some(ToolDetails::Image{image,..}),..}=>image.id==remove,_=>false}){return Err(Error::Invalid("Images in conversation history cannot be removed independently. Delete the conversation instead."));}
                 let before=record.resources.len();record.resources.retain(|r|!(r.id==remove&&r.kind==ResourceKind::Image&&r.call_id.is_empty()));if before==record.resources.len(){return Err(Error::Invalid("Unused uploaded image not found."));}Ok(())
             }).await?;
-            let images={let c=manager.catalog.lock().unwrap();if !c.unreadable.is_empty()||c.conversations.values().any(|conv|conv.resources().iter().any(|r|r.id==asset)){None}else{c.images.clone()}};
+            let images={let c=manager.catalog.lock().unwrap();if !c.unreadable.is_empty()||c.conversations.values().any(|conv|conv.owned_resources().iter().any(|r|r.id==asset)){None}else{c.images.clone()}};
             if let Some(images)=images{images.delete(vec![asset]).await?;}Ok(())}.await;
             manager.catalog.lock().unwrap().mutating.remove(&id);result
         }).await.map_err(|_|Error::Internal)?
@@ -1042,8 +1111,19 @@ impl AgentManager {
     }
     pub fn unreadable_sessions(&self) -> Vec<String> {
         let catalog = self.catalog.lock().unwrap();
-        let mut ids: Vec<_> = catalog.unreadable.iter().cloned().collect();
+        let mut ids: Vec<_> = catalog
+            .unreadable
+            .iter()
+            .chain(
+                catalog
+                    .deletions
+                    .keys()
+                    .filter(|id| !catalog.conversations.contains_key(*id)),
+            )
+            .cloned()
+            .collect();
         ids.sort();
+        ids.dedup();
         ids
     }
     pub fn summaries(&self) -> Result<Vec<ConversationSummary>> {
@@ -1095,60 +1175,19 @@ impl AgentManager {
                     ids.push(child.id.clone());
                 }
             }
+            for manifest in catalog.deletions.values() {
+                if manifest.parent_id.as_deref() == Some(&parent_id)
+                    && seen.insert(manifest.id.clone())
+                {
+                    ids.push(manifest.id.clone());
+                }
+            }
             index += 1;
         }
         ids
     }
     pub async fn delete(&self, id: &str) -> Result<()> {
-        let (reserved, conversations) = {
-            let mut catalog = self.catalog.lock().unwrap();
-            let ids = Self::deletion_family(&catalog, id);
-            if catalog.closed
-                || catalog.forking > 0
-                || ids.iter().any(|id| catalog.mutating.contains(id))
-            {
-                return Err(Error::Busy);
-            }
-            if !catalog.conversations.contains_key(id) && !catalog.unreadable.contains(id) {
-                return Err(Error::Invalid("Conversation not found."));
-            }
-            let conversations: Vec<_> = ids
-                .iter()
-                .filter_map(|id| catalog.conversations.get(id).cloned())
-                .collect();
-            if conversations.iter().any(|c| {
-                c.parent()
-                    .is_some_and(|p| catalog.mutating.contains(&p.session_id))
-            }) {
-                return Err(Error::Busy);
-            }
-            let reserved: HashSet<_> = ids.into_iter().collect();
-            catalog.mutating.extend(reserved.iter().cloned());
-            for conversation in &conversations {
-                if let Some(op) = conversation.snapshot().operation {
-                    conversation.cancel(&op.id);
-                }
-            }
-            (reserved, conversations)
-        };
-        // Never drop a live tool executor to simulate deletion. In particular, the
-        // parent's delegate future owns its children until their cleanup settles.
-        for conversation in conversations {
-            let (_, mut events) = conversation.subscribe();
-            while conversation.busy() {
-                if events.recv().await.is_err() {
-                    events = conversation.subscribe().1;
-                }
-            }
-        }
-        // Recollect after parent cleanup: a child whose creation was already in
-        // flight when cancellation arrived must be included as well.
-        let result = self.delete_session(id, None, &reserved).await;
-        let mut catalog = self.catalog.lock().unwrap();
-        for id in reserved {
-            catalog.mutating.remove(&id);
-        }
-        result
+        self.delete_session(id, None).await
     }
     pub(crate) async fn delete_returned_child(
         &self,
@@ -1156,18 +1195,10 @@ impl AgentManager {
         parent_id: &str,
         call_id: &str,
     ) -> Result<()> {
-        self.delete_session(id, Some((parent_id, call_id)), &HashSet::new())
-            .await
+        self.delete_session(id, Some((parent_id, call_id))).await
     }
-    async fn delete_session(
-        &self,
-        id: &str,
-        returned_child: Option<(&str, &str)>,
-        reserved: &HashSet<String>,
-    ) -> Result<()> {
-        // Reserve the entire family before touching storage. A busy descendant
-        // must not cause a half-deleted family, and forks must not race cleanup.
-        let sessions = {
+    async fn delete_session(&self, id: &str, returned_child: Option<(&str, &str)>) -> Result<()> {
+        let (mut reserved, mut conversations) = {
             let mut catalog = self.catalog.lock().unwrap();
             // Explicit deletion already owns cleanup, or has finished it.
             if returned_child.is_some()
@@ -1175,97 +1206,193 @@ impl AgentManager {
             {
                 return Ok(());
             }
-            if catalog.closed || catalog.forking > 0 {
+            let ids = Self::deletion_family(&catalog, id);
+            if catalog.closed
+                || catalog.account_busy
+                || catalog.forking > 0
+                || ids.iter().any(|id| catalog.mutating.contains(id))
+            {
                 return Err(Error::Busy);
             }
-            if !catalog.conversations.contains_key(id) && !catalog.unreadable.contains(id) {
+            if !catalog.conversations.contains_key(id)
+                && !catalog.unreadable.contains(id)
+                && !catalog.deletions.contains_key(id)
+            {
                 return Err(Error::Invalid("Conversation not found."));
             }
-            let ids = Self::deletion_family(&catalog, id);
-            let family: HashSet<_> = ids.iter().cloned().collect();
+            let mut conversations = Vec::new();
             for session_id in &ids {
-                if catalog.mutating.contains(session_id) && !reserved.contains(session_id) {
-                    return Err(Error::Busy);
-                }
                 if let Some(conversation) = catalog.conversations.get(session_id) {
-                    if returned_child.is_some() && conversation.disposed() {
-                        // A previous explicit deletion failed after disposing this child.
-                        // Its delegate must not turn cleanup into an automatic retry.
-                        return Err(Error::Storage);
-                    }
-                    let cleanup_allowed =
-                        returned_child.is_some_and(|(parent_id, call_id)| {
-                            let snapshot = conversation.snapshot();
-                            snapshot.metadata.parent.is_some_and(|p| {
-                                p.session_id == parent_id && p.tool_call_id == call_id
-                            }) && snapshot.operation.is_some_and(|op| !op.state.active())
-                        });
-                    if (returned_child.is_some() && !cleanup_allowed) || conversation.busy() {
+                    if conversation
+                        .parent()
+                        .is_some_and(|p| catalog.mutating.contains(&p.session_id))
+                    {
                         return Err(Error::Busy);
                     }
+                    if let Some((parent_id, call_id)) = returned_child {
+                        // A failed deletion must never turn into an automatic delegate retry.
+                        if conversation.disposed() || catalog.deletions.contains_key(session_id) {
+                            return Err(Error::Storage);
+                        }
+                        let snapshot = conversation.snapshot();
+                        if !snapshot
+                            .metadata
+                            .parent
+                            .is_some_and(|p| p.session_id == parent_id && p.tool_call_id == call_id)
+                            || snapshot.operation.is_none_or(|op| op.state.active())
+                        {
+                            return Err(Error::Busy);
+                        }
+                    }
+                    conversations.push((conversation.clone(), conversation.reserve_delete()?));
                 }
             }
-            let mut sessions = Vec::with_capacity(ids.len());
-            // Delete leaves first: a storage failure keeps their parent available
-            // for inspection, rather than leaving inaccessible orphan children.
-            for session_id in ids.into_iter().rev() {
-                let resources = if let Some(conversation) = catalog.conversations.get(&session_id) {
-                    conversation.dispose()?;
-                    conversation.resources()
-                } else {
-                    vec![]
-                };
-                sessions.push((session_id, resources));
+            let reserved: HashSet<_> = ids.into_iter().collect();
+            catalog.mutating.extend(reserved.iter().cloned());
+            for (conversation, _) in &conversations {
+                if let Some(op) = conversation.snapshot().operation {
+                    conversation.cancel(&op.id);
+                }
             }
-            catalog.mutating.extend(family);
-            sessions
+            (reserved, conversations)
         };
-        let mut result = Ok(());
-        for (session_id, resources) in &sessions {
-            result = self
-                .delete_reserved_session(session_id, resources.clone())
-                .await;
-            if result.is_err() {
-                break;
+        let manager = self.clone();
+        let id = id.to_owned();
+        // Own cancellation, settlement, persistence, publication and reservation release.
+        // Dropping an embedded caller's future only detaches its receipt.
+        tokio::spawn(async move {
+            let result = AssertUnwindSafe(async {
+                for (conversation, _) in &conversations {
+                    conversation.settle_active().await;
+                }
+                let sessions = {
+                    let mut catalog = manager.catalog.lock().unwrap();
+                    // Parent settlement awaited delegation executors, including a child
+                    // whose creation was in flight when cancellation arrived.
+                    let ids = Self::deletion_family(&catalog, &id);
+                    for session_id in &ids {
+                        if !reserved.contains(session_id) {
+                            if catalog.mutating.contains(session_id) {
+                                return Err(Error::Busy);
+                            }
+                            if let Some(conversation) = catalog.conversations.get(session_id) {
+                                if conversation.busy() {
+                                    return Err(Error::Busy);
+                                }
+                                conversations
+                                    .push((conversation.clone(), conversation.reserve_delete()?));
+                            }
+                            reserved.insert(session_id.clone());
+                            catalog.mutating.insert(session_id.clone());
+                        }
+                    }
+                    for (_, reservation) in conversations.drain(..) {
+                        reservation.dispose()?;
+                    }
+                    let mut sessions = Vec::with_capacity(ids.len());
+                    // Leaves first: retain the parent for inspection on storage failure.
+                    for session_id in ids.into_iter().rev() {
+                        let manifest = if let Some(manifest) = catalog.deletions.get(&session_id) {
+                            // Existing durable intent is immutable on an explicit retry.
+                            manifest.clone()
+                        } else {
+                            let conversation = catalog.conversations.get(&session_id);
+                            let mut resources =
+                                conversation.map_or_else(Vec::new, |c| c.owned_resources());
+                            for resource in &mut resources {
+                                resource.call_id.clear();
+                            }
+                            DeletionManifest {
+                                id: session_id.clone(),
+                                parent_id: conversation
+                                    .and_then(|c| c.parent())
+                                    .map(|p| p.session_id),
+                                resources,
+                            }
+                        };
+                        catalog.deletions.insert(session_id, manifest.clone());
+                        sessions.push(manifest);
+                    }
+                    sessions
+                };
+                for manifest in sessions {
+                    manager.delete_reserved_session(manifest).await?;
+                }
+                Ok(())
+            })
+            .catch_unwind()
+            .await
+            .unwrap_or(Err(Error::Internal));
+            // Includes reservations for children discovered after cancellation.
+            drop(conversations);
+            let mut catalog = manager.catalog.lock().unwrap();
+            for id in reserved {
+                catalog.mutating.remove(&id);
             }
-        }
-        let mut catalog = self.catalog.lock().unwrap();
-        for (session_id, _) in sessions {
-            catalog.mutating.remove(&session_id);
-        }
-        result
+            result
+        })
+        .await
+        .map_err(|_| Error::Internal)?
     }
-    async fn delete_reserved_session(&self, id: &str, resources: Vec<ResourceRef>) -> Result<()> {
+    async fn delete_reserved_session(&self, manifest: DeletionManifest) -> Result<()> {
+        let id = &manifest.id;
         if let Some(store) = &self.store {
-            store.delete(id.into()).await?;
+            store.prepare_delete(manifest.clone()).await?;
+            // On an uncertain error keep both the disposed session and manifest.
+            // Only another explicit delete may confirm a missing transcript.
+            store.delete(id.clone()).await?;
         }
         let cleanup = {
             let mut catalog = self.catalog.lock().unwrap();
             catalog.conversations.remove(id);
+            catalog.uncertain_creations.remove(id);
             catalog.native.remove_session(id);
             catalog.unreadable.remove(id);
             self.changes.remove(id);
             let referenced: HashSet<_> = catalog
                 .conversations
                 .values()
-                .flat_map(|c| c.resources().into_iter().map(|r| r.id))
+                .flat_map(|c| c.owned_resources().into_iter().map(|r| r.id))
                 .collect();
             if catalog.unreadable.is_empty() {
-                let unreferenced: Vec<_> = resources
-                    .into_iter()
+                let unreferenced: Vec<_> = manifest
+                    .resources
+                    .iter()
                     .filter(|r| !referenced.contains(&r.id))
+                    .cloned()
                     .collect();
+                // An unacknowledged fork may not exist on disk. Its references
+                // protect assets in process, but cannot retire durable cleanup intent.
+                let uncertain: HashSet<_> = catalog
+                    .uncertain_creations
+                    .iter()
+                    .filter_map(|id| catalog.conversations.get(id))
+                    .flat_map(|c| c.owned_resources().into_iter().map(|r| r.id))
+                    .collect();
+                let can_complete = manifest
+                    .resources
+                    .iter()
+                    .all(|r| !uncertain.contains(&r.id));
                 Some((
                     catalog.logs.clone(),
                     catalog.images.clone(),
                     catalog.files.clone(),
                     unreferenced,
+                    can_complete,
                 ))
             } else {
                 None
             }
         };
-        if let Some((logs, images, files, resources)) = cleanup {
+        if let Some((logs, images, files, resources, can_complete)) = cleanup {
+            if resources.iter().any(|r| match r.kind {
+                ResourceKind::ShellLog => logs.is_none(),
+                ResourceKind::Image => images.is_none(),
+                ResourceKind::File => files.is_none(),
+            }) {
+                // Embedded managers may attach storage later. Never lose the manifest.
+                return Ok(());
+            }
             let logs_result = if let Some(logs) = logs {
                 logs.delete(
                     resources
@@ -1304,10 +1431,19 @@ impl AgentManager {
             } else {
                 Ok(())
             };
-            logs_result.and(image_result).and(file_result)
-        } else {
-            Ok(())
+            logs_result.and(image_result).and(file_result)?;
+            if !can_complete {
+                return Ok(());
+            }
+            if let Some(store) = &self.store {
+                store.complete_delete(id.clone()).await?;
+            }
+            self.catalog.lock().unwrap().deletions.remove(id);
+            self.changes.catalog_changed();
         }
+        // Unreadable records retain unknown references. Keep the manifest for a
+        // later explicit deletion after the user repairs/removes those records.
+        Ok(())
     }
     pub async fn close(&self) -> Result<()> {
         {

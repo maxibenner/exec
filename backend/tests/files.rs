@@ -48,6 +48,66 @@ async fn terminal(client: &AgentClient, id: &str) -> ConversationSnapshot {
 }
 
 #[tokio::test]
+async fn file_cleanup_accepts_committed_unlinks_but_never_follows_replacement_links() {
+    for removed in 1..=3 {
+        let root = support::directory();
+        let store = FileStore::open(root.path().to_owned()).await.unwrap();
+        let file = store
+            .put(new_id(), new_id(), "owned.txt".into(), b"owned".to_vec())
+            .await
+            .unwrap();
+        let path = Path::new(&file.path);
+        let asset = path.parent().unwrap();
+        let session = asset.parent().unwrap();
+        std::fs::remove_file(path).unwrap();
+        if removed >= 2 {
+            std::fs::remove_dir(asset).unwrap();
+        }
+        if removed >= 3 {
+            std::fs::remove_dir(session).unwrap();
+        }
+        assert!(store.resolve(vec![file.id.clone()]).await.is_err());
+        store.delete(vec![file.id.clone()]).await.unwrap();
+        assert!(!root.path().join(format!("{}.json", file.id)).exists());
+        assert!(!session.exists());
+    }
+    for target in ["index", "session", "asset", "payload"] {
+        let root = support::directory();
+        let outside = support::directory();
+        let external = outside.path().join("preserve.txt");
+        std::fs::write(&external, b"not owned").unwrap();
+        let store = FileStore::open(root.path().to_owned()).await.unwrap();
+        let file = store
+            .put(new_id(), new_id(), "owned.txt".into(), b"owned".to_vec())
+            .await
+            .unwrap();
+        let path = Path::new(&file.path);
+        let asset = path.parent().unwrap();
+        let session = asset.parent().unwrap();
+        let index = root.path().join(format!("{}.json", file.id));
+        match target {
+            "index" => {
+                std::fs::remove_file(&index).unwrap();
+                symlink(&external, &index).unwrap();
+            }
+            "payload" => {
+                std::fs::remove_file(path).unwrap();
+                symlink(&external, path).unwrap();
+            }
+            "asset" | "session" => {
+                let directory = if target == "asset" { asset } else { session };
+                std::fs::rename(directory, root.path().join("retained")).unwrap();
+                symlink(outside.path(), directory).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(store.delete(vec![file.id]).await.is_err());
+        assert!(std::fs::symlink_metadata(index).is_ok());
+        assert_eq!(std::fs::read(external).unwrap(), b"not owned");
+    }
+}
+
+#[tokio::test]
 async fn files_are_shell_readable_owned_and_retained_until_last_fork_is_deleted() {
     let profile = support::directory();
     let workspace = support::directory();

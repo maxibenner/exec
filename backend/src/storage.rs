@@ -1,6 +1,8 @@
 use crate::{Error, Result, core::*};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     ffi::CStr,
     fs::{self, File, Metadata, OpenOptions},
     io::{Read, Write},
@@ -21,6 +23,34 @@ pub struct LoadedCatalog {
     pub records: Vec<ConversationRecord>,
     pub unreadable: Vec<String>,
 }
+/// Durable, bounded ownership for an explicitly accepted deletion. It survives
+/// transcript removal until every asset is cleaned up or has another live owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeletionManifest {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub resources: Vec<ResourceRef>,
+}
+impl DeletionManifest {
+    fn validate(&self) -> Result<()> {
+        let mut ids = HashSet::new();
+        if !valid_id(&self.id)
+            || self
+                .parent_id
+                .as_ref()
+                .is_some_and(|id| !valid_id(id) || *id == self.id)
+            || self.resources.len() > 4096
+            || self
+                .resources
+                .iter()
+                .any(|r| !valid_id(&r.id) || !r.call_id.is_empty() || !ids.insert(&r.id))
+        {
+            return Err(Error::Storage);
+        }
+        Ok(())
+    }
+}
 #[async_trait]
 pub trait ConversationStore: Checkpoint {
     async fn load(&self) -> Result<Vec<ConversationRecord>>;
@@ -29,6 +59,18 @@ pub trait ConversationStore: Checkpoint {
             records: self.load().await?,
             unreadable: vec![],
         })
+    }
+    /// Persist before delete can unlink a transcript. Stores without durable
+    /// cleanup support fail closed rather than silently dropping asset ownership.
+    async fn prepare_delete(&self, _: DeletionManifest) -> Result<()> {
+        Err(Error::Storage)
+    }
+    async fn load_deletions(&self) -> Result<Vec<DeletionManifest>> {
+        Ok(vec![])
+    }
+    /// Remove only after asset cleanup succeeds (or another durable owner exists).
+    async fn complete_delete(&self, _: String) -> Result<()> {
+        Err(Error::Storage)
     }
     async fn delete(&self, id: String) -> Result<()>;
     async fn close(&self) -> Result<()>;
@@ -67,6 +109,44 @@ impl StoreState {
             return Err(Error::Storage);
         }
         Ok((path, info))
+    }
+    fn deletion_file(&self, id: &str) -> Result<PathBuf> {
+        self.file(id)?;
+        Ok(self.root.join(format!(".{id}.deleting")))
+    }
+    fn deletion(&self, id: &str) -> Result<Option<DeletionManifest>> {
+        let path = self.deletion_file(id)?;
+        let info = match fs::symlink_metadata(&path) {
+            Ok(info) => info,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if !info.is_file()
+            || info.uid() != unsafe { libc::getuid() }
+            || info.mode() & 0o077 != 0
+            || info.nlink() != 1
+            || info.len() > LIMIT
+        {
+            return Err(Error::Storage);
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)?;
+        if !unchanged(&info, &file.metadata()?) {
+            return Err(Error::Storage);
+        }
+        let mut data = Vec::new();
+        (&file).take(LIMIT + 1).read_to_end(&mut data)?;
+        if !unchanged(&info, &file.metadata()?) || data.len() as u64 != info.len() {
+            return Err(Error::Storage);
+        }
+        let manifest: DeletionManifest = serde_json::from_slice(&data)?;
+        manifest.validate()?;
+        if manifest.id != id {
+            return Err(Error::Storage);
+        }
+        Ok(Some(manifest))
     }
     fn sync(&self) -> Result<()> {
         File::open(&self.root)?.sync_all()?;
@@ -290,6 +370,9 @@ impl Checkpoint for JsonConversationStore {
             return Err(Error::Storage);
         }
         self.queued(move |s| {
+            if s.deletion(&record.id)?.is_some() {
+                return Err(Error::Storage);
+            }
             let target = s.file(&record.id)?;
             match fs::symlink_metadata(&target) {
                 Ok(info) if !info.is_file() => return Err(Error::Storage),
@@ -465,19 +548,105 @@ impl ConversationStore for JsonConversationStore {
         .await
         .map_err(|_| Error::Storage)
     }
+    async fn prepare_delete(&self, manifest: DeletionManifest) -> Result<()> {
+        manifest.validate()?;
+        let data = serde_json::to_vec(&manifest)?;
+        if data.len() as u64 > LIMIT {
+            return Err(Error::Storage);
+        }
+        self.queued(move |s| {
+            if let Some(existing) = s.deletion(&manifest.id)? {
+                if existing != manifest {
+                    return Err(Error::Storage);
+                }
+                // A previous acknowledgement may have failed after rename.
+                return s.sync();
+            }
+            let target = s.deletion_file(&manifest.id)?;
+            let temp = s.root.join(format!(".{}.{}.tmp", manifest.id, new_id()));
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temp)?;
+            let result = (|| {
+                file.write_all(&data)?;
+                file.sync_all()?;
+                s.owner()?;
+                fs::rename(&temp, target)?;
+                s.sync()
+            })();
+            let _ = fs::remove_file(temp);
+            result
+        })
+        .await
+        .map_err(|_| Error::Storage)
+    }
+    async fn load_deletions(&self) -> Result<Vec<DeletionManifest>> {
+        self.queued(|s| {
+            let mut manifests = Vec::new();
+            for entry in fs::read_dir(&s.root)? {
+                let name = entry?.file_name();
+                let Some(name) = name.to_str() else {
+                    continue;
+                };
+                let Some(id) = name
+                    .strip_prefix('.')
+                    .and_then(|name| name.strip_suffix(".deleting"))
+                else {
+                    continue;
+                };
+                manifests.push(s.deletion(id)?.ok_or(Error::Storage)?);
+            }
+            manifests.sort_by(|a, b| a.id.cmp(&b.id));
+            s.owner()?;
+            Ok(manifests)
+        })
+        .await
+        .map_err(|_| Error::Storage)
+    }
+    async fn complete_delete(&self, id: String) -> Result<()> {
+        self.queued(move |s| {
+            match fs::symlink_metadata(s.file(&id)?) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err(Error::Storage),
+            }
+            if s.deletion(&id)?.is_some() {
+                s.owner()?;
+                fs::remove_file(s.deletion_file(&id)?)?;
+            }
+            // Also confirm an earlier unlink whose acknowledgement was lost.
+            s.sync()
+        })
+        .await
+        .map_err(|_| Error::Storage)
+    }
     async fn delete(&self, id: String) -> Result<()> {
         self.queued(move |s| {
-            // No parsing: corrupt/unreadable transcripts must remain deletable.
-            let (record, info) = s.existing_record(&id)?;
+            // No transcript parsing: corrupt/unreadable records remain deletable.
+            // A present manifest must be safe even when the transcript still exists.
+            let manifest = s.deletion(&id)?;
+            // Only an owned deletion manifest permits a missing-transcript retry.
+            let record = match fs::symlink_metadata(s.file(&id)?) {
+                Ok(_) => Some(s.existing_record(&id)?),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound && manifest.is_some() =>
+                {
+                    None
+                }
+                Err(error) => return Err(error.into()),
+            };
             if let Some(directory) = DiagnosticDirectory::open(s.root.join(&id), false)? {
                 directory.delete()?;
                 s.sync()?;
             }
             s.owner()?;
-            if !unchanged(&info, &fs::symlink_metadata(&record)?) {
-                return Err(Error::Storage);
+            if let Some((record, info)) = record {
+                if !unchanged(&info, &fs::symlink_metadata(&record)?) {
+                    return Err(Error::Storage);
+                }
+                fs::remove_file(record)?;
             }
-            fs::remove_file(record)?;
             s.sync()
         })
         .await
