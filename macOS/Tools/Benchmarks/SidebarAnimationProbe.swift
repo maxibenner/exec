@@ -226,7 +226,8 @@ private struct ProbeWindow: View {
     let windows: SessionWindows
     let simpleDetail: Bool
     var body: some View {
-        ChatWindowLayout(initiallyShowsSidebar: true) {
+        ChatWindowLayout(initiallyShowsSidebar: !CommandLine.arguments.contains("--reveal-sidebar"),
+                         sidebarRevealRequest: windows.sidebarRevealRequest) {
             SessionSidebar(store: library, open: windows.openSession, delete: { library.deleteSession($0.id) })
         } detail: {
             if simpleDetail { Text("Isolated detail") }
@@ -256,6 +257,7 @@ private struct ProbeWindow: View {
         let table: String
         let focus: String
         var duplicateMarkers: [String]? = nil
+        var detachedMarkers: [String]? = nil
         var composerFocused: Bool? = nil
         var hasComposerFocus: Bool { composerFocused ?? focus.hasPrefix("Editor@") }
     }
@@ -333,6 +335,8 @@ private struct ProbeWindow: View {
         fileprivate var pollingEvidence: [PollingEvent]? = nil
         var rejectedRoutes: [String]? = nil
         var probeBuild: String? = nil
+        var lifecycleOptions: [String]? = nil
+        var hiddenReveal: Sample? = nil
     }
     @MainActor static func descendants(_ view: NSView) -> [NSView] {
         [view] + view.subviews.flatMap { descendants($0) }
@@ -341,17 +345,23 @@ private struct ProbeWindow: View {
         let views = descendants(host)
         let table = views.compactMap { $0 as? NSTableView }.first
         var markers: [String: Geometry] = [:]
-        var duplicates: [String] = []
+        var duplicates: [String] = [], detached: [String] = []
         for marker in views.compactMap({ $0 as? SidebarProbeMarker.Marker }) {
             guard let layer = marker.layer else { continue }
             let presentation = layer.presentation() ?? layer
-            let rect = presentation.convert(presentation.bounds, to: nil)
             var opacity: Float = 1
+            var attached = false
             var ancestor: CALayer? = presentation
             while let current = ancestor {
+                if current.model() === host.layer { attached = true }
                 opacity *= current.opacity
                 ancestor = current.superlayer
             }
+            // AppKit can retain fitting-size/recycled views in the NSView tree
+            // while their layers are detached. Converting those to nil yields
+            // row-local coordinates, not an actual frame in the window.
+            guard attached else { detached.append(marker.key); continue }
+            let rect = presentation.convert(presentation.bounds, to: nil)
             if markers[marker.key] != nil { duplicates.append(marker.key) }
             markers[marker.key] = Geometry(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height, opacity: Double(opacity))
         }
@@ -360,10 +370,25 @@ private struct ProbeWindow: View {
             animations: Array(Set(keys)).sorted(), rows: table?.numberOfRows ?? -1,
             selection: table?.selectedRow ?? -1, table: table.map { String(describing: ObjectIdentifier($0)) } ?? "none",
             focus: host.window?.firstResponder.map { "\(type(of: $0))@\(ObjectIdentifier($0))" } ?? "none",
-            duplicateMarkers: duplicates.sorted(), composerFocused: host.window?.firstResponder is ComposerTextInput.Editor)
+            duplicateMarkers: duplicates.sorted(), detachedMarkers: detached.sorted(),
+            composerFocused: host.window?.firstResponder is ComposerTextInput.Editor)
     }
+    @MainActor static func toggleSidebar(_ host: NSView, visible: Bool) async throws {
+        guard let split = descendants(host).compactMap({ $0 as? NSSplitView }).first,
+              let controller = split.delegate as? NSSplitViewController,
+              let sidebar = controller.splitViewItems.first(where: { $0.behavior == .sidebar }),
+              sidebar.isCollapsed == visible else { throw ExecError("Unexpected sidebar visibility before toggle") }
+        controller.toggleSidebar(nil)
+        try await Task.sleep(for: .milliseconds(600))
+        guard sidebar.isCollapsed != visible else { throw ExecError("Sidebar toggle did not settle") }
+    }
+
     @MainActor static func measure(_ name: String, host: NSView,
                                    change: @escaping @MainActor () async throws -> Void) async throws -> Phase {
+        if CommandLine.arguments.contains("--cycle-sidebar") {
+            try await toggleSidebar(host, visible: false)
+            try await toggleSidebar(host, visible: true)
+        }
         let start = ProcessInfo.processInfo.systemUptime
         var samples = [sample(host, start: start)]
         var finished = false
@@ -421,8 +446,11 @@ private struct ProbeWindow: View {
             "children-remove-one": (5, 2), "children-remove-all": (5, 0),
             "parent-insert-and-focus": (6, 0), "parent-move-and-echo": (6, 0),
             "parent-delete-and-focus": (5, 0), "parent-remote-swap": (5, 0),
+            "parent-insert-during-content-echo": (6, 0), "parent-remove-during-content-echo": (5, 0),
             "children-during-content-echo": (5, 3), "parent-drop-rollback": (5, 3),
-            "children-rapid-retarget": (5, 4), "metadata-only": (5, 4), "scroll-remount": (30, 4)]
+            "children-rapid-retarget": (5, 4), "metadata-only": (5, 4), "scroll-remount": (30, 4),
+            "parent-delete-last": (0, 0), "parent-insert-first": (1, 0),
+            "parent-insert-second": (2, 0), "parent-move-pair": (2, 0), "parent-delete-selected": (1, 0)]
         let tables = Set(report.phases.flatMap { $0.samples.map(\.table) })
         if tables.count != 1 || tables.contains("none") { failures.append("Native table identity changed or was missing") }
         for phase in report.phases {
@@ -441,7 +469,7 @@ private struct ProbeWindow: View {
             guard let outcome = expected[phase.name] else { failures.append("Unknown phase: \(phase.name)"); continue }
             let groups = final.filter { $0.hasPrefix("group:") }.count
             if after.rows != outcome.rows || final.filter({ $0.hasPrefix("child:") }).count != outcome.children
-                || groups == 0 || (phase.name != "scroll-remount" && groups != outcome.rows)
+                || (outcome.rows > 0 && groups == 0) || (phase.name != "scroll-remount" && groups != outcome.rows)
                 || final.filter({ $0.hasPrefix("parent:") }).count != groups
                 || final.filter({ $0.hasPrefix("footer:") }).count != groups {
                 failures.append("\(phase.name): missing markers or incorrect final row/child counts")
@@ -453,7 +481,7 @@ private struct ProbeWindow: View {
                (!before.hasComposerFocus || after.focus != before.focus) {
                 failures.append("\(phase.name): composer focus was not preserved")
             }
-            if phase.name == "children-swap" || phase.name == "parent-remote-swap" || phase.name == "parent-move-and-echo" {
+            if ["children-swap", "parent-remote-swap", "parent-move-and-echo", "parent-move-pair"].contains(phase.name) {
                 let prefix = phase.name == "children-swap" ? "child:" : "group:"
                 let moved = initial.intersection(final).filter { $0.hasPrefix(prefix) && abs(before.markers[$0]!.y - after.markers[$0]!.y) > 1 }
                 if moved.count < 2 { failures.append("\(phase.name): expected reorder did not occur") }
@@ -506,6 +534,7 @@ private struct ProbeWindow: View {
                 }
                 continue
             }
+            failures += opacityContinuityFailures(phase).map { "\(phase.name): \($0)" }
             if phase.name == "metadata-only" {
                 for key in keys where distinct(values(key, \.y)) > 1 || distinct(values(key, \.opacity)) > 1 {
                     failures.append("Metadata update restarted a row animation: \(key.prefix(6))")
@@ -534,10 +563,68 @@ private struct ProbeWindow: View {
         return failures
     }
 
+    /// Several intermediate values are necessary but not sufficient: a fade can
+    /// still jump between them. Keep uncertainty separate from observed jumps.
+    static func opacityContinuityFailures(_ phase: Phase) -> [String] {
+        var issues: [String] = []
+        let keys = Set(phase.samples.flatMap { $0.markers.keys }).filter {
+            $0.hasPrefix("group:") || $0.hasPrefix("child:")
+        }
+        for key in keys.sorted() {
+            if phase.samples.contains(where: { $0.duplicateMarkers?.contains(key) == true }) {
+                issues.append("\(key): ambiguous duplicate presentation markers")
+                continue
+            }
+            let pairs = zip(phase.samples, phase.samples.dropFirst())
+            let gapped = pairs.contains { a, b in
+                let x = a.markers[key]?.opacity ?? 0, y = b.markers[key]?.opacity ?? 0
+                return b.time - a.time >= 0.06 &&
+                    (abs(y - x) > 0.02 || (x > 0.02 && x < 0.98) || (y > 0.02 && y < 0.98))
+            }
+            let jumped = pairs.contains { a, b in
+                guard b.time - a.time < 0.06, let x = a.markers[key]?.opacity,
+                      let y = b.markers[key]?.opacity else { return false }
+                return abs(y - x) > 0.6
+            }
+            if gapped { issues.append("\(key): fade continuity undersampled\(jumped ? " (post-stall opacity jump)" : "")") }
+            else if jumped { issues.append("\(key): sampled opacity jumped by >0.6 within 60ms") }
+        }
+        return issues
+    }
+
+    /// Model-layer control for sizing copies that remain in the native view tree.
+    /// Live workloads separately exercise the presentation-layer ancestry path.
+    @MainActor static func verifyMarkerAttachment() throws {
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 200))
+        host.wantsLayer = true
+        let markers = (0..<2).map { _ in SidebarProbeMarker.Marker(frame: NSRect(x: 20, y: 40, width: 180, height: 40)) }
+        for marker in markers {
+            marker.key = "group:attachment-control"
+            marker.wantsLayer = true
+            host.addSubview(marker)
+        }
+        guard let root = host.layer, let detached = markers.last?.layer else {
+            throw ExecError("Missing attachment control layers")
+        }
+        for marker in markers { root.addSublayer(marker.layer!) }
+        let attached = sample(host, start: 0)
+        guard attached.duplicateMarkers == [markers[0].key] else {
+            throw ExecError("Attached duplicate markers were not detected")
+        }
+        detached.removeFromSuperlayer()
+        let measured = sample(host, start: 0)
+        guard measured.markers.count == 1, measured.duplicateMarkers?.isEmpty == true,
+              measured.detachedMarkers == [markers[0].key], descendants(host).count == 3 else {
+            throw ExecError("Detached native sizing copy polluted window geometry")
+        }
+        print("PASS attachment control: detached sizing layers excluded; attached duplicates still rejected")
+    }
+
     /// Negative control: keep native animation keys and correct final positions,
     /// but replace every intermediate frame with an instantaneous endpoint jump.
     /// This prevents the regression gate itself from degrading to endpoint checks.
-    static func verifySnapDetection(_ report: Report) throws {
+    @MainActor static func verifySnapDetection(_ report: Report) throws {
+        try verifyMarkerAttachment()
         guard !report.reduceMotion, report.stress == nil, report.polling == nil else {
             throw ExecError("Detector verification needs the default motion workload")
         }
@@ -558,6 +645,24 @@ private struct ProbeWindow: View {
             throw ExecError("Animation checks accepted instantaneous movement or visibility")
         }
         print("PASS negative controls: instantaneous reordering and appearance were rejected")
+        func fixture(_ opacity: [Double], gap: Bool = false, duplicate: Bool = false) -> Phase {
+            Phase(name: "continuity-control", samples: opacity.enumerated().map { index, value in
+                Sample(time: Double(index) * 0.01 + (gap && index >= 3 ? 0.1 : 0),
+                       markers: ["group:control": Geometry(x: 0, y: 0, width: 200, height: 40, opacity: value)],
+                       animations: ["opacity"], rows: 1, selection: -1, table: "control", focus: "control",
+                       duplicateMarkers: duplicate && index == 3 ? ["group:control"] : [])
+            })
+        }
+        // Correct endpoints and at least three intermediate alphas do not excuse
+        // one discontinuity. A sampling stall or duplicate marker is inconclusive.
+        let smooth = (0...10).map { Double($0) / 10 }
+        guard opacityContinuityFailures(fixture(smooth)).isEmpty,
+              opacityContinuityFailures(fixture([0, 0.1, 0.2, 0.9, 0.95, 1])).contains(where: { $0.contains("opacity jumped") }),
+              opacityContinuityFailures(fixture(smooth, gap: true)).contains(where: { $0.contains("undersampled") }),
+              opacityContinuityFailures(fixture(smooth, duplicate: true)).contains(where: { $0.contains("ambiguous") }) else {
+            throw ExecError("Opacity continuity detector accepted a discontinuity or rejected smooth samples")
+        }
+        print("PASS continuity controls: smooth accepted; jumps, sampling gaps and duplicate markers rejected")
     }
 
     /// Per-mutation windows catch transient rows that endpoint-only checks miss.
@@ -929,7 +1034,28 @@ private struct ProbeWindow: View {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         defer { window.orderOut(nil); window.contentView = nil }
+        var hiddenReveal: Sample?
         try await Task.sleep(for: .milliseconds(800))
+        if arguments.contains("--hidden-updates") {
+            if !arguments.contains("--reveal-sidebar") { try await toggleSidebar(host, visible: false) }
+            // Change parents, children and ordering while the native sidebar is
+            // collapsed. It must reveal the current catalog, not a stale snapshot.
+            await transport.install(Array(parents.prefix(2).reversed()) + children)
+            try await library.refreshSharedState()
+            try await Task.sleep(for: .milliseconds(400))
+            try await toggleSidebar(host, visible: true)
+            let revealed = sample(host, start: ProcessInfo.processInfo.systemUptime)
+            hiddenReveal = revealed
+            let expected = Set(parentIDs.prefix(2).flatMap { id in ["group:\(id)", "parent:\(id)", "footer:\(id)"] }
+                + childIDs.map { "child:\($0)" })
+            guard Set(revealed.markers.keys) == expected, revealed.rows == 2,
+                  revealed.markers.values.allSatisfy({ $0.opacity >= 0.98 && $0.width > 0 && $0.height > 0 }) else {
+                throw ExecError("Hidden catalog changes did not reconcile on reveal")
+            }
+            await transport.install(parents)
+            try await library.refreshSharedState()
+            try await Task.sleep(for: .milliseconds(400))
+        } else if arguments.contains("--reveal-sidebar") { try await toggleSidebar(host, visible: true) }
         if arguments.contains("--narrow"), let split = descendants(host).compactMap({ $0 as? NSSplitView }).first {
             split.setPosition(200, ofDividerAt: 0)
             try await Task.sleep(for: .milliseconds(300))
@@ -979,6 +1105,27 @@ private struct ProbeWindow: View {
             await transport.reorder(Array(library.sessionList.map(\.id).reversed()))
             try await library.refreshSharedState()
         })
+        if arguments.contains("--parent-echo") {
+            let id = UUID()
+            let inserted = SidebarProbeTransport.snapshot(id, title: "Echo conversation")
+            let changed = parentIDs.enumerated().map {
+                SidebarProbeTransport.snapshot($0.element, title: "Conversation \($0.offset + 1)", activity: 2000)
+            }
+            phases.append(try await measure("parent-insert-during-content-echo", host: host) {
+                await transport.install([inserted] + parents)
+                try await library.refreshSharedState()
+                try await Task.sleep(for: .milliseconds(40))
+                await transport.install([SidebarProbeTransport.snapshot(id, title: "Echo conversation", activity: 2000)] + changed)
+                try await library.refreshSharedState()
+            })
+            phases.append(try await measure("parent-remove-during-content-echo", host: host) {
+                await transport.install(parents)
+                try await library.refreshSharedState()
+                try await Task.sleep(for: .milliseconds(40))
+                await transport.install(changed)
+                try await library.refreshSharedState()
+            })
+        }
         await transport.install(parents)
         try await library.refreshSharedState()
         try await Task.sleep(for: .milliseconds(400))
@@ -1023,6 +1170,41 @@ private struct ProbeWindow: View {
             try await Task.sleep(for: .milliseconds(200))
             table.scrollRowToVisible(0)
         })
+        if arguments.contains("--empty-lifecycle") {
+            await transport.install(parents)
+            try await library.refreshSharedState()
+            for id in library.sidebarSessions.dropFirst().map(\.id) {
+                library.deleteSession(id)
+                await library.waitForNavigation()
+                guard !library.sidebarSessions.contains(where: { $0.id == id }) else {
+                    throw ExecError("Empty lifecycle setup failed to delete a session")
+                }
+            }
+            try await Task.sleep(for: .milliseconds(600))
+            phases.append(try await measure("parent-delete-last", host: host) {
+                library.deleteSession(library.sidebarSessions[0].id)
+                await library.waitForNavigation()
+            })
+            for name in ["parent-insert-first", "parent-insert-second"] {
+                phases.append(try await measure(name, host: host) {
+                    windows.newConversation()
+                    guard let pending = library.pendingNewConversation else { throw ExecError("Missing pending creation") }
+                    pending.consumeInitialWorkspaceSelection()
+                    library.selectWorkspace(workspace, in: pending)
+                    await library.waitForNavigation()
+                    guard library.current === pending, pending.currentSessionID != nil else {
+                        throw ExecError("Empty lifecycle creation failed")
+                    }
+                })
+            }
+            phases.append(try await measure("parent-move-pair", host: host) {
+                library.moveSidebarSessions(from: IndexSet(integer: 0), to: 2)
+            })
+            phases.append(try await measure("parent-delete-selected", host: host) {
+                library.deleteSession(library.currentSessionID!)
+                await library.waitForNavigation()
+            })
+        }
         }
         library.closePresentations()
         let report = Report(operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
@@ -1031,7 +1213,10 @@ private struct ProbeWindow: View {
                             polling: polling.cycles > 0 ? polling : nil,
                             pollingEvidence: polling.cycles > 0 ? await transport.evidence : nil,
                             rejectedRoutes: await transport.rejected,
-                            probeBuild: try? String(contentsOfFile: CommandLine.arguments[0] + ".sources", encoding: .utf8))
+                            probeBuild: try? String(contentsOfFile: CommandLine.arguments[0] + ".sources", encoding: .utf8),
+                            lifecycleOptions: arguments.filter {
+                                ["--reveal-sidebar", "--hidden-updates", "--cycle-sidebar", "--empty-lifecycle", "--parent-echo"].contains($0)
+                            }, hiddenReveal: hiddenReveal)
         let args = CommandLine.arguments
         let output = args.firstIndex(of: "--output").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
             ?? ".build/sidebar-animation-report.json"

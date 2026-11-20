@@ -21,5 +21,7 @@ swiftc -swift-version 6 -parse-as-library "${sources[@]}" -o .build/exec-checks
 .build/exec-checks --composer-events
 # Assert real intermediate presentation frames, not just final sidebar geometry.
 # These use isolated synthetic sessions and never capture the user's screen.
-./scripts/probe-sidebar.sh --check --verify-detectors --output .build/sidebar-motion.json
-.build/sidebar-animation-probe --check --reduce-motion --output .build/sidebar-reduced.json
+# Include empty catalogs, metadata echoes and native collapse/reveal lifecycles.
+lifecycle=(--empty-lifecycle --parent-echo --hidden-updates --cycle-sidebar)
+./scripts/probe-sidebar.sh --check --verify-detectors "${lifecycle[@]}" --output .build/sidebar-motion.json
+.build/sidebar-animation-probe --check --reduce-motion --reveal-sidebar "${lifecycle[@]}" --output .build/sidebar-reduced.json

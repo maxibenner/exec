@@ -19,11 +19,24 @@ renderer; do not use this ten-animation window for performance comparisons.
 .build/sidebar-animation-probe --check --dark --narrow --output .build/sidebar-dark-narrow.json
 ```
 
-The normal `./scripts/test.sh` run includes the default motion and Reduce Motion
-workloads. `--verify-detectors` also checks a deliberately snapped copy of the sampled
-report: correct endpoints and native animation keys must not pass without intermediate
-movement and fading. These are regression checks on sampled geometry, not proof of
-GPU frame cadence or physical drag smoothness.
+The normal `./scripts/test.sh` run includes motion and Reduce Motion workloads plus
+`--empty-lifecycle --parent-echo --hidden-updates --cycle-sidebar`:
+
+- `--empty-lifecycle` deletes the last row, creates the first and second conversations,
+  reorders the pair, and deletes the selected conversation through production APIs.
+- `--parent-echo` updates metadata 40 ms into parent insertion/removal.
+- `--hidden-updates` changes parent order/count and children while collapsed, then
+  checks the revealed catalog before the measured phases.
+- `--cycle-sidebar` collapses/reveals the native sidebar before each measured phase.
+  `--reveal-sidebar` additionally starts with the sidebar closed.
+
+Reports record these options and the hidden-catalog reveal endpoint. These visibility
+checks do not assert row fades while collapsed or sample the sidebar's own slide animation.
+`--verify-detectors` checks a deliberately snapped copy of the sampled report: correct
+endpoints and native animation keys must not pass without intermediate movement and fading.
+Additional controls reject an isolated opacity jump despite several intermediate values,
+sampling gaps and ambiguous markers. These are regression checks on sampled geometry,
+not proof of GPU frame cadence or physical drag smoothness.
 
 Opens an isolated window containing the production sidebar, split view and chat detail,
 including composer focus restoration. A fake transport and temporary preferences supply
@@ -44,12 +57,41 @@ intermediate motion. Reports contain synthetic geometry only; no screenshots are
 The script fails if instrumentation hooks drift, measures the allocated group height (not
 just its natural content), and records source hashes beside the binary.
 
+Only layers attached to the hosting view's layer tree contribute window geometry.
+AppKit can leave fitting-size/recycled views in the native view tree with detached
+layers: converting those to global coordinates produces spurious row-local jumps
+and duplicate identities. Reports retain excluded keys as `detachedMarkers`; the
+attachment control checks both exclusion and detection of genuinely attached duplicates.
+This corrects measurement artifacts, not production row animation behavior.
+
 For repeated insert/remove bursts, use `--stress-cycles 10 --stress-parents 100`
 with optional `--stress-kind children|parents|mixed`, `--stress-batch 3`,
 `--stress-interval-ms 80`, `--stress-noise`, or `--stress-reuse-ids`.
 `PROBE_OPTIMIZE=1 ./scripts/probe-sidebar.sh ...` builds an optimized probe.
 Stress reports retain mutation timestamps and flag undersampled or ambiguous fades;
 presentation-layer opacity does not prove visible text fading or GPU frame cadence.
+
+### Unresolved native parent-row interruption
+
+Ordinary create/delete/reorder and visibility cases passing does not establish reliable
+interruption of a native insertion. A small, no-transcript reproducer is:
+
+```sh
+.build/sidebar-animation-probe --check --simple-detail --stress-cycles 3 \
+  --stress-parents 5 --stress-kind parents --stress-batch 1 --stress-interval-ms 40 \
+  --output .build/sidebar-parent-interruption.json
+```
+
+On macOS 27.3 (26C5035r), removing an entering parent produced an attached presentation
+opacity jump greater than 0.6 and a position discontinuity, without a 60 ms sampling gap.
+Reinserting that ID during removal also produced two attached marker instances, making
+that leg ambiguous. This is distinct from detached sizing copies and heavy-transcript
+sampling stalls. Changing the SwiftUI easing curve to a spring did not resolve it.
+The renderer is unchanged; this case still fails `--check` and is not part of the passing
+standard gate. A production fix remains open. Do not conceal it by accepting ambiguous
+samples, skipping intermediate checks, or delaying catalog changes merely to pass the probe.
+Native hidden-catalog runs can also emit AppKit's reentrant-table-delegate warning;
+passing sampled geometry does not resolve that warning.
 
 ### Polling and transcript contention
 
