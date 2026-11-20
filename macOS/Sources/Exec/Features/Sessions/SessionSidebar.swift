@@ -152,21 +152,23 @@ struct SessionChildRowContent: View {
                 Text(verbatim: child.title).lineLimit(1).truncationMode(.tail)
             }
             Spacer(minLength: 0)
-            if store.needsApproval(child.id) {
-                SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
-                    .accessibilityLabel("Approval required")
-            } else if store.needsAttention(child.id) {
-                SessionStatusIndicator(symbol: "exclamationmark.circle").foregroundStyle(.orange)
-            } else if store.isSessionWaiting(child.id) {
-                SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
-                    .accessibilityLabel("Waiting")
+            Group {
+                if store.needsApproval(child.id) {
+                    SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
+                        .accessibilityLabel("Approval required")
+                } else if store.needsAttention(child.id) {
+                    SessionStatusIndicator(symbol: "exclamationmark.circle").foregroundStyle(.orange)
+                } else if store.isSessionWaiting(child.id) {
+                    SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
+                        .accessibilityLabel("Waiting")
+                }
             }
+            // Match the parent's trailing status slot without insetting the row.
+            .frame(width: 16)
         }
         .font(.caption2).foregroundStyle(.secondary)
         // Status symbols must not change the child's layout height.
         .frame(height: 22, alignment: .center)
-        // Align the connector with the parent title and metadata's leading edge.
-        .padding(.trailing, 6)
     }
 }
 
