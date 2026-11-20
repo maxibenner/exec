@@ -267,26 +267,26 @@ struct SessionRow: View {
         HStack(spacing: 8) {
             Text(verbatim: session.title).font(.body.weight(.regular)).lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Group {
-                if needsApproval {
-                    SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
-                        .help("Approval required").accessibilityLabel("Approval required")
-                } else if needsAttention {
-                    SessionStatusIndicator(symbol: "exclamationmark.circle").foregroundStyle(.orange)
-                        .help("Conversation needs attention").accessibilityLabel("Conversation needs attention")
-                } else if store.isSessionWaiting(session.id) {
-                    SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
-                        .accessibilityLabel("Waiting")
-                } else if store.isSessionResponding(session.id) {
-                    SessionStatusIndicator().accessibilityLabel("Running")
-                } else {
-                    Color.clear
+            // Reserve horizontal space only. Indicators may overflow vertically,
+            // but must never increase a single-line title's layout height.
+            Color.clear.frame(width: 16, height: 0)
+                .overlay {
+                    if needsApproval {
+                        SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
+                            .help("Approval required").accessibilityLabel("Approval required")
+                    } else if needsAttention {
+                        SessionStatusIndicator(symbol: "exclamationmark.circle").foregroundStyle(.orange)
+                            .help("Conversation needs attention").accessibilityLabel("Conversation needs attention")
+                    } else if store.isSessionWaiting(session.id) {
+                        SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
+                            .accessibilityLabel("Waiting")
+                    } else if store.isSessionResponding(session.id) {
+                        SessionStatusIndicator().accessibilityLabel("Running")
+                    }
                 }
-            }
-            .frame(width: 16, height: 20)
         }
         .padding(.top, 5)
-        .padding(.bottom, 2)
+        .padding(.bottom, 4)
         .contentShape(Rectangle())
         .overlay {
             SessionContextMenu(items: [

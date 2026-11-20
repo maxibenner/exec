@@ -58,6 +58,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             return
         }
         let checks: [(String, @MainActor () async throws -> Void)] = [
+            ("Single-line and wrapped sidebar titles use consistent padding", { try SidebarTitleLayoutTests().singleAndWrappedTitlesUseTheSamePadding() }),
             ("Startup counts zero, one and multiple sessions", { try StartupSessionCountTests().countsZeroOneAndMultipleSessions() }),
             ("Startup ignores children and invalid files", { try StartupSessionCountTests().ignoresChildrenAndInvalidFiles() }),
             ("Sidebar visibility is set before ordering the window front", { try await SidebarVisibilityTests().appliesInitialVisibilityBeforeOrderingWindowFront() }),
