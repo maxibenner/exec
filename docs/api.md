@@ -215,6 +215,10 @@ to an explicitly authorized frontend's machine, not automatically the backend ho
 
 Bodies require `Content-Type: application/json` and reject unknown fields. Request bodies are bounded to 12 MiB (for encoded images), text to 128 Ki UTF-16 code units with an additional 128 KiB UTF-8 turn bound, model IDs to 128 code units, and workspace paths to 4,096 code units. Workspaces must be existing absolute directories and are canonicalized. Approval/cancellation IDs are UUIDs. Errors are an HTTP status plus `{"error":"safe message"}`, never raw provider exceptions. Exact diagnostic wording is not a machine-readable error code; oversized/interrupted bodies can also reset the connection.
 
+Proven pre-effect service gates (authorization/allowlist, admission, routing and request-body/field validation) may add `"delivery":"rejected"` to that same error object. This optional field proves only that **this request** had no effects; it does not imply an earlier request settled. Runtime errors omit it, even when their status is 400, 409 or 503: cancellation or durable/provider work may already have happened. In particular, 500 and storage-recovery 409 responses are not definite rejection evidence. Missing, malformed, unknown or legacy delivery metadata is an **uncertain outcome**, not permission to resubmit. Safe diagnostic messages remain actionable but must not be parsed for delivery evidence.
+
+Model discovery, balance and usage reads return 503 when the manager is closed, including when it closes while a provider read is pending. Account mutation conflicts remain distinct from closure.
+
 The server bounds TCP connections to 64 and separately admits at most 64 non-GET command handlers across HTTP and remote transport, including body reads. Excess commands return 503 before body parsing or effects; there is no admission wait queue. A tracked handler owns its admission permit until it finishes, even after the caller disconnects. Incomplete body reads are cancelled on disconnect/shutdown, but accepted mutations are never aborted to free capacity. GET reads remain outside the command budget. Shutdown waits for accepted writes; stalled storage can therefore delay shutdown indefinitely. A lost response is not permission to retry a mutation automatically.
 
 | Method | Path | Body / response |
@@ -680,6 +684,11 @@ session, drafts, windows and scroll state.
 
 Accepted library updates/patches, session creation, forks and deletions own their settlement
 and publication even if an embedded caller drops its future (or an HTTP client disconnects).
+`GET /v1/library` returns 409 while a library write is pending, never the old configuration.
+A fresh successful GET can resolve a lost client acknowledgement only after settlement; a
+GET started before the write cannot. A failed storage acknowledgement leaves reads at 500
+until profile reload, even if the file was committed. Neither pending nor failed reads clear
+client write uncertainty. Existing conversations can still execute independently.
 Detaching is not cancellation and is not authorization to resubmit. A failed creation/fork
 acknowledgement may follow a committed write; its session remains catalogued but closed to
 new work until explicit deletion or reload, preserving potentially shared asset ownership.

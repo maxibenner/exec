@@ -38,13 +38,7 @@ async fn detached_library_update_and_patch_publish_and_release_the_reservation()
         entered(&gate).await;
         caller.abort();
         assert!(caller.await.unwrap_err().is_cancelled());
-        assert!(
-            manager
-                .library_configuration()
-                .unwrap()
-                .default_model
-                .is_none()
-        );
+        assert_eq!(manager.library_configuration().unwrap_err(), Error::Busy);
         assert_eq!(
             manager
                 .update_library(Default::default())
@@ -56,10 +50,7 @@ async fn detached_library_update_and_patch_publish_and_release_the_reservation()
         eventually(|| {
             manager
                 .library_configuration()
-                .unwrap()
-                .default_model
-                .as_deref()
-                == Some("accepted")
+                .is_ok_and(|library| library.default_model.as_deref() == Some("accepted"))
         })
         .await;
         changes.changed().await.unwrap();

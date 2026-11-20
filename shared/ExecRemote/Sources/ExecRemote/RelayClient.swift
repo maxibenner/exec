@@ -136,6 +136,7 @@ public actor RelayClient {
     private var timeout: Task<Void, Never>?
     private var watchdog: Task<Void, Never>?
     private let livenessTimeout: Duration
+    private let requestTimeout: Duration
     private var lastAuthenticatedTraffic = ContinuousClock.now
     private var supportsChanges = false
 
@@ -145,6 +146,7 @@ public actor RelayClient {
         var continuation: CheckedContinuation<RemoteJSON, Error>?
         let observationID: UUID?
         let cancellation: RelayRequestCancellation
+        var dispatched = false // becomes uncertain only at the socket handoff
         var bytes = Data()
         var status: Int?
     }
@@ -162,6 +164,7 @@ public actor RelayClient {
 
     public init() {
         livenessTimeout = .seconds(70)
+        requestTimeout = .seconds(45)
         beforeDispatch = {}
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil; configuration.urlCache = nil
@@ -169,9 +172,10 @@ public actor RelayClient {
         let session = URLSession(configuration: configuration, delegate: RelaySessionDelegate(), delegateQueue: nil)
         makeSocket = { WebSocketTransport(session: session, url: $0) }
     }
-    init(livenessTimeout: Duration = .seconds(70), beforeDispatch: @escaping @Sendable () -> Void = {}, makeSocket: @escaping @Sendable (URL) -> any RelaySocket) {
-        precondition(livenessTimeout > .zero)
+    init(livenessTimeout: Duration = .seconds(70), requestTimeout: Duration = .seconds(45), beforeDispatch: @escaping @Sendable () -> Void = {}, makeSocket: @escaping @Sendable (URL) -> any RelaySocket) {
+        precondition(livenessTimeout > .zero && requestTimeout > .zero)
         self.livenessTimeout = livenessTimeout
+        self.requestTimeout = requestTimeout
         self.beforeDispatch = beforeDispatch
         self.makeSocket = makeSocket
     }
@@ -188,9 +192,12 @@ public actor RelayClient {
         socket?.close(); socket = nil; channel = nil; connecting = false
         pump?.cancel(); pump = nil; timeout?.cancel(); timeout = nil
         watchdog?.cancel(); watchdog = nil; supportsChanges = false
-        active?.continuation?.resume(throwing: error); active = nil
+        if let request = active {
+            request.continuation?.resume(throwing: request.dispatched ? error : Self.notDispatched(error))
+        }
+        active = nil
         let waiting = queue; queue.removeAll()
-        for request in waiting { request.continuation?.resume(throwing: error) }
+        for request in waiting { request.continuation?.resume(throwing: Self.notDispatched(error)) }
         observation?.continuation.finish(throwing: error); observation = nil; optedIn = false
     }
     private func fail(_ error: any Error, generation expected: UUID) {
@@ -228,7 +235,11 @@ public actor RelayClient {
         return remaining
     }
     private static var interrupted: RemoteFailure {
-        RemoteFailure("Connection interrupted. The request may have taken effect. It was not retried.")
+        RemoteFailure("Connection interrupted. The request may have taken effect. It was not retried.", kind: .uncertain)
+    }
+    private static func notDispatched(_ error: any Error) -> RemoteFailure {
+        if let failure = error as? RemoteFailure, failure.kind == .notDispatched { return failure }
+        return RemoteFailure("Connection ended before the request was sent. It was not retried.", kind: .notDispatched)
     }
 
     public func connect(_ host: PairedHost) async throws {
@@ -288,7 +299,7 @@ public actor RelayClient {
 
     public func request(_ method: String, _ path: String, body: RemoteJSON? = nil) async throws -> RemoteJSON {
         do { return try await perform(method, path, body: body) }
-        catch let rejection as APIRejection { throw RemoteFailure(rejection.message) }
+        catch let rejection as APIRejection { throw rejection.failure }
     }
 
     /// Opt in only when authenticated ready advertises support; otherwise no probe.
@@ -297,7 +308,7 @@ public actor RelayClient {
     /// before replacing it. Neither operation cancels an accepted API command.
     public func changes() async throws -> AsyncThrowingStream<RemoteChangeNotification, Error>? {
         try Task.checkCancellation()
-        guard isConnected else { throw RemoteFailure("Connect to the agent first.") }
+        guard isConnected else { throw RemoteFailure("Connect to the agent first.", kind: .notDispatched) }
         guard supportsChanges else { return nil }
         guard observation == nil else { throw RemoteFailure("Changes are already being observed.") }
         let id = UUID()
@@ -313,7 +324,7 @@ public actor RelayClient {
             if Task.isCancelled { throw CancellationError() }
             if let rejection = error as? APIRejection {
                 if rejection.status == 404 || rejection.status == 405 { return nil }
-                throw RemoteFailure(rejection.message)
+                throw rejection.failure
             }
             throw error
         }
@@ -331,11 +342,14 @@ public actor RelayClient {
 
     private func perform(_ method: String, _ path: String, body: RemoteJSON? = nil, observationID: UUID? = nil) async throws -> RemoteJSON {
         try Task.checkCancellation()
-        guard isConnected else { throw RemoteFailure("Connect to the agent first.") }
-        guard queue.count < 64 else { throw RemoteFailure("Too many pending requests.") }
+        guard isConnected else { throw RemoteFailure("Connect to the agent first.", kind: .notDispatched) }
+        guard queue.count < 64 else { throw RemoteFailure("Too many pending requests.", kind: .notDispatched) }
         let id = UUID().uuidString.lowercased(), expected = generation
         let value: RemoteJSON = .object(["id": .string(id), "method": .string(method), "path": .string(path), "body": body ?? .null])
-        guard try JSONEncoder().encode(value).count <= 196_608 else { throw RemoteFailure("The request is too large.") }
+        let size: Int
+        do { size = try JSONEncoder().encode(value).count }
+        catch { throw RemoteFailure("Could not encode the request. It was not sent.", kind: .notDispatched) }
+        guard size <= 196_608 else { throw RemoteFailure("The request is too large.", kind: .notDispatched) }
         let cancellation = RelayRequestCancellation()
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
@@ -377,19 +391,31 @@ public actor RelayClient {
             // Commit the sender context BEFORE suspension. Never copy it across await.
             let packet = try channel!.seal(active!.value)
             let text = try Self.text(packet), id = active!.id
-            timeout = Task { [weak self] in
-                do { try await Task.sleep(for: .seconds(45)) } catch { return }
-                await self?.expireRequest(id, generation: expected)
-            }
             Task { [weak self] in
-                guard await self?.generation == expected else { return }
-                do { try await socket.send(text) }
-                catch { await self?.fail(Self.interrupted, generation: expected) }
+                await self?.send(text, id: id, socket: socket, generation: expected)
             }
-        } catch { fail(Self.interrupted, generation: expected) }
+        } catch {
+            // HPKE may have advanced locally, but nothing reached the socket.
+            fail(RemoteFailure("Could not encode or encrypt the request. It was not sent.", kind: .notDispatched), generation: expected)
+        }
+    }
+    private func send(_ text: String, id: String, socket: any RelaySocket, generation expected: UUID) async {
+        guard generation == expected, active?.id == id else { return }
+        // From this handoff onward even a failed send can follow remote effects.
+        active!.dispatched = true
+        let deadline = requestTimeout
+        timeout = Task { [weak self] in
+            do { try await Task.sleep(for: deadline) } catch { return }
+            await self?.expireRequest(id, generation: expected)
+        }
+        do { try await socket.send(text) }
+        catch { fail(Self.interrupted, generation: expected) }
     }
 
-    private struct APIRejection: Error { let status: Int; let message: String }
+    private struct APIRejection: Error {
+        let status: Int
+        let failure: RemoteFailure
+    }
     private struct Reply: Decodable {
         let id: String
         let status: Int
@@ -435,7 +461,11 @@ public actor RelayClient {
             result = .success(body)
         } else {
             let body = try? JSONDecoder().decode(RemoteJSON.self, from: completed.bytes)
-            result = .failure(APIRejection(status: reply.status, message: body?["error"].string ?? "Request rejected."))
+            // Status alone says nothing about effects (including 409 storage recovery).
+            // Only an authenticated, explicitly recognized no-effect marker is definite.
+            let kind: RemoteFailure.Kind = body?["delivery"].string == "rejected" ? .rejected : .uncertain
+            let message = body?["error"].string ?? "Request failed (HTTP \(reply.status)). Inspect agent state before continuing."
+            result = .failure(APIRejection(status: reply.status, failure: RemoteFailure(message, kind: kind)))
         }
         timeout?.cancel(); timeout = nil; active = nil
         completed.continuation?.resume(with: result)

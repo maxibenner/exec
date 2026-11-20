@@ -68,6 +68,8 @@ private actor FakeHost {
     private var recipient: HPKE.Recipient?
     private var pending: [RemoteJSON] = []
     private var waiter: CheckedContinuation<RemoteJSON, Never>?
+    private var holdNextSend = false
+    private var heldSend: CheckedContinuation<Void, Error>?
     private(set) var commands: [RemoteJSON] = []
     init(delayClose: Bool = false, readyFields: [String: RemoteJSON] = ["changeNotifications": .bool(true)]) throws {
         self.readyFields = readyFields
@@ -77,7 +79,7 @@ private actor FakeHost {
         challengeFrame = String(decoding: try JSONEncoder().encode(RemoteJSON.object(["version": .number(2), "challenge": .string(challenge)])), as: UTF8.self)
         pipe.push(challengeFrame)
     }
-    func receive(_ text: String) throws {
+    func receive(_ text: String) async throws {
         let packet = try JSONDecoder().decode(RemoteJSON.self, from: Data(text.utf8))
         if recipient == nil {
             let peer = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(base64Encoded: packet["publicKey"].string!)!)
@@ -98,7 +100,16 @@ private actor FakeHost {
             commands.append(command)
             if let waiter { self.waiter = nil; waiter.resume(returning: command) }
             else { pending.append(command) }
+            if holdNextSend {
+                holdNextSend = false
+                try await withCheckedThrowingContinuation { heldSend = $0 }
+            }
         }
+    }
+    func holdNextCommandSend() { holdNextSend = true }
+    func failHeldSend() {
+        heldSend?.resume(throwing: RemoteFailure("Fixture lost send acknowledgement after acceptance"))
+        heldSend = nil
     }
     func nextCommand() async -> RemoteJSON {
         if !pending.isEmpty { return pending.removeFirst() }
@@ -178,6 +189,100 @@ final class RelayChangesTests: XCTestCase, @unchecked Sendable {
         }
         XCTFail("Transport did not reach expected state", file: file, line: line)
         throw RemoteFailure("Test synchronization failed.")
+    }
+
+    private func assertFailure(_ task: Task<RemoteJSON, Error>, kind: RemoteFailure.Kind, message: String? = nil, file: StaticString = #filePath, line: UInt = #line) async {
+        do { _ = try await task.value; XCTFail("Expected delivery failure", file: file, line: line) }
+        catch {
+            XCTAssertEqual((error as? RemoteFailure)?.kind, kind, "\(error)", file: file, line: line)
+            if let message { XCTAssertEqual(error.localizedDescription, message, file: file, line: line) }
+        }
+    }
+
+    func testPreflightFailuresAreNotDispatchedAndDoNotAdvanceHPKE() async throws {
+        let host = try FakeHost(), socket = FakeSocket(host)
+        let client = RelayClient(makeSocket: { _ in socket })
+        await assertFailure(Task { try await client.request("DELETE", "/v1/conversations/never") }, kind: .notDispatched, message: "Connect to the agent first.")
+        try await client.connect(host.paired)
+        for body: RemoteJSON in [.number(.nan), .number(.infinity), .string(String(repeating: "x", count: 196_608))] {
+            await assertFailure(Task { try await client.request("POST", "/v1/conversations", body: body) }, kind: .notDispatched)
+        }
+        let before = await host.commands
+        XCTAssertTrue(before.isEmpty)
+        try await health(client, host)
+        await client.disconnect()
+    }
+
+    func testAuthenticatedRejectionMetadataIsRequiredAndSafeMessagesSurvive() async throws {
+        let (client, host) = try await connected()
+        let cases: [(Int, RemoteJSON, RemoteFailure.Kind)] = [
+            (400, .object(["error": .string("Invalid title."), "delivery": .string("rejected")]), .rejected),
+            (503, .object(["error": .string("No work was accepted."), "delivery": .string("rejected")]), .rejected),
+            (500, .object(["error": .string("Save failed after actions. Inspect state.")]), .uncertain),
+            (409, .object(["error": .string("Conversation requires storage recovery.")]), .uncertain),
+            (401, .object(["error": .string("Legacy authorization failure.")]), .uncertain),
+            (403, .object(["error": .string("Legacy authorization failure.")]), .uncertain),
+            (400, .object(["error": .string("Unknown evidence."), "delivery": .string("future")]), .uncertain),
+            (400, .object(["error": .string("Malformed evidence."), "delivery": .bool(true)]), .uncertain),
+            (409, .object(["error": .string("Request rejected.")]), .uncertain),
+        ]
+        for (status, body, kind) in cases {
+            let task = Task { try await client.request("DELETE", "/v1/conversations/once") }
+            let command = await host.nextCommand()
+            try await host.reply(command, body, status: status)
+            await assertFailure(task, kind: kind, message: body["error"].string)
+            try await health(client, host) // drain errors and preserve both HPKE directions
+        }
+        let legacy = Task { try await client.request("POST", "/v1/conversations") }
+        let command = await host.nextCommand()
+        try await host.chunk(command, Data("legacy non-JSON failure".utf8), status: 500)
+        await assertFailure(legacy, kind: .uncertain, message: "Request failed (HTTP 500). Inspect agent state before continuing.")
+        try await health(client, host)
+        let commands = await host.commands
+        XCTAssertEqual(commands.count, (cases.count + 1) * 2, "Failures must never replay commands")
+        await client.disconnect()
+    }
+
+    func testActiveLossIsUncertainButQueuedLossIsNotDispatchedAndReconnectNeverReplays() async throws {
+        for mode in 0..<4 { // disconnect, lost reply, deadline, malformed successful body
+            let old = try FakeHost(), fresh = try FakeHost()
+            let factory = SocketFactory([old, fresh])
+            let client = RelayClient(requestTimeout: .milliseconds(300), makeSocket: { factory.make($0) })
+            try await client.connect(old.paired)
+            let active = Task { try await client.request("POST", "/v1/conversations") }
+            let command = await old.nextCommand()
+            let queued = Task { try await client.request("DELETE", "/v1/conversations/never") }
+            try await until { await client.queuedRequestCount == 1 }
+            switch mode {
+            case 0: await client.disconnect()
+            case 1: old.pipe.close()
+            case 2: break // exercise the real request timer, not the idle watchdog
+            default: try await old.chunk(command, Data("{".utf8))
+            }
+            await assertFailure(active, kind: .uncertain)
+            await assertFailure(queued, kind: .notDispatched)
+            try await client.connect(fresh.paired)
+            try await health(client, fresh)
+            let oldCommands = await old.commands, freshCommands = await fresh.commands
+            XCTAssertEqual(oldCommands.map { $0["method"].string! }, ["POST"])
+            XCTAssertEqual(freshCommands.map { $0["method"].string! }, ["GET"])
+            XCTAssertEqual(factory.count, 2)
+            await client.disconnect()
+        }
+    }
+
+    func testSendFailureAfterPeerAcceptanceIsUncertainAndQueuedCommandNeverLeaves() async throws {
+        let (client, host) = try await connected()
+        await host.holdNextCommandSend()
+        let active = Task { try await client.request("POST", "/v1/conversations") }
+        _ = await host.nextCommand() // real HPKE opened; remote effects are possible
+        let queued = Task { try await client.request("DELETE", "/v1/conversations/never") }
+        try await until { await client.queuedRequestCount == 1 }
+        await host.failHeldSend()
+        await assertFailure(active, kind: .uncertain)
+        await assertFailure(queued, kind: .notDispatched)
+        let commands = await host.commands
+        XCTAssertEqual(commands.map { $0["method"].string! }, ["POST"])
     }
 
     func testRecordedChallengeAndEncryptedReadyCannotAuthenticateAFreshConnection() async throws {
@@ -272,7 +377,10 @@ final class RelayChangesTests: XCTestCase, @unchecked Sendable {
             let command = await host.nextCommand()
             try await host.reply(command, .object(["error": .string("Not authorized.")]), status: status)
             do { _ = try await mutation.value; XCTFail("Auth rejection accepted") }
-            catch { XCTAssertEqual(error.localizedDescription, "Not authorized.") }
+            catch {
+                XCTAssertEqual(error.localizedDescription, "Not authorized.")
+                XCTAssertEqual((error as? RemoteFailure)?.kind, .uncertain, "Legacy responses have no no-effect evidence")
+            }
             try await health(client, host)
         }
         let commands = await host.commands
@@ -306,7 +414,10 @@ final class RelayChangesTests: XCTestCase, @unchecked Sendable {
         let queued = (0..<64).map { index in Task { try await client.request("DELETE", "/v1/conversations/\(index)") } }
         try await until { await client.queuedRequestCount == 64 }
         do { _ = try await client.request("DELETE", "/v1/conversations/overflow"); XCTFail("Queue was unbounded") }
-        catch { XCTAssertEqual(error.localizedDescription, "Too many pending requests.") }
+        catch {
+            XCTAssertEqual(error.localizedDescription, "Too many pending requests.")
+            XCTAssertEqual((error as? RemoteFailure)?.kind, .notDispatched)
+        }
         queued.forEach { $0.cancel() }
         for task in queued { do { _ = try await task.value; XCTFail("Expected cancellation") } catch is CancellationError {} }
         try await host.reply(accepted); _ = try await first.value
@@ -549,7 +660,8 @@ final class RelayChangesTests: XCTestCase, @unchecked Sendable {
             default: host.pipe.push(String(repeating: "x", count: 1024 * 1024 + 1))
             }
             if mode != 7 { try await host.frame(.object(fields)) }
-            do { _ = try await task.value; XCTFail("Accepted invalid frame \(mode)") } catch {}
+            do { _ = try await task.value; XCTFail("Accepted invalid frame \(mode)") }
+            catch { XCTAssertEqual((error as? RemoteFailure)?.kind, .uncertain) }
             let connected = await client.isConnected
             XCTAssertFalse(connected)
             let count = await host.commands.count

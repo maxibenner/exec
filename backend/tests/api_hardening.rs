@@ -1,8 +1,14 @@
+#[path = "support/gated_store.rs"]
+mod gated_store;
 mod support;
 
 use async_trait::async_trait;
 use exec_agent::{
-    Error, Result, core::*, manager::AgentManager, service::*, storage::ConversationStore,
+    Error, Result,
+    core::*,
+    manager::AgentManager,
+    service::*,
+    storage::{ConversationStore, DeletionManifest, JsonConversationStore},
 };
 use serde_json::json;
 use std::{
@@ -43,6 +49,7 @@ impl Gate {
 #[derive(Default)]
 struct GatedStore {
     records: Mutex<BTreeMap<String, ConversationRecord>>,
+    deletions: Mutex<BTreeMap<String, DeletionManifest>>,
     delete_gate: Mutex<Option<Arc<Gate>>>,
     save_gate: Mutex<Option<Arc<Gate>>>,
     saves: AtomicUsize,
@@ -66,6 +73,24 @@ impl Checkpoint for GatedStore {
 impl ConversationStore for GatedStore {
     async fn load(&self) -> Result<Vec<ConversationRecord>> {
         Ok(self.records.lock().unwrap().values().cloned().collect())
+    }
+    async fn prepare_delete(&self, manifest: DeletionManifest) -> Result<()> {
+        // This fixture owns no asset stores; never pretend it can clean assets.
+        if !manifest.resources.is_empty() {
+            return Err(Error::Storage);
+        }
+        self.deletions
+            .lock()
+            .unwrap()
+            .insert(manifest.id.clone(), manifest);
+        Ok(())
+    }
+    async fn load_deletions(&self) -> Result<Vec<DeletionManifest>> {
+        Ok(self.deletions.lock().unwrap().values().cloned().collect())
+    }
+    async fn complete_delete(&self, id: String) -> Result<()> {
+        self.deletions.lock().unwrap().remove(&id);
+        Ok(())
     }
     async fn delete(&self, id: String) -> Result<()> {
         let gate = self.delete_gate.lock().unwrap().clone();
@@ -225,6 +250,10 @@ async fn pending_deletion_is_conflict_not_absence_and_readers_still_work() {
         tokio::spawn(async move { client.delete(&id).await })
     };
     gate.wait(1).await;
+    let manifests = store.load_deletions().await.unwrap();
+    assert_eq!(manifests.len(), 1);
+    assert_eq!(manifests[0].id, conversation.id);
+    assert!(manifests[0].resources.is_empty());
     assert!(matches!(manager.get(&conversation.id), Err(Error::Busy)));
     for (method, suffix, body) in [
         ("PUT", "/title", Some(json!({"title":"must not run"}))),
@@ -273,6 +302,7 @@ async fn pending_deletion_is_conflict_not_absence_and_readers_still_work() {
         manager.get(&conversation.id),
         Err(Error::ConversationNotFound)
     ));
+    assert!(store.load_deletions().await.unwrap().is_empty());
     for suffix in ["", "/sync", "/events"] {
         assert_eq!(
             client
@@ -382,6 +412,187 @@ async fn disconnected_writes_keep_admission_until_storage_settles_and_shutdown_w
     assert_eq!(records[&spare.id].metadata.title, None);
     assert_eq!(store.saves.load(Ordering::SeqCst), initial_saves + 64);
     assert_eq!(provider.count(), 0);
+}
+
+async fn api_request(
+    service: &Service,
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> (u16, serde_json::Value) {
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .retry(reqwest::retry::never())
+        .build()
+        .unwrap();
+    let mut request = http
+        .request(
+            method.parse().unwrap(),
+            format!("http://{}{path}", service.address),
+        )
+        .bearer_auth(support::API_TOKEN);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await.unwrap();
+    (response.status().as_u16(), response.json().await.unwrap())
+}
+
+#[tokio::test]
+async fn preflight_rejections_are_explicit_but_post_commit_500_and_storage_409_are_uncertain() {
+    use gated_store::Write;
+    for (method, suffix, body, status) in [
+        ("PUT", "/title", json!({"title":"committed"}), 500),
+        ("POST", "/clear", json!({}), 409),
+    ] {
+        let root = support::directory();
+        let store =
+            gated_store::GatedStore::new(JsonConversationStore::open(root.path()).await.unwrap());
+        let provider = FakeProvider::new(vec![]);
+        let manager = AgentManager::open(store.clone(), |_| (provider.clone(), vec![]))
+            .await
+            .unwrap();
+        let conversation = manager
+            .create(support::options(provider.clone(), vec![]))
+            .await
+            .unwrap();
+        let service = serve(manager.clone(), provider.clone()).await;
+        let path = format!("/v1/conversations/{}", conversation.id);
+        let initial_saves = store.record_attempts.load(Ordering::SeqCst);
+        for (route, invalid) in [
+            (format!("{path}/title"), json!({"title":"bad\ntitle"})),
+            (
+                format!("{path}/title"),
+                json!({"title":"valid", "unknown":true}),
+            ),
+            ("/v1/unknown".into(), json!({})),
+        ] {
+            let (status, response) = api_request(&service, "PUT", &route, Some(invalid)).await;
+            assert!(status == 400 || status == 404);
+            assert_eq!(response["delivery"], "rejected");
+            assert!(response["error"].is_string());
+        }
+        assert_eq!(store.record_attempts.load(Ordering::SeqCst), initial_saves);
+        *store.fail_after.lock().unwrap() = Some(Write::Record);
+        let (actual_status, response) =
+            api_request(&service, method, &format!("{path}{suffix}"), Some(body)).await;
+        assert_eq!(actual_status, status);
+        assert!(
+            response.get("delivery").is_none(),
+            "A lost store acknowledgement is not rejection evidence"
+        );
+        assert!(
+            response["error"]
+                .as_str()
+                .unwrap()
+                .contains(if status == 409 {
+                    "storage recovery"
+                } else {
+                    "prior actions may have had effects"
+                })
+        );
+        assert_eq!(
+            store.record_attempts.load(Ordering::SeqCst),
+            initial_saves + 1
+        );
+        if status == 500 {
+            assert_eq!(
+                store.load().await.unwrap()[0].metadata.title.as_deref(),
+                Some("committed")
+            );
+        }
+        assert!(
+            manager
+                .snapshot(&conversation.id)
+                .unwrap()
+                .storage_error
+                .is_some()
+        );
+        assert_eq!(provider.count(), 0);
+        service.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn library_get_cannot_resolve_a_disconnected_write_until_storage_settles() {
+    use gated_store::Write;
+    use tokio::io::AsyncWriteExt;
+    for lose_storage_ack in [false, true] {
+        let root = support::directory();
+        let store =
+            gated_store::GatedStore::new(JsonConversationStore::open(root.path()).await.unwrap());
+        let provider = FakeProvider::new(vec![]);
+        let manager = AgentManager::open(store.clone(), |_| (provider.clone(), vec![]))
+            .await
+            .unwrap();
+        let service = serve(manager.clone(), provider.clone()).await;
+        let (status, initial) = api_request(&service, "GET", "/v1/library", None).await;
+        assert_eq!(status, 200);
+        assert!(initial["defaultModel"].is_null());
+        let gate = store.gate(Write::Library);
+        if lose_storage_ack {
+            *store.fail_after.lock().unwrap() = Some(Write::Library);
+        }
+        let body = json!({"defaultModel":"settled"}).to_string();
+        let request = format!(
+            "PATCH /v1/library HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            support::API_TOKEN,
+            body.len()
+        );
+        let mut socket = tokio::net::TcpStream::connect(service.address)
+            .await
+            .unwrap();
+        socket.write_all(request.as_bytes()).await.unwrap();
+        gated_store::entered(&gate).await;
+        drop(socket); // Accepted exactly once; the caller no longer owns settlement.
+        assert_eq!(
+            store.load_library().await.unwrap().default_model.as_deref(),
+            Some("settled")
+        );
+        let (status, pending) = api_request(&service, "GET", "/v1/library", None).await;
+        assert_eq!(status, 409);
+        assert!(
+            pending.get("defaultModel").is_none(),
+            "The old configuration must not clear client write uncertainty"
+        );
+        assert!(pending.get("delivery").is_none());
+        let (status, _) = api_request(
+            &service,
+            "PATCH",
+            "/v1/library",
+            Some(json!({"automaticTitles":false})),
+        )
+        .await;
+        assert_eq!(status, 409);
+        assert_eq!(store.library_attempts.load(Ordering::SeqCst), 1);
+        gate.release.cancel();
+        gated_store::eventually(|| !matches!(manager.library_configuration(), Err(Error::Busy)))
+            .await;
+        let (status, settled) = api_request(&service, "GET", "/v1/library", None).await;
+        if lose_storage_ack {
+            assert_eq!(status, 500);
+            assert!(settled.get("defaultModel").is_none());
+            assert!(settled.get("delivery").is_none());
+        } else {
+            assert_eq!(status, 200);
+            assert_eq!(settled["defaultModel"], "settled");
+        }
+        assert_eq!(store.library_attempts.load(Ordering::SeqCst), 1);
+        service.close().await.unwrap();
+        // Only reopening the durable store can resolve a failed storage ack.
+        let reopened = AgentManager::open(
+            JsonConversationStore::open(root.path()).await.unwrap(),
+            |_| (provider.clone(), vec![]),
+        )
+        .await
+        .unwrap();
+        let service = serve(reopened, provider.clone()).await;
+        let (status, settled) = api_request(&service, "GET", "/v1/library", None).await;
+        assert_eq!(status, 200);
+        assert_eq!(settled["defaultModel"], "settled");
+        assert_eq!(provider.count(), 0);
+        service.close().await.unwrap();
+    }
 }
 
 fn png() -> Vec<u8> {
