@@ -61,16 +61,6 @@ struct ModelsAndToolsSettingsView: View {
                 } footer: {
                     Text("Uses the provider selected in each chat.")
                 }
-                Section {
-                    ForEach(connected) { connection in
-                        LabeledContent(connection.name,
-                                       value: connection.supportsImageGeneration ? "Available" : "Unavailable")
-                    }
-                } header: {
-                    Text("Image Generation")
-                } footer: {
-                    Text("Uses the connected OpenAI subscription.")
-                }
             }
         }
         .disabled(store.authenticating || connected.isEmpty)
