@@ -4,9 +4,14 @@ import UIKit
 
 public struct MobileWorkingIndicator: UIViewRepresentable {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    public init() {}
+    private let tintColor: UIColor?
+    /// Set a concrete UIKit tint when the transcript must ignore system accents.
+    public init(tintColor: UIColor? = nil) { self.tintColor = tintColor }
     public func makeUIView(context: Context) -> NeuralActivityView { NeuralActivityView() }
-    public func updateUIView(_ view: NeuralActivityView, context: Context) { view.reduceMotion = reduceMotion }
+    public func updateUIView(_ view: NeuralActivityView, context: Context) {
+        view.tintColor = tintColor
+        view.reduceMotion = reduceMotion
+    }
     public func sizeThatFits(_ proposal: ProposedViewSize, uiView: NeuralActivityView, context: Context) -> CGSize? {
         uiView.intrinsicContentSize
     }

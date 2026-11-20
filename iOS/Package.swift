@@ -13,7 +13,7 @@ let package = Package(
             dependencies: [.product(name: "ExecRemote", package: "ExecRemote")],
             path: "ExecRemote",
             exclude: ["Assets.xcassets", "ExecRemoteApp.swift", "HostConnectionOverlay.swift", "Info.plist", "NativeTranscript.swift", "RemoteUIFixture.swift", "TranscriptUIFixture.swift", "ScannerView.swift"],
-            sources: ["RemoteStore.swift", "ConversationPresentation.swift", "DeviceStore.swift", "TranscriptScrollState.swift"]
+            sources: ["RemoteStore.swift", "ConversationPresentation.swift", "DeviceStore.swift", "TranscriptScrollState.swift", "ThinkingIndicatorLifecycle.swift"]
         ),
         .testTarget(name: "ExecRemoteStoreTests", dependencies: ["ExecRemoteStore"], path: "Tests")
     ]

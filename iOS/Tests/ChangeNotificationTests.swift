@@ -21,7 +21,8 @@ private actor ObservationClock {
 }
 
 @MainActor final class ChangeNotificationTests: XCTestCase {
-    private func makeStore(_ transport: FakeTransport, _ clock: ObservationClock) throws -> RemoteStore {
+    private func makeStore(_ transport: FakeTransport, _ clock: ObservationClock,
+                           thinkingSleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }) throws -> RemoteStore {
         let key = Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation.base64EncodedString()
         let invitation = try JSONDecoder().decode(PairingInvitation.self, from: JSONEncoder().encode(RemoteJSON.object([
             "version": .number(1), "relay": .string("wss://example.invalid"),
@@ -30,7 +31,7 @@ private actor ObservationClock {
         ])))
         let host = PairedHost(invitation: invitation, deviceName: "Notification fixture")
         return RemoteStore(client: transport, loadHost: { host }, saveHost: { _ in }, forgetHost: {},
-                           sleep: { try await clock.sleep($0) })
+                           sleep: { try await clock.sleep($0) }, thinkingSleep: thinkingSleep)
     }
     private func notice(_ revision: String = "1", catalog: String = "catalog", epoch: String = "epoch",
                         other: String = "1") -> RemoteChangeNotification {
@@ -107,6 +108,34 @@ private actor ObservationClock {
         let requests = await transport.requests
         XCTAssertFalse(requests.contains { $0.contains("/unopened/sync") })
         observer.cancel(); await observer.value
+    }
+
+    func testHiddenThinkingTracksStreamNoticesWithoutDependingOnSelection() async throws {
+        let transport = FakeTransport(), clock = ObservationClock()
+        // The delay itself is covered by ThinkingIndicatorTests' manual clock.
+        let store = try makeStore(transport, clock, thinkingSleep: { _ in })
+        await configure(transport)
+        let gap: RemoteJSON = .object(["id": .string("session"), "messages": .array([]),
+            "operation": .object(["id": .string("op"), "state": .string("running")])])
+        await transport.setConversation(gap)
+        await store.connect(); await store.open("session").value; await store.open("other").value
+        let observer = Task { await store.observe() }; defer { observer.cancel() }
+        try await until { store.lastChangeNotification == self.notice() && store.thinking.visible == ["session"] }
+        let streaming: RemoteJSON = .object(["id": .string("session"), "messages": .array([
+            .object(["id": .string("answer"), "role": .string("assistant"), "status": .string("streaming"), "text": .string("Hidden output")])]),
+            "operation": gap["operation"]])
+        await transport.setConversation(streaming)
+        await transport.emit(notice("2"))
+        try await until { store.lastChangeNotification == self.notice("2") }
+        XCTAssertTrue(store.thinking.visible.isEmpty)
+        XCTAssertEqual(store.selected, "other")
+        await transport.setConversation(gap)
+        await transport.emit(notice("3"))
+        try await until { store.lastChangeNotification == self.notice("3") && store.thinking.visible == ["session"] }
+        await store.open("session").value
+        XCTAssertEqual(store.thinking.visible, ["session"], "Opening a warm gap does not restart its delay")
+        observer.cancel(); await observer.value
+        XCTAssertTrue(store.thinking.visible.isEmpty)
     }
 
     func testInitialNoticeClosesReadSubscribeRaceAndEpochForcesHiddenCatchup() async throws {
