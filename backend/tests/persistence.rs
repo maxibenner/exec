@@ -19,6 +19,126 @@ fn empty_record() -> ConversationRecord {
     conversation(FakeProvider::new(vec![]), vec![]).record()
 }
 #[tokio::test]
+async fn unsafe_or_corrupt_deletion_manifests_fail_closed_without_removing_transcripts() {
+    for kind in ["corrupt", "symlink", "public", "wrong-id"] {
+        let root = directory();
+        let store = JsonConversationStore::open(root.path()).await.unwrap();
+        let record = empty_record();
+        store.save(record.clone()).await.unwrap();
+        let transcript = root.path().join(format!("{}.json", record.id));
+        let original = fs::read(&transcript).unwrap();
+        let manifest = root.path().join(format!(".{}.deleting", record.id));
+        if kind == "symlink" {
+            symlink(&transcript, &manifest).unwrap();
+        } else {
+            let data = if kind == "corrupt" {
+                b"not a cleanup manifest".to_vec()
+            } else {
+                serde_json::to_vec(&exec_agent::storage::DeletionManifest {
+                    id: if kind == "wrong-id" {
+                        new_id()
+                    } else {
+                        record.id.clone()
+                    },
+                    parent_id: None,
+                    resources: vec![],
+                })
+                .unwrap()
+            };
+            fs::write(&manifest, data).unwrap();
+            fs::set_permissions(
+                &manifest,
+                fs::Permissions::from_mode(if kind == "public" { 0o644 } else { 0o600 }),
+            )
+            .unwrap();
+        }
+        assert!(store.load_deletions().await.is_err());
+        assert!(store.save(record.clone()).await.is_err());
+        assert!(store.delete(record.id.clone()).await.is_err());
+        assert!(
+            AgentManager::open(store, |_| (FakeProvider::new(vec![]), vec![]))
+                .await
+                .is_err()
+        );
+        assert_eq!(fs::read(&transcript).unwrap(), original);
+        assert!(fs::symlink_metadata(&manifest).is_ok());
+        // Failed restore released profile ownership, without quarantining unknown data.
+        let store = JsonConversationStore::open(root.path()).await.unwrap();
+        store.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn deletion_intent_is_immutable_and_blocks_transcript_resurrection_until_completion() {
+    use exec_agent::storage::DeletionManifest;
+    let root = directory();
+    let store = JsonConversationStore::open(root.path()).await.unwrap();
+    let record = empty_record();
+    store.save(record.clone()).await.unwrap();
+    let manifest = DeletionManifest {
+        id: record.id.clone(),
+        parent_id: None,
+        resources: vec![ResourceRef {
+            id: new_id(),
+            call_id: String::new(),
+            kind: ResourceKind::Image,
+        }],
+    };
+    store.prepare_delete(manifest.clone()).await.unwrap();
+    assert!(store.complete_delete(record.id.clone()).await.is_err());
+    let mut changed = manifest.clone();
+    changed.resources.clear();
+    assert!(store.prepare_delete(changed).await.is_err());
+    assert!(store.save(record.clone()).await.is_err());
+    assert_eq!(
+        store.load_deletions().await.unwrap(),
+        vec![manifest.clone()]
+    );
+    store.delete(record.id.clone()).await.unwrap();
+    store.close().await.unwrap();
+    let store = JsonConversationStore::open(root.path()).await.unwrap();
+    assert_eq!(
+        store.load_deletions().await.unwrap(),
+        vec![manifest.clone()]
+    );
+    assert!(store.load().await.unwrap().is_empty());
+    assert!(store.save(record.clone()).await.is_err());
+    store.prepare_delete(manifest).await.unwrap(); // Explicit confirmation, not overwrite.
+    store.delete(record.id.clone()).await.unwrap();
+    store.complete_delete(record.id.clone()).await.unwrap();
+    assert!(store.load_deletions().await.unwrap().is_empty());
+    assert!(store.delete(record.id).await.is_err());
+    store.close().await.unwrap();
+}
+
+#[test]
+fn cleanup_ledgers_are_versioned_bounded_and_cannot_duplicate_usable_resources() {
+    let mut record = empty_record();
+    let resource = ResourceRef {
+        id: new_id(),
+        call_id: String::new(),
+        kind: ResourceKind::Image,
+    };
+    record.cleanup_resources.push(resource.clone());
+    assert!(record.validate().is_err());
+    record.version = 12;
+    record.validate().unwrap();
+    record.resources.push(resource.clone());
+    assert!(record.validate().is_err());
+    record.resources.clear();
+    record.cleanup_resources[0].call_id = "not-context".into();
+    assert!(record.validate().is_err());
+    record.cleanup_resources[0].call_id.clear();
+    record.cleanup_resources = (0..4097)
+        .map(|_| ResourceRef {
+            id: new_id(),
+            ..resource.clone()
+        })
+        .collect();
+    assert!(record.validate().is_err());
+}
+
+#[tokio::test]
 async fn completed_conversations_round_trip_continue_and_delete_durably() {
     let root = directory();
     let profile = root.path().join("profile");

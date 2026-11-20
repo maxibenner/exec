@@ -1,10 +1,122 @@
 mod support;
-
 use exec_agent::{Error, core::*, manager::AgentManager, storage::JsonConversationStore};
 use futures_util::stream;
 use std::{sync::Arc, time::Duration};
 use support::*;
 use tokio_util::sync::CancellationToken;
+
+struct ManagedImageTool(&'static str);
+#[async_trait::async_trait]
+impl Tool for ManagedImageTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.0.into(),
+            description: "Must stay in the parent".into(),
+            parameters: Default::default(),
+        }
+    }
+    async fn prepare(
+        &self,
+        _: Arguments,
+        _: ToolContext,
+    ) -> exec_agent::Result<Box<dyn PreparedTool>> {
+        panic!("child must not prepare managed image tools")
+    }
+}
+fn image_tools() -> Vec<Arc<dyn Tool>> {
+    vec![
+        Arc::new(ManagedImageTool("generate_image")),
+        Arc::new(ManagedImageTool("take_screenshot")),
+    ]
+}
+fn forbidden_image_call() -> ProviderEvent {
+    ProviderEvent::ToolCall(ToolCall {
+        id: "forbidden-image".into(),
+        name: "generate_image".into(),
+        arguments: Default::default(),
+    })
+}
+
+#[tokio::test]
+async fn delegated_children_cannot_execute_managed_image_tools_even_if_the_model_calls_them() {
+    let workspace = directory();
+    let provider = FakeProvider::new(vec![
+        response(vec![
+            delegate("delegate-one", "Review this task"),
+            ProviderEvent::Done,
+        ]),
+        response(vec![forbidden_image_call(), ProviderEvent::Done]),
+        answer(),
+        answer(),
+    ]);
+    let manager = Arc::new(AgentManager::default());
+    let parent = root(&manager, provider.clone(), image_tools(), workspace.path()).await;
+    assert_eq!(
+        finish(manager.submit(&parent.id, "Delegate".into()).await.unwrap())
+            .await
+            .state,
+        OperationState::Completed
+    );
+    let requests = provider.requests.lock().unwrap();
+    assert!(requests[0].tools.iter().any(|t| t.name == "generate_image"));
+    assert!(
+        requests[0]
+            .tools
+            .iter()
+            .any(|t| t.name == "take_screenshot")
+    );
+    assert!(
+        requests[1]
+            .tools
+            .iter()
+            .all(|t| !matches!(t.name.as_str(), "generate_image" | "take_screenshot"))
+    );
+    assert!(requests[2].messages.iter().any(|m| matches!(m, ContextMessage::Tool { call_id, outcome: ToolOutcome::Failed, .. } if call_id == "forbidden-image")));
+}
+
+#[tokio::test]
+async fn restored_children_also_exclude_managed_image_executors() {
+    let profile = directory();
+    let provider = FakeProvider::new(vec![
+        response(vec![forbidden_image_call(), ProviderEvent::Done]),
+        answer(),
+    ]);
+    let manager = AgentManager::open(
+        JsonConversationStore::open(profile.path()).await.unwrap(),
+        |_| (provider.clone(), image_tools()),
+    )
+    .await
+    .unwrap();
+    let mut child_options = options(provider.clone(), image_tools());
+    child_options.workspace = profile.path().to_string_lossy().into_owned();
+    child_options.metadata.parent = Some(SessionParent {
+        session_id: new_id(),
+        operation_id: new_id(),
+        tool_call_id: "original-delegation".into(),
+    });
+    let child = manager.create(child_options).await.unwrap();
+    manager.close().await.unwrap();
+    let manager = AgentManager::open(
+        JsonConversationStore::open(profile.path()).await.unwrap(),
+        |_| (provider.clone(), image_tools()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        finish(
+            manager
+                .submit(&child.id, "Continue explicitly".into())
+                .await
+                .unwrap()
+        )
+        .await
+        .state,
+        OperationState::Completed
+    );
+    assert!(provider.requests.lock().unwrap()[0].tools.is_empty());
+    manager.delete(&child.id).await.unwrap();
+    manager.close().await.unwrap();
+}
 
 fn delegate(id: &str, task: &str) -> ProviderEvent {
     ProviderEvent::ToolCall(ToolCall {

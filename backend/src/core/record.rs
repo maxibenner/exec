@@ -25,6 +25,9 @@ pub struct ConversationRecord {
     pub usage: Option<TokenUsage>,
     #[serde(default)]
     pub resources: Vec<ResourceRef>,
+    /// Cleared assets retain cleanup ownership without remaining usable attachments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cleanup_resources: Vec<ResourceRef>,
     #[serde(default)]
     pub configuration: Option<ConversationConfiguration>,
     pub id: String,
@@ -124,7 +127,8 @@ impl ConversationRecord {
             return Err(Error::Invalid("Invalid provider state."));
         }
         let bad = Error::Invalid("Invalid or unsupported conversation record.");
-        if !matches!(self.version, 1..=11)
+        if !matches!(self.version, 1..=12)
+            || (self.version < 12 && !self.cleanup_resources.is_empty())
             || (self.version < 11 && !self.tool_availability.is_empty())
             || self
                 .metadata
@@ -343,7 +347,11 @@ impl ConversationRecord {
             }
         }
         let mut resources = HashSet::new();
-        if self.resources.len() > 4096
+        if self.resources.len() + self.cleanup_resources.len() > 4096
+            || self
+                .cleanup_resources
+                .iter()
+                .any(|r| !valid_id(&r.id) || !r.call_id.is_empty() || !resources.insert(&r.id))
             || self.resources.iter().any(|r| {
                 !valid_id(&r.id)
                     || !(calls.contains(r.call_id.as_str())

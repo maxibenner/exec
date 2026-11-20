@@ -61,7 +61,7 @@ impl FileStore {
         }
         Ok(self.root.join(format!("{id}.json")))
     }
-    fn read(&self, id: &str) -> Result<FileRef> {
+    fn read(&self, id: &str, deleting: bool) -> Result<FileRef> {
         self.check()?;
         let file = OpenOptions::new()
             .read(true)
@@ -94,14 +94,23 @@ impl FileStore {
             return Err(invalid());
         }
         for directory in [session, asset] {
-            let m = fs::symlink_metadata(directory)?;
-            if !m.is_dir() || m.mode() & 0o077 != 0 || m.uid() != unsafe { libc::getuid() } {
-                return Err(invalid());
+            match fs::symlink_metadata(directory) {
+                Ok(m)
+                    if m.is_dir()
+                        && m.mode() & 0o077 == 0
+                        && m.uid() == unsafe { libc::getuid() } => {}
+                Err(e) if deleting && e.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err(invalid()),
             }
         }
-        let m = fs::symlink_metadata(path)?;
-        if !m.is_file() || m.len() != reference.byte_count as u64 || m.mode() & 0o077 != 0 {
-            return Err(invalid());
+        match fs::symlink_metadata(path) {
+            Ok(m)
+                if m.is_file()
+                    && m.len() == reference.byte_count as u64
+                    && m.mode() & 0o077 == 0
+                    && m.uid() == unsafe { libc::getuid() } => {}
+            Err(e) if deleting && e.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err(invalid()),
         }
         Ok(reference)
     }
@@ -113,7 +122,7 @@ impl FileStore {
         tokio::task::spawn_blocking(move || {
             let refs = ids
                 .iter()
-                .map(|id| store.read(id))
+                .map(|id| store.read(id, false))
                 .collect::<Result<Vec<_>>>()?;
             validate_message_files(&refs)?;
             Ok(refs)
@@ -225,16 +234,47 @@ impl FileStore {
         tokio::task::spawn_blocking(move || {
             store.check()?;
             for id in ids {
-                if !store.index(&id)?.try_exists()? {
-                    continue;
+                match fs::symlink_metadata(store.index(&id)?) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e.into()),
+                    Ok(_) => {}
                 }
-                let reference = store.read(&id)?;
+                // Retain the index until payload and directory removals are durable.
+                // An explicit retry may find any prefix of those removals committed.
+                let reference = store.read(&id, true)?;
                 let path = Path::new(&reference.path);
-                fs::remove_file(path)?;
+                match fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
                 let directory = path.parent().ok_or_else(invalid)?;
-                fs::remove_dir(directory)?;
-                // Other files or fork references can keep the originating session directory alive.
-                let _ = fs::remove_dir(directory.parent().ok_or_else(invalid)?);
+                match fs::remove_dir(directory) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+                let session = directory.parent().ok_or_else(invalid)?;
+                match OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+                    .open(session)
+                {
+                    Ok(directory) => directory.sync_all()?,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+                // Other assets can keep the originating session directory alive.
+                match fs::remove_dir(session) {
+                    Ok(()) => {}
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                        ) => {}
+                    Err(e) => return Err(e.into()),
+                }
+                File::open(&store.root)?.sync_all()?;
                 fs::remove_file(store.index(&id)?)?;
             }
             File::open(&store.root)?.sync_all()?;

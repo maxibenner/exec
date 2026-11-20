@@ -195,6 +195,20 @@ pub struct Conversation {
 /// Keep a conversation from starting work across a durable reset.
 /// Dropping also wakes observers waiting for an in-flight mutation to settle.
 pub(crate) struct IdleReservation(Arc<Conversation>, bool);
+impl IdleReservation {
+    /// Atomically replace the reservation with disposal after active work settles.
+    pub(crate) fn dispose(mut self) -> Result<()> {
+        let mut state = self.0.state();
+        if state.active.is_some() {
+            return Err(Error::Busy);
+        }
+        state.disposed = true;
+        state.updating = false;
+        self.1 = false;
+        self.0.publish_snapshot(&state);
+        Ok(())
+    }
+}
 impl Drop for IdleReservation {
     fn drop(&mut self) {
         if !self.1 {
@@ -228,6 +242,7 @@ impl Conversation {
             ConversationRecord {
                 version: 9,
                 resources: vec![],
+                cleanup_resources: vec![],
                 provider_state: None,
                 usage: None,
                 metadata: SessionMetadata {
@@ -466,6 +481,17 @@ impl Conversation {
     pub fn resources(&self) -> Vec<ResourceRef> {
         self.state().record.resources.clone()
     }
+    /// Includes hidden cleanup ownership retained by clear, not just usable assets.
+    pub(crate) fn owned_resources(&self) -> Vec<ResourceRef> {
+        let state = self.state();
+        state
+            .record
+            .resources
+            .iter()
+            .chain(&state.record.cleanup_resources)
+            .cloned()
+            .collect()
+    }
     pub fn record(&self) -> ConversationRecord {
         self.state().record.clone()
     }
@@ -574,6 +600,16 @@ impl Conversation {
         state.updating = true;
         Ok(IdleReservation(self.clone(), true))
     }
+    /// Deletion can settle active work and explicitly retry a disposed session,
+    /// including one whose last storage acknowledgement failed.
+    pub(crate) fn reserve_delete(self: &Arc<Self>) -> Result<IdleReservation> {
+        let mut state = self.state();
+        if state.updating {
+            return Err(Error::Busy);
+        }
+        state.updating = true;
+        Ok(IdleReservation(self.clone(), true))
+    }
     pub(crate) async fn settle_active(&self) {
         let (_, mut events) = self.subscribe();
         while self.state().active.is_some() {
@@ -597,8 +633,13 @@ impl Conversation {
                 record.executing_tool_id = None;
                 record.provider_state = None;
                 record.usage = None;
-                // Drop ownership only; forks/other sessions may still use these files.
-                record.resources.clear();
+                // Hide cleared attachments, but durably retain their cleanup ownership.
+                // Neither shared forks nor unreadable records permit eager asset deletion.
+                for mut resource in record.resources.drain(..) {
+                    resource.call_id.clear();
+                    record.cleanup_resources.push(resource);
+                }
+                record.version = record.version.max(12);
                 record.metadata.activity_at = SessionMetadata::activity();
                 Ok(())
             },
@@ -795,6 +836,8 @@ impl Conversation {
             return Err(Error::Invalid("Conversation is closed."));
         }
         let mut record = state.record.clone();
+        // A fork inherits usable context, not the source's cleared cleanup ledger.
+        record.cleanup_resources.clear();
         record.pending_input.clear();
         if state.active.is_some() {
             // Snapshot only completed transcript pieces, never live work.
@@ -1316,7 +1359,7 @@ impl Conversation {
             if state.storage_error.is_some() {
                 return Err(Error::Storage);
             }
-            if state.record.resources.len() >= 4096 {
+            if state.record.resources.len() + state.record.cleanup_resources.len() >= 4096 {
                 return Err(Error::Invalid("Too many conversation resources."));
             }
             state.record.resources.push(resource);
@@ -1932,8 +1975,8 @@ impl Conversation {
                         if asks_approval { prepared.approval_granted()?; }
                         {
                             let resources = prepared.resources(); let mut s = self.state();
-                            let mut ids: HashSet<_> = s.record.resources.iter().map(|r|r.id.clone()).collect();
-                            if s.record.resources.len()+resources.len()>4096 || resources.iter().any(|r|!valid_id(&r.id)||r.call_id!=call.id||!ids.insert(r.id.clone())) { return Err(Error::Internal); }
+                            let mut ids: HashSet<_> = s.record.resources.iter().chain(&s.record.cleanup_resources).map(|r|r.id.clone()).collect();
+                            if s.record.resources.len()+s.record.cleanup_resources.len()+resources.len()>4096 || resources.iter().any(|r|!valid_id(&r.id)||r.call_id!=call.id||!ids.insert(r.id.clone())) { return Err(Error::Internal); }
                             s.record.resources.extend(resources);
                             s.record.executing_tool_id=Some(call.id.clone());
                         }
