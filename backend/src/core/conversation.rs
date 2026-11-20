@@ -1638,13 +1638,13 @@ impl Conversation {
         for step in 0..max_steps {
             check_cancel(cancel)?;
             self.compact_history(cancel, true).await?;
-            let calls = self.respond(cancel).await?;
+            let (calls, needs_continuation) = self.respond(cancel).await?;
             self.checkpoint(None).await?;
             check_cancel(cancel)?;
             self.validate_tool_batch(&calls, step + 1 < max_steps)?;
             self.execute_calls(&calls, cancel).await?;
             check_cancel(cancel)?;
-            if calls.is_empty() {
+            if calls.is_empty() && !needs_continuation {
                 let mut s = self.state();
                 if s.record.pending_input.is_empty() {
                     // Linearize settlement against steering under the same lock.
@@ -1657,7 +1657,7 @@ impl Conversation {
             "Agent step limit reached. No further request was sent.",
         ))
     }
-    async fn respond(&self, cancel: &CancellationToken) -> Result<Vec<ToolCall>> {
+    async fn respond(&self, cancel: &CancellationToken) -> Result<(Vec<ToolCall>, bool)> {
         let (mut request, index, mut known) = {
             let mut s = self.state();
             // Include input accepted during compaction too. This lock establishes
@@ -1718,7 +1718,7 @@ impl Conversation {
             )
         };
         let mut metadata = None;
-        let response: Result<Vec<ToolCall>> = async {
+        let response: Result<(Vec<ToolCall>, bool)> = async {
             self.checkpoint(None).await?;
             check_cancel(cancel)?;
             self.diagnostic(DiagnosticEvent::ResponseStarted, Some(index), None)
@@ -1791,9 +1791,9 @@ impl Conversation {
                         }
                         metadata = Some((state, usage));
                     }
-                    ProviderEvent::Done => {
+                    end @ (ProviderEvent::Done | ProviderEvent::Continue) => {
                         check_cancel(cancel)?;
-                        return Ok(calls);
+                        return Ok((calls, matches!(end, ProviderEvent::Continue)));
                     }
                 }
             }
@@ -1817,7 +1817,7 @@ impl Conversation {
                 unreachable!()
             };
             match &response {
-                Ok(batch) => {
+                Ok((batch, _)) => {
                     *calls = batch.clone();
                     *status = MessageStatus::Completed;
                 }
