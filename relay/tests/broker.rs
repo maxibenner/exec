@@ -231,24 +231,35 @@ async fn oversized_serialized_client_envelopes_close_only_the_offender() {
 }
 
 #[test]
-fn production_admission_is_explicit_and_development_is_loopback_only() {
+fn admission_is_open_by_default_and_validates_optional_allowlists() {
     use exec_relay::HostAdmission;
     let loopback = "127.0.0.1".parse().unwrap();
     for bind in [
         loopback,
+        "::1".parse().unwrap(),
         "0.0.0.0".parse().unwrap(),
+        "::".parse().unwrap(),
         "192.168.1.2".parse().unwrap(),
+        "203.0.113.1".parse().unwrap(),
     ] {
-        assert!(HostAdmission::from_config(bind, None, false).is_err());
+        for routes in [None, Some(""), Some(" \t\n ")] {
+            assert!(HostAdmission::from_config(bind, routes, false).is_ok());
+        }
     }
     for invalid in [
-        "",
+        ",",
         "not-a-hash",
         &"A".repeat(64),
         &format!("{},", "a".repeat(64)),
     ] {
         assert!(HostAdmission::from_config(loopback, Some(invalid), false).is_err());
     }
+    let too_many = (0..65)
+        .map(|i| format!("{i:064x}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert!(HostAdmission::from_config(loopback, Some(&too_many), false).is_err());
+    // The legacy development flag retains its explicit loopback-only checks.
     assert!(HostAdmission::from_config(loopback, None, true).is_ok());
     assert!(HostAdmission::from_config("::1".parse().unwrap(), None, true).is_ok());
     assert!(HostAdmission::from_config("0.0.0.0".parse().unwrap(), None, true).is_err());
@@ -257,13 +268,58 @@ fn production_admission_is_explicit_and_development_is_loopback_only() {
 }
 
 #[tokio::test]
-async fn self_issued_tokens_cannot_reserve_production_host_slots() {
+async fn absent_or_blank_allowlists_admit_arbitrary_hosts_but_still_require_tokens() {
+    for routes in [None, Some(""), Some(" \t\n ")] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let admission =
+            exec_relay::HostAdmission::from_config(address.ip(), routes, false).unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, exec_relay::router(admission))
+                .await
+                .unwrap();
+        });
+        let error = connect_async(host_request(address, "not-a-token"))
+            .await
+            .unwrap_err();
+        let tokio_tungstenite::tungstenite::Error::Http(response) = error else {
+            panic!("expected credential rejection")
+        };
+        assert_eq!(response.status(), 401);
+        let mut hosts = Vec::new();
+        for token in ["a".repeat(64), "b".repeat(64)] {
+            let (mut host, _) = connect_async(host_request(address, &token)).await.unwrap();
+            assert!(matches!(
+                host.next().await.unwrap().unwrap(),
+                Message::Ping(_)
+            ));
+            hosts.push(host);
+        }
+        let error = connect_async(host_request(address, &"a".repeat(64)))
+            .await
+            .unwrap_err();
+        let tokio_tungstenite::tungstenite::Error::Http(response) = error else {
+            panic!("expected duplicate host rejection")
+        };
+        assert_eq!(response.status(), 409);
+        for mut host in hosts {
+            host.close(None).await.unwrap();
+        }
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn unlisted_tokens_cannot_reserve_allowlisted_host_slots() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let token = "a".repeat(64);
+    let other_token = "b".repeat(64);
     let route = format!("{:x}", Sha256::digest(token.as_bytes()));
+    let other_route = format!("{:x}", Sha256::digest(other_token.as_bytes()));
+    let routes = format!(" {route}, \n{other_route} ");
     let admission =
-        exec_relay::HostAdmission::from_config(address.ip(), Some(&route), false).unwrap();
+        exec_relay::HostAdmission::from_config(address.ip(), Some(&routes), false).unwrap();
     let server = tokio::spawn(async move {
         axum::serve(listener, exec_relay::router(admission))
             .await
@@ -278,16 +334,19 @@ async fn self_issued_tokens_cannot_reserve_production_host_slots() {
         };
         assert_eq!(response.status(), 403);
     }
-    let (mut host, _) = connect_async(host_request(address, &token)).await.unwrap();
-    assert!(matches!(
-        host.next().await.unwrap().unwrap(),
-        Message::Ping(_)
-    ));
-    let (mut client, _) = connect_async(format!("ws://{address}/v1/client/{route}"))
-        .await
-        .unwrap();
-    assert_eq!(text(&mut host).await["kind"], "open");
-    client.close(None).await.unwrap();
-    host.close(None).await.unwrap();
+    for token in [&token, &other_token] {
+        let route = format!("{:x}", Sha256::digest(token.as_bytes()));
+        let (mut host, _) = connect_async(host_request(address, token)).await.unwrap();
+        assert!(matches!(
+            host.next().await.unwrap().unwrap(),
+            Message::Ping(_)
+        ));
+        let (mut client, _) = connect_async(format!("ws://{address}/v1/client/{route}"))
+            .await
+            .unwrap();
+        assert_eq!(text(&mut host).await["kind"], "open");
+        client.close(None).await.unwrap();
+        host.close(None).await.unwrap();
+    }
     server.abort();
 }

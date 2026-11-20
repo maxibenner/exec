@@ -29,11 +29,10 @@ struct Host {
     sender: Option<Outbox>,
     clients: HashMap<String, Outbox>,
 }
-/// Registration policy is independent of possession of a self-issued host token.
-/// Only an explicitly selected loopback development listener may admit any route.
+/// Registration accepts any host unless a route allowlist is configured.
+/// A private host token is still required to register and own its route.
 pub struct HostAdmission {
-    allowed_routes: HashSet<String>,
-    local_development: bool,
+    allowed_routes: Option<HashSet<String>>,
 }
 impl HostAdmission {
     pub fn from_config(
@@ -41,19 +40,17 @@ impl HostAdmission {
         routes: Option<&str>,
         local_development: bool,
     ) -> Result<Self, &'static str> {
-        if local_development {
-            if !bind.is_loopback() || routes.is_some() {
-                return Err(
-                    "Development admission requires a loopback bind and no route allowlist.",
-                );
-            }
-            return Ok(Self {
-                allowed_routes: HashSet::new(),
-                local_development: true,
-            });
+        let routes = routes.map(str::trim).filter(|routes| !routes.is_empty());
+        // Preserve the legacy development flag's checks; it is no longer needed
+        // for unrestricted admission on loopback or other listeners.
+        if local_development && (!bind.is_loopback() || routes.is_some()) {
+            return Err("Development admission requires a loopback bind and no route allowlist.");
         }
-        let routes = routes
-            .ok_or("Set EXEC_RELAY_ALLOWED_ROUTES, or explicitly enable loopback development.")?;
+        let Some(routes) = routes else {
+            return Ok(Self {
+                allowed_routes: None,
+            });
+        };
         let mut allowed_routes = HashSet::new();
         for route in routes.split(',').map(str::trim) {
             if route.len() != 64
@@ -71,12 +68,13 @@ impl HostAdmission {
             return Err("The route allowlist exceeds the host limit.");
         }
         Ok(Self {
-            allowed_routes,
-            local_development: false,
+            allowed_routes: Some(allowed_routes),
         })
     }
     fn permits(&self, route: &str) -> bool {
-        self.local_development || self.allowed_routes.contains(route)
+        self.allowed_routes
+            .as_ref()
+            .is_none_or(|routes| routes.contains(route))
     }
 }
 pub struct Broker {

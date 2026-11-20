@@ -29,8 +29,8 @@ services:
     build: ./relay
     environment:
       EXEC_RELAY_BIND: 0.0.0.0:8787
-      # Empty permits private agent bootstrap with --no-deps; relay startup
-      # still fails closed until route hashes are configured (docs/api.md).
+      # Unset/blank allows any backend; set route hashes to restrict registration.
+      # See docs/api.md for private bootstrap with a restricted relay.
       EXEC_RELAY_ALLOWED_ROUTES: ${EXEC_RELAY_ALLOWED_ROUTES:-}
     init: true
     read_only: true

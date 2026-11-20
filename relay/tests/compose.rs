@@ -7,23 +7,28 @@ const COMPOSE: &str = include_str!("../../compose.yaml");
 const ROUTE: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 #[test]
-fn compose_allows_private_bootstrap_but_requires_routes_for_relay_startup() {
-    // Keep bootstrap renderable without admitting arbitrary hosts. This also
-    // runs on machines without Docker; the rendered check below is stronger.
+fn compose_uses_open_admission_unless_routes_are_configured() {
+    // This also runs on machines without Docker; the rendered check below is stronger.
     assert!(COMPOSE.contains("EXEC_RELAY_BIND: 0.0.0.0:8787"));
     assert!(COMPOSE.contains("EXEC_RELAY_ALLOWED_ROUTES: ${EXEC_RELAY_ALLOWED_ROUTES:-}"));
     assert!(!COMPOSE.contains("EXEC_RELAY_LOCAL_DEVELOPMENT"));
     let bind = "0.0.0.0".parse().unwrap();
-    for routes in [None, Some("")] {
-        assert!(HostAdmission::from_config(bind, routes, false).is_err());
+    for routes in [None, Some(""), Some(" \t "), Some(ROUTE)] {
+        assert!(HostAdmission::from_config(bind, routes, false).is_ok());
     }
-    assert!(HostAdmission::from_config(bind, Some(ROUTE), false).is_ok());
+    assert!(HostAdmission::from_config(bind, Some("not-a-route"), false).is_err());
 }
 
 #[test]
 fn rendered_compose_forwards_only_public_relay_configuration() {
     let compose_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../compose.yaml");
-    for routes in [None, Some(""), Some(ROUTE)] {
+    for routes in [
+        None,
+        Some(""),
+        Some(" \t "),
+        Some(ROUTE),
+        Some("not-a-route"),
+    ] {
         let mut command = Command::new("docker");
         command
             .env_clear()
@@ -81,7 +86,7 @@ fn rendered_compose_forwards_only_public_relay_configuration() {
         // This is the actual startup validator, applied to the rendered values.
         assert_eq!(
             HostAdmission::from_config(bind.ip(), Some(forwarded), false).is_ok(),
-            routes == Some(ROUTE)
+            routes != Some("not-a-route")
         );
         assert!(config["services"]["agent"]["ports"].is_null());
         assert!(config["services"]["relay"]["ports"].is_null());

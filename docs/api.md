@@ -49,9 +49,14 @@ reading or changing the default file. To select a different file, set
 
 From the repository root, the supplied `compose.yaml` persists the private profile
 and workspaces in separate volumes and exposes only the relay's TLS reverse proxy.
-Production relay admission requires `EXEC_RELAY_ALLOWED_ROUTES`; an unset/empty
-allowlist still renders but the relay refuses startup. Bootstrap the private agent
-first, bypassing the agent → proxy → relay startup dependencies:
+Relay registration is open to any backend when `EXEC_RELAY_ALLOWED_ROUTES` is unset,
+empty or whitespace-only; host-token validation, device pairing and encryption
+remain required. For this default mode, set `EXEC_RELAY_DOMAIN` and run
+`docker compose up -d --build`, then configure remote access using the admin commands
+below. A nonempty allowlist restricts registration to its route hashes.
+
+To configure a restricted relay before any backend can register, bootstrap the
+private agent first, bypassing the agent → proxy → relay startup dependencies:
 
 ```sh
 export EXEC_RELAY_DOMAIN="relay.example.com" # Your public relay DNS hostname.
@@ -82,9 +87,11 @@ docker compose exec -T agent exec-agent-admin remote status
 docker compose exec agent exec-agent-admin remote invite
 ```
 
-For multiple agents, use comma-separated route hashes (at most 64). Persist the
-hostname and route allowlist in deployment configuration, **never** the host token
-or invitation secret in Compose environment, files, logs or command arguments.
+For multiple agents, use comma-separated route hashes (at most 64). Malformed
+nonempty lists fail startup; clearing the entire list reopens registration. Persist
+the hostname and optional route allowlist in deployment configuration, **never**
+the host token or invitation secret in Compose environment, files, logs or command
+arguments.
 After changing the allowlist, use `docker compose up -d --force-recreate relay`;
 `docker compose restart` alone does not replace container environment. The agent
 reconnects its transport without replaying API commands. Public DNS/TLS and the
