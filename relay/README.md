@@ -46,6 +46,8 @@ docker run -d --name exec-relay --restart unless-stopped \
 
 The container runs as UID 10001 and binds `0.0.0.0:8787` inside the container, so an allowlist is mandatory even when its published port is host-loopback-only.
 
+For the repository-root `compose.yaml`, follow the [private agent bootstrap](../docs/api.md#token-files-containers-and-local-administration): set `EXEC_RELAY_DOMAIN`, start only `agent` with `docker compose up -d --build --no-deps --wait agent`, then use `exec-agent-admin remote configure --relay "wss://$EXEC_RELAY_DOMAIN"` before `remote invite`. Invitation output requires an attached private terminal, not `-T`, redirection or a pipe. Copy only its public `route` hash to `EXEC_RELAY_ALLOWED_ROUTES`, then start `relay proxy`. The Compose file forwards that allowlist but intentionally permits an empty value for agent-only bootstrap; the relay itself still fails closed. Never put the host registration token or invitation secret in Compose configuration/environment/logs. To apply an updated allowlist, recreate the relay container (`docker compose up -d --force-recreate relay`); a plain Compose restart keeps the old environment.
+
 Reverse proxy setup:
 
 - Terminate valid public TLS; configure `wss://your-relay-host` in Exec.
@@ -64,4 +66,4 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-All relay tests use loopback sockets and synthetic tokens. They cover admission/configuration rejection, attempts to exhaust host slots with self-issued tokens, exact serialized size boundaries, JSON-escaping expansion and isolation of an oversize sender from a second client.
+All relay tests use loopback sockets and synthetic tokens. They cover admission/configuration rejection, attempts to exhaust host slots with self-issued tokens, exact serialized size boundaries, JSON-escaping expansion and isolation of an oversize sender from a second client. `cargo test --locked --test compose` checks the static Compose/bootstrap contract and, when the Docker CLI/Compose plugin is installed, renders unset, empty and synthetic allowlists with `docker compose config --format json`, then applies the real relay startup validator. Rendering needs no daemon, builds, registry access or credentials. Without the Docker CLI only the render portion is skipped; an installed but failing Compose command is reported, not retried. These checks do not verify Linux containers or public DNS/TLS.

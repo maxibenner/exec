@@ -6,6 +6,7 @@ use tokio_tungstenite::{WebSocketStream, accept_async};
 struct Fixture {
     directory: tempfile::TempDir,
     remote: Arc<RemoteAccess>,
+    host_key: String,
     socket: WebSocketStream<tokio::net::TcpStream>,
     stop: CancellationToken,
     runner: tokio::task::JoinHandle<()>,
@@ -23,6 +24,7 @@ impl Fixture {
             })
             .await
             .unwrap();
+        let host_key = crypto::public_key(&remote.state.lock().await.config.private_key).unwrap();
         let stop = CancellationToken::new();
         let runner = tokio::spawn(remote.clone().run(Weak::new(), stop.clone()));
         let (socket, _) = listener.accept().await.unwrap();
@@ -30,6 +32,7 @@ impl Fixture {
         Self {
             directory,
             remote,
+            host_key,
             socket,
             stop,
             runner,
@@ -82,8 +85,10 @@ impl Fixture {
         invitation: Option<&str>,
     ) -> String {
         let public = crypto::public_key(private).unwrap();
-        let host = crypto::public_key(&self.remote.state.lock().await.config.private_key).unwrap();
-        let (enc, mut sender) = crypto::sender(private, &host, challenge, "client").unwrap();
+        // Invitation-pinned public identity remains available to peers even
+        // while the host's private configuration mutex is held by persistence.
+        let (enc, mut sender) =
+            crypto::sender(private, &self.host_key, challenge, "client").unwrap();
         let ciphertext = crypto::seal(
             &mut sender,
             &serde_json::to_vec(&json!({
@@ -109,6 +114,42 @@ impl Fixture {
         let pause = Arc::new(WritePause::default());
         *self.remote.write_pause.lock().unwrap() = Some(pause.clone());
         pause
+    }
+    async fn wait_transactions(&self, count: usize) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while self.remote.transactions.len() != count {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    async fn cycle_hellos_behind_paused_pairing(&mut self, peer: &str, invitation: Option<&str>) {
+        self.send("close", "pairing", String::new()).await;
+        for count in 2..=MAX_CLIENTS {
+            let id = format!("pending-{count}");
+            let challenge = self.open(&id).await;
+            self.hello(&id, peer, &challenge, invitation).await;
+            self.wait_transactions(count).await;
+            assert_eq!(
+                self.remote.authorization_slots.available_permits(),
+                MAX_CLIENTS - count
+            );
+            self.send("close", &id, String::new()).await;
+        }
+        // Each new hello reaches authorization after the previous live client
+        // has disconnected. None may spawn a transaction or wait for the mutex.
+        for index in 0..MAX_CLIENTS * 3 {
+            let id = format!("excess-{index}");
+            let challenge = self.open(&id).await;
+            self.hello(&id, peer, &challenge, invitation).await;
+            let closed = self.frame().await;
+            assert_eq!(closed.kind, "close");
+            assert_eq!(closed.client, id);
+            assert_eq!(self.remote.transactions.len(), MAX_CLIENTS);
+            assert_eq!(self.remote.authorization_slots.available_permits(), 0);
+            assert!(self.remote.state.try_lock().is_err());
+        }
     }
     fn pending_device(&self) -> String {
         let temporary = std::fs::read_dir(self.directory.path())
@@ -202,7 +243,7 @@ async fn client_queue_overflow_closes_only_that_client_and_aborts_its_buffer() {
 }
 
 #[tokio::test]
-async fn disconnected_pairing_settles_before_later_revocation_and_configuration() {
+async fn disconnected_hellos_are_bounded_until_pairing_settles_before_revocation() {
     let mut fixture = Fixture::new().await;
     let (peer, public) = crypto::keypair();
     let invitation = fixture.remote.invite().await.unwrap();
@@ -215,6 +256,9 @@ async fn disconnected_pairing_settles_before_later_revocation_and_configuration(
         .await
         .unwrap();
     let device = fixture.pending_device();
+    fixture
+        .cycle_hellos_behind_paused_pairing(&peer, invitation["secret"].as_str())
+        .await;
     fixture.socket.close(None).await.unwrap();
     // Wait until the connector has actually dropped its socket and JoinSet.
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -255,6 +299,11 @@ async fn disconnected_pairing_settles_before_later_revocation_and_configuration(
     pause.release();
     revoke.await.unwrap().unwrap();
     configure.await.unwrap().unwrap();
+    fixture.wait_transactions(0).await;
+    assert_eq!(
+        fixture.remote.authorization_slots.available_permits(),
+        MAX_CLIENTS
+    );
     assert!(!fixture.remote.device_exists(&device).await);
     assert!(fixture.remote.state.lock().await.config.devices.is_empty());
     assert_eq!(fixture.remote.status().await["invitationActive"], false);
@@ -295,6 +344,9 @@ async fn shutdown_waits_for_accepted_pairing_write_and_memory_settlement() {
     tokio::time::timeout(Duration::from_secs(3), pause.entered.notified())
         .await
         .unwrap();
+    fixture
+        .cycle_hellos_behind_paused_pairing(&peer, invitation["secret"].as_str())
+        .await;
     fixture.stop.cancel();
     assert!(
         tokio::time::timeout(Duration::from_millis(50), &mut fixture.runner)
@@ -306,6 +358,15 @@ async fn shutdown_waits_for_accepted_pairing_write_and_memory_settlement() {
         .await
         .unwrap()
         .unwrap();
+    assert!(fixture.remote.transactions.is_empty());
+    assert_eq!(
+        fixture.remote.authorization_slots.available_permits(),
+        MAX_CLIENTS
+    );
+    assert_eq!(
+        fixture.remote.status().await["connectionStatus"],
+        "disconnected"
+    );
     let restored = RemoteAccess::load(fixture.directory.path()).await.unwrap();
     let id = restored
         .authorize_device(&public, None, "restored")

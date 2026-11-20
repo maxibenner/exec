@@ -11,7 +11,9 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, Semaphore, watch};
+
+const MAX_CLIENTS: usize = 4;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +56,8 @@ pub(crate) struct RemoteAccess {
     // Socket tasks only await these transactions; dropping that waiter cannot
     // release the state lock while its blocking atomic write is still running.
     transactions: tokio_util::task::TaskTracker,
+    // Disconnected hellos must not accumulate tasks behind a stalled write.
+    authorization_slots: Arc<Semaphore>,
     #[cfg(test)]
     write_pause: std::sync::Mutex<Option<Arc<WritePause>>>,
 }
@@ -150,6 +154,7 @@ impl RemoteAccess {
             }),
             revision,
             transactions: tokio_util::task::TaskTracker::new(),
+            authorization_slots: Arc::new(Semaphore::new(MAX_CLIENTS)),
             #[cfg(test)]
             write_pause: std::sync::Mutex::new(None),
         }))
@@ -254,12 +259,20 @@ impl RemoteAccess {
         invitation: Option<&str>,
         name: &str,
     ) -> Result<String> {
+        // Admit before spawning or waiting for state. The transaction, not its
+        // socket waiter, owns capacity until validation/persistence has settled.
+        let permit = self
+            .authorization_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::Busy)?;
         let remote = self.clone();
         let public = public.to_owned();
         let invitation = invitation.map(str::to_owned);
         let name = name.to_owned();
         self.transactions
             .spawn(async move {
+                let _permit = permit;
                 remote
                     .accept_device(&public, invitation.as_deref(), &name)
                     .await

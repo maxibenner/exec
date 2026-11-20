@@ -212,7 +212,7 @@ impl RemoteAccess {
                             let frame: Envelope = serde_json::from_str(&text).map_err(|_| Error::Internal)?;
                             if frame.client.len() > 64 { return Err(Error::Internal); }
                             match frame.kind.as_str() {
-                                "open" if clients.len() < 4 && !clients.contains_key(&frame.client) => {
+                                "open" if clients.len() < MAX_CLIENTS && !clients.contains_key(&frame.client) => {
                                     let (tx, rx) = mpsc::channel(4);
                                     let remote = self.clone(); let host = host.clone(); let out = out.clone(); let key = config.private_key.clone();
                                     let id = frame.client.clone();
