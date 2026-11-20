@@ -49,6 +49,11 @@ struct SessionSidebar: View {
         open(id)
     }
 
+    private func beginRenaming(_ session: SessionSummary) {
+        guard store.canRenameSession(session.id) else { return }
+        renameID = session.id; renameTitle = session.title; renaming = true
+    }
+
     var body: some View {
         let sessions = groups
         let shortcutIDs = displayedGroups.prefix(9).map(\.id)
@@ -58,10 +63,7 @@ struct SessionSidebar: View {
                 let session = group.session
                 VStack(alignment: .leading, spacing: 0) {
                     SessionRow(session: session, store: store,
-                               rename: {
-                                   guard store.canRenameSession(session.id) else { return }
-                                   renameID = session.id; renameTitle = session.title; renaming = true
-                               }, delete: { delete(session) })
+                               rename: { beginRenaming(session) }, delete: { delete(session) })
                         .onTapGesture { activate(session.id) }
                         .accessibilityAction { activate(session.id) }
                         .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
@@ -97,6 +99,10 @@ struct SessionSidebar: View {
                         .contentShape(Rectangle())
                         .onTapGesture { activate(session.id) }
                         .accessibilityAction { activate(session.id) }
+                        .overlay {
+                            ParentSessionContextMenu(session: session, store: store,
+                                rename: { beginRenaming(session) }, delete: { delete(session) })
+                        }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
@@ -257,6 +263,22 @@ private struct SidebarProgressSpinner: NSViewRepresentable {
     }
 }
 
+/// Reuse parent actions on disjoint title/footer surfaces, never over child rows.
+private struct ParentSessionContextMenu: View {
+    let session: SessionSummary
+    let store: ChatLibrary
+    let rename: () -> Void
+    let delete: () -> Void
+
+    var body: some View {
+        SessionContextMenu(items: [
+            .action("Rename…", enabled: store.canRenameSession(session.id), perform: rename),
+            .separator,
+            .action("Delete Session", enabled: store.canDeleteSession(session.id), perform: delete)
+        ])
+    }
+}
+
 struct SessionRow: View {
     let session: SessionSummary
     let store: ChatLibrary
@@ -291,11 +313,7 @@ struct SessionRow: View {
         .padding(.bottom, 4)
         .contentShape(Rectangle())
         .overlay {
-            SessionContextMenu(items: [
-                .action("Rename…", enabled: store.canRenameSession(session.id), perform: rename),
-                .separator,
-                .action("Delete Session", enabled: store.canDeleteSession(session.id), perform: delete)
-            ])
+            ParentSessionContextMenu(session: session, store: store, rename: rename, delete: delete)
         }
         .accessibilityAction(named: "Rename Conversation") { if store.canRenameSession(session.id) { rename() } }
         .accessibilityAction(named: "Delete Session") { if store.canDeleteSession(session.id) { delete() } }

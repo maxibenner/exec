@@ -42,6 +42,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
                 }),
                 ("Composer stale snapshots cannot cross drafts or sessions", {
                     try await ComposerEventTests().changedDraftAndSessionDoNotReuseSnapshot()
+                }),
+                ("Sidebar context clicks cover parents without stealing child menus", {
+                    try await SidebarContextMenuTests().parentAndChildHitTargetsStayScoped()
                 })
             ]
             var failures = 0

@@ -290,15 +290,21 @@ private actor SessionReorderTransport: AgentTransport {
             }
         }
         func frame(_ view: NSView) -> CGRect { view.convert(view.bounds, to: host) }
-        guard let initialParentMenu = menus(in: parentRow).first(where: isParentMenu) else {
-            throw CheckFailure(description: "Missing native parent menu")
-        }
-        let initialParentHitFrame = frame(initialParentMenu)
         func topInParentRow(_ view: NSView) -> CGFloat {
             let rect = view.convert(view.bounds, to: parentRow)
             return parentRow.isFlipped ? rect.minY : parentRow.bounds.maxY - rect.maxY
         }
+        func parentMenus(in row: NSView) -> [SessionContextMenu.MenuView] {
+            menus(in: row).filter(isParentMenu).sorted { topInParentRow($0) < topInParentRow($1) }
+        }
+        let initialParentMenus = parentMenus(in: parentRow)
+        guard initialParentMenus.count == 2, let initialParentMenu = initialParentMenus.first,
+              let initialFooterMenu = initialParentMenus.last else {
+            throw CheckFailure(description: "Missing native parent title/footer menus")
+        }
+        let initialParentHitFrame = frame(initialParentMenu)
         let initialParentTop = topInParentRow(initialParentMenu)
+        let initialFooterTop = topInParentRow(initialFooterMenu)
         let children = try (0..<2).map { index -> AgentJSON in
             guard case .object(var fields) = try AgentIntegrationTests.fixture(state: "running"),
                   case .object(var metadata) = fields["metadata"] else { throw CheckFailure(description: "Invalid fixture") }
@@ -341,11 +347,15 @@ private actor SessionReorderTransport: AgentTransport {
             try expect(abs(table.rect(ofRow: 1).minY - initialNeighborY - heightDelta) < 1)
             try expect(library.sidebarSelectionID == parentID)
             let rowMenus = menus(in: parentRow)
-            try expect(rowMenus.count == count + 1)
-            guard let parentMenu = rowMenus.first(where: isParentMenu) else {
-                throw CheckFailure(description: "Missing parent hit area")
+            try expect(rowMenus.count == count + 2)
+            let parentRegions = parentMenus(in: parentRow)
+            guard parentRegions.count == 2, let parentMenu = parentRegions.first, let footerMenu = parentRegions.last else {
+                throw CheckFailure(description: "Missing parent title/footer hit areas")
             }
             let parentHitFrame = frame(parentMenu)
+            try expect(abs(topInParentRow(footerMenu) - initialFooterTop - heightDelta) < 0.5)
+            try expect(abs(frame(footerMenu).minX - parentHitFrame.minX) < 0.1)
+            try expect(abs(frame(footerMenu).width - parentHitFrame.width) < 0.1)
             try expect(abs(parentHitFrame.minX - initialParentHitFrame.minX) < 0.1)
             // Compare row-local top edges, not screen Y (List can scroll to keep
             // its contents in view as the native family's height changes).
