@@ -3,10 +3,11 @@ import AppKit
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var store: ChatLibrary?
     private var waitingToQuit = false
+    private var readyToQuit = false
     var shutdownBackend: (@MainActor () async -> Void)?
 
-    // Keep presentation and the final AppKit reply injectable so tests never quit
-    // the test process or interact with the user's windows.
+    // Keep presentation and the final AppKit request injectable so unit tests
+    // never quit their host process or interact with the user's windows.
     var confirmQuit: @MainActor (NSAlert, NSWindow?) async -> NSApplication.ModalResponse = { alert, window in
         if let window, window.isVisible, window.attachedSheet == nil {
             return await withCheckedContinuation { continuation in
@@ -15,17 +16,18 @@ import AppKit
         }
         return alert.runModal()
     }
-    var replyToTermination: (NSApplication, Bool) -> Void = { application, shouldQuit in
-        application.reply(toApplicationShouldTerminate: shouldQuit)
+    var finishQuitRequest: (NSApplication, Bool) -> Void = { application, shouldQuit in
+        if shouldQuit { application.terminate(nil) }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if waitingToQuit { return .terminateLater }
+        if readyToQuit { return .terminateNow }
+        if waitingToQuit { return .terminateCancel }
         guard let store, store.hasRunningOperations || store.hasUnsavedChanges || store.hasUnsentDrafts else {
             guard let shutdownBackend else { return .terminateNow }
             waitingToQuit = true
-            Task { await shutdownBackend(); replyToTermination(sender, true) }
-            return .terminateLater
+            Task { await shutdownBackend(); finishQuit(sender) }
+            return .terminateCancel
         }
         let alert = NSAlert()
         alert.messageText = "Quit Exec?"
@@ -43,15 +45,13 @@ import AppKit
         alert.buttons[0].keyEquivalent = ""
         alert.buttons[1].keyEquivalent = "\r"
 
-        // Mark the entire confirmation as pending BEFORE presenting it. Returning
-        // to AppKit first avoids a nested termination callback from a modal loop;
-        // repeated Quit/Close requests share this one decision instead of stacking alerts.
+        // Reserve the whole decision before yielding; repeated Quit requests
+        // must neither stack alerts nor start a second shutdown.
         waitingToQuit = true
         Task {
             let response = await confirmQuit(alert, sender.keyWindow ?? sender.mainWindow)
             guard response == .alertFirstButtonReturn else {
-                // Keep the guard set while AppKit unwinds the cancelled request.
-                replyToTermination(sender, false)
+                finishQuitRequest(sender, false)
                 waitingToQuit = false
                 return
             }
@@ -62,8 +62,16 @@ import AppKit
             } else {
                 while store.hasRunningOperations { try? await Task.sleep(for: .milliseconds(50)) }
             }
-            replyToTermination(sender, true)
+            finishQuit(sender)
         }
-        return .terminateLater
+        // terminateLater can enter a modal loop while the caller still occupies
+        // the main dispatch queue, preventing our main-actor task from running.
+        // Unwind this request, then re-enter termination only after cleanup settles.
+        return .terminateCancel
+    }
+
+    private func finishQuit(_ sender: NSApplication) {
+        readyToQuit = true
+        finishQuitRequest(sender, true)
     }
 }

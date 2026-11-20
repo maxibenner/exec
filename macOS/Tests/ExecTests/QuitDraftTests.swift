@@ -35,8 +35,8 @@ import AppKit
                     return confirmations == 1 ? .alertSecondButtonReturn : .alertFirstButtonReturn
                 }
                 delegate.shutdownBackend = { shutdowns += 1 }
-                delegate.replyToTermination = { _, value in replies.append(value) }
-                try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateLater)
+                delegate.finishQuitRequest = { _, value in replies.append(value) }
+                try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateCancel)
                 try await SessionLifecycleTests.wait("cancel idle draft quit") { replies == [false] }
                 try expect(confirmations == 1 && shutdowns == 0 && draft.hasUnsentDraft)
                 try expect(title == "Quit Exec?")
@@ -44,7 +44,7 @@ import AppKit
                 try expect(draft.draft == (content == "text" ? "Do not discard silently" : ""))
                 try expect(draft.draftImages.count == (content == "image" ? 1 : 0))
                 try expect(draft.draftFiles.count == (content == "file" ? 1 : 0))
-                try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateLater)
+                try expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateCancel)
                 try await SessionLifecycleTests.wait("confirm idle draft quit") { replies == [false, true] }
                 try expect(confirmations == 2 && shutdowns == 1)
                 let requests = await transport.requests
