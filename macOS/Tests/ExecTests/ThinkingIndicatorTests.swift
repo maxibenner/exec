@@ -44,7 +44,7 @@ import AppKit
         try expect(!visible())
     }
 
-    func documentFooter() throws {
+    func documentFooter() async throws {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
                               styleMask: [.borderless], backing: .buffered, defer: false)
@@ -60,6 +60,12 @@ import AppKit
         update(false)
         let originalHeight = view.documentView!.frame.height
         update(true)
+        try expect(view.thinkingIndicatorFrame == nil)
+        try expect(view.documentView!.frame.height == originalHeight)
+        try await Task.sleep(for: .milliseconds(350))
+        try expect(view.thinkingIndicatorFrame == nil)
+        update(true) // An unchanged idle snapshot must not postpone insertion.
+        try await Task.sleep(for: .milliseconds(400))
         guard let footer = view.thinkingIndicatorFrame else {
             throw CheckFailure(description: "Missing transcript footer")
         }
@@ -72,5 +78,36 @@ import AppKit
         update(false)
         try expect(view.thinkingIndicatorFrame == nil)
         try expect(view.documentView!.frame.height == originalHeight)
+    }
+
+    func delayLifecycle() async throws {
+        _ = NSApplication.shared
+        let view = TranscriptScrollView(state: TranscriptState())
+        defer { view.detach() }
+        func update(_ idle: Bool) {
+            view.update(messages: [], jumpRequest: 0, showsThinkingIndicator: idle)
+        }
+
+        update(true)
+        try await Task.sleep(for: .milliseconds(350))
+        update(false)
+        update(true) // Start a fresh gap; the cancelled task must not insert early.
+        try await Task.sleep(for: .milliseconds(350))
+        try expect(view.thinkingIndicatorFrame == nil)
+        try await Task.sleep(for: .milliseconds(400))
+        try expect(view.thinkingIndicatorFrame != nil)
+        update(false) // Removal is synchronous, including during the fade-in.
+        try expect(view.thinkingIndicatorFrame == nil)
+
+        update(true)
+        update(false) // Activity resumes before the delay elapses.
+        try await Task.sleep(for: .milliseconds(750))
+        try expect(view.thinkingIndicatorFrame == nil)
+
+        update(true)
+        view.detach() // A conversation switch must not leave a pending insertion.
+        update(true) // Late updates cannot revive a dismantled view.
+        try await Task.sleep(for: .milliseconds(750))
+        try expect(view.thinkingIndicatorFrame == nil)
     }
 }

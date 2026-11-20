@@ -65,6 +65,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
     private let content = DocumentView()
     private var thinkingFooter: NSHostingView<WorkingIndicator>?
+    private var thinkingDelayTask: Task<Void, Never>?
     private var thinkingFooterHeight: CGFloat { thinkingFooter == nil ? 0 : 40 }
     var thinkingIndicatorFrame: CGRect? { thinkingFooter?.frame }
 
@@ -146,23 +147,23 @@ private struct VirtualTranscript: NSViewRepresentable {
 
     func update(messages: [Message], jumpRequest: Int, bottomInset: CGFloat = 0,
                 showsThinkingIndicator: Bool = false) {
-        if showsThinkingIndicator != (thinkingFooter != nil) {
-            if showsThinkingIndicator {
-                let footer = NSHostingView(rootView: WorkingIndicator())
-                let shouldFade = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-                footer.alphaValue = shouldFade ? 0 : 1
-                thinkingFooter = footer
-                content.addSubview(footer)
-                if shouldFade {
-                    NSAnimationContext.runAnimationGroup { context in
-                        context.duration = 0.2
-                        footer.animator().alphaValue = 1
-                    }
+        guard !detached else { return }
+        if showsThinkingIndicator {
+            // Repeated idle snapshots must not restart this gap's delay.
+            if thinkingFooter == nil, thinkingDelayTask == nil {
+                thinkingDelayTask = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(for: .milliseconds(600)) }
+                    catch { return }
+                    guard !Task.isCancelled, let self, !self.detached else { return }
+                    self.thinkingDelayTask = nil
+                    self.insertThinkingFooter()
                 }
-            } else {
-                thinkingFooter?.removeFromSuperview()
-                thinkingFooter = nil
             }
+        } else {
+            thinkingDelayTask?.cancel()
+            thinkingDelayTask = nil
+            thinkingFooter?.removeFromSuperview()
+            thinkingFooter = nil
         }
         self.bottomInset = max(0, bottomInset)
         // Empty inference placeholders have no visible content, but mounting them
@@ -209,6 +210,22 @@ private struct VirtualTranscript: NSViewRepresentable {
         }
         refresh()
     }
+
+    private func insertThinkingFooter() {
+        let footer = NSHostingView(rootView: WorkingIndicator())
+        let shouldFade = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        footer.alphaValue = shouldFade ? 0 : 1
+        thinkingFooter = footer
+        content.addSubview(footer)
+        refresh()
+        if shouldFade {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.4
+                footer.animator().alphaValue = 1
+            }
+        }
+    }
+
     override func layout() {
         super.layout()
         if let window {
@@ -276,6 +293,8 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
 
     func detach() {
+        thinkingDelayTask?.cancel()
+        thinkingDelayTask = nil
         cancelScrollAnimation()
         cancelGrowthMotion()
         detached = true

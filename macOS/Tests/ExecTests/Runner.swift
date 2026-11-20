@@ -59,7 +59,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
         }
         let checks: [(String, @MainActor () async throws -> Void)] = [
             ("Thinking footer follows response gaps and terminal states", { try ThinkingIndicatorTests().responseActivity() }),
-            ("Thinking footer belongs to transcript geometry", { try ThinkingIndicatorTests().documentFooter() }),
+            ("Thinking footer belongs to transcript geometry", { try await ThinkingIndicatorTests().documentFooter() }),
+            ("Thinking footer delay cancels, restarts and ends on detach", { try await ThinkingIndicatorTests().delayLifecycle() }),
             ("Single-line and wrapped sidebar titles use consistent padding", { try SidebarTitleLayoutTests().singleAndWrappedTitlesUseTheSamePadding() }),
             ("Startup counts zero, one and multiple sessions", { try StartupSessionCountTests().countsZeroOneAndMultipleSessions() }),
             ("Startup ignores children and invalid files", { try StartupSessionCountTests().ignoresChildrenAndInvalidFiles() }),
