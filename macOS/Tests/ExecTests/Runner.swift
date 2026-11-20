@@ -28,6 +28,12 @@ func expectFailure(_ operation: () throws -> Void) throws {
         }
         Task { @MainActor in
             let checks: [(String, @MainActor () async throws -> Void)] = [
+                ("Forked composers show a caret and accept real keyboard input", {
+                    try await SidebarCreationTests().forkFocusesMountedComposerAfterNavigation()
+                }),
+                ("Composer survives a dismantled temporary replacement", {
+                    try await ComposerEventTests().survivingEditorResumesAfterTemporaryReplacement()
+                }),
                 ("Composer real-event blur/refocus, subsequent clicks and explicit focus", {
                     try await ComposerEventTests().realBlurAndRefocusPreserveSelectionAndViewport()
                 }),
@@ -71,7 +77,6 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Blank creation waits for workspace selection before revealing", { try await SidebarCreationTests().blankWorkspaceCreationRevealsOnlyAfterSelectionAndSave() }),
             ("Failed creation and fork never reveal the sidebar", { try await SidebarCreationTests().failedCreationAndForkNeverReveal() }),
             ("Fork reveals only for the second top-level session", { try await SidebarCreationTests().forkRevealsOnlyForSecondTopLevelSession() }),
-            ("Fork focuses the mounted composer after navigation", { try await SidebarCreationTests().forkFocusesMountedComposerAfterNavigation() }),
             ("Navigation, deletion and catalogs never reveal the sidebar", { try await SidebarCreationTests().navigationDeletionAndCatalogChangesNeverReveal() }),
             ("Intervening catalog changes cannot trigger a second-session reveal", { try await SidebarCreationTests().interveningCatalogChangesDoNotMasqueradeAsSecondCreation() }),
             ("Settings use an aligned native header and permanent sidebar", { try await SettingsWindowLayoutTests().nativeHeaderKeepsSidebarVisibleAcrossSections() }),
@@ -187,6 +192,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Composer command and path isolation", { try ComposerCommandTests().recognizesOnlyLeadingCommands() }),
             ("Composer cursor excludes controls", { try ComposerCursorTests().excludesControlsWithoutLeavingGaps() }),
             ("Composer bridges focus state and preserves marked text through updates", { try await ComposerTextInputTests().bridgesFocusAndPreservesComposition() }),
+            ("Retired composers cannot apply queued focus or binding updates", { try await ComposerTextInputTests().retiredEditorsCannotApplyQueuedFocus() }),
             ("Composer preserves its viewport and selection across focus changes", { try await ComposerTextInputTests().preservesViewportAcrossFocusChanges() }),
             ("Composer renders a consistent caret at line starts and ends", { try ComposerTextInputTests().drawsConsistentCaret() }),
             ("Submitted attachments forward vertical scrolling to the transcript", { try AttachmentScrollTests().submittedAttachmentsForwardVerticalScrolling() }),

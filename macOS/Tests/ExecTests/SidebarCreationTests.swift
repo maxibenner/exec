@@ -5,16 +5,12 @@ import SwiftUI
 @MainActor private struct ForkFocusHost: View {
     let library: ChatLibrary
     let windows: SessionWindows
-    @State private var focused = false
 
     var body: some View {
         ChatWindowLayout(initiallyShowsSidebar: false, sidebarRevealRequest: windows.sidebarRevealRequest) {
             SessionSidebar(store: library, open: windows.openSession, delete: { windows.requestSessionDeletion($0.id) })
         } detail: {
-            ConversationView(library: library, conversation: library.current,
-                             presentation: windows.presentation(for: library.current),
-                             focused: $focused, composerFocusRequest: windows.composerFocusRequest)
-                .id(ObjectIdentifier(library.current))
+            ChatView(store: library, windows: windows)
         }
     }
 }
@@ -268,40 +264,99 @@ private actor SidebarCreationTransport: AgentTransport {
         }
     }
 
+    /// Uses the running NSApplication loop in --composer-events. Direct insertText
+    /// calls can succeed even when the editor cannot receive real keyboard input.
     func forkFocusesMountedComposerAfterNavigation() async throws {
-        let fixture = try await SidebarCreationFixture()
-        defer { fixture.close() }
-        let library = fixture.library, windows = fixture.windows
-        let host = NSHostingView(rootView: ForkFocusHost(library: library, windows: windows))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        window.contentView = host
-        windows.mainWindow = window
-        window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil); window.contentView = nil }
-        func editor(in root: NSView) -> ComposerTextInput.EditorScrollView? {
-            if let view = root as? ComposerTextInput.EditorScrollView { return view }
-            return root.subviews.lazy.compactMap { editor(in: $0) }.first
+        for count in 1...2 {
+            let fixture = try await SidebarCreationFixture(topLevelCount: count)
+            defer { fixture.close() }
+            let library = fixture.library, windows = fixture.windows
+            let host = NSHostingView(rootView: ForkFocusHost(library: library, windows: windows))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                                  styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+            window.contentView = host
+            windows.mainWindow = window
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            defer { window.orderOut(nil); window.contentView = nil }
+            func editor(in root: NSView) -> ComposerTextInput.EditorScrollView? {
+                if let view = root as? ComposerTextInput.EditorScrollView { return view }
+                return root.subviews.lazy.compactMap { editor(in: $0) }.first
+            }
+            func settle() async throws {
+                try await Task.sleep(for: .milliseconds(100))
+                host.layoutSubtreeIfNeeded()
+            }
+            func requireActiveWindow() async throws {
+                guard !NSApp.isActive || !window.isKeyWindow else { return }
+                // Synthetic events bypass the Window Server's activation click.
+                // Restore the fixture window, never the editor's responder.
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                for _ in 0..<100 {
+                    if NSApp.isActive && window.isKeyWindow { return }
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+                throw CheckFailure(description: "Fork fixture did not acquire its active key window")
+            }
+            func postKey(_ character: String, keyCode: UInt16) {
+                for eventType in [NSEvent.EventType.keyDown, .keyUp] {
+                    let event = NSEvent.keyEvent(with: eventType, location: .zero, modifierFlags: [],
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                        context: nil, characters: character, charactersIgnoringModifiers: character,
+                        isARepeat: false, keyCode: keyCode)!
+                    NSApp.postEvent(event, atStart: false)
+                }
+            }
+            try await settle()
+            try await requireActiveWindow()
+            guard let original = editor(in: host) else { throw CheckFailure(description: "Source composer not mounted") }
+            try expect(window.makeFirstResponder(original.editor))
+            try await settle()
+            let source = library.current
+            for (character, keyCode) in [("/", UInt16(44)), ("f", 3), ("o", 31), ("r", 15), ("k", 40)] {
+                postKey(character, keyCode: keyCode)
+            }
+            try await settle()
+            guard source.draft == "/fork" else {
+                throw CheckFailure(description: "Source typing failed: draft=\(source.draft.debugDescription), text=\(original.editor.string.debugDescription), active=\(NSApp.isActive), key=\(window.isKeyWindow), responder=\(String(describing: window.firstResponder)), editable=\(original.editor.isEditable), selection=\(original.editor.selectedRange())")
+            }
+            postKey("\r", keyCode: 36)
+            try await fixture.waitForCreation()
+            // Cover a fast replacement and a disabled source that has settled.
+            if count == 2 { try await settle() }
+            try await fixture.finishCreation()
+            await library.waitForNavigation()
+            // Include the native second-session sidebar reveal animation.
+            try await Task.sleep(for: .milliseconds(600))
+            host.layoutSubtreeIfNeeded()
+            guard let fork = editor(in: host) else { throw CheckFailure(description: "Fork composer not mounted") }
+            try expect(library.current !== source && library.error == nil)
+            try expect(fork !== original && fork.editor.isEditable && fork.editor.isSelectable)
+            try await requireActiveWindow()
+            try expect(window.firstResponder === fork.editor)
+            guard fork.editor.shouldDrawInsertionPoint,
+                  fork.editor.visibleRect.height > 0,
+                  fork.editor.selectedRange() == NSRange(location: 0, length: 0) else {
+                throw CheckFailure(description: "Fork caret unavailable: draws=\(fork.editor.shouldDrawInsertionPoint), frame=\(fork.editor.frame), visible=\(fork.editor.visibleRect), selection=\(fork.editor.selectedRange())")
+            }
+            postKey("a", keyCode: 0)
+            try await settle()
+            try expect(library.current.draft == "a")
+            // Clicking the newly opened editor must also leave it usable.
+            let point = fork.editor.convert(NSPoint(x: 30, y: 8), to: nil)
+            try expect(window.contentView?.hitTest(point) === fork.editor)
+            for eventType in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: eventType, location: point, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: -1, clickCount: 1, pressure: eventType == .leftMouseDown ? 1 : 0)!
+                NSApp.postEvent(event, atStart: false)
+            }
+            try await settle()
+            postKey("b", keyCode: 11)
+            try await settle()
+            try expect(library.current.draft == "ab")
         }
-        try await Task.sleep(for: .milliseconds(60))
-        host.layoutSubtreeIfNeeded()
-        guard let original = editor(in: host) else { throw CheckFailure(description: "Source composer not mounted") }
-        try expect(window.makeFirstResponder(original.editor))
-        try await Task.sleep(for: .milliseconds(30))
-        windows.forkConversation(library.current)
-        try await fixture.waitForCreation()
-        // Let the disabled source's native blur propagate before replacing it.
-        try await Task.sleep(for: .milliseconds(60))
-        try await fixture.finishCreation()
-        await library.waitForNavigation()
-        // Check after the native sidebar reveal has settled, not mid-animation.
-        try await Task.sleep(for: .milliseconds(600))
-        host.layoutSubtreeIfNeeded()
-        guard let fork = editor(in: host) else { throw CheckFailure(description: "Fork composer not mounted") }
-        try expect(fork !== original && fork.editor.isEditable)
-        try expect(window.firstResponder === fork.editor)
-        fork.editor.insertText("Follow-up", replacementRange: NSRange(location: 0, length: 0))
-        try expect(library.current.draft == "Follow-up")
     }
 
     func navigationDeletionAndCatalogChangesNeverReveal() async throws {
