@@ -999,6 +999,213 @@ async fn openai_services_and_compaction_use_separate_context_and_keep_only_compa
 }
 
 #[tokio::test]
+async fn idle_and_active_forks_keep_compaction_without_replaying_omitted_live_work() {
+    use exec_agent::{
+        manager::AgentManager, providers::ProviderRegistry, storage::JsonConversationStore,
+    };
+
+    for pending_tool in [false, true] {
+        let root = support::directory();
+        let workspace = support::directory();
+        let path = root.path().join("credentials.json");
+        save(&path, &session(false));
+        let entered = CancellationToken::new();
+        let signal = entered.clone();
+        let transport = Fake::new(move |request| {
+            let entered = signal.clone();
+            async move {
+                if matches!(request.endpoint, Endpoint::Models) {
+                    return Ok(response(
+                        json!({"models":[{"slug":"test","context_window":1000}]}),
+                    ));
+                }
+                assert!(matches!(request.endpoint, Endpoint::Responses));
+                let body: Value = serde_json::from_str(request.body.as_ref().unwrap()).unwrap();
+                let input = body["input"].as_array().unwrap();
+                if input.last().unwrap()["type"] == "compaction_trigger" {
+                    return Ok(wire(vec![json!({"type":"response.completed","response":{
+                        "status":"completed","output":[{"type":"compaction","encrypted_content":"saved-summary"}]
+                    }})]));
+                }
+                let question = input
+                    .iter()
+                    .rev()
+                    .find(|item| item["role"] == "user")
+                    .unwrap()["content"]
+                    .as_str()
+                    .unwrap();
+                if question != "Original lengthy history" {
+                    assert_eq!(input[0]["encrypted_content"], "saved-summary");
+                    assert!(
+                        !body["input"]
+                            .to_string()
+                            .contains("Original lengthy history")
+                    );
+                }
+                if matches!(question, "Short idle question" | "Short active question") {
+                    assert!(
+                        input
+                            .iter()
+                            .any(|item| item["encrypted_content"] == "retained-reasoning")
+                    );
+                    assert!(!body["input"].to_string().contains("omitted-live-work"));
+                }
+                if question == "Hold source" {
+                    if pending_tool {
+                        return Ok(wire(vec![json!({"type":"response.completed","response":{
+                            "status":"completed","output":[
+                                {"type":"reasoning","encrypted_content":"omitted-live-work"},
+                                {"type":"function_call","call_id":"omitted-live-work","name":"change","arguments":"{}"}
+                            ],"usage":{"input_tokens":350,"output_tokens":10,"total_tokens":360}
+                        }})]));
+                    }
+                    return Ok(HttpResponse {
+                        status: 200,
+                        content_type: Some("text/event-stream".into()),
+                        body: Box::pin(async_stream::try_stream! {
+                            yield bytes::Bytes::from("data: {\"type\":\"response.output_text.delta\",\"delta\":\"omitted-live-work\"}\n\n");
+                            entered.cancel();
+                            std::future::pending::<()>().await;
+                        }),
+                    });
+                }
+                let tokens = if question.starts_with("Short ") {
+                    365
+                } else {
+                    360
+                };
+                Ok(wire(vec![json!({"type":"response.completed","response":{
+                    "status":"completed","output":[
+                        {"type":"reasoning","encrypted_content":"retained-reasoning"},
+                        {"type":"message","content":[{"type":"output_text","text":"Completed answer"}]}
+                    ],"usage":{"input_tokens":tokens-10,"output_tokens":10,"total_tokens":tokens}
+                }})]))
+            }
+        });
+        let auth = Authentication::open(path, None, transport.clone())
+            .await
+            .unwrap();
+        let provider = Arc::new(
+            ProviderRegistry::new(
+                "openai",
+                vec![(
+                    "openai".into(),
+                    Arc::new(OpenAIProvider::new(auth, transport.clone())),
+                )],
+            )
+            .unwrap(),
+        );
+        let signal = entered.clone();
+        let tools = vec![support::tool(None, move |context| {
+            let entered = signal.clone();
+            async move {
+                entered.cancel();
+                context.cancel.cancelled().await;
+                Err(Error::Cancelled)
+            }
+        })];
+        let profile = root.path().join("profile");
+        let manager =
+            AgentManager::open(JsonConversationStore::open(&profile).await.unwrap(), |_| {
+                (provider.clone(), tools.clone())
+            })
+            .await
+            .unwrap();
+        let mut options = ConversationOptions::new(
+            provider.clone(),
+            "openai/test",
+            workspace.path().to_str().unwrap(),
+        );
+        options.tools = tools.clone();
+        let source = manager.create(options).await.unwrap();
+        assert_eq!(
+            support::complete(source.submit("Original lengthy history".into()).unwrap())
+                .await
+                .state,
+            OperationState::Completed
+        );
+        assert_eq!(
+            support::complete(source.compact().unwrap()).await.state,
+            OperationState::Completed
+        );
+        assert_eq!(
+            support::complete(source.submit("After compaction".into()).unwrap())
+                .await
+                .state,
+            OperationState::Completed
+        );
+        assert_eq!(source.snapshot().context_usage.unwrap().tokens, 360);
+        let original = source.record();
+        let idle_fork = manager
+            .fork(&source.id, provider.clone(), tools.clone())
+            .await
+            .unwrap();
+        assert_eq!(idle_fork.record().provider_state, original.provider_state);
+        assert_eq!(
+            idle_fork.snapshot().context_usage,
+            source.snapshot().context_usage
+        );
+        assert_eq!(
+            support::complete(idle_fork.submit("Short idle question".into()).unwrap())
+                .await
+                .state,
+            OperationState::Completed
+        );
+        assert_eq!(idle_fork.snapshot().context_usage.unwrap().tokens, 365);
+        assert_eq!(source.record(), original);
+
+        let run = source.submit("Hold source".into()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), entered.cancelled())
+            .await
+            .unwrap();
+        assert_eq!(source.snapshot().context_usage.unwrap().tokens, 360);
+        let original = source.record();
+        let fork = manager
+            .fork(&source.id, provider.clone(), tools.clone())
+            .await
+            .unwrap();
+        fork.record().validate().unwrap();
+        let fork_state = fork.record().provider_state.unwrap();
+        assert_eq!(
+            fork_state["contexts"]["openai"]["prefix"],
+            original.provider_state.as_ref().unwrap()["contexts"]["openai"]["prefix"]
+        );
+        assert!(fork_state.to_string().contains("retained-reasoning"));
+        assert!(!fork_state.to_string().contains("omitted-live-work"));
+        assert!(
+            !serde_json::to_string(&fork.snapshot())
+                .unwrap()
+                .contains("omitted-live-work")
+        );
+        assert_eq!(source.record(), original);
+        assert!(source.cancel(&run.operation_id));
+        assert_eq!(
+            support::complete(run).await.state,
+            OperationState::Interrupted
+        );
+        manager.close().await.unwrap();
+
+        let manager =
+            AgentManager::open(JsonConversationStore::open(&profile).await.unwrap(), |_| {
+                (provider.clone(), tools.clone())
+            })
+            .await
+            .unwrap();
+        let fork = manager.get(&fork.id).unwrap();
+        assert_eq!(fork.record().provider_state, Some(fork_state));
+        assert_eq!(
+            support::complete(fork.submit("Short active question".into()).unwrap())
+                .await
+                .state,
+            OperationState::Completed
+        );
+        let usage = fork.snapshot().context_usage.unwrap();
+        assert_eq!((usage.tokens, usage.limit), (365, 1000));
+        manager.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn recovered_incomplete_reply_does_not_replay_completed_opaque_output() {
     let root = support::directory();
     let path = root.path().join("credentials.json");

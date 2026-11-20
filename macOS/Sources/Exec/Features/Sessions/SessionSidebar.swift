@@ -25,7 +25,6 @@ struct SessionSidebar: View {
     @State private var renaming = false
     @State private var renameID: UUID?
     @State private var renameTitle = ""
-    @State private var childRowFrames: [UUID: CGRect] = [:]
     private var rowAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.25) }
     private var groups: [SidebarSessionGroup] { SidebarSessionGroup.snapshot(store) }
 
@@ -68,10 +67,15 @@ struct SessionSidebar: View {
                         .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
                     ForEach(group.children) { child in
                         SessionChildRowContent(child: child, store: store)
+                            // Include the native row gutters in the background, then
+                            // cancel that padding so the connector/text do not move.
+                            .padding(.horizontal, 16)
                             .contentShape(Rectangle())
-                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
-                                childRowFrames[child.id] = $0
+                            .background {
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear)
                             }
+                            .padding(.horizontal, -16)
                             .modifier(SidebarChildAppearance(visible: revealedChildIDs.contains(child.id), animation: rowAnimation) {
                                 revealedChildIDs.insert(child.id)
                             })
@@ -98,20 +102,9 @@ struct SessionSidebar: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .modifier(SidebarAnimatedHeight(animation: rowAnimation))
                 .listRowBackground(
-                    GeometryReader { geometry in
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(store.sidebarSelectionID == session.id
-                                  ? Color.primary.opacity(0.08) : Color.clear)
-                        if let child = group.children.first(where: { $0.id == store.sidebarSelectionID }),
-                           let frame = childRowFrames[child.id] {
-                            // Paint outside the native content inset, just like the parent.
-                            // Only the background moves; the connector and text stay put.
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.primary.opacity(0.08))
-                                .frame(height: frame.height)
-                                .offset(y: frame.minY - geometry.frame(in: .global).minY)
-                        }
-                    }
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(store.sidebarSelectionID == session.id
+                              ? Color.primary.opacity(0.08) : Color.clear)
                 )
                 .moveDisabled(!store.canReorderSessions)
             }
@@ -131,9 +124,7 @@ struct SessionSidebar: View {
             let previousStructure = displayedGroups.map { [$0.id] + $0.children.map(\.id) }
             let nextStructure = updated.map { [$0.id] + $0.children.map(\.id) }
             withAnimation(previousStructure != nextStructure ? rowAnimation : nil) {
-                let childIDs = Set(updated.flatMap { $0.children.map(\.id) })
-                revealedChildIDs.formIntersection(childIDs)
-                childRowFrames = childRowFrames.filter { childIDs.contains($0.key) }
+                revealedChildIDs.formIntersection(updated.flatMap { $0.children.map(\.id) })
                 displayedGroups = updated
             }
         }

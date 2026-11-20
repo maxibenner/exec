@@ -657,6 +657,36 @@ impl ChatProvider for OpenAIProvider {
         };
         Ok(result)
     }
+    fn fork_state(
+        &self,
+        state: Value,
+        message_ids: &[String],
+        messages: &[ContextMessage],
+    ) -> Result<Option<Value>> {
+        let mut state: Context = serde_json::from_value(state).map_err(|_| invalid())?;
+        if message_ids.len() != messages.len()
+            || state
+                .prefix
+                .as_ref()
+                .is_some_and(|prefix| !message_ids.contains(&prefix.through))
+        {
+            return Err(invalid());
+        }
+        let mut outputs = BTreeMap::new();
+        // Outputs are keyed by the request boundary immediately before the reply.
+        // Keep unchanged replies (including encrypted reasoning), not pruned calls.
+        for (boundary, message) in message_ids.iter().zip(messages.iter().skip(1)) {
+            if let ContextMessage::Assistant { text, calls } = message
+                && let Some(output) = state.outputs.remove(boundary)
+                && self::text(&output) == *text
+                && self::calls(&output)? == *calls
+            {
+                outputs.insert(boundary.clone(), output);
+            }
+        }
+        state.outputs = outputs;
+        Ok(Some(serde_json::to_value(state)?))
+    }
     fn stream(&self, request: ProviderRequest) -> BoxStream<'static, Result<ProviderEvent>> {
         let authentication = self.authentication.clone();
         let transport = self.transport.clone();

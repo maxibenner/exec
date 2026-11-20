@@ -24,9 +24,8 @@ import SwiftUI
         }.font(.caption2).fixedSize())
         let connectorWidth = NSFont.preferredFont(forTextStyle: .caption2).capHeight * 0.85
         for scheme in [ColorScheme.light, .dark] {
-            // The connector replaced the old leading inset. Include its width,
-            // its 6-point title gap, and the remaining 6-point trailing inset.
-            // Keep measuring the production leaf, not List's combined AX label.
+            // Include the drawn connector, its 6-point spacing and trailing inset.
+            // The leading gutter belongs to the selection background, not the leaf.
             let natural = NSHostingView(rootView: SessionChildRowContent(child: child, store: library)
                 .fixedSize().environment(\.colorScheme, scheme))
             try expect(abs(natural.fittingSize.width - unpadded.fittingSize.width - connectorWidth - 12) < 1)

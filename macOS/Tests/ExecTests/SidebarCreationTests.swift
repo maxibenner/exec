@@ -1,5 +1,23 @@
 import AppKit
 import Foundation
+import SwiftUI
+
+@MainActor private struct ForkFocusHost: View {
+    let library: ChatLibrary
+    let windows: SessionWindows
+    @State private var focused = false
+
+    var body: some View {
+        ChatWindowLayout(initiallyShowsSidebar: false, sidebarRevealRequest: windows.sidebarRevealRequest) {
+            SessionSidebar(store: library, open: windows.openSession, delete: { windows.requestSessionDeletion($0.id) })
+        } detail: {
+            ConversationView(library: library, conversation: library.current,
+                             presentation: windows.presentation(for: library.current),
+                             focused: $focused, composerFocusRequest: windows.composerFocusRequest)
+                .id(ObjectIdentifier(library.current))
+        }
+    }
+}
 
 /// Holds only explicit creation requests; all other traffic stays in the fake transport.
 private actor SidebarCreationTransport: AgentTransport {
@@ -248,6 +266,42 @@ private actor SidebarCreationTransport: AgentTransport {
             let requests = await fixture.transport.creationRequests
             try expect(requests == 1)
         }
+    }
+
+    func forkFocusesMountedComposerAfterNavigation() async throws {
+        let fixture = try await SidebarCreationFixture()
+        defer { fixture.close() }
+        let library = fixture.library, windows = fixture.windows
+        let host = NSHostingView(rootView: ForkFocusHost(library: library, windows: windows))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.contentView = host
+        windows.mainWindow = window
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        func editor(in root: NSView) -> ComposerTextInput.EditorScrollView? {
+            if let view = root as? ComposerTextInput.EditorScrollView { return view }
+            return root.subviews.lazy.compactMap { editor(in: $0) }.first
+        }
+        try await Task.sleep(for: .milliseconds(60))
+        host.layoutSubtreeIfNeeded()
+        guard let original = editor(in: host) else { throw CheckFailure(description: "Source composer not mounted") }
+        try expect(window.makeFirstResponder(original.editor))
+        try await Task.sleep(for: .milliseconds(30))
+        windows.forkConversation(library.current)
+        try await fixture.waitForCreation()
+        // Let the disabled source's native blur propagate before replacing it.
+        try await Task.sleep(for: .milliseconds(60))
+        try await fixture.finishCreation()
+        await library.waitForNavigation()
+        // Check after the native sidebar reveal has settled, not mid-animation.
+        try await Task.sleep(for: .milliseconds(600))
+        host.layoutSubtreeIfNeeded()
+        guard let fork = editor(in: host) else { throw CheckFailure(description: "Fork composer not mounted") }
+        try expect(fork !== original && fork.editor.isEditable)
+        try expect(window.firstResponder === fork.editor)
+        fork.editor.insertText("Follow-up", replacementRange: NSRange(location: 0, length: 0))
+        try expect(library.current.draft == "Follow-up")
     }
 
     func navigationDeletionAndCatalogChangesNeverReveal() async throws {
