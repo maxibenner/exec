@@ -3,6 +3,67 @@ import Observation
 import SwiftUI
 
 @MainActor struct SidebarVisibilityTests {
+    func nativeObservationPublishesOnlyAttachedChangesOnce() async throws {
+        _ = NSApplication.shared
+        let split = NSSplitViewController()
+        let sidebarController = NSViewController(), detail = NSViewController()
+        sidebarController.view = NSView()
+        detail.view = NSView()
+        let sidebar = NSSplitViewItem(sidebarWithViewController: sidebarController)
+        sidebar.isCollapsed = true
+        split.addSplitViewItem(sidebar)
+        split.addSplitViewItem(NSSplitViewItem(viewController: detail))
+        let window = NSWindow(contentViewController: split)
+        window.isReleasedWhenClosed = false
+        window.setContentSize(CGSize(width: 980, height: 700))
+        let observer = SidebarResizeBehavior.ConfigurationView()
+        var changes: [Bool] = []
+        observer.onVisibilityChange = { changes.append($0) }
+        defer {
+            observer.removeFromSuperview()
+            window.contentViewController = nil
+            window.close()
+        }
+        detail.view.addSubview(observer)
+        observer.configure()
+        observer.configure()
+        try await Task.sleep(for: .milliseconds(50))
+        try expect(changes.isEmpty) // Attachment must not write a preference.
+
+        sidebar.isCollapsed = false
+        sidebar.isCollapsed = false
+        observer.configure()
+        try await Task.sleep(for: .milliseconds(50))
+        try expect(changes == [true])
+        sidebar.isCollapsed = true
+        try await Task.sleep(for: .milliseconds(50))
+        try expect(changes == [true, false])
+
+        // Queue a publication, then detach and reattach to the SAME item before
+        // yielding. Item identity alone cannot reject this stale callback.
+        sidebar.isCollapsed = false
+        observer.removeFromSuperview()
+        detail.view.addSubview(observer)
+        observer.configure()
+        try await Task.sleep(for: .milliseconds(50))
+        try expect(changes == [true, false])
+
+        observer.removeFromSuperview()
+        sidebar.isCollapsed = true
+        try await Task.sleep(for: .milliseconds(50))
+        try expect(changes == [true, false])
+        detail.view.addSubview(observer)
+        observer.configure()
+        sidebar.isCollapsed = false
+        try await Task.sleep(for: .milliseconds(50))
+        try expect(changes == [true, false, true])
+
+        sidebar.isCollapsed = true
+        SidebarResizeBehavior.dismantleNSView(observer, coordinator: ())
+        try await Task.sleep(for: .milliseconds(50))
+        try expect(changes == [true, false, true])
+    }
+
     func appliesInitialVisibilityBeforeOrderingWindowFront() async throws {
         let suite = "exec-sidebar-visibility-\(UUID())"
         let preferences = UserDefaults(suiteName: suite)!
@@ -253,7 +314,9 @@ import SwiftUI
                 try await Task.sleep(for: .milliseconds(20))
             }
             try expectCollapsedState()
-            try expect(model.sidebarVisibility.isVisible == visible)
+            guard model.sidebarVisibility.isVisible == visible else {
+                throw CheckFailure(description: "Sidebar preference expected=\(visible), saved=\(model.sidebarVisibility.isVisible), collapsed=\(sidebar.isCollapsed), ordered=\(window.isVisible), \(model.summary)")
+            }
             return split
         }
 

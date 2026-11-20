@@ -16,24 +16,45 @@ import SwiftUI
         defer { preferences.removePersistentDomain(forName: suite) }
         let library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: FakeAgentTransport())), preferences: preferences)
         defer { library.closePresentations() }
-        var child = try SessionSummary(AgentIntegrationTests.fixture(state: "completed", result: true))
-        child.title = "Sub-agent title"
-        let unpadded = NSHostingView(rootView: HStack(spacing: 6) {
-            Text(verbatim: child.title)
-            Spacer(minLength: 0)
-        }.font(.caption2).fixedSize())
         let connectorWidth = NSFont.preferredFont(forTextStyle: .caption2).capHeight * 0.85
-        for scheme in [ColorScheme.light, .dark] {
-            // Include the drawn connector, its 6-point spacing and trailing inset.
-            // The leading gutter belongs to the selection background, not the leaf.
-            let natural = NSHostingView(rootView: SessionChildRowContent(child: child, store: library)
-                .fixedSize().environment(\.colorScheme, scheme))
-            try expect(abs(natural.fittingSize.width - unpadded.fittingSize.width - connectorWidth - 12) < 1)
-            for width in [CGFloat(180), 300] {
-                let host = NSHostingView(rootView: SessionChildRowContent(child: child, store: library)
-                    .frame(width: width).environment(\.colorScheme, scheme))
-                try expect(abs(host.fittingSize.width - width) < 0.1)
-                try expect(abs(host.fittingSize.height - 22) < 0.1)
+        for showsStatus in [false, true] {
+            let snapshot = try AgentIntegrationTests.fixture(
+                state: showsStatus ? "awaiting_approval" : "completed", result: !showsStatus)
+                .decoded(AgentSnapshot.self)
+            try library.current.apply(snapshot)
+            try expect(library.needsApproval(snapshot.id) == showsStatus)
+            for title in ["Sub-agent title", "A long child title that must truncate rather than wrap in a narrow sidebar"] {
+                var child = SessionSummary(snapshot: snapshot)
+                child.title = title
+                // Measure text alone: a reference HStack with a Spacer introduces
+                // its own gap. fixedSize here checks ideal, untruncated content.
+                let text = NSHostingView(rootView: Text(verbatim: title).font(.caption2).fixedSize())
+                for scheme in [ColorScheme.light, .dark] {
+                    let natural = NSHostingView(rootView: SessionChildRowContent(child: child, store: library)
+                        .fixedSize().environment(\.colorScheme, scheme))
+                    // Connector + inner gap + spacer gap. An empty status Group
+                    // has no layout, even with .frame(width: 16); a visible status
+                    // adds that frame and one more gap. No leading gutter here.
+                    let extraWidth = connectorWidth + 12 + (showsStatus ? 22 : 0)
+                    guard abs(natural.fittingSize.width - text.fittingSize.width - extraWidth) < 1 else {
+                        throw CheckFailure(description: "Child width=\(natural.fittingSize.width), text=\(text.fittingSize.width), expected extra=\(extraWidth), status=\(showsStatus)")
+                    }
+                    for width in [CGFloat(180), 300] {
+                        let content = NSView()
+                        let host = NSHostingView(rootView: SessionChildRowContent(child: child, store: library)
+                            .background(Marker(view: content))
+                            .frame(width: width).environment(\.colorScheme, scheme))
+                        host.frame.size = host.fittingSize
+                        host.layoutSubtreeIfNeeded()
+                        try expect(abs(host.fittingSize.width - width) < 0.1)
+                        try expect(abs(host.fittingSize.height - 22) < 0.1)
+                        // Measure the row inside the imposed frame, not just the
+                        // wrapper: content/status must retain the full hit width.
+                        let frame = content.convert(content.bounds, to: host)
+                        try expect(abs(frame.minX) < 0.1 && abs(frame.width - width) < 0.1)
+                        try expect(abs(frame.height - 22) < 0.1)
+                    }
+                }
             }
         }
     }

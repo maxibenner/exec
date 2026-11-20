@@ -94,6 +94,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Startup ignores children and invalid files", { try StartupSessionCountTests().ignoresChildrenAndInvalidFiles() }),
             ("Sidebar preferences default closed without inferring a choice", { try SidebarVisibilityPreferenceTests().defaultsClosedWithoutSavingAnInferredChoice() }),
             ("Sidebar preferences round-trip open and closed in isolation", { try SidebarVisibilityPreferenceTests().roundTripsOpenAndClosedWithoutChangingOtherPreferences() }),
+            ("Native sidebar observation publishes attached changes once", { try await SidebarVisibilityTests().nativeObservationPublishesOnlyAttachedChangesOnce() }),
             ("Sidebar visibility is set before ordering the window front", { try await SidebarVisibilityTests().appliesInitialVisibilityBeforeOrderingWindowFront() }),
             ("Sidebar toggles survive content, count and focus changes", { try await SidebarVisibilityTests().nativeToggleSurvivesContentCountAndFocusChanges() }),
             ("Native sidebar toggles persist across window remounts", { try await SidebarVisibilityTests().nativeTogglesPersistAcrossWindowRemounts() }),

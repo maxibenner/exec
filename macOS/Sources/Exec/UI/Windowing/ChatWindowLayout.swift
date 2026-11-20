@@ -31,7 +31,10 @@ struct ChatWindowLayout<Sidebar: View, Detail: View>: View {
                 // Fit beside the widest sidebar (320) at the window minimum (720).
                 .frame(minWidth: 400, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
                 .background(.background)
-                .background(SidebarResizeBehavior())
+                .background(SidebarResizeBehavior { visible in
+                    let actual: NavigationSplitViewVisibility = visible ? .all : .detailOnly
+                    if columnVisibility != actual { columnVisibility = actual }
+                })
         }
         .navigationSplitViewStyle(.balanced)
         .onChange(of: columnVisibility) { _, visibility in
