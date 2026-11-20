@@ -250,6 +250,7 @@ struct ApiError {
     status: u16,
     message: String,
     rejected: bool,
+    code: Option<&'static str>,
 }
 type ApiResult<T> = std::result::Result<T, ApiError>;
 impl ApiError {
@@ -259,6 +260,7 @@ impl ApiError {
             status,
             message: message.into(),
             rejected: true,
+            code: None,
         }
     }
     fn uncertain(status: u16, message: impl Into<String>) -> Self {
@@ -266,12 +268,16 @@ impl ApiError {
             status,
             message: message.into(),
             rejected: false,
+            code: None,
         }
     }
     fn response(self) -> Response<Body> {
         let mut body = json!({"error": self.message});
         if self.rejected {
             body["delivery"] = json!("rejected");
+        }
+        if let Some(code) = self.code {
+            body["code"] = json!(code);
         }
         json_response(self.status, body)
     }
@@ -420,6 +426,12 @@ struct Connect {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct Disconnect {
+    #[serde(default)]
+    stop_running: bool,
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Rename {
@@ -844,19 +856,43 @@ async fn handle(
         if id.is_empty() || id.contains('/') {
             return Err(ApiError::rejected(404, "Provider not found."));
         }
-        let credential = match method.as_str() {
-            "PUT" => Some(body::<Connect>(request, &request_cancel).await?.api_key),
-            "DELETE" => None,
+        let result = match method.as_str() {
+            "PUT" => {
+                let credential = body::<Connect>(request, &request_cancel).await?.api_key;
+                options
+                    .manager
+                    .set_credential(options.provider.clone(), id, Some(credential))
+                    .await
+            }
+            "DELETE" => {
+                // Legacy bodyless DELETE remains safe: active work requires explicit consent.
+                let has_body = request.headers().contains_key("content-type")
+                    || request.headers().contains_key("transfer-encoding")
+                    || request
+                        .headers()
+                        .get("content-length")
+                        .is_some_and(|v| v != "0");
+                let input = if has_body {
+                    body::<Disconnect>(request, &request_cancel).await?
+                } else {
+                    Disconnect::default()
+                };
+                options
+                    .manager
+                    .disconnect_provider(options.provider.clone(), id, input.stop_running)
+                    .await
+            }
             _ => return Err(ApiError::rejected(404, "Route not found.")),
         };
-        let connections = options
-            .manager
-            .set_credential(options.provider.clone(), id, credential)
-            .await
-            .map_err(|error| match error {
-                Error::Invalid(message) => ApiError::uncertain(400, message),
-                other => ApiError::from(other),
-            })?;
+        let connections = result.map_err(|error| match error {
+            Error::ProviderInUse => {
+                // This gate runs under the catalog lock, before cancellation or any write.
+                let mut error = ApiError::rejected(409, error.to_string());
+                error.code = Some("provider_in_use");
+                error
+            }
+            other => ApiError::from(other),
+        })?;
         return Ok(json_response(200, connections));
     }
     if route == "/v1/library" {

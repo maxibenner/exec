@@ -293,6 +293,18 @@ pub struct ProviderConnection {
 }
 #[async_trait]
 pub trait ChatProvider: Send + Sync {
+    /// Local routing identity, including adapters accepting unqualified model IDs.
+    fn provider_id(&self, model: &str) -> Option<String> {
+        model
+            .split_once('/')
+            .map(|(id, _)| id.to_owned())
+            .or_else(|| self.connections().first().map(|c| c.id.clone()))
+    }
+    fn image_generation_provider_id(&self) -> Option<String> {
+        self.supports_image_generation()
+            .then(|| self.connections().first().map(|c| c.id.clone()))
+            .flatten()
+    }
     async fn prepare_model(&self, _model: &str, _cancel: CancellationToken) -> Result<()> {
         Ok(())
     }
@@ -386,6 +398,11 @@ pub trait ChatProvider: Send + Sync {
     }
     fn connections(&self) -> Vec<ProviderConnection> {
         vec![]
+    }
+    /// Locally exclude new provider requests for an owned disconnect transaction.
+    /// The returned reservation must remain alive through cleanup and credential persistence.
+    fn reserve_disconnect(&self, _provider: &str) -> Result<Box<dyn Send>> {
+        Ok(Box::new(()))
     }
     async fn set_credential(&self, _provider: &str, _credential: Option<String>) -> Result<()> {
         Err(crate::Error::Invalid(

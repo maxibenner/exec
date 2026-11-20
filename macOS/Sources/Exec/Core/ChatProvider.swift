@@ -96,7 +96,7 @@ struct ProviderConnection: Identifiable, Equatable {
     func refreshConnections() async throws
     func models() async throws -> [ChatModel]
     func connect(id: String, credential: String?) async throws
-    func disconnect(id: String) async throws
+    func disconnect(id: String, stopRunning: Bool) async throws
     func cancelConnection() async
     func isModelAvailable(_ model: String) -> Bool
     func providerID(for model: String) -> String?

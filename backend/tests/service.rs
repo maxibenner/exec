@@ -566,8 +566,10 @@ async fn same_conversation_exclusion_cross_conversation_concurrency_explicit_can
     let op = f.client.submit(&a.id, "hold").await.unwrap();
     entered.cancelled().await;
     assert_eq!(
+        // This fake provider has externally managed credentials. Unrelated running
+        // work no longer masks that validation error with a global busy rejection.
         f.client.disconnect("deepseek").await.unwrap_err(),
-        Error::Api(409)
+        Error::Api(400)
     );
     assert_eq!(
         f.client

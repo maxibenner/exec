@@ -495,6 +495,30 @@ impl Conversation {
     pub fn record(&self) -> ConversationRecord {
         self.state().record.clone()
     }
+    pub(crate) fn uses_provider(&self, id: &str) -> bool {
+        let state = self.state();
+        let record = &state.record;
+        let owns_model = |model: &str| self.provider.provider_id(model).as_deref() == Some(id);
+        let search = record
+            .configuration
+            .as_ref()
+            .and_then(|c| c.settings.search_model.as_deref());
+        let image_call = state
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.approval.call.name == "generate_image")
+            || state.active_tool.as_ref().is_some_and(|id| {
+                record.messages.iter().rev().any(|message| {
+                    matches!(message, Message::Assistant { calls, .. }
+                        if calls.iter().any(|call| &call.id == id && call.name == "generate_image"))
+                })
+            });
+        owns_model(&record.model)
+            || (record.metadata.tool_enabled("web_search")
+                && self.tools.contains_key("web_search")
+                && search.is_some_and(owns_model))
+            || (image_call && self.provider.image_generation_provider_id().as_deref() == Some(id))
+    }
     pub fn busy(&self) -> bool {
         let state = self.state();
         state.active.is_some() || state.updating

@@ -73,7 +73,7 @@ impl From<&Error> for DiagnosticFailure {
     fn from(error: &Error) -> Self {
         match error {
             Error::Cancelled => Self::Cancelled,
-            Error::Busy => Self::Busy,
+            Error::Busy | Error::ProviderInUse => Self::Busy,
             Error::WorkspaceLocked => Self::WorkspaceLocked,
             Error::Storage => Self::Storage,
             Error::Internal | Error::Closed => Self::Internal,

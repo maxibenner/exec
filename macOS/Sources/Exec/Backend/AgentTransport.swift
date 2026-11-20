@@ -11,6 +11,7 @@ protocol AgentTransport: Sendable {
 struct AgentHTTPError: LocalizedError, Sendable {
     let status: Int
     let message: String
+    var code: String? = nil
     var errorDescription: String? { message }
 }
 
@@ -54,9 +55,9 @@ struct HTTPAgentTransport: AgentTransport {
 
     fileprivate static func validate(_ status: Int, data: Data) throws {
         guard (200..<300).contains(status) else {
-            struct Failure: Decodable { let error: String }
-            let message = (try? JSONDecoder().decode(Failure.self, from: data))?.error
-            throw AgentHTTPError(status: status, message: message ?? "The backend request failed (HTTP \(status)).")
+            struct Failure: Decodable { let error: String; let code: String? }
+            let failure = try? JSONDecoder().decode(Failure.self, from: data)
+            throw AgentHTTPError(status: status, message: failure?.error ?? "The backend request failed (HTTP \(status)).", code: failure?.code)
         }
     }
 }

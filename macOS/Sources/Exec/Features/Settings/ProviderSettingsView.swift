@@ -28,7 +28,6 @@ struct ProviderSettingsView: View {
         }
         .padding(20)
         .background(.background)
-        .disabled(store.accountBusy || !store.canNavigate)
         .onChange(of: connected.map(\.id)) { _, ids in
             if !ids.contains(selection ?? "") { selection = ids.first }
         }
@@ -37,6 +36,15 @@ struct ProviderSettingsView: View {
                                     canConnect: !store.accountBusy && store.canNavigate) { key in
                 store.connect(providerID: connection.id, credential: key)
             }
+        }
+        .confirmationDialog("Remove \(store.pendingProviderRemoval?.name ?? "Provider")?", isPresented: Binding(
+            get: { store.pendingProviderRemoval != nil },
+            set: { if !$0 { store.cancelProviderRemoval() } }
+        ), titleVisibility: .visible, presenting: store.pendingProviderRemoval) { removal in
+            Button("Stop Sessions and Remove Provider", role: .destructive) { store.confirmProviderRemoval(providerID: removal.id) }
+            Button("Cancel", role: .cancel) { store.cancelProviderRemoval() }
+        } message: { _ in
+            Text("This stops ALL running sessions using this provider, including sessions in other windows or devices. Sessions using other providers continue. Conversation history is kept, and you can choose another provider’s model later.")
         }
         .alert("Provider Connection", isPresented: Binding(
             get: { store.connectionError != nil },
@@ -107,13 +115,14 @@ struct ProviderSettingsView: View {
                         .menuIndicator(.hidden)
                     }
                 }
+                .disabled(store.accountBusy || !store.canNavigate)
                 .help("Add Provider")
                 .accessibilityLabel("Add Provider")
                 Button {
                     guard let selection else { return }
                     store.disconnect(providerID: selection)
                 } label: { Image(systemName: "minus").frame(width: 16, height: 18) }
-                .disabled(!connected.contains { $0.id == selection })
+                .disabled(!store.canDisconnectProvider || !connected.contains { $0.id == selection })
                 .help("Remove Provider")
                 .accessibilityLabel("Remove Provider")
             }
