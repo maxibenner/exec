@@ -296,6 +296,12 @@ pub trait ChatProvider: Send + Sync {
     async fn prepare_model(&self, _model: &str, _cancel: CancellationToken) -> Result<()> {
         Ok(())
     }
+    /// Original request indices whose images are needed by the adapter, in order.
+    /// Selection must be local and side-effect free; opaque context stays adapter-owned.
+    /// The default retains all images. Adapters may exclude context already summarized.
+    fn image_context_indices(&self, request: &ProviderRequest) -> Result<Vec<usize>> {
+        Ok((0..request.message_ids.len()).collect())
+    }
     async fn accepts_images(&self, _model: &str, _cancel: CancellationToken) -> Result<bool> {
         Ok(false)
     }

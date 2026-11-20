@@ -51,6 +51,23 @@ pub(super) async fn generate(
     result
 }
 
+/// Derive valid metadata without changing the accepted user message.
+pub(super) fn fallback(text: &str) -> String {
+    let title: String = text
+        .split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(80)
+        .collect();
+    if title.is_empty() {
+        "Untitled".into()
+    } else {
+        title
+    }
+}
+
 fn valid_title(text: &str, completed: bool) -> Option<String> {
     let title = text.trim();
     (completed
@@ -73,6 +90,25 @@ mod tests {
             assert!(valid_title(text, done).is_none());
         }
         assert!(valid_title(&"x".repeat(81), true).is_none());
+    }
+    #[test]
+    fn fallback_titles_are_bounded_valid_metadata() {
+        for text in [
+            "\u{1b}Topic\u{7f} with\ncontrols\u{9f}",
+            "\u{7}\u{1b}",
+            " \t\n ",
+            &"🌱".repeat(100),
+        ] {
+            let title = fallback(text);
+            assert!(valid_title(&title, true).is_some());
+            SessionMetadata {
+                title: Some(title),
+                ..Default::default()
+            }
+            .validate()
+            .unwrap();
+        }
+        assert_eq!(fallback(&"🌱".repeat(100)), "🌱".repeat(80));
     }
     #[test]
     fn missing_setting_defaults_on() {

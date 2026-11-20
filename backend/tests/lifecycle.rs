@@ -67,6 +67,8 @@ async fn live_ownership_excludes_approval_and_intent_survives_cancellation_and_n
     assert!(c.busy());
     cleanup.cancel();
     assert_eq!(complete(run).await.state, OperationState::Interrupted);
+    // Cleanup reported success, so cancellation must not replace the known result.
+    assert_eq!(c.snapshot().messages[2].text(), "effect settled");
     let kinds = event_kinds(&mut events);
     assert_eq!(
         kinds
@@ -94,7 +96,7 @@ async fn live_ownership_excludes_approval_and_intent_survives_cancellation_and_n
     assert_eq!(
         finished,
         [
-            ("first".into(), ToolOutcome::Interrupted),
+            ("first".into(), ToolOutcome::Completed),
             ("second".into(), ToolOutcome::NotExecuted)
         ]
     );
