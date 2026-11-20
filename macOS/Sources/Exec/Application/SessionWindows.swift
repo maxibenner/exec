@@ -63,11 +63,12 @@ import Observation
 
     func requestSessionDeletion(_ id: UUID) {
         guard !isConfirmingDeletion, library.canDeleteSession(id) else { return }
-        guard SessionDeletionConfirmation.isRequired(for: id, in: library) else {
+        let confirmation = SessionDeletionConfirmation(for: id, in: library)
+        guard confirmation.isRequired else {
             library.deleteSession(id)
             return
         }
-        let alert = SessionDeletionConfirmation.makeAlert()
+        let alert = confirmation.makeAlert()
         let window = NSApplication.shared.keyWindow ?? controllers[id]?.window ?? mainWindow
         // Reserve the decision before yielding so shortcuts and other windows
         // cannot stack alerts or replace the original deletion target.
