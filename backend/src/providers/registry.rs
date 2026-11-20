@@ -541,6 +541,22 @@ impl ChatProvider for ProviderRegistry {
         self.save_cache(id).await?;
         result
     }
+    fn fork_state(
+        &self,
+        state: Value,
+        message_ids: &[String],
+        messages: &[ContextMessage],
+    ) -> Result<Option<Value>> {
+        let mut contexts = self.contexts(Some(state))?;
+        for (id, state) in std::mem::take(&mut contexts.contexts) {
+            if let Some(provider) = self.providers.get(&id)
+                && let Some(state) = provider.fork_state(state, message_ids, messages)?
+            {
+                contexts.contexts.insert(id, state);
+            }
+        }
+        Ok(Some(serde_json::to_value(contexts)?))
+    }
     fn stream(&self, mut request: ProviderRequest) -> BoxStream<'static, Result<ProviderEvent>> {
         let prepared = (|| {
             let (id, model, provider) = self.route(&request.model)?;

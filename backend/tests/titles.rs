@@ -75,6 +75,106 @@ async fn automatic_titles_are_isolated_and_manual_names_survive_restart() {
 }
 
 #[tokio::test]
+async fn forks_of_manual_names_can_generate_titles_until_explicitly_renamed() {
+    let root = directory();
+    let workspace = directory();
+    let provider = FakeProvider::new(vec![
+        answer(),
+        response(vec![
+            ProviderEvent::Text("New fork topic".into()),
+            ProviderEvent::Done,
+        ]),
+        answer(),
+        answer(),
+    ]);
+    let manager = AgentManager::open(
+        JsonConversationStore::open(root.path()).await.unwrap(),
+        |_| (provider.clone(), vec![]),
+    )
+    .await
+    .unwrap();
+    let source = manager
+        .create(ConversationOptions::new(
+            provider.clone(),
+            "fake",
+            workspace.path().to_str().unwrap(),
+        ))
+        .await
+        .unwrap();
+    complete(source.submit("Original topic".into()).unwrap()).await;
+    manager
+        .rename(&source.id, "Chosen name".into())
+        .await
+        .unwrap();
+    let original = source.snapshot();
+    let fork = manager
+        .fork(&source.id, provider.clone(), vec![])
+        .await
+        .unwrap();
+    assert_eq!(
+        fork.snapshot().metadata.title.as_deref(),
+        Some("Chosen name (fork)")
+    );
+    assert!(!fork.snapshot().metadata.manually_named);
+    manager.close().await.unwrap();
+
+    let manager = AgentManager::open(
+        JsonConversationStore::open(root.path()).await.unwrap(),
+        |_| (provider.clone(), vec![]),
+    )
+    .await
+    .unwrap();
+    let fork = manager.get(&fork.id).unwrap();
+    assert!(!fork.snapshot().metadata.manually_named);
+    assert_eq!(
+        complete(
+            manager
+                .submit(&fork.id, "Different topic".into())
+                .await
+                .unwrap()
+        )
+        .await
+        .state,
+        OperationState::Completed
+    );
+    assert_eq!(
+        fork.snapshot().metadata.title.as_deref(),
+        Some("New fork topic")
+    );
+    assert!(!fork.snapshot().metadata.manually_named);
+    assert_eq!(manager.get(&source.id).unwrap().snapshot(), original);
+    {
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        let ContextMessage::User { text } = &requests[1].messages[0] else {
+            panic!()
+        };
+        let fields: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(fields["current_title"], "Chosen name (fork)");
+        assert_eq!(fields["latest_user_message"], "Different topic");
+    }
+
+    manager
+        .rename(&fork.id, "Fork's chosen name".into())
+        .await
+        .unwrap();
+    complete(
+        manager
+            .submit(&fork.id, "Another topic".into())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(provider.count(), 4);
+    assert_eq!(
+        fork.snapshot().metadata.title.as_deref(),
+        Some("Fork's chosen name")
+    );
+    assert!(fork.snapshot().metadata.manually_named);
+    manager.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn disabled_naming_and_incomplete_titles_do_not_disrupt_chat() {
     let workspace = directory();
     let provider = FakeProvider::new(vec![

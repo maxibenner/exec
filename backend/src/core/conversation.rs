@@ -836,13 +836,19 @@ impl Conversation {
                 operation.state = OperationState::Interrupted;
                 operation.error = None;
             }
-            // Opaque provider context may include calls omitted from this snapshot.
-            record.provider_state = None;
+            // Pruned calls cannot reuse finalized opaque output, but dropping all
+            // state would also discard compaction and replay the full history.
+            if let Some(provider_state) = record.provider_state.take() {
+                let (messages, ids) = record.provider_context(record.messages.len());
+                record.provider_state =
+                    self.provider.fork_state(provider_state, &ids, &messages)?;
+            }
             record.usage = None;
         }
         record.id = new_id();
         // An explicit user fork is independent, not another execution of the parent's call.
         record.metadata.parent = None;
+        record.metadata.manually_named = false;
         record.metadata.activity_at = SessionMetadata::activity();
         record.metadata.title = Some(format!(
             "{} (fork)",

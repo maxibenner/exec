@@ -334,6 +334,16 @@ pub trait ChatProvider: Send + Sync {
     ) -> Result<super::AccountUsage> {
         Err(crate::Error::Provider(crate::ProviderFailure::Unsupported))
     }
+    /// Retain only opaque state compatible with a fork's completed context.
+    /// This is a local transformation, never provider I/O. Unknown formats are dropped.
+    fn fork_state(
+        &self,
+        _state: Value,
+        _message_ids: &[String],
+        _messages: &[ContextMessage],
+    ) -> Result<Option<Value>> {
+        Ok(None)
+    }
     fn context_window(&self, _model: &str) -> Option<u64> {
         None
     }
