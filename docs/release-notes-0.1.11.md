@@ -1,0 +1,7 @@
+- Replaced routine conversation polling with more efficient change notifications.
+- Improved the macOS sidebar, composer, scrolling, and system-accent styling.
+- Added message queueing during compaction, unsent-draft warnings, and fixes for stopping and sub-agent handling.
+- Improved remote pairing, connection recovery, and device revocation.
+- Expanded iOS with per-session tools, queued messages, and better transcript, settings, and connection handling.
+- Added Docker/Compose deployment, a local administration CLI, and headless provider login.
+- Added private per-session diagnostics with clearer provider and network errors.
