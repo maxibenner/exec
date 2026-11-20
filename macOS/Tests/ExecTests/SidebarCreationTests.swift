@@ -276,7 +276,8 @@ private actor SidebarCreationTransport: AgentTransport {
                                   styleMask: [.titled, .resizable], backing: .buffered, defer: false)
             window.contentView = host
             windows.mainWindow = window
-            window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+            // An entirely offscreen window may not activate on current macOS.
+            window.center()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             defer { window.orderOut(nil); window.contentView = nil }

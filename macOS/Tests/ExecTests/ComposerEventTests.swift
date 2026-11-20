@@ -96,7 +96,9 @@ struct ComposerEventTests {
             other.frame = NSRect(x: 30, y: 600, width: 250, height: 24)
             root.addSubview(other)
             window.contentView = root
-            window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+            // AppKit may refuse activation when every window is offscreen.
+            // Native-event checks need a real key window, not just a responder.
+            window.center()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
