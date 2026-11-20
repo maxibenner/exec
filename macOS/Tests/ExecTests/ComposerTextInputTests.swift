@@ -26,6 +26,7 @@ struct ComposerTextInputTests {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 240),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
         host.layoutSubtreeIfNeeded()
@@ -78,6 +79,7 @@ struct ComposerTextInputTests {
         root.addSubview(original)
         root.addSubview(replacement)
         window.contentView = root
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
         let session = ObjectIdentifier(root)
@@ -89,16 +91,16 @@ struct ComposerTextInputTests {
         // Claim the shared presentation before the original's queued focus runs.
         replacement.update(text: "", session: session, request: nil, enabled: true,
                            focused: false, editingState: state)
-        original.editor.onFocus?()
+        original.editor.onFocus?(true)
         try await settle()
         try expect(window.firstResponder !== original.editor && originalReports.isEmpty)
 
         var replacementReports: [Bool] = []
         let responderBeforeDetaching = window.firstResponder
         replacement.onFocus = { replacementReports.append($0) }
+        replacement.editor.onFocus?(true)
         replacement.update(text: "", session: session, request: 2, enabled: true,
                            focused: true, editingState: state)
-        replacement.editor.onFocus?()
         // Even when callbacks retain the old representable, detaching invalidates
         // work already queued on the main thread.
         replacement.detach()
@@ -118,6 +120,7 @@ struct ComposerTextInputTests {
         other.frame = NSRect(x: 20, y: 200, width: 300, height: 24)
         root.addSubview(other)
         window.contentView = root
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
         let session = NSObject()
@@ -148,14 +151,8 @@ struct ComposerTextInputTests {
             view.update(text: draft, session: ObjectIdentifier(session), request: 2, enabled: true, focused: true)
             try await settle()
             try expect(view.contentView.bounds.origin == origin && view.editor.selectedRange() == selection)
-            // A refocusing mouse click resumes the old insertion point, rather
-            // than placing it where that first click happened to land.
-            try expect(window.makeFirstResponder(other))
-            try await settle()
-            click(view.editor, at: NSPoint(x: 10, y: origin.y + 10))
-            try await settle()
-            try expect(window.firstResponder === view.editor)
-            try expect(view.editor.selectedRange() == selection && view.contentView.bounds.origin == origin)
+            // Mouse refocus is covered through NSApplication.run() in
+            // ComposerEventTests; native mouse tracking needs a running app loop.
         }
         view.update(text: "", session: ObjectIdentifier(session), request: 2, enabled: true, focused: true)
         try await settle()
@@ -253,19 +250,6 @@ struct ComposerTextInputTests {
 
     private final class CaretDrawingEditor: ComposerTextInput.Editor {
         override var shouldDrawInsertionPoint: Bool { true }
-    }
-
-    private func click(_ editor: NSTextView, at point: NSPoint) {
-        let location = editor.convert(point, to: nil)
-        let window = editor.window!
-        func event(_ type: NSEvent.EventType) -> NSEvent {
-            NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
-                              timestamp: ProcessInfo.processInfo.systemUptime,
-                              windowNumber: window.windowNumber, context: nil,
-                              eventNumber: 0, clickCount: 1, pressure: 1)!
-        }
-        // This focus-only path does not enter AppKit's mouse-tracking loop.
-        editor.mouseDown(with: event(.leftMouseDown))
     }
 
     private func settle() async throws { try await Task.sleep(for: .milliseconds(30)) }
