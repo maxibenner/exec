@@ -468,7 +468,7 @@ async fn delegated_children_inherit_enforcement_and_cannot_change_selection() {
                 })
             }
         }),
-        // Parent cancellation retains unfinished children for inspection.
+        // Keep the child running until the parent cancellation is exercised.
         waiting(child_waiting.clone()),
     ]);
     let manager = Arc::new(AgentManager::default());
@@ -498,26 +498,37 @@ async fn delegated_children_inherit_enforcement_and_cannot_change_selection() {
         .find(|s| s.metadata.parent.is_some())
         .unwrap();
     assert_eq!(child.metadata.disabled_tools, ["change"]);
+    let child = manager.get(&child.id).unwrap();
     release.cancel();
     tokio::time::timeout(std::time::Duration::from_secs(5), child_waiting.cancelled())
         .await
         .unwrap();
-    parent.cancel(&run.operation_id);
-    complete(run).await;
-    let child = manager.get(&child.id).unwrap();
-    assert_eq!(outcomes(&child), [ToolOutcome::NotExecuted]);
-    assert_eq!(probe.preparations.load(Ordering::SeqCst), 0);
-    assert!(matches!(
-        child.update_disabled_tools(vec![]).await,
-        Err(Error::Invalid(_))
-    ));
-    // A user-created fork is independent, but initially inherits the child's policy.
+    // Fork while the child still exists: cancelled delegates are now removed
+    // after their bounded results have been checkpointed in the parent.
     let fork = manager
-        .fork(&child.id, provider, vec![probe])
+        .fork(&child.id, provider.clone(), vec![probe.clone()])
         .await
         .unwrap();
     assert!(fork.snapshot().metadata.parent.is_none());
     assert_eq!(fork.snapshot().metadata.disabled_tools, ["change"]);
     fork.update_disabled_tools(vec![]).await.unwrap();
+    parent.cancel(&run.operation_id);
+    complete(run).await;
+    assert!(manager.get(&child.id).is_err());
+    assert_eq!(outcomes(&child), [ToolOutcome::NotExecuted]);
+    assert_eq!(probe.preparations.load(Ordering::SeqCst), 0);
+    // Restoring an idle child must still reject selection changes on policy,
+    // rather than merely because the live child is busy or already disposed.
+    let record = child.record();
+    let mut options =
+        ConversationOptions::new(provider, record.model.clone(), record.workspace.clone());
+    options.tools = vec![probe];
+    let restored = Conversation::new(options, Some(record)).unwrap();
+    assert!(matches!(
+        restored.update_disabled_tools(vec![]).await,
+        Err(Error::Invalid(
+            "Sub-agents inherit their parent's tool selection."
+        ))
+    ));
     manager.close().await.unwrap();
 }
