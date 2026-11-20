@@ -47,6 +47,9 @@ import AppKit
                     reference.doubleValue = scroller.doubleValue
                     reference.knobProportion = scroller.knobProportion
                     do {
+                        // Geometry alone misses AppKit's undersized overlay-knob
+                        // texture for compatible subclasses. Use its exact native class.
+                        try expect(type(of: scroller) == NSScroller.self)
                         try expect(transcript.scrollerStyle == style && scroller.scrollerStyle == style)
                         try expect(!scroller.isHidden && scroller.isEnabled)
                         try expect(scroller.frame == reference.frame && scroller.bounds == reference.bounds)
@@ -78,6 +81,58 @@ import AppKit
                     }
                 }
             }
+        }
+    }
+
+    /// Requires --composer-events' NSApplication loop. Native mouse tracking
+    /// supplies hitPart; sendAction alone has no knob/track part to operate on.
+    func nativeActionsPreserveReaderIntentAcrossStyles() async throws {
+        _ = NSApplication.shared
+        let state = TranscriptState()
+        let transcript = TranscriptScrollView(state: state)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 400),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = transcript
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        defer { transcript.detach(); window.orderOut(nil); window.contentView = nil; window.close() }
+        transcript.autohidesScrollers = false
+        let messages = (0..<40).map { Message(role: .assistant, text: "Synthetic row \($0)\nSecond line") }
+        func drag(_ scroller: NSScroller, to y: CGFloat) async throws {
+            let knob = scroller.rect(for: .knob)
+            let start = NSPoint(x: knob.midX, y: knob.midY)
+            let end = NSPoint(x: knob.midX, y: y)
+            for (type, point) in [(NSEvent.EventType.leftMouseDown, start), (.leftMouseDragged, end), (.leftMouseUp, end)] {
+                let event = NSEvent.mouseEvent(with: type, location: scroller.convert(point, to: nil),
+                    modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                    clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)!
+                NSApp.postEvent(event, atStart: false)
+            }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        for style in [NSScroller.Style.overlay, .legacy, .overlay] {
+            transcript.scrollerStyle = style
+            transcript.tile()
+            state.jumpToLatest()
+            transcript.update(messages: messages, jumpRequest: state.jumpRequest)
+            transcript.layoutSubtreeIfNeeded()
+            transcript.refresh()
+            transcript.flashScrollers()
+            try await Task.sleep(for: .milliseconds(200))
+            let scroller = transcript.verticalScroller!
+            try expect(type(of: scroller) == NSScroller.self)
+            let before = transcript.contentView.bounds.minY
+            let quarter = scroller.isFlipped ? scroller.bounds.height * 0.25 : scroller.bounds.height * 0.75
+            try await drag(scroller, to: quarter)
+            guard transcript.contentView.bounds.minY < before, !state.followsLatest else {
+                throw CheckFailure(description: "Native scroller did not stop following: style=\(style.rawValue), before=\(before), after=\(transcript.contentView.bounds.minY), follows=\(state.followsLatest)")
+            }
+            try await drag(scroller, to: scroller.isFlipped ? scroller.bounds.maxY : scroller.bounds.minY)
+            try expect(state.followsLatest)
+            try expect(abs(transcript.contentView.bounds.maxY - transcript.documentView!.bounds.maxY) <= 2)
         }
     }
 

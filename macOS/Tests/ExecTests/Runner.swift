@@ -51,6 +51,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
                 ("Composer stale snapshots cannot cross drafts or sessions", {
                     try await ComposerEventTests().changedDraftAndSessionDoNotReuseSnapshot()
                 }),
+                ("Native scrollbar actions preserve reader intent across styles", {
+                    try await TranscriptScrollerTests().nativeActionsPreserveReaderIntentAcrossStyles()
+                }),
                 ("Sidebar context clicks cover parents without stealing child menus", {
                     try await SidebarContextMenuTests().parentAndChildHitTargetsStayScoped()
                 })
