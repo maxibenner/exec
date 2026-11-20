@@ -94,7 +94,7 @@ struct ComposerTextInput: NSViewRepresentable {
             editor.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
             editor.setAccessibilityLabel("Message")
             editor.delegate = self
-            editor.onFocus = { [weak self] in self?.reportFocus() }
+            editor.onFocus = { [weak self] in self?.reportFocus($0) }
             documentView = editor
             contentView.postsBoundsChangedNotifications = true
             NotificationCenter.default.addObserver(self, selector: #selector(viewportDidChange),
@@ -122,16 +122,16 @@ struct ComposerTextInput: NSViewRepresentable {
             let changedState = editingState.map { $0 !== self.editingState } ?? false
             if changedSession || changedState { capturePosition() }
             if let editingState { self.editingState = editingState }
-            if changedSession || changedState || self.editingState.owner == nil {
-                self.editingState.owner = ownership
-            }
+            let acquiringOwnership = changedSession || changedState || self.editingState.owner == nil
+            if acquiringOwnership { self.editingState.owner = ownership }
             guard self.editingState.owner == ownership else { return }
             updating = true
             defer { updating = false }
-            if changedSession {
+            if acquiringOwnership {
                 let saved = self.editingState.position
                 pendingPosition = saved?.session == session && saved?.text == text ? saved : nil
                 editor.hasEditingPosition = pendingPosition != nil
+                if pendingPosition != nil { needsLayout = true }
             } else if boundText != text && editor.string != text {
                 pendingPosition = nil
                 self.editingState.position = nil
@@ -148,14 +148,17 @@ struct ComposerTextInput: NSViewRepresentable {
                 invalidateIntrinsicContentSize()
             }
             boundText = text
-            if !focused && self.focused && window?.firstResponder === editor {
-                window?.makeFirstResponder(nil)
+            if !focused && self.focused {
+                pendingFocus = false
+                if window?.firstResponder === editor { window?.makeFirstResponder(nil) }
             }
-            if self.request != request || (enabled && !self.enabled) || changedSession {
+            // A request token is an edge, not a standing demand for focus. Keep
+            // unconsumed work while disabled, but never replay it just on enable.
+            if self.request != request || changedSession {
                 pendingFocus = request != nil || focused
             }
             if focused && !self.focused { pendingFocus = true }
-            if !enabled { pendingFocus = request != nil || focused }
+            if !enabled && self.enabled && focused { pendingFocus = true }
             self.session = session
             self.request = request
             self.enabled = enabled
@@ -173,7 +176,11 @@ struct ComposerTextInput: NSViewRepresentable {
         }
 
         @objc private func viewportDidChange(_ notification: Notification) { capturePosition() }
-        func textViewDidChangeSelection(_ notification: Notification) { capturePosition() }
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard !detached, editingState.owner == ownership, !updating else { return }
+            pendingPosition = nil
+            capturePosition()
+        }
 
         func detach() {
             capturePosition()
@@ -214,7 +221,13 @@ struct ComposerTextInput: NSViewRepresentable {
         }
 
         private func restorePositionIfReady() {
-            guard let position = pendingPosition, contentSize.width > 0, contentSize.height > 0,
+            guard !updating, let position = pendingPosition else { return }
+            guard !detached, editingState.owner == ownership, position.session == session,
+                  position.text == boundText, editor.string == position.text, !editor.hasMarkedText() else {
+                pendingPosition = nil
+                return
+            }
+            guard contentSize.width > 0, contentSize.height > 0,
                   let layout = editor.layoutManager, let container = editor.textContainer else { return }
             // Restore after SwiftUI has assigned the real viewport, never while
             // sizing proposals or a zero-sized mount could clamp the offset to 0.
@@ -248,6 +261,7 @@ struct ComposerTextInput: NSViewRepresentable {
                 guard !self.detached, self.editingState.owner == self.ownership,
                       self.pendingFocus, self.enabled, let window = self.window,
                       !self.isHiddenOrHasHiddenAncestor else { return }
+                self.restorePositionIfReady()
                 self.pendingFocus = false
                 if window.firstResponder !== self.editor {
                     self.pendingFocus = !window.makeFirstResponder(self.editor)
@@ -255,7 +269,11 @@ struct ComposerTextInput: NSViewRepresentable {
             }
         }
 
-        private func reportFocus() {
+        private func reportFocus(_ focused: Bool) {
+            guard !detached, editingState.owner == ownership else { return }
+            // Cancel before the queued focus block can run. A disabled editor's
+            // resignation is temporary; preserve its pending prior-focus restore.
+            if focused || enabled { pendingFocus = false }
             capturePosition()
             // Responder changes can happen inside a SwiftUI update transaction.
             DispatchQueue.main.async { [weak self] in
@@ -267,6 +285,8 @@ struct ComposerTextInput: NSViewRepresentable {
         }
 
         func textDidChange(_ notification: Notification) {
+            guard !detached, editingState.owner == ownership, enabled, !updating else { return }
+            pendingPosition = nil
             editor.needsDisplay = true
             invalidateIntrinsicContentSize()
             boundText = editor.string
@@ -275,6 +295,7 @@ struct ComposerTextInput: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            guard !detached, editingState.owner == ownership, enabled, textView === editor else { return true }
             guard !textView.hasMarkedText() else { return false }
             switch commandSelector {
             case #selector(NSResponder.insertNewline(_:)):
@@ -298,7 +319,7 @@ struct ComposerTextInput: NSViewRepresentable {
     }
 
     class Editor: NSTextView {
-        var onFocus: (() -> Void)?
+        var onFocus: ((Bool) -> Void)?
         var hasEditingPosition = false
         var placeholder = "" { didSet { if oldValue != placeholder { needsDisplay = true } } }
         private static let caretWidth: CGFloat = 2
@@ -309,9 +330,16 @@ struct ComposerTextInput: NSViewRepresentable {
             // Match the actual focus-causing event, not the current responder.
             let resumesEditing = refocusingClick === event
             refocusingClick = nil
-            if resumesEditing { return }
-            if hasEditingPosition, window?.firstResponder !== self, isPlainClick(event),
-               window?.makeFirstResponder(self) == true { return }
+            if resumesEditing || (hasEditingPosition && window?.firstResponder !== self && isPlainClick(event) &&
+                                  window?.makeFirstResponder(self) == true) {
+                // A plain refocus click resumes the saved caret/viewport. Track
+                // until release or drag, then let NSTextView own drag selection
+                // from the original down event, including its normal autoscroll.
+                guard let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp],
+                                                  until: .distantFuture, inMode: .eventTracking, dequeue: true),
+                      next.type == .leftMouseDragged else { return }
+                NSApp.postEvent(next, atStart: true)
+            }
             super.mouseDown(with: event)
         }
 
@@ -350,7 +378,7 @@ struct ComposerTextInput: NSViewRepresentable {
                     refocusingClick = event
                 }
                 hasEditingPosition = true
-                onFocus?()
+                onFocus?(true)
             }
             return accepted
         }
@@ -358,7 +386,7 @@ struct ComposerTextInput: NSViewRepresentable {
         override func resignFirstResponder() -> Bool {
             refocusingClick = nil
             let accepted = super.resignFirstResponder()
-            if accepted { onFocus?() }
+            if accepted { onFocus?(false) }
             return accepted
         }
 

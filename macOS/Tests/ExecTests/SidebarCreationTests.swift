@@ -276,6 +276,7 @@ private actor SidebarCreationTransport: AgentTransport {
                                   styleMask: [.titled, .resizable], backing: .buffered, defer: false)
             window.contentView = host
             windows.mainWindow = window
+            window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             defer { window.orderOut(nil); window.contentView = nil }
@@ -299,9 +300,9 @@ private actor SidebarCreationTransport: AgentTransport {
                 }
                 throw CheckFailure(description: "Fork fixture did not acquire its active key window")
             }
-            func postKey(_ character: String, keyCode: UInt16) {
+            func postKey(_ character: String, keyCode: UInt16, flags: NSEvent.ModifierFlags = []) {
                 for eventType in [NSEvent.EventType.keyDown, .keyUp] {
-                    let event = NSEvent.keyEvent(with: eventType, location: .zero, modifierFlags: [],
+                    let event = NSEvent.keyEvent(with: eventType, location: .zero, modifierFlags: flags,
                         timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                         context: nil, characters: character, charactersIgnoringModifiers: character,
                         isARepeat: false, keyCode: keyCode)!
@@ -327,9 +328,8 @@ private actor SidebarCreationTransport: AgentTransport {
             if count == 2 { try await settle() }
             try await fixture.finishCreation()
             await library.waitForNavigation()
-            // Include the native second-session sidebar reveal animation.
-            try await Task.sleep(for: .milliseconds(600))
-            host.layoutSubtreeIfNeeded()
+            // Exercise input during reveal/layout, not only after a 600ms grace period.
+            try await settle()
             guard let fork = editor(in: host) else { throw CheckFailure(description: "Fork composer not mounted") }
             try expect(library.current !== source && library.error == nil)
             try expect(fork !== original && fork.editor.isEditable && fork.editor.isSelectable)
@@ -356,6 +356,23 @@ private actor SidebarCreationTransport: AgentTransport {
             postKey("b", keyCode: 11)
             try await settle()
             try expect(library.current.draft == "ab")
+            // Shift-arrow selection is handled by NSTextView, independent of
+            // the application's Edit menu (the fixture has no main menu).
+            postKey("\u{f702}", keyCode: 123, flags: [.shift])
+            postKey("\u{f702}", keyCode: 123, flags: [.shift])
+            try await settle()
+            guard fork.editor.selectedRange() == NSRange(location: 0, length: 2) else {
+                throw CheckFailure(description: "Fork keyboard selection failed: text=\(fork.editor.string.debugDescription), selection=\(fork.editor.selectedRange()), responder=\(String(describing: window.firstResponder))")
+            }
+            postKey("r", keyCode: 15)
+            try await settle()
+            try expect(library.current.draft == "r" && fork.editor.selectedRange() == NSRange(location: 1, length: 0))
+            postKey("\u{f702}", keyCode: 123, flags: [.shift])
+            try await settle()
+            try expect(fork.editor.selectedRange() == NSRange(location: 0, length: 1))
+            postKey("x", keyCode: 7)
+            try await settle()
+            try expect(library.current.draft == "x" && source.draft.isEmpty)
         }
     }
 

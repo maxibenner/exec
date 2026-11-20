@@ -96,6 +96,7 @@ struct ComposerEventTests {
             other.frame = NSRect(x: 30, y: 600, width: 250, height: 24)
             root.addSubview(other)
             window.contentView = root
+            window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -188,6 +189,21 @@ struct ComposerEventTests {
             try check(window.firstResponder === view.editor,
                       "Editor click #\(eventNumber) did not focus editor; before click: \(before)", view: view)
             try check(model.focused, "Editor click #\(eventNumber) did not update focus binding", view: view)
+        }
+
+        func drag(from start: NSPoint, to end: NSPoint) async throws {
+            try await requireActiveWindow()
+            eventNumber += 1
+            let before = window.deliveredDowns
+            window.postedEventNumbers.insert(-eventNumber)
+            for (type, point) in [(NSEvent.EventType.leftMouseDown, start), (.leftMouseDragged, end), (.leftMouseUp, end)] {
+                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: -eventNumber, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1)!
+                NSApp.postEvent(event, atStart: false)
+            }
+            try await settle()
+            try check(window.deliveredDowns == before + 1, "Drag did not deliver exactly one mouseDown")
         }
 
         func type(_ character: String, keyCode: UInt16) async throws {
@@ -337,6 +353,32 @@ struct ComposerEventTests {
             try await h.clickEditor(view)
             try expect(view.editor.selectedRange().length == 0 && view.editor.selectedRange() != saved.selection)
         }
+        try await h.checkNoRequests()
+    }
+
+    func firstRefocusDragSelectsAndReplacesText() async throws {
+        let h = try Harness()
+        defer { h.close() }
+        let (view, _) = try await h.prepare()
+        try await h.blur()
+        let start = NSPoint(x: 30, y: view.contentView.bounds.minY + 8)
+        let end = NSPoint(x: 190, y: start.y)
+        let startInWindow = view.editor.convert(start, to: nil)
+        let endInWindow = view.editor.convert(end, to: nil)
+        try h.check(h.window.contentView?.hitTest(startInWindow) === view.editor &&
+                    h.window.contentView?.hitTest(endInWindow) === view.editor,
+                    "Drag endpoints must hit the visible native editor", view: view)
+        let first = view.editor.characterIndexForInsertion(at: start)
+        let last = view.editor.characterIndexForInsertion(at: end)
+        let selection = NSRange(location: first, length: last - first)
+        try expect(selection.length > 5)
+        let before = h.model.panel.draft
+        try await h.drag(from: startInWindow, to: endInWindow)
+        try h.check(view.editor.selectedRange() == selection,
+                    "First-refocus drag was swallowed: expected \(selection), got \(view.editor.selectedRange())", view: view)
+        try await h.type("x", keyCode: 7)
+        try h.check(h.model.panel.draft == (before as NSString).replacingCharacters(in: selection, with: "x"),
+                    "Typing did not replace the first-refocus drag selection", view: view)
         try await h.checkNoRequests()
     }
 

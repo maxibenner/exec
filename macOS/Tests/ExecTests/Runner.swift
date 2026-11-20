@@ -16,6 +16,11 @@ func expectFailure(_ operation: () throws -> Void) throws {
 }
 
 @main struct TestRunner {
+    private static func matchesFilter(_ name: String) -> Bool {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--filter"), index + 1 < arguments.count else { return true }
+        return name.localizedCaseInsensitiveContains(arguments[index + 1])
+    }
     // Keep run() in a synchronous entry point: AppKit marks it noasync. The
     // default suite is unchanged; only this isolated process owns an app loop.
     @MainActor private static func runComposerEvents() {
@@ -27,8 +32,8 @@ func expectFailure(_ operation: () throws -> Void) throws {
             exit(1)
         }
         Task { @MainActor in
-            let checks: [(String, @MainActor () async throws -> Void)] = [
-                ("Forked composers show a caret and accept real keyboard input", {
+            let allChecks: [(String, @MainActor () async throws -> Void)] = [
+                ("Forked composers focus, select and replace through native events", {
                     try await SidebarCreationTests().forkFocusesMountedComposerAfterNavigation()
                 }),
                 ("Composer survives a dismantled temporary replacement", {
@@ -36,6 +41,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
                 }),
                 ("Composer real-event blur/refocus, subsequent clicks and explicit focus", {
                     try await ComposerEventTests().realBlurAndRefocusPreserveSelectionAndViewport()
+                }),
+                ("Composer first-refocus drag selects and replaces text", {
+                    try await ComposerEventTests().firstRefocusDragSelectsAndReplacesText()
                 }),
                 ("Composer remount restores selection and text-anchored viewport", {
                     try await ComposerEventTests().remountRestoresSelectionAndViewportAfterLayout()
@@ -47,6 +55,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
                     try await SidebarContextMenuTests().parentAndChildHitTargetsStayScoped()
                 })
             ]
+            let checks = allChecks.filter { matchesFilter($0.0) }
             var failures = 0
             for (name, check) in checks {
                 do { try await check(); print("PASS \(name)") }
@@ -66,7 +75,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             runComposerEvents()
             return
         }
-        let checks: [(String, @MainActor () async throws -> Void)] = [
+        let allChecks: [(String, @MainActor () async throws -> Void)] = [
             ("Thinking footer follows response gaps and terminal states", { try ThinkingIndicatorTests().responseActivity() }),
             ("Thinking footer belongs to transcript geometry", { try await ThinkingIndicatorTests().documentFooter() }),
             ("Thinking timing follows background session observation", { try await ThinkingIndicatorTests().backgroundObservation() }),
@@ -198,6 +207,11 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Account usage fits settings widths", { try AccountUsageLabelTests().fitsAvailableWidths() }),
             ("Composer command and path isolation", { try ComposerCommandTests().recognizesOnlyLeadingCommands() }),
             ("Composer cursor excludes controls", { try ComposerCursorTests().excludesControlsWithoutLeavingGaps() }),
+            ("Composer lifecycle restores the latest ownership and state position", { try await ComposerLifecycleTests().restoresLatestPositionOnOwnershipAndStateChanges() }),
+            ("Composer lifecycle pending restores cannot overwrite native input", { try await ComposerLifecycleTests().pendingRestoresCannotOverwriteNewNativeInput() }),
+            ("Composer lifecycle nonowners cannot restore or publish edits", { try await ComposerLifecycleTests().nonOwnersCannotRestoreOrPublishEditingCallbacks() }),
+            ("Composer lifecycle blur cancels queued and consumed focus requests", { try await ComposerLifecycleTests().blurCancelsQueuedFocusAndConsumedRequestsStayConsumed() }),
+            ("Composer lifecycle disabled editors defer only unconsumed focus", { try await ComposerLifecycleTests().disabledEditorsDeferOnlyUnconsumedFocusAndIgnoreCommands() }),
             ("Composer bridges focus state and preserves marked text through updates", { try await ComposerTextInputTests().bridgesFocusAndPreservesComposition() }),
             ("Retired composers cannot apply queued focus or binding updates", { try await ComposerTextInputTests().retiredEditorsCannotApplyQueuedFocus() }),
             ("Composer preserves its viewport and selection across focus changes", { try await ComposerTextInputTests().preservesViewportAcrossFocusChanges() }),
@@ -273,6 +287,7 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Bundled backend ignores external settings and provisions private credentials", { try AgentIntegrationTests().httpConfiguration() }),
             ("Agent transport connects to isolated Rust service", { try await AgentIntegrationTests().realService() })
         ]
+        let checks = allChecks.filter { matchesFilter($0.0) }
         for (name, check) in checks {
             do { try await check() }
             catch {
