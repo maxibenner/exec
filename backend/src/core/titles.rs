@@ -33,7 +33,7 @@ pub(super) async fn generate(
                 ProviderEvent::Text(delta) => text.push_str(&delta),
                 ProviderEvent::TextSnapshot(snapshot) => text = snapshot,
                 ProviderEvent::Done => done = true,
-                ProviderEvent::ToolCall(_) => return None,
+                ProviderEvent::ToolCall(_) | ProviderEvent::Continue => return None,
                 ProviderEvent::Metadata { .. } => {}
             }
             if text.len() > 4096 {

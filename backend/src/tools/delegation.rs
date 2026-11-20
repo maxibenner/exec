@@ -33,20 +33,17 @@ async fn run_child(
         )));
     }
     let snapshot = child.snapshot();
-    let answer = snapshot
-        .messages
-        .iter()
-        .rev()
-        .find_map(|message| match message {
-            Message::Assistant {
-                text,
-                calls,
-                status: MessageStatus::Completed,
-                ..
-            } if calls.is_empty() => Some(text.as_str()),
-            _ => None,
-        })
-        .unwrap_or("");
+    // Only successful operation settlement establishes finality. Never search
+    // backward for a tool-free progress message if the terminal reply is missing.
+    let answer = match snapshot.messages.last() {
+        Some(Message::Assistant {
+            text,
+            calls,
+            status: MessageStatus::Completed,
+            ..
+        }) if calls.is_empty() => text.as_str(),
+        _ => return Err(Error::Internal),
+    };
     Ok(bounded_result(
         format!("Child session: {}\n\n{answer}", child.id),
         limit,

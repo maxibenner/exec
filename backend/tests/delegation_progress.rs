@@ -905,6 +905,101 @@ async fn steering_during_a_progress_checkpoint_keeps_polling_the_delegate() {
 }
 
 #[tokio::test]
+async fn steered_child_waits_for_tools_and_final_before_returning_and_cleanup() {
+    let workspace = directory();
+    let store = Arc::new(GatedStore::default());
+    store.save_gate.arm();
+    let (initial, gates) = gated_children(1, false, false);
+    let tool_gate = Arc::new(Gate::default());
+    tool_gate.arm();
+    let held = tool_gate.clone();
+    let mut scripts = vec![batch("batch", 1)];
+    scripts.extend(initial);
+    scripts.extend([
+        response(vec![
+            ProviderEvent::Text("Intermediate update after steering".into()),
+            ProviderEvent::Continue,
+        ]),
+        script(move |_| {
+            Box::pin(async_stream::try_stream! {
+                held.hold().await;
+                yield call("child-action");
+                yield ProviderEvent::Done;
+            })
+        }),
+        answer(),
+        answer(),
+    ]);
+    let provider = FakeProvider::new(scripts);
+    let effects = Arc::new(AtomicUsize::new(0));
+    let count = effects.clone();
+    let tools = vec![tool(None, move |_| {
+        count.fetch_add(1, Ordering::SeqCst);
+        async { Ok("child action completed".into()) }
+    })];
+    let manager = AgentManager::open(store.clone(), |_| (provider.clone(), tools.clone()))
+        .await
+        .unwrap();
+    let mut library = manager.library_configuration().unwrap();
+    library.automatic_titles = false;
+    manager.update_library(library).await.unwrap();
+    let parent = manager
+        .create_session(
+            provider.clone(),
+            tools,
+            Some("fake".into()),
+            workspace.path().to_string_lossy().into_owned(),
+            None,
+            Some(vec![]),
+        )
+        .await
+        .unwrap();
+    let mut run = manager.submit(&parent.id, "Delegate".into()).await.unwrap();
+    wait(&gates[0].entered).await;
+    let id = child_id(&manager, 0);
+    let child = manager.get(&id).unwrap();
+    let operation = child.snapshot().operation.unwrap().id;
+    manager
+        .steer(&id, &operation, "Change direction".into())
+        .unwrap();
+    gates[0].release.cancel();
+    wait(&tool_gate.entered).await;
+    assert!(child.snapshot().pending_input.is_empty());
+    assert_eq!(
+        child.snapshot().operation.unwrap().state,
+        OperationState::Running
+    );
+    assert!(results(&parent.snapshot().messages).is_empty());
+    assert_eq!(store.deletes.load(Ordering::SeqCst), 0);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    pending(&mut run, &provider, 4, &parent);
+    tool_gate.release.cancel();
+    wait(&store.save_gate.entered).await;
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    let returned = results(&parent.snapshot().messages);
+    assert_eq!(returned.len(), 1);
+    assert_eq!(
+        returned[0].text,
+        format!("Child session: {id}\n\nCompleted answer")
+    );
+    assert_eq!(returned[0].outcome, ToolOutcome::Completed);
+    assert!(manager.get(&id).is_ok());
+    assert_eq!(store.deletes.load(Ordering::SeqCst), 0);
+    store.save_gate.release.cancel();
+    assert_eq!(complete(run).await.state, OperationState::Completed);
+    assert_eq!(provider.count(), 6);
+    assert_eq!(store.deletes.load(Ordering::SeqCst), 1);
+    assert!(manager.get(&id).is_err());
+    let requests = provider.requests.lock().unwrap();
+    assert!(requests[2].messages.iter().any(|m| matches!(m,
+        ContextMessage::User { text } if text == "Change direction")));
+    assert!(requests[3].messages.iter().any(|m| matches!(m,
+        ContextMessage::Assistant { text, calls } if text == "Intermediate update after steering" && calls.is_empty())));
+    child.record().validate().unwrap();
+    parent.record().validate().unwrap();
+}
+
+#[tokio::test]
 async fn automatic_cleanup_never_retries_a_failed_explicit_child_deletion() {
     let workspace = directory();
     let store = Arc::new(GatedStore {

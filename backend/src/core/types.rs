@@ -239,7 +239,12 @@ pub enum ProviderEvent {
         state: Option<Value>,
         usage: Option<TokenUsage>,
     },
+    /// A complete response. With no tools or pending input, the operation may settle.
     Done,
+    /// A complete but explicitly intermediate response. Advance to the next model
+    /// decision within the same operation and step budget, even without tool calls.
+    /// Never emit this for a truncated/failed stream or infer it from response text.
+    Continue,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

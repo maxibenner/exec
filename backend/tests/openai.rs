@@ -105,6 +105,231 @@ fn save(path: &std::path::Path, value: &Session) {
     .unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
 }
+fn phased_message(id: &str, phase: Value, text: &str) -> Value {
+    json!({"id":id,"type":"message","role":"assistant","status":"completed",
+        "phase":phase,"content":[{"type":"output_text","text":text}]})
+}
+
+#[tokio::test]
+async fn steering_commentary_continues_through_tools_to_final_and_replays_phase() {
+    let root = support::directory();
+    let path = root.path().join("credentials.json");
+    save(&path, &session(false));
+    let entered = CancellationToken::new();
+    let release = CancellationToken::new();
+    let signal = entered.clone();
+    let held = release.clone();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let count = requests.clone();
+    let transport = Fake::new(move |request| {
+        let signal = signal.clone();
+        let held = held.clone();
+        let count = count.clone();
+        async move {
+            if matches!(request.endpoint, Endpoint::Models) {
+                return Ok(response(
+                    json!({"models":[{"slug":"test","context_window":100000}]}),
+                ));
+            }
+            assert!(matches!(request.endpoint, Endpoint::Responses));
+            let body: Value = serde_json::from_str(request.body.as_ref().unwrap()).unwrap();
+            let input = body["input"].as_array().unwrap();
+            let step = count.fetch_add(1, Ordering::SeqCst);
+            if step > 0 {
+                assert!(
+                    input
+                        .iter()
+                        .any(|i| i["role"] == "user" && i["content"] == "Change direction")
+                );
+            }
+            if step > 1 {
+                assert!(
+                    input
+                        .iter()
+                        .any(|i| i["id"] == "progress" && i["phase"] == "commentary")
+                );
+            }
+            let output = match step {
+                0 => {
+                    signal.cancel();
+                    held.cancelled().await;
+                    vec![phased_message(
+                        "initial",
+                        json!("final_answer"),
+                        "Initial answer",
+                    )]
+                }
+                1 => {
+                    // Phase arrives on the added item, not repeated on done or the
+                    // response envelope. Item completion must not settle the turn.
+                    let mut done =
+                        phased_message("progress", Value::Null, "Progress after steering");
+                    done.as_object_mut().unwrap().remove("phase");
+                    return Ok(wire(vec![
+                        json!({"type":"response.output_item.added","output_index":0,"item":{
+                            "id":"progress","type":"message","role":"assistant","status":"in_progress","phase":"commentary"}}),
+                        json!({"type":"response.output_text.delta","delta":"Progress after steering"}),
+                        json!({"type":"response.output_item.done","output_index":0,"item":done}),
+                        json!({"type":"response.completed","response":{"status":"completed","output":[]}}),
+                    ]));
+                }
+                2 => vec![
+                    phased_message("tool-preamble", json!("commentary"), "About to act"),
+                    json!({"type":"function_call","id":"fc","call_id":"action","name":"change","arguments":"{}","status":"completed"}),
+                ],
+                3 => {
+                    assert!(
+                        input.iter().any(
+                            |i| i["type"] == "function_call_output" && i["call_id"] == "action"
+                        )
+                    );
+                    vec![
+                        phased_message("last-progress", json!("commentary"), "Checking results"),
+                        phased_message("final", json!("final_answer"), "Actual final answer"),
+                    ]
+                }
+                _ => panic!("unexpected inference or retry"),
+            };
+            Ok(wire(vec![
+                json!({"type":"response.completed","response":{"status":"completed","output":output}}),
+            ]))
+        }
+    });
+    let auth = Authentication::open(path, None, transport.clone())
+        .await
+        .unwrap();
+    let provider = Arc::new(OpenAIProvider::new(auth, transport));
+    let effects = Arc::new(AtomicUsize::new(0));
+    let count = effects.clone();
+    let mut options = support::options(
+        provider.clone(),
+        vec![support::tool(None, move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+            async { Ok("done".into()) }
+        })],
+    );
+    options.model = "test".into();
+    let conversation = Conversation::new(options, None).unwrap();
+    let run = conversation.submit("Original task".into()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered.cancelled())
+        .await
+        .unwrap();
+    conversation
+        .steer(&run.operation_id, "Change direction".into())
+        .unwrap();
+    release.cancel();
+    assert_eq!(
+        support::complete(run).await.state,
+        OperationState::Completed
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 4);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    let record = conversation.record();
+    record.validate().unwrap();
+    assert!(
+        matches!(record.messages.last(), Some(Message::Assistant { text, .. }) if text == "Actual final answer")
+    );
+    let state = record.provider_state.unwrap();
+    assert!(state.to_string().contains("last-progress"));
+    assert!(state.to_string().contains("final_answer"));
+    // Existing flattened transcripts still retain phase on a fork.
+    let ids: Vec<_> = record.messages.iter().map(|m| m.id().to_owned()).collect();
+    let mut messages = context(&record.messages);
+    if let Some(ContextMessage::Assistant { text, .. }) = messages.last_mut() {
+        *text = "Checking resultsActual final answer".into();
+    }
+    let forked = provider
+        .fork_state(state, &ids, &messages)
+        .unwrap()
+        .unwrap();
+    assert!(forked.to_string().contains("last-progress"));
+}
+
+#[tokio::test]
+async fn commentary_needs_a_completed_envelope_and_unmarked_text_is_not_a_heuristic() {
+    for (phase, terminal, expected) in [
+        (None, Some("completed"), OperationState::Completed),
+        (
+            Some(Value::Null),
+            Some("completed"),
+            OperationState::Completed,
+        ),
+        (
+            Some(json!("final_answer")),
+            Some("completed"),
+            OperationState::Completed,
+        ),
+        (
+            Some(json!("unknown")),
+            Some("completed"),
+            OperationState::Failed,
+        ),
+        (Some(json!("commentary")), None, OperationState::Failed),
+        (
+            Some(json!("commentary")),
+            Some("incomplete"),
+            OperationState::Failed,
+        ),
+        (
+            Some(json!("commentary")),
+            Some("failed"),
+            OperationState::Failed,
+        ),
+    ] {
+        let root = support::directory();
+        let path = root.path().join("credentials.json");
+        save(&path, &session(false));
+        let transport = Fake::new(move |request| {
+            let phase = phase.clone();
+            async move {
+                if matches!(request.endpoint, Endpoint::Models) {
+                    return Ok(response(
+                        json!({"models":[{"slug":"test","context_window":100000}]}),
+                    ));
+                }
+                assert!(matches!(request.endpoint, Endpoint::Responses));
+                let mut item = phased_message("message", Value::Null, "I am still working on this");
+                if let Some(phase) = phase {
+                    item["phase"] = phase;
+                } else {
+                    item.as_object_mut().unwrap().remove("phase");
+                }
+                // Undocumented channel metadata is not a phase substitute.
+                item["channel"] = json!("commentary");
+                let mut events =
+                    vec![json!({"type":"response.output_item.done","output_index":0,"item":item})];
+                if let Some(status) = terminal {
+                    events.push(json!({"type":"response.completed","response":{"status":status,"output":[]}}));
+                }
+                Ok(wire(events))
+            }
+        });
+        let auth = Authentication::open(path, None, transport.clone())
+            .await
+            .unwrap();
+        let provider = Arc::new(OpenAIProvider::new(auth, transport.clone()));
+        let mut options = support::options(provider, vec![]);
+        options.model = "test".into();
+        let conversation = Conversation::new(options, None).unwrap();
+        assert_eq!(
+            support::complete(conversation.submit("Task".into()).unwrap())
+                .await
+                .state,
+            expected
+        );
+        assert_eq!(
+            transport
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| matches!(r.endpoint, Endpoint::Responses))
+                .count(),
+            1
+        );
+    }
+}
+
 #[tokio::test]
 async fn automatic_titles_use_valid_openai_requests_without_polluting_chat_context() {
     let root = support::directory();

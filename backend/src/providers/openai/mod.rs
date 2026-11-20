@@ -168,7 +168,7 @@ fn input(request: &ProviderRequest, state: &Context) -> Result<Vec<Value>> {
                     .filter(|_| !incomplete)
                     .and_then(|i| state.outputs.get(&request.message_ids[i]))
                 {
-                    if self::calls(output)? != *calls || self::text(output) != *text {
+                    if self::calls(output)? != *calls || !text_matches(output, text) {
                         return Err(Error::Invalid(
                             "Saved OpenAI output no longer matches completed conversation history.",
                         ));
@@ -256,15 +256,19 @@ struct Decoder {
 impl Decoder {
     fn decode(&mut self, event: &Value) -> Result<Option<(Vec<Value>, Option<TokenUsage>)>> {
         match event["type"].as_str() {
-            Some("response.output_item.done") => {
+            Some("response.output_item.added" | "response.output_item.done") => {
                 let index = event["output_index"]
                     .as_u64()
                     .filter(|n| *n < 256)
                     .ok_or_else(invalid)? as usize;
-                if !event["item"].is_object() {
-                    return Err(invalid());
-                }
-                self.items.insert(index, event["item"].clone());
+                let item = event["item"].as_object().ok_or_else(invalid)?;
+                // Keep phase and other opaque fields when later events omit them.
+                self.items
+                    .entry(index)
+                    .or_insert_with(|| json!({}))
+                    .as_object_mut()
+                    .ok_or_else(invalid)?
+                    .extend(item.clone());
             }
             Some("response.completed" | "response.done") => {
                 let response = &event["response"];
@@ -352,6 +356,9 @@ fn validate_output(output: &[Value]) -> Result<()> {
         || !output.iter().all(|i| {
             i.is_object()
                 && i.get("status").is_none_or(|s| s == "completed")
+                && (i["type"] != "message"
+                    || i["phase"].is_null()
+                    || matches!(i["phase"].as_str(), Some("commentary" | "final_answer")))
                 && valid_json_depth(i, 0)
         })
     {
@@ -359,10 +366,33 @@ fn validate_output(output: &[Value]) -> Result<()> {
     }
     Ok(())
 }
+// Responses phase is the documented distinction; channel names are not a
+// substitute. Missing/null phase retains compatibility with older models.
+fn needs_continuation(output: &[Value]) -> bool {
+    output
+        .iter()
+        .rev()
+        .find(|item| item["type"] == "message")
+        .is_some_and(|item| item["phase"] == "commentary")
+}
+fn text_matches(output: &[Value], expected: &str) -> bool {
+    // Older records flattened commentary and final text together. Keep their
+    // opaque items on replay/fork without rewriting or resuming completed turns.
+    text(output) == expected || message_text(output, false) == expected
+}
 fn text(output: &[Value]) -> String {
+    let has_final = output
+        .iter()
+        .any(|item| item["type"] == "message" && item["phase"] == "final_answer");
+    message_text(output, has_final)
+}
+fn message_text(output: &[Value], final_only: bool) -> String {
     output
         .iter()
         .filter(|v| v["type"] == "message")
+        // Do not return progress preambles as part of the child's final answer.
+        // The complete original output (including phase) stays in opaque context.
+        .filter(|v| !final_only || v["phase"] == "final_answer")
         .filter_map(|v| v["content"].as_array())
         .flatten()
         .filter_map(|v| match v["type"].as_str() {
@@ -678,7 +708,7 @@ impl ChatProvider for OpenAIProvider {
         for (boundary, message) in message_ids.iter().zip(messages.iter().skip(1)) {
             if let ContextMessage::Assistant { text, calls } = message
                 && let Some(output) = state.outputs.remove(boundary)
-                && self::text(&output) == *text
+                && text_matches(&output, text)
                 && self::calls(&output)? == *calls
             {
                 outputs.insert(boundary.clone(), output);
@@ -694,12 +724,15 @@ impl ChatProvider for OpenAIProvider {
             let session=authentication.credentials(request.cancel.clone()).await?;let mut state=restore(request.provider_state.clone(),&session)?;
             let body=body(&request,&state)?;let mut source=Self::response(transport,session,body,request.cancel.clone());
             while let Some(event)=source.next().await {match event? {ResponseEvent::Text(delta)=>yield ProviderEvent::Text(delta),ResponseEvent::Completed(output,usage)=>{
+                let needs_continuation=needs_continuation(&output);
                 let calls=calls(&output)?;let final_text=text(&output);if final_text.is_empty()&&calls.is_empty(){Err(Error::Provider(Failure::EmptyResponse))?;}
                 yield ProviderEvent::TextSnapshot(final_text);
                 for call in calls {yield ProviderEvent::ToolCall(call);}
                 if let Some(boundary)=request.message_ids.last(){state.outputs.insert(boundary.clone(),output);}
                 let ids:HashSet<_>=request.message_ids.iter().collect();state.outputs.retain(|id,_|ids.contains(id));
-                yield ProviderEvent::Metadata{state:Some(serde_json::to_value(state)?),usage};yield ProviderEvent::Done;return;
+                yield ProviderEvent::Metadata{state:Some(serde_json::to_value(state)?),usage};
+                yield if needs_continuation { ProviderEvent::Continue } else { ProviderEvent::Done };
+                return;
             }}}
         })
     }
