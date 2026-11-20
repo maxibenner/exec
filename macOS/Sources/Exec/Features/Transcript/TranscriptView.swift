@@ -152,7 +152,7 @@ private struct VirtualTranscript: NSViewRepresentable {
             // Repeated idle snapshots must not restart this gap's delay.
             if thinkingFooter == nil, thinkingDelayTask == nil {
                 thinkingDelayTask = Task { @MainActor [weak self] in
-                    do { try await Task.sleep(for: .milliseconds(600)) }
+                    do { try await Task.sleep(for: .milliseconds(500)) }
                     catch { return }
                     guard !Task.isCancelled, let self, !self.detached else { return }
                     self.thinkingDelayTask = nil
