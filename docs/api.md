@@ -48,14 +48,48 @@ reading or changing the default file. To select a different file, set
 `EXEC_AGENT_TOKEN_FILE` and leave `EXEC_AGENT_TOKEN` unset (not empty).
 
 From the repository root, the supplied `compose.yaml` persists the private profile
-and workspaces in separate volumes and exposes only the relay's TLS reverse proxy:
+and workspaces in separate volumes and exposes only the relay's TLS reverse proxy.
+Production relay admission requires `EXEC_RELAY_ALLOWED_ROUTES`; an unset/empty
+allowlist still renders but the relay refuses startup. Bootstrap the private agent
+first, bypassing the agent → proxy → relay startup dependencies:
 
 ```sh
-# Set EXEC_RELAY_DOMAIN to your public relay DNS hostname first.
-docker compose up -d --build
-docker compose exec agent exec-agent-admin health
-docker compose exec agent exec-agent-admin providers list
+export EXEC_RELAY_DOMAIN="relay.example.com" # Your public relay DNS hostname.
+docker compose up -d --build --no-deps --wait agent
+docker compose exec -T agent exec-agent-admin health
+docker compose exec -T agent exec-agent-admin providers list
+docker compose exec -T agent exec-agent-admin remote configure --relay "wss://$EXEC_RELAY_DOMAIN"
+# In a private interactive terminal, with stdin/stdout attached (no -T or pipe):
+docker compose exec agent exec-agent-admin remote invite
 ```
+
+`remote configure` enables access by default; there is no `--enable` flag. Configure
+it **before** inviting. No running relay is needed to issue an invitation; the
+connection may report `connecting` / `relayNotFound` until the relay is available.
+From the invitation displayed locally, copy **only `route`**, the 64-character
+lowercase SHA-256 hash of the host registration token. Do not pipe `remote invite`
+to `jq`, redirect it, or run it in recorded terminals/CI: its JSON includes the
+single-use invitation secret, and the CLI deliberately requires interactive
+stdin/stdout. Never print/copy `remote.json` or the private host registration token.
+
+```sh
+export EXEC_RELAY_ALLOWED_ROUTES="<64-character lowercase route hash>"
+# Daemon-free validation; only the public hostname and route hashes are rendered.
+docker compose config --quiet
+docker compose up -d --build relay proxy
+docker compose exec -T agent exec-agent-admin remote status
+# When ready to pair, generate a fresh invitation if the first expired (five minutes):
+docker compose exec agent exec-agent-admin remote invite
+```
+
+For multiple agents, use comma-separated route hashes (at most 64). Persist the
+hostname and route allowlist in deployment configuration, **never** the host token
+or invitation secret in Compose environment, files, logs or command arguments.
+After changing the allowlist, use `docker compose up -d --force-recreate relay`;
+`docker compose restart` alone does not replace container environment. The agent
+reconnects its transport without replaying API commands. Public DNS/TLS and the
+container deployment still need verification on the target host. See
+[relay admission](../relay/README.md#production-host-admission).
 
 Keep transport/provider secrets out of command arguments and source control.
 The local admin CLI does not run chat, inference or model-discovery commands.
