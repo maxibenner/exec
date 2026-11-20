@@ -19,7 +19,7 @@ import CryptoKit
     var hasUsableModel: Bool { model != nil && provider.isModelAvailable(selectedModel) && !hasUnsavedChanges && !deletedRemotely }
     var requestModelID: String { selectedModel }
     private(set) var messages: [Message] = []
-    private(set) var deletedRemotely = false
+    private(set) var deletedRemotely = false { didSet { updateThinkingIndicator() } }
     var draft = ""
     var draftImages: [ImageAttachment] = []
     var draftFiles: [FileAttachment] = []
@@ -31,15 +31,15 @@ import CryptoKit
     private(set) var workspace: Workspace?
     private var workspaceChosen = false
     private var commitInheritedWorkspace = false
-    private(set) var isRestoringSession = false
+    private(set) var isRestoringSession = false { didSet { updateThinkingIndicator() } }
     private(set) var isSending = false
-    private(set) var isCompacting = false
-    private(set) var isStopping = false
+    private(set) var isCompacting = false { didSet { updateThinkingIndicator() } }
+    private(set) var isStopping = false { didSet { updateThinkingIndicator() } }
     private(set) var isSaving = false
     private(set) var hasUnsavedChanges = false
     private var submitting = false
     private var acceptedOperationID: UUID?
-    private var snapshot: AgentSnapshot?
+    private var snapshot: AgentSnapshot? { didSet { updateThinkingIndicator() } }
     private var operationActive: Bool { snapshot?.operation?.active == true }
     private var backendBusy: Bool { isRestoringSession || submitting || compactionTask != nil || operationActive || isStopping || clearTask != nil }
     var busy: Bool { !deletedRemotely && (backendBusy || commandTask != nil) }
@@ -47,7 +47,7 @@ import CryptoKit
     private var compactionTask: Task<UUID?, Never>?
     private var commandTask: Task<Void, Never>?
     private var pendingCommands: [(key: String, action: @MainActor () async throws -> Void)] = []
-    private var commandsClosed = false
+    private var commandsClosed = false { didSet { updateThinkingIndicator() } }
     var canRequestCommands: Bool { !commandsClosed && !isRestoringSession && !configurationUncertain }
 
     /// Coalesce repeat actions, bind them to this conversation, and never send an idle-only
@@ -90,9 +90,28 @@ import CryptoKit
         commandTask?.cancel()
     }
     var isWorking: Bool { busy }
-    var showsThinkingIndicator: Bool {
-        !deletedRemotely && !isStopping && !isRestoringSession && !isCompacting &&
-            snapshot?.showsThinkingIndicator == true
+    private(set) var showsThinkingIndicator = false
+    private var thinkingOperationID: UUID?
+    private var thinkingDelayTask: Task<Void, Never>?
+
+    /// Track each idle gap even while this session's transcript is unmounted.
+    /// A different operation is a fresh gap, even without an intervening terminal snapshot.
+    private func updateThinkingIndicator() {
+        let operationID = !commandsClosed && !deletedRemotely && !isStopping && !isRestoringSession &&
+            !isCompacting && snapshot?.showsThinkingIndicator == true ? snapshot?.operation?.id : nil
+        guard operationID != thinkingOperationID else { return }
+        thinkingDelayTask?.cancel()
+        thinkingDelayTask = nil
+        showsThinkingIndicator = false
+        thinkingOperationID = operationID
+        guard let operationID else { return }
+        thinkingDelayTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(500)) }
+            catch { return }
+            guard !Task.isCancelled, let self, self.thinkingOperationID == operationID else { return }
+            self.thinkingDelayTask = nil
+            self.showsThinkingIndicator = true
+        }
     }
     var canEditDraft: Bool { !isRestoringSession }
     var canSelectWorkspace: Bool {

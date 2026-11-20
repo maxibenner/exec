@@ -60,12 +60,6 @@ import AppKit
         update(false)
         let originalHeight = view.documentView!.frame.height
         update(true)
-        try expect(view.thinkingIndicatorFrame == nil)
-        try expect(view.documentView!.frame.height == originalHeight)
-        try await Task.sleep(for: .milliseconds(350))
-        try expect(view.thinkingIndicatorFrame == nil)
-        update(true) // An unchanged idle snapshot must not postpone insertion.
-        try await Task.sleep(for: .milliseconds(400))
         guard let footer = view.thinkingIndicatorFrame else {
             throw CheckFailure(description: "Missing transcript footer")
         }
@@ -80,34 +74,98 @@ import AppKit
         try expect(view.documentView!.frame.height == originalHeight)
     }
 
+    private func snapshotJSON(text: String = "", state: String = "running",
+                              operationID: UUID = AgentIntegrationTests.operationID) throws -> AgentJSON {
+        guard case .object(var fields) = try AgentIntegrationTests.fixture(state: state) else {
+            throw CheckFailure(description: "Invalid thinking fixture")
+        }
+        fields["approval"] = .null
+        fields["operation"] = .object(["id": .string(operationID.uuidString), "state": .string(state)])
+        fields["messages"] = .array([.object([
+            "id": .string(AgentIntegrationTests.assistantID.uuidString), "role": .string("assistant"),
+            "text": .string(text), "status": .string("streaming")
+        ])])
+        return .object(fields)
+    }
+
+    private func snapshot(text: String = "", state: String = "running",
+                          operationID: UUID = AgentIntegrationTests.operationID) throws -> AgentSnapshot {
+        try snapshotJSON(text: text, state: state, operationID: operationID).decoded(AgentSnapshot.self)
+    }
+
     func delayLifecycle() async throws {
         _ = NSApplication.shared
-        let view = TranscriptScrollView(state: TranscriptState())
-        defer { view.detach() }
-        func update(_ idle: Bool) {
-            view.update(messages: [], jumpRequest: 0, showsThinkingIndicator: idle)
+        let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: FakeAgentTransport())))
+        defer { store.closePresentation() }
+        func mount() -> TranscriptScrollView {
+            let view = TranscriptScrollView(state: TranscriptState())
+            view.update(messages: store.messages, jumpRequest: 0, showsThinkingIndicator: store.showsThinkingIndicator)
+            return view
         }
 
-        update(true)
-        try await Task.sleep(for: .milliseconds(350))
-        update(false)
-        update(true) // Start a fresh gap; the cancelled task must not insert early.
-        try await Task.sleep(for: .milliseconds(350))
-        try expect(view.thinkingIndicatorFrame == nil)
-        try await Task.sleep(for: .milliseconds(400))
-        try expect(view.thinkingIndicatorFrame != nil)
-        update(false) // Removal is synchronous, including during the fade-in.
-        try expect(view.thinkingIndicatorFrame == nil)
+        try store.apply(snapshot())
+        let first = mount()
+        try expect(first.thinkingIndicatorFrame == nil)
+        try await Task.sleep(for: .milliseconds(300))
+        first.detach() // Navigation does not close the session or reset its gap.
+        try store.apply(snapshot()) // Repeated background state must not restart the delay.
+        try await Task.sleep(for: .milliseconds(300))
+        let returned = mount()
+        try expect(returned.thinkingIndicatorFrame != nil)
+        returned.detach()
+        let again = mount() // Already eligible on return: no additional 0.5-second delay.
+        try expect(again.thinkingIndicatorFrame != nil)
+        again.detach()
+        first.update(messages: [], jumpRequest: 0, showsThinkingIndicator: true)
+        try expect(first.thinkingIndicatorFrame == nil) // Late updates cannot revive old views.
 
-        update(true)
-        update(false) // Activity resumes before the delay elapses.
-        try await Task.sleep(for: .milliseconds(750))
-        try expect(view.thinkingIndicatorFrame == nil)
+        try store.apply(snapshot(text: "Output"))
+        try expect(!store.showsThinkingIndicator) // Activity hides synchronously.
+        try store.apply(snapshot())
+        try await Task.sleep(for: .milliseconds(300))
+        try store.apply(snapshot(text: "More output"))
+        try store.apply(snapshot()) // A real new gap needs the full delay.
+        try await Task.sleep(for: .milliseconds(300))
+        try expect(!store.showsThinkingIndicator) // Cancelled task cannot publish into this gap.
+        try await Task.sleep(for: .milliseconds(300))
+        try expect(store.showsThinkingIndicator)
 
-        update(true)
-        view.detach() // A conversation switch must not leave a pending insertion.
-        update(true) // Late updates cannot revive a dismantled view.
-        try await Task.sleep(for: .milliseconds(750))
-        try expect(view.thinkingIndicatorFrame == nil)
+        try store.apply(snapshot(operationID: UUID()))
+        try expect(!store.showsThinkingIndicator) // New operation, even if terminal state was skipped.
+        try store.apply(snapshot(state: "interrupted"))
+        try await Task.sleep(for: .milliseconds(600))
+        try expect(!store.showsThinkingIndicator)
+        try store.apply(snapshot())
+        store.closePresentation() // Session teardown, unlike navigation, cancels pending publication.
+        try await Task.sleep(for: .milliseconds(600))
+        try expect(!store.showsThinkingIndicator)
+    }
+
+    func backgroundObservation() async throws {
+        let transport = FakeAgentTransport()
+        let path = AgentAPI.path(AgentIntegrationTests.conversationID)
+        try await transport.reply(path, snapshotJSON())
+        let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)))
+        defer { store.closePresentation() }
+        try await store.loadSession(AgentIntegrationTests.conversationID)
+        // No transcript and no getter read until after the delay.
+        try await Task.sleep(for: .milliseconds(600))
+        try expect(store.showsThinkingIndicator)
+        try await transport.reply(path, snapshotJSON(text: "Background output"))
+        for _ in 0..<200 {
+            if store.messages.last?.text == "Background output" { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try expect(store.messages.last?.text == "Background output")
+        try expect(!store.showsThinkingIndicator)
+        try await transport.reply(path, snapshotJSON())
+        for _ in 0..<200 {
+            if store.messages.last?.text == "" { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try expect(store.messages.last?.text == "")
+        try expect(!store.showsThinkingIndicator)
+        try await Task.sleep(for: .milliseconds(600))
+        try expect(store.showsThinkingIndicator)
     }
 }
