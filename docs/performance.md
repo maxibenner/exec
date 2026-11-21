@@ -46,11 +46,24 @@ renderer; do not use this ten-animation window for performance comparisons.
 .build/sidebar-animation-probe --check --dark --narrow --output .build/sidebar-dark-narrow.json
 ```
 
-The normal `./scripts/test.sh` run includes the default motion and Reduce Motion
-workloads. `--verify-detectors` also checks a deliberately snapped copy of the sampled
-report: correct endpoints and native animation keys must not pass without intermediate
-movement and fading. These are regression checks on sampled geometry, not proof of
-GPU frame cadence or physical drag smoothness.
+The normal `./scripts/test.sh` run includes motion and Reduce Motion workloads plus
+`--empty-lifecycle --parent-echo --hidden-updates --cycle-sidebar`:
+
+- `--empty-lifecycle` deletes the last row, creates the first and second conversations,
+  reorders the pair, and deletes the selected conversation through production APIs.
+- `--parent-echo` updates metadata 40 ms into parent insertion/removal.
+- `--hidden-updates` changes parent order/count and children while collapsed, then
+  checks the revealed catalog before the measured phases.
+- `--cycle-sidebar` collapses/reveals the native sidebar before each measured phase.
+  `--reveal-sidebar` additionally starts with the sidebar closed.
+
+Reports record these options and the hidden-catalog reveal endpoint. These visibility
+checks do not assert row fades while collapsed or sample the sidebar's own slide animation.
+`--verify-detectors` checks a deliberately snapped copy of the sampled report: correct
+endpoints and native animation keys must not pass without intermediate movement and fading.
+Additional controls reject an isolated opacity jump despite several intermediate values,
+sampling gaps and ambiguous markers. These are regression checks on sampled geometry,
+not proof of GPU frame cadence or physical drag smoothness.
 
 Opens an isolated window containing the production sidebar, split view and chat detail,
 including composer focus restoration. A fake transport and temporary preferences supply
@@ -71,12 +84,85 @@ intermediate motion. Reports contain synthetic geometry only; no screenshots are
 The script fails if instrumentation hooks drift, measures the allocated group height (not
 just its natural content), and records source hashes beside the binary.
 
+Only layers attached to the hosting view's layer tree contribute window geometry.
+AppKit can leave fitting-size/recycled views in the native view tree with detached
+layers: converting those to global coordinates produces spurious row-local jumps
+and duplicate identities. Reports retain excluded keys as `detachedMarkers`; the
+attachment control checks both exclusion and detection of genuinely attached duplicates.
+This corrects measurement artifacts, not production row animation behavior.
+
 For repeated insert/remove bursts, use `--stress-cycles 10 --stress-parents 100`
 with optional `--stress-kind children|parents|mixed`, `--stress-batch 3`,
 `--stress-interval-ms 80`, `--stress-noise`, or `--stress-reuse-ids`.
 `PROBE_OPTIMIZE=1 ./scripts/probe-sidebar.sh ...` builds an optimized probe.
 Stress reports retain mutation timestamps and flag undersampled or ambiguous fades;
 presentation-layer opacity does not prove visible text fading or GPU frame cadence.
+
+### Unresolved native row interruptions
+
+Ordinary create/delete/reorder checks do not establish animation continuity when
+another update interrupts an entering row. Production rendering is unchanged; the
+following cases still fail `--check` on macOS 27.3 (26C5035r):
+
+```sh
+# Minimal fixed-height List: remove a parent before its insertion completes.
+.build/sidebar-animation-probe --check --in-place --simple-detail --native-list-control \
+  --stress-cycles 3 --stress-parents 5 --stress-kind parents --stress-batch 1 \
+  --stress-interval-ms 40 --trace-owners --output .build/sidebar-reversal.json
+# Production readers: deliver an auto-title while the new session row is entering.
+.build/sidebar-animation-probe --check --in-place --simple-detail --trace-owners \
+  --fresh-title --fresh-title-events --output .build/sidebar-fresh-title.json
+```
+
+Native view/layer identity and animation endpoint traces isolate two mechanisms:
+
+- **Insertion/removal reversal:** the same row moves to a different native animation
+  clip. Removal starts from opacity 1 and full row height instead of the current
+  insertion presentation. The fixed-height List control reproduces this without
+  composer, transcript, child transitions or the production family-height modifier.
+- **Entering-row height changes:** a wrapping title or width change moves the same
+  row out of its insertion clip early, losing the remaining fade/movement. A minimal
+  natural-height List reproduces this too. Fresh-session titles delivered through
+  both polling and change notifications reproduce it; activity-only refreshes and
+  changing a different retained row's title did not in the controlled cases.
+
+The reversal also reproduces on the physical 2× display; mixed display scale is not
+a necessary cause. Programmatic cross-display movement and catalog reordering passed
+sampled geometry checks; this does not validate physical dragging or live resizing.
+Reinserting an ID during removal can produce two attached row instances: those samples
+remain ambiguous, not evidence of smooth motion. Native hidden-catalog tests can also
+emit an unresolved AppKit reentrant-table-delegate warning.
+
+Animating title metadata or changing easing did not repair the interruptions.
+Reserving two title lines avoids the height-change trigger but increases single-line
+row height and does not fix reversal; no such presentation tradeoff is applied.
+A production repair remains open. Do not hide these failures by weakening detectors,
+delaying catalog changes, or patching private AppKit classes.
+
+Useful isolation options:
+
+- `--in-place`: order the synthetic window without activation; not a focus test.
+- `--screen 0` / `--screen 1`: select an attached physical display. Startup prints
+  screen frames/scales; per-hop scale is not recorded in animation samples.
+- `--trace-owners`: include process-local row/view/layer identities and animation
+  keys/endpoints. The checker rejects loss of an unfinished insertion owner even
+  across a detached sample; it does not prove composited pixel continuity there.
+- `--native-list-control`: fixed-height List control; add `--native-natural-height`
+  for wrapping rows or `--native-animated-metadata` for animated metadata updates.
+- `--stress-retarget metadata|title|title-inserted|title-retained|resize|screen|reorder`:
+  apply an independent update 40 ms after each mutation. Use a 500 ms stress interval
+  to separate it from rapid reversal. `title-inserted` targets the entering parent;
+  `title-retained` targets a different row. Resize uses the native split divider.
+- `--fresh-title`: create/delete three conversations through production navigation
+  with a temporary workspace. Schedule a synthetic auto-title 40 ms after first row
+  observation, then let normal readers deliver it. Add `--fresh-title-events` for
+  the in-memory change-notification stream rather than legacy polling. Reports keep
+  response evidence and title observation times; no inference occurs. This models
+  timing overlap, not the real service's frequency or latency.
+
+Keep raw reports under `.build/`, not source control. Owner tracing increases sampling
+work, so inspect sample gaps as well as detector results. Actual native dragging,
+updates during dragging, GPU cadence and composited pixel behavior remain manual checks.
 
 ### Polling and transcript contention
 
