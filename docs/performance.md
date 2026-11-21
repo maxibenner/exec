@@ -71,27 +71,71 @@ with optional `--stress-kind children|parents|mixed`, `--stress-batch 3`,
 Stress reports retain mutation timestamps and flag undersampled or ambiguous fades;
 presentation-layer opacity does not prove visible text fading or GPU frame cadence.
 
-### Unresolved native parent-row interruption
+### Unresolved native row interruptions
 
-Ordinary create/delete/reorder and visibility cases passing does not establish reliable
-interruption of a native insertion. A small, no-transcript reproducer is:
+Ordinary create/delete/reorder checks do not establish animation continuity when
+another update interrupts an entering row. Production rendering is unchanged; the
+following cases still fail `--check` on macOS 27.3 (26C5035r):
 
 ```sh
-.build/sidebar-animation-probe --check --simple-detail --stress-cycles 3 \
-  --stress-parents 5 --stress-kind parents --stress-batch 1 --stress-interval-ms 40 \
-  --output .build/sidebar-parent-interruption.json
+# Minimal fixed-height List: remove a parent before its insertion completes.
+.build/sidebar-animation-probe --check --in-place --simple-detail --native-list-control \
+  --stress-cycles 3 --stress-parents 5 --stress-kind parents --stress-batch 1 \
+  --stress-interval-ms 40 --trace-owners --output .build/sidebar-reversal.json
+# Production readers: deliver an auto-title while the new session row is entering.
+.build/sidebar-animation-probe --check --in-place --simple-detail --trace-owners \
+  --fresh-title --fresh-title-events --output .build/sidebar-fresh-title.json
 ```
 
-On macOS 27.3 (26C5035r), removing an entering parent produced an attached presentation
-opacity jump greater than 0.6 and a position discontinuity, without a 60 ms sampling gap.
-Reinserting that ID during removal also produced two attached marker instances, making
-that leg ambiguous. This is distinct from detached sizing copies and heavy-transcript
-sampling stalls. Changing the SwiftUI easing curve to a spring did not resolve it.
-The renderer is unchanged; this case still fails `--check` and is not part of the passing
-standard gate. A production fix remains open. Do not conceal it by accepting ambiguous
-samples, skipping intermediate checks, or delaying catalog changes merely to pass the probe.
-Native hidden-catalog runs can also emit AppKit's reentrant-table-delegate warning;
-passing sampled geometry does not resolve that warning.
+Native view/layer identity and animation endpoint traces isolate two mechanisms:
+
+- **Insertion/removal reversal:** the same row moves to a different native animation
+  clip. Removal starts from opacity 1 and full row height instead of the current
+  insertion presentation. The fixed-height List control reproduces this without
+  composer, transcript, child transitions or the production family-height modifier.
+- **Entering-row height changes:** a wrapping title or width change moves the same
+  row out of its insertion clip early, losing the remaining fade/movement. A minimal
+  natural-height List reproduces this too. Fresh-session titles delivered through
+  both polling and change notifications reproduce it; activity-only refreshes and
+  changing a different retained row's title did not in the controlled cases.
+
+The reversal also reproduces on the physical 2× display; mixed display scale is not
+a necessary cause. Programmatic cross-display movement and catalog reordering passed
+sampled geometry checks; this does not validate physical dragging or live resizing.
+Reinserting an ID during removal can produce two attached row instances: those samples
+remain ambiguous, not evidence of smooth motion. Native hidden-catalog tests can also
+emit an unresolved AppKit reentrant-table-delegate warning.
+
+Animating title metadata or changing easing did not repair the interruptions.
+Reserving two title lines avoids the height-change trigger but increases single-line
+row height and does not fix reversal; no such presentation tradeoff is applied.
+A production repair remains open. Do not hide these failures by weakening detectors,
+delaying catalog changes, or patching private AppKit classes.
+
+Useful isolation options:
+
+- `--in-place`: order the synthetic window without activation; not a focus test.
+- `--screen 0` / `--screen 1`: select an attached physical display. Startup prints
+  screen frames/scales; per-hop scale is not recorded in animation samples.
+- `--trace-owners`: include process-local row/view/layer identities and animation
+  keys/endpoints. The checker rejects loss of an unfinished insertion owner even
+  across a detached sample; it does not prove composited pixel continuity there.
+- `--native-list-control`: fixed-height List control; add `--native-natural-height`
+  for wrapping rows or `--native-animated-metadata` for animated metadata updates.
+- `--stress-retarget metadata|title|title-inserted|title-retained|resize|screen|reorder`:
+  apply an independent update 40 ms after each mutation. Use a 500 ms stress interval
+  to separate it from rapid reversal. `title-inserted` targets the entering parent;
+  `title-retained` targets a different row. Resize uses the native split divider.
+- `--fresh-title`: create/delete three conversations through production navigation
+  with a temporary workspace. Schedule a synthetic auto-title 40 ms after first row
+  observation, then let normal readers deliver it. Add `--fresh-title-events` for
+  the in-memory change-notification stream rather than legacy polling. Reports keep
+  response evidence and title observation times; no inference occurs. This models
+  timing overlap, not the real service's frequency or latency.
+
+Keep raw reports under `.build/`, not source control. Owner tracing increases sampling
+work, so inspect sample gaps as well as detector results. Actual native dragging,
+updates during dragging, GPU cadence and composited pixel behavior remain manual checks.
 
 ### Polling and transcript contention
 
