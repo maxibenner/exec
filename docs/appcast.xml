@@ -6,6 +6,18 @@
         <description>Stable updates for Exec on macOS.</description>
         <language>en</language>
         <item>
+            <title>0.1.12</title>
+            <pubDate>Fri, 20 Nov 2026 20:38:12 -0500</pubDate>
+            <link>https://github.com/maxibenner/exec</link>
+            <sparkle:version>15</sparkle:version>
+            <sparkle:shortVersionString>0.1.12</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[- Fixed issue where composer would not recieve focus after forking
+]]></description>
+            <enclosure url="https://github.com/maxibenner/exec/releases/download/v0.1.12/Exec-0.1.12-macOS-arm64.zip" length="12638830" type="application/octet-stream" sparkle:edSignature="MkGdLh7+uXxaCXQO1GRQ7NXLkCXH6XQ+ukj4XCtHnnJY9cQ+aO0ZyoW1OnfL9K4iibCURlB/c0Hx7cc7fq1hDA=="/>
+        </item>
+        <item>
             <title>0.1.11</title>
             <pubDate>Fri, 20 Nov 2026 17:45:56 -0500</pubDate>
             <link>https://github.com/maxibenner/exec</link>
