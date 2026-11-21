@@ -5,9 +5,10 @@ import SwiftUI
 @MainActor private struct ForkFocusHost: View {
     let library: ChatLibrary
     let windows: SessionWindows
+    var initiallyShowsSidebar = false
 
     var body: some View {
-        ChatWindowLayout(initiallyShowsSidebar: false, sidebarRevealRequest: windows.sidebarRevealRequest) {
+        ChatWindowLayout(initiallyShowsSidebar: initiallyShowsSidebar, sidebarRevealRequest: windows.sidebarRevealRequest) {
             SessionSidebar(store: library, open: windows.openSession, delete: { windows.requestSessionDeletion($0.id) })
         } detail: {
             ChatView(store: library, windows: windows)
@@ -16,7 +17,7 @@ import SwiftUI
 }
 
 /// Holds only explicit creation requests; all other traffic stays in the fake transport.
-private actor SidebarCreationTransport: AgentTransport {
+actor SidebarCreationTransport: AgentTransport {
     nonisolated let responses = FakeAgentTransport()
     private var catalog: [AgentJSON] = []
     private var pending: CheckedContinuation<Data, Error>?
@@ -62,7 +63,8 @@ private actor SidebarCreationTransport: AgentTransport {
     }
 }
 
-@MainActor private final class SidebarCreationFixture {
+// Shared by the ordinary checks and the actual SwiftUI Window scene probe.
+@MainActor final class SidebarCreationFixture {
     let transport = SidebarCreationTransport()
     let suite = "exec-sidebar-creation-\(UUID())"
     let preferences: UserDefaults
@@ -72,13 +74,13 @@ private actor SidebarCreationTransport: AgentTransport {
     let roots: [AgentJSON]
     let child: AgentJSON?
 
-    init(topLevelCount: Int = 1, selected: Bool = true) async throws {
+    init(topLevelCount: Int = 1, selected: Bool = true, messages: [AgentJSON] = []) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("exec-sidebar-\(UUID())")
         workspace = directory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         preferences = UserDefaults(suiteName: suite)!
         preferences.set(try JSONEncoder().encode([ChatModel(id: "deepseek/test", name: "Test")]), forKey: "chat.modelCatalog")
-        let initial = (0..<topLevelCount).map { _ in Self.snapshot(workspace: directory) }
+        let initial = (0..<topLevelCount).map { _ in Self.snapshot(workspace: directory, messages: messages) }
         roots = initial
         child = initial.first.map { Self.snapshot(workspace: directory, parent: $0["id"]) }
         library = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: transport)), preferences: preferences)
@@ -92,7 +94,7 @@ private actor SidebarCreationTransport: AgentTransport {
         }
         try await library.refreshSharedState()
     }
-    static func snapshot(workspace: URL, parent: AgentJSON = .null) -> AgentJSON {
+    static func snapshot(workspace: URL, parent: AgentJSON = .null, messages: [AgentJSON] = []) -> AgentJSON {
         var metadata: [String: AgentJSON] = ["title": .string("Test session"), "manuallyNamed": .bool(false), "activityAt": .number(1000)]
         if parent.string != nil {
             metadata["parent"] = .object(["sessionId": parent, "operationId": .string(UUID().uuidString), "toolCallId": .string("delegate")])
@@ -101,7 +103,7 @@ private actor SidebarCreationTransport: AgentTransport {
             "id": .string(UUID().uuidString), "model": .string("deepseek/test"), "workspace": .string(workspace.path),
             "configuration": .object(["settings": .object(["systemPrompt": .string(""), "autoApprove": .bool(true)]),
                 "instructionsFrozen": .bool(true), "workspaceInstructions": .null]),
-            "metadata": .object(metadata), "messages": .array([]), "pendingInput": .array([]),
+            "metadata": .object(metadata), "messages": .array(messages), "pendingInput": .array([]),
             "operation": .null, "approval": .null, "activeToolCallID": .null, "storageError": .null])
     }
     func waitForCreation() async throws {
@@ -264,116 +266,171 @@ private actor SidebarCreationTransport: AgentTransport {
         }
     }
 
-    /// Uses the running NSApplication loop in --composer-events. Direct insertText
-    /// calls can succeed even when the editor cannot receive real keyboard input.
+    /// A Cartesian matrix, not timings coupled to session count. Two successive
+    /// forks also exercise reuse of the window/presentation without reactivation.
+    /// --fork-case <substring> isolates a variant without changing its timing.
     func forkFocusesMountedComposerAfterNavigation() async throws {
-        for count in 1...2 {
-            let fixture = try await SidebarCreationFixture(topLevelCount: count)
-            defer { fixture.close() }
-            let library = fixture.library, windows = fixture.windows
-            let host = NSHostingView(rootView: ForkFocusHost(library: library, windows: windows))
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-                                  styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-            window.contentView = host
-            windows.mainWindow = window
-            // An entirely offscreen window may not activate on current macOS.
-            window.center()
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            defer { window.orderOut(nil); window.contentView = nil }
-            func editor(in root: NSView) -> ComposerTextInput.EditorScrollView? {
-                if let view = root as? ComposerTextInput.EditorScrollView { return view }
-                return root.subviews.lazy.compactMap { editor(in: $0) }.first
-            }
-            func settle() async throws {
-                try await Task.sleep(for: .milliseconds(100))
-                host.layoutSubtreeIfNeeded()
-            }
-            func requireActiveWindow() async throws {
-                guard !NSApp.isActive || !window.isKeyWindow else { return }
-                // Synthetic events bypass the Window Server's activation click.
-                // Restore the fixture window, never the editor's responder.
-                NSApp.activate(ignoringOtherApps: true)
-                window.makeKeyAndOrderFront(nil)
-                for _ in 0..<100 {
-                    if NSApp.isActive && window.isKeyWindow { return }
-                    try await Task.sleep(for: .milliseconds(20))
-                }
-                throw CheckFailure(description: "Fork fixture did not acquire its active key window")
-            }
-            func postKey(_ character: String, keyCode: UInt16, flags: NSEvent.ModifierFlags = []) {
-                for eventType in [NSEvent.EventType.keyDown, .keyUp] {
-                    let event = NSEvent.keyEvent(with: eventType, location: .zero, modifierFlags: flags,
-                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                        context: nil, characters: character, charactersIgnoringModifiers: character,
-                        isARepeat: false, keyCode: keyCode)!
-                    NSApp.postEvent(event, atStart: false)
+        let arguments = CommandLine.arguments
+        let filter = arguments.firstIndex(of: "--fork-case").flatMap {
+            $0 + 1 < arguments.count ? arguments[$0 + 1] : nil
+        }
+        var failures: [String] = [], exercised = 0
+        for populated in [true, false] {
+            for count in 1...2 {
+                for sidebar in [false, true] {
+                    for slow in [false, true] {
+                        let label = "transcript=\(populated ? "populated" : "empty")/roots=\(count)/sidebar=\(sidebar ? "visible" : "hidden")/completion=\(slow ? "slow" : "fast")"
+                        if let filter, !label.contains(filter) { continue }
+                        exercised += 1
+                        do {
+                            try await exerciseForks(populated: populated, count: count, sidebar: sidebar, slow: slow)
+                            print("PASS fork variant \(label) (two forks)")
+                        } catch {
+                            failures.append(label)
+                            FileHandle.standardError.write(Data("FAIL fork variant \(label): \(error)\n".utf8))
+                        }
+                    }
                 }
             }
-            try await settle()
-            try await requireActiveWindow()
-            guard let original = editor(in: host) else { throw CheckFailure(description: "Source composer not mounted") }
-            try expect(window.makeFirstResponder(original.editor))
-            try await settle()
-            let source = library.current
-            for (character, keyCode) in [("/", UInt16(44)), ("f", 3), ("o", 31), ("r", 15), ("k", 40)] {
-                postKey(character, keyCode: keyCode)
+        }
+        guard exercised > 0, failures.isEmpty else {
+            throw CheckFailure(description: "Fork matrix: \(failures.count)/\(exercised) variants failed: \(failures.joined(separator: ", "))")
+        }
+    }
+
+    private func exerciseForks(populated: Bool, count: Int, sidebar: Bool, slow: Bool) async throws {
+        // Enough completed, wrapped transcript content to mount/scroll native rows.
+        // Source and fork keep the same message IDs, as a real fork does.
+        let messages: [AgentJSON] = populated ? (0..<24).map { index in
+            .object(["id": .string(UUID().uuidString), "role": .string(index.isMultiple(of: 2) ? "user" : "assistant"),
+                     "text": .string("Synthetic turn \(index)\n" + String(repeating: "Fork transcript fixture. ", count: 12)),
+                     "status": .string("completed")])
+        } : []
+        let fixture = try await SidebarCreationFixture(topLevelCount: count, messages: messages)
+        defer { fixture.close() }
+        let library = fixture.library, windows = fixture.windows
+        let host = NSHostingView(rootView: ForkFocusHost(library: library, windows: windows, initiallyShowsSidebar: sidebar))
+        let window = ForkComposerEventWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                                            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        windows.mainWindow = window
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        var retained: [ComposerTextInput.EditorScrollView] = []
+        var phase = "initial mount"
+        var navigationState = ""
+        func diagnostics() -> String { window.diagnostics(library: library, windows: windows, retained: retained) }
+        func settle() async throws {
+            // Same 100ms event/layout allowance as the original regression. Never
+            // extend this on failure, reactivate, or assign a first responder.
+            try await Task.sleep(for: .milliseconds(100))
+            host.layoutSubtreeIfNeeded()
+        }
+        func check(_ condition: Bool, _ message: String) throws {
+            guard condition else { throw CheckFailure(description: message) }
+        }
+        do {
+            // Activation is a setup precondition only, never a post-fork repair.
+            for _ in 0..<100 {
+                if NSApp.isActive && window.isKeyWindow { break }
+                try await Task.sleep(for: .milliseconds(10))
             }
             try await settle()
-            guard source.draft == "/fork" else {
-                throw CheckFailure(description: "Source typing failed: draft=\(source.draft.debugDescription), text=\(original.editor.string.debugDescription), active=\(NSApp.isActive), key=\(window.isKeyWindow), responder=\(String(describing: window.firstResponder)), editable=\(original.editor.isEditable), selection=\(original.editor.selectedRange())")
+            try check(NSApp.isActive && window.isKeyWindow, "Fixture did not acquire initial active/key window")
+            try check(ForkComposerEventWindow.sidebar(in: host)?.isCollapsed == !sidebar, "Initial sidebar state differs from variant")
+            try window.postClick(window.visibleEditor())
+            try await settle()
+            for iteration in 1...2 {
+                phase = "fork \(iteration): source /fork typing"
+                let source = library.current
+                let original = try window.visibleEditor()
+                retained.append(original)
+                try check(source.draft.isEmpty && source.messages.count == messages.count, "Source draft/transcript precondition failed")
+                for (character, code) in [("/", UInt16(44)), ("f", 3), ("o", 31), ("r", 15), ("k", 40)] {
+                    window.postKey(character, code: code)
+                }
+                try await settle()
+                try window.checkDelivery()
+                try check(source.draft == "/fork" && original.editor.string == "/fork", "Source typing failed")
+                window.postKey("\r", code: 36)
+                try await fixture.waitForCreation()
+                phase = "fork \(iteration): pending creation"
+                // Only the fake server completion changes. Sidebar/count/content
+                // vary independently; fast never adds a pre-completion delay.
+                if slow { try await settle() }
+                navigationState = "Before completion:\n" + diagnostics()
+                try await fixture.transport.finishCreation(SidebarCreationFixture.snapshot(workspace: fixture.workspace, messages: messages))
+                await library.waitForNavigation()
+                navigationState += "\nImmediately after navigation (before layout allowance):\n" + diagnostics()
+                phase = "fork \(iteration): caret and native input"
+                try await settle()
+                let fork = try window.visibleEditor()
+                retained.append(fork)
+                try check(library.current !== source && library.error == nil && library.current.messages.count == messages.count,
+                          "Fork did not open the expected transcript")
+                var issues: [String] = []
+                func observe(_ condition: Bool, _ message: String) {
+                    if !condition { issues.append(message + "\n" + diagnostics()) }
+                }
+                observe(NSApp.isActive && window.isKeyWindow, "Lost active/key state after fork (not repaired by test)")
+                observe(fork !== original && fork.editor.isEditable && fork.editor.isSelectable &&
+                        window.firstResponder === fork.editor && fork.editor.shouldDrawInsertionPoint &&
+                        fork.editor.selectedRange() == NSRange(location: 0, length: 0), "Fork caret unavailable")
+                window.postKey("a", code: 0)
+                try await settle()
+                observe(library.current.draft == "a" && fork.editor.string == "a", "Fork rejected first native typing")
+                // Still click/type after a caret failure to distinguish focus-only
+                // failures from a disabled/stale editor. Never force fork focus.
+                try window.postClick(fork)
+                try await settle()
+                window.postKey("b", code: 11)
+                try await settle()
+                observe(library.current.draft == "ab" && fork.editor.string == "ab", "Fork rejected typing after native click")
+                try window.checkDelivery()
+                if !issues.isEmpty {
+                    // Investigation only: preserve the failure even if ordinary
+                    // session navigation repairs it. This is not a test retry.
+                    if let sourceID = source.currentSessionID, let forkID = library.currentSessionID {
+                        windows.openSession(sourceID)
+                        await library.waitForNavigation()
+                        try await settle()
+                        windows.openSession(forkID)
+                        await library.waitForNavigation()
+                        try await settle()
+                        let before = library.current.draft
+                        window.postKey("c", code: 8)
+                        try await settle()
+                        issues.append("Switch away/back: native typing changed draft=\(library.current.draft != before)\n" + diagnostics())
+                    }
+                    throw CheckFailure(description: issues.joined(separator: "\n"))
+                }
+                phase = "fork \(iteration): native selection and replacement"
+                window.postKey("\u{f702}", code: 123, flags: [.shift])
+                window.postKey("\u{f702}", code: 123, flags: [.shift])
+                try await settle()
+                try check(fork.editor.selectedRange() == NSRange(location: 0, length: 2), "Fork keyboard selection failed")
+                window.postKey("r", code: 15)
+                try await settle()
+                try check(library.current.draft == "r" && fork.editor.selectedRange() == NSRange(location: 1, length: 0),
+                          "Fork selection replacement failed")
+                // Clear through native selection/backspace, not a binding mutation,
+                // so a second /fork begins in the same, already-used composer.
+                window.postKey("\u{f702}", code: 123, flags: [.shift])
+                window.postKey("\u{7f}", code: 51)
+                try await settle()
+                try check(library.current.draft.isEmpty && source.draft.isEmpty && fork.editor.string.isEmpty,
+                          "Fork native deletion or source draft clearing failed")
+                try window.checkDelivery()
+                try check(windows.composerFocusRequest == iteration && windows.sidebarRevealRequest == (count == 1 ? 1 : 0),
+                          "Fork focus/reveal request count changed")
             }
-            postKey("\r", keyCode: 36)
-            try await fixture.waitForCreation()
-            // Cover a fast replacement and a disabled source that has settled.
-            if count == 2 { try await settle() }
-            try await fixture.finishCreation()
-            await library.waitForNavigation()
-            // Exercise input during reveal/layout, not only after a 600ms grace period.
-            try await settle()
-            guard let fork = editor(in: host) else { throw CheckFailure(description: "Fork composer not mounted") }
-            try expect(library.current !== source && library.error == nil)
-            try expect(fork !== original && fork.editor.isEditable && fork.editor.isSelectable)
-            try await requireActiveWindow()
-            try expect(window.firstResponder === fork.editor)
-            guard fork.editor.shouldDrawInsertionPoint,
-                  fork.editor.visibleRect.height > 0,
-                  fork.editor.selectedRange() == NSRange(location: 0, length: 0) else {
-                throw CheckFailure(description: "Fork caret unavailable: draws=\(fork.editor.shouldDrawInsertionPoint), frame=\(fork.editor.frame), visible=\(fork.editor.visibleRect), selection=\(fork.editor.selectedRange())")
-            }
-            postKey("a", keyCode: 0)
-            try await settle()
-            try expect(library.current.draft == "a")
-            // Clicking the newly opened editor must also leave it usable.
-            let point = fork.editor.convert(NSPoint(x: 30, y: 8), to: nil)
-            try expect(window.contentView?.hitTest(point) === fork.editor)
-            for eventType in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                let event = NSEvent.mouseEvent(with: eventType, location: point, modifierFlags: [],
-                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                    context: nil, eventNumber: -1, clickCount: 1, pressure: eventType == .leftMouseDown ? 1 : 0)!
-                NSApp.postEvent(event, atStart: false)
-            }
-            try await settle()
-            postKey("b", keyCode: 11)
-            try await settle()
-            try expect(library.current.draft == "ab")
-            // Shift-arrow selection is handled by NSTextView, independent of
-            // the application's Edit menu (the fixture has no main menu).
-            postKey("\u{f702}", keyCode: 123, flags: [.shift])
-            postKey("\u{f702}", keyCode: 123, flags: [.shift])
-            try await settle()
-            guard fork.editor.selectedRange() == NSRange(location: 0, length: 2) else {
-                throw CheckFailure(description: "Fork keyboard selection failed: text=\(fork.editor.string.debugDescription), selection=\(fork.editor.selectedRange()), responder=\(String(describing: window.firstResponder))")
-            }
-            postKey("r", keyCode: 15)
-            try await settle()
-            try expect(library.current.draft == "r" && fork.editor.selectedRange() == NSRange(location: 1, length: 0))
-            postKey("\u{f702}", keyCode: 123, flags: [.shift])
-            try await settle()
-            try expect(fork.editor.selectedRange() == NSRange(location: 0, length: 1))
-            postKey("x", keyCode: 7)
-            try await settle()
-            try expect(library.current.draft == "x" && source.draft.isEmpty)
+            let requests = await fixture.transport.creationRequests
+            try check(requests == 2, "Expected two explicit fork requests")
+        } catch {
+            throw CheckFailure(description: "\(phase): \(error)\n\(navigationState)\nAt failure:\n\(diagnostics())")
         }
     }
 

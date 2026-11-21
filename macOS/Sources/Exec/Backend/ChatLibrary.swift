@@ -491,13 +491,12 @@ import Observation
             return
         }
         openingSessionID = id
-        navigate {
+        navigate(onSuccess: onOpened) {
             let next = try self.makeConversation()
             self.loading = next
             try await next.loadSession(id)
             try Task.checkCancellation()
             self.activate(next)
-            onOpened()
         }
     }
 
@@ -512,7 +511,7 @@ import Observation
     func forkConversation(_ source: ChatStore, onOpened: @escaping @MainActor () -> Void = {}) {
         guard canForkConversation(source) else { return }
         let commandDraft = source.draft
-        navigate(reportingTo: source) {
+        navigate(reportingTo: source, onSuccess: onOpened) {
             await source.waitForPendingSave()
             try await source.saveIfIdle()
             try Task.checkCancellation()
@@ -526,7 +525,6 @@ import Observation
                 source.draft = ""
             }
             self.activate(next)
-            onOpened()
         }
     }
 
@@ -914,23 +912,31 @@ import Observation
     }
 
     private func navigate(reportingTo destination: ChatStore? = nil,
+                          onSuccess: @escaping @MainActor () -> Void = {},
                           _ operation: @escaping @MainActor () async throws -> Void) {
         navigating = true
         navigationError = nil
         navigationRequest += 1
         let request = navigationRequest
         navigationTask = Task {
+            var succeeded = false
             defer {
                 if request == navigationRequest {
                     // Clear optimistic ordering even if cancelled before operation starts.
                     // Failures expose the latest confirmed catalog without replaying writes.
                     pendingSidebarOrder = nil
                     navigating = false; openingSessionID = nil; loading = nil; navigationTask = nil
+                    // Observation's willSet can flush pending SwiftUI work before
+                    // the gate changes, mounting a still-disabled composer. Publish
+                    // focus/window presentation only after all cleanup so the new
+                    // view receives settled state, even after that reentrant flush.
+                    if succeeded { onSuccess() }
                 }
             }
             do {
                 try Task.checkCancellation()
                 try await operation()
+                succeeded = true
             }
             catch is CancellationError {}
             catch {
