@@ -18,7 +18,13 @@ while IFS= read -r file; do sources+=("$file"); done < <(
 swiftc -swift-version 6 -parse-as-library "${sources[@]}" -o .build/exec-checks
 .build/exec-checks
 # Posted mouse events need a separate process running NSApplication.run().
-.build/exec-checks --composer-events
+# The expanded fork matrix takes ~36s; keep separate 60s watchdogs rather than
+# making the remaining event checks compete with it or increasing all timeouts.
+.build/exec-checks --composer-events --filter 'Forked composers'
+.build/exec-checks --composer-events --exclude-filter 'Forked composers'
+# A real @main App Window catches navigation/SwiftUI flush ordering that an
+# NSHostingView + NSWindow cannot. Three forks include two after sidebar reveal.
+./scripts/probe-composer-scene.sh --screen=0 --speed=slow --sidebar=hidden --forks=3
 # Assert real intermediate presentation frames, not just final sidebar geometry.
 # These use isolated synthetic sessions and never capture the user's screen.
 ./scripts/probe-sidebar.sh --check --verify-detectors --output .build/sidebar-motion.json

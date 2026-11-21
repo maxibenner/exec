@@ -1,23 +1,11 @@
 import AppKit
 import Foundation
 
-struct CheckFailure: Error, CustomStringConvertible {
-    let description: String
-}
-
-func expect(_ condition: @autoclosure () throws -> Bool, file: String = #fileID, line: Int = #line) throws {
-    guard try condition() else { throw CheckFailure(description: "\(file):\(line): expectation failed") }
-}
-
-func expectFailure(_ operation: () throws -> Void) throws {
-    do { try operation() }
-    catch is ExecError { return }
-    throw CheckFailure(description: "Expected ExecError")
-}
-
 @main struct TestRunner {
     private static func matchesFilter(_ name: String) -> Bool {
         let arguments = CommandLine.arguments
+        if let index = arguments.firstIndex(of: "--exclude-filter"), index + 1 < arguments.count,
+           name.localizedCaseInsensitiveContains(arguments[index + 1]) { return false }
         guard let index = arguments.firstIndex(of: "--filter"), index + 1 < arguments.count else { return true }
         return name.localizedCaseInsensitiveContains(arguments[index + 1])
     }
@@ -33,6 +21,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
         }
         Task { @MainActor in
             let allChecks: [(String, @MainActor () async throws -> Void)] = [
+                ("Fork native event routing control", {
+                    try await ForkComposerRoutingTests().postedKeysFollowTheKeyWindow()
+                }),
                 ("Forked composers focus, select and replace through native events", {
                     try await SidebarCreationTests().forkFocusesMountedComposerAfterNavigation()
                 }),
@@ -105,6 +96,9 @@ func expectFailure(_ operation: () throws -> Void) throws {
             ("Sidebar toggles survive content, count and focus changes", { try await SidebarVisibilityTests().nativeToggleSurvivesContentCountAndFocusChanges() }),
             ("Native sidebar toggles persist across window remounts", { try await SidebarVisibilityTests().nativeTogglesPersistAcrossWindowRemounts() }),
             ("Sidebar reveal requests respect subsequent manual close", { try await SidebarVisibilityTests().revealRequestsOpenOnceAndRespectSubsequentManualClose() }),
+            ("Navigation completion runs after cleanup and permits reentry", { try await NavigationCompletionTests().successRunsAfterCleanupAndAllowsReentry() }),
+            ("Navigation completion never publishes failed opens or forks", { try await NavigationCompletionTests().failuresNeverPublishSuccess() }),
+            ("Navigation completion ignores cancellation and superseded requests", { try await NavigationCompletionTests().cancellationAndSupersessionNeverPublishSuccess() }),
             ("Only successful second top-level creation reveals the sidebar", { try await SidebarCreationTests().onlySecondTopLevelCreationRevealsAfterSuccess() }),
             ("Blank creation waits for workspace selection before revealing", { try await SidebarCreationTests().blankWorkspaceCreationRevealsOnlyAfterSelectionAndSave() }),
             ("Failed creation and fork never reveal the sidebar", { try await SidebarCreationTests().failedCreationAndForkNeverReveal() }),

@@ -3,6 +3,33 @@
 Run scripts from `macOS/`. These tools do not make model calls or read credentials.
 No third-party profiler installation is required.
 
+## Composer scene checks
+
+```sh
+./scripts/probe-composer-scene.sh --screen=0 --speed=slow --sidebar=hidden --forks=3
+.build/composer-scene-probe --screen=1 --speed=fast --sidebar=visible --forks=3
+.build/composer-scene-probe --screen=0 --move-to=1 --speed=slow --forks=3
+```
+
+This opens a real SwiftUI `Window` scene with production chat views and commands,
+synthetic completed transcripts, a fake transport and isolated preferences. It does
+not use accounts, Keychain, live inference or screen capture. It activates test UI;
+avoid typing/clicking during the run. Use only attached display indices. Each command
+is a separate case, not an automatic retry; the default smoke runs in `test.sh`.
+
+Successive forks check caret/editability, posted keyboard input, click recovery,
+selection/replacement/deletion, and sidebar/focus requests. The probe never forces
+post-fork focus or activation. It validates event delivery separately: a posted key's
+window number alone does not guarantee routing when another window is key.
+
+The scene is essential. The original fork defect passes an `NSHostingView`/`NSWindow`
+fixture but fails here: observation's `willSet` synchronously flushes pending SwiftUI
+work before `navigating` becomes false. The incoming editor can therefore mount
+noneditable and miss the enabling update. Navigation completion now publishes
+focus/window presentation only after clearing navigation state. Retain this scene
+regression rather than replacing it with direct `insertText` or forced responder tests.
+Physical input gestures and live backend timing still require manual verification.
+
 ## Visual alternatives
 
 Run `./scripts/preview-indicators.sh` to open ten numbered animation experiments,
