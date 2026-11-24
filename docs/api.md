@@ -448,10 +448,16 @@ tools are disabled. This is session policy, not a shared library default or appr
   set, rather than adding/removing individual names. Send `[]` to re-enable all tools.
   Success returns the saved snapshot. Updates are idle-only; active operations or a
   blocked storage state return 409. Unknown names and duplicate entries return 400.
-- Model requests keep the complete registered tool catalog in stable name order, including
-  disabled and temporarily unavailable tools. Selection changes do not rewrite schemas or
-  the tool-safety instruction prefix, even when every tool is disabled. No provider-native
-  tool allowlists are used.
+- Model and compaction requests include only the currently enabled tool definitions, in
+  stable name order: session selection intersected with runtime capabilities. The core
+  selects the definitions and trusted availability instruction from the same capability
+  snapshot for every request; adapters do not implement separate filters or provider-native
+  allowlists. All disabled/unavailable tools may yield an empty offered catalog.
+- Historical tool calls, results and opaque provider context remain intact when definitions
+  are removed or re-enabled. A catalog change never replays previous executions or resets
+  conversation state. The tool-safety instruction prefix stays unchanged. Changing offered
+  definitions can reduce provider prompt-cache reuse and increase input processing cost or
+  latency; cache hits and the extent/duration of a miss depend on the provider.
 - Trusted, provider-neutral runtime availability instructions specify the effective enabled
   set (session selection intersected with runtime capabilities). Adapters encode these as
   application instructions: OpenAI `developer`, DeepSeek `system`, never fake user messages

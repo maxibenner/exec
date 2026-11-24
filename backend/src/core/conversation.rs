@@ -574,10 +574,11 @@ impl Conversation {
         record: &mut ConversationRecord,
         end: usize,
         cancel: &CancellationToken,
-    ) -> (Vec<ContextMessage>, Vec<String>) {
-        // Tool-free conversations need no policy, unless replacing earlier availability
-        // after a restore with a different catalog.
-        if !self.definitions.is_empty() || !record.tool_availability.is_empty() {
+    ) -> (Vec<ContextMessage>, Vec<String>, Vec<ToolDefinition>) {
+        // Select schemas and trusted availability from the same local capability
+        // snapshot. History stays intact when a tool is no longer offered.
+        // Tool-free conversations need no policy unless replacing a previous set.
+        let tools = if !self.definitions.is_empty() || !record.tool_availability.is_empty() {
             let context = ToolContext {
                 available_images: vec![],
                 conversation_id: self.id.clone(),
@@ -594,17 +595,22 @@ impl Conversation {
                 workspace: record.workspace.clone(),
                 cancel: cancel.clone(),
             };
-            let enabled = self
+            let tools: Vec<_> = self
                 .definitions
                 .iter()
                 .filter(|d| {
                     record.metadata.tool_enabled(&d.name) && self.tools[&d.name].available(&context)
                 })
-                .map(|d| d.name.clone())
+                .cloned()
                 .collect();
+            let enabled = tools.iter().map(|d| d.name.clone()).collect();
             record.update_tool_availability(end, enabled);
-        }
-        record.provider_context(end)
+            tools
+        } else {
+            vec![]
+        };
+        let (messages, message_ids) = record.provider_context(end);
+        (messages, message_ids, tools)
     }
     pub(crate) fn reserve_idle(self: &Arc<Self>) -> Result<IdleReservation> {
         let mut state = self.state();
@@ -1139,7 +1145,7 @@ impl Conversation {
                     Err(Error::Invalid("There is no completed history to compact."))
                 };
             }
-            let (messages, message_ids) = self.request_context(&mut s.record, end, cancel);
+            let (messages, message_ids, tools) = self.request_context(&mut s.record, end, cancel);
             let history = &s.record.messages[..end];
             ProviderRequest {
                 images: Default::default(),
@@ -1159,7 +1165,7 @@ impl Conversation {
                     .instructions(&s.record.workspace, !self.definitions.is_empty()),
                 effort: None,
                 provider_state: s.record.provider_state.clone(),
-                tools: self.definitions.clone(),
+                tools,
                 cancel: cancel.clone(),
             }
         };
@@ -1665,7 +1671,7 @@ impl Conversation {
             // which instructions belong to the response that is about to start.
             self.inject_pending_input(&mut s);
             let end = s.record.messages.len();
-            let (messages, message_ids) = self.request_context(&mut s.record, end, cancel);
+            let (messages, message_ids, tools) = self.request_context(&mut s.record, end, cancel);
             let known: HashSet<String> = s
                 .record
                 .messages
@@ -1711,7 +1717,7 @@ impl Conversation {
                         .unwrap()
                         .instructions(&s.record.workspace, !self.definitions.is_empty()),
                     messages,
-                    tools: self.definitions.clone(),
+                    tools,
                     cancel: cancel.clone(),
                 },
                 index,
