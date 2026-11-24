@@ -73,6 +73,7 @@ pub struct DesktopPermission {
 }
 struct Frontend {
     os_permission: bool,
+    accepts_remote_conversations: bool,
     requests: mpsc::Sender<NativeEvent>,
 }
 struct Pending {
@@ -165,7 +166,11 @@ impl NativeHub {
             RuntimeToolAvailability::unavailable("Screen access is not enabled for this session.")
         }
     }
-    pub(crate) fn register(self: &Arc<Self>, os_permission: bool) -> Result<NativeConnection> {
+    pub(crate) fn register(
+        self: &Arc<Self>,
+        os_permission: bool,
+        accepts_remote_conversations: bool,
+    ) -> Result<NativeConnection> {
         let mut s = self.state.lock().unwrap();
         if s.frontends.len() >= 8 {
             return Err(Error::Busy);
@@ -176,6 +181,7 @@ impl NativeHub {
             id.clone(),
             Frontend {
                 os_permission,
+                accepts_remote_conversations,
                 requests: tx,
             },
         );
@@ -186,6 +192,46 @@ impl NativeHub {
             requests,
             hub: self.clone(),
         })
+    }
+    /// Only a native-authorized adapter can opt in. Notify it on the same ordered
+    /// channel as capture requests, so its local binding precedes any capture.
+    pub(crate) fn bind_remote(&self, conversation: &str) -> Result<()> {
+        if !valid_id(conversation) {
+            return Err(Error::Invalid("Invalid conversation ID."));
+        }
+        let mut s = self.state.lock().unwrap();
+        if let Some(id) = s.permissions.get(conversation) {
+            if s.frontends.get(id).is_some_and(|f| !f.requests.is_closed()) {
+                return Ok(());
+            }
+            s.permissions.remove(conversation);
+            s.approved.remove(conversation);
+            s.windows.retain(|(_, session), _| session != conversation);
+            s.cancel_where(|request| request.conversation_id == conversation);
+        }
+        let mut eligible = s.frontends.iter().filter(|(_, frontend)| {
+            frontend.accepts_remote_conversations && !frontend.requests.is_closed()
+        });
+        let Some((id, frontend)) = eligible.next() else {
+            return Ok(());
+        };
+        if eligible.next().is_some() {
+            return Err(Error::Invalid(
+                "Remote screenshot access requires exactly one opted-in native frontend.",
+            ));
+        }
+        let id = id.clone();
+        frontend
+            .requests
+            .try_send(NativeEvent::ConversationBound {
+                frontend_id: id.clone(),
+                conversation_id: conversation.into(),
+            })
+            .map_err(|_| Error::Busy)?;
+        s.permissions.insert(conversation.into(), id);
+        drop(s);
+        self.availability_changed();
+        Ok(())
     }
     pub(crate) fn update_os_permission(&self, id: &str, granted: bool) -> Result<()> {
         let mut s = self.state.lock().unwrap();
@@ -428,6 +474,12 @@ pub enum NativeEvent {
         #[serde(rename = "frontendID")]
         frontend_id: String,
     },
+    ConversationBound {
+        #[serde(rename = "frontendID")]
+        frontend_id: String,
+        #[serde(rename = "conversationID")]
+        conversation_id: String,
+    },
     Request {
         request: NativeRequest,
     },
@@ -457,7 +509,7 @@ mod tests {
     async fn only_exact_live_request_can_answer() {
         let hub = Arc::new(NativeHub::default());
 
-        let mut native = hub.register(true).unwrap();
+        let mut native = hub.register(true, false).unwrap();
         let c = context();
         hub.set_permission(
             &c.conversation_id,
@@ -515,7 +567,7 @@ mod tests {
         for mode in 0..3 {
             let hub = Arc::new(NativeHub::default());
 
-            let mut native = hub.register(mode != 2).unwrap();
+            let mut native = hub.register(mode != 2, false).unwrap();
             let c = context();
             let enabled = DesktopPermission {
                 frontend_id: Some(native.id.clone()),
@@ -564,3 +616,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "native/remote_binding_tests.rs"]
+mod remote_binding_tests;

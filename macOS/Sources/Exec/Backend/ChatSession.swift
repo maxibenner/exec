@@ -664,7 +664,11 @@ import CryptoKit
         }
     }
 
-    var canCompact: Bool { canRequestCommands && !messages.isEmpty && provider.providerID(for: selectedModel) == "openai" }
+    var canCompact: Bool {
+        // Capability belongs to the backend's model, not a queued local selection.
+        canRequestCommands && !messages.isEmpty && snapshot?.model == selectedModel &&
+            snapshot?.supportsCompaction == true && snapshot?.pendingInput.isEmpty == true
+    }
     func compact() {
         guard canCompact else { return }
         whenIdle("compact") { [weak self] in

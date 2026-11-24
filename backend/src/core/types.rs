@@ -335,6 +335,10 @@ pub trait ChatProvider: Send + Sync {
     fn image_context_indices(&self, request: &ProviderRequest) -> Result<Vec<usize>> {
         Ok((0..request.message_ids.len()).collect())
     }
+    /// Compaction may summarize only an older prefix; avoid loading retained images.
+    fn compaction_image_context_indices(&self, request: &ProviderRequest) -> Result<Vec<usize>> {
+        self.image_context_indices(request)
+    }
     async fn accepts_images(&self, _model: &str, _cancel: CancellationToken) -> Result<bool> {
         Ok(false)
     }
@@ -393,6 +397,15 @@ pub trait ChatProvider: Send + Sync {
     }
     fn supports_compaction(&self, _model: &str) -> bool {
         false
+    }
+    /// Explicit opt-in to the registry's shared text-summary strategy when native
+    /// compaction is unavailable. Summarization uses this adapter and model only.
+    fn supports_summary_compaction(&self, _model: &str) -> bool {
+        false
+    }
+    /// Earlier triggers leave room for providers which summarize through ordinary inference.
+    fn auto_compaction_threshold_percent(&self, _model: &str) -> u64 {
+        95
     }
     async fn compact(&self, _request: ProviderRequest) -> Result<Value> {
         Err(crate::Error::Provider(crate::ProviderFailure::Unsupported))
@@ -684,6 +697,7 @@ pub struct Approval {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSummary {
     pub id: String,
+    pub supports_compaction: bool,
     pub configuration: super::ConversationConfiguration,
     pub pending_input: Vec<Message>,
     pub metadata: super::SessionMetadata,
@@ -715,6 +729,7 @@ impl ConversationSummary {
             context_usage: self.context_usage,
             resources: self.resources,
             model: self.model,
+            supports_compaction: self.supports_compaction,
             workspace: self.workspace,
             can_change_workspace: self.can_change_workspace,
             operation: self.operation,
@@ -730,6 +745,9 @@ impl ConversationSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSnapshot {
     pub id: String,
+    /// Model capability, not current operation eligibility; recomputed by the backend.
+    #[serde(default)]
+    pub supports_compaction: bool,
     pub configuration: super::ConversationConfiguration,
     pub pending_input: Vec<Message>,
     pub metadata: super::SessionMetadata,

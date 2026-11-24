@@ -1,4 +1,5 @@
 //! Provider-owned routing and discovery. Context is carried by each request, never shared.
+use super::summary_compaction::{self, SummaryState};
 use crate::{Error, Result, check_cancel, core::*};
 use async_trait::async_trait;
 use futures_util::{StreamExt, stream::BoxStream};
@@ -14,6 +15,8 @@ use tokio_util::sync::CancellationToken;
 struct Contexts {
     registry_version: u32,
     contexts: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    summaries: BTreeMap<String, SummaryState>,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -265,14 +268,21 @@ impl ProviderRegistry {
             Some(state) if state.get("registry_version").is_some() => {
                 let contexts: Contexts = serde_json::from_value(state)
                     .map_err(|_| Error::Invalid("Invalid provider context."))?;
-                if contexts.registry_version != 1 || contexts.contexts.len() > 32 {
+                if contexts.registry_version != 1
+                    || contexts.contexts.len() > 32
+                    || contexts.summaries.len() > 32
+                {
                     return Err(Error::Invalid("Unsupported provider context."));
+                }
+                for summary in contexts.summaries.values() {
+                    summary.validate()?;
                 }
                 Ok(contexts)
             }
             Some(state) => Ok(Contexts {
                 registry_version: 1,
                 contexts: BTreeMap::from([(self.default.clone(), state)]),
+                ..Contexts::default()
             }),
         }
     }
@@ -291,7 +301,9 @@ impl ChatProvider for ProviderRegistry {
     async fn prepare_model(&self, model: &str, cancel: CancellationToken) -> Result<()> {
         let (id, bare, provider) = self.route(model)?;
         let _access = self.read_access(&id)?;
-        if !provider.supports_compaction(&bare) || self.context_window(model).is_none() {
+        if !(provider.supports_compaction(&bare) || provider.supports_summary_compaction(&bare))
+            || self.context_window(model).is_none()
+        {
             provider.prepare_model(&bare, cancel).await?;
         }
         Ok(())
@@ -302,7 +314,28 @@ impl ChatProvider for ProviderRegistry {
         let mut request = request.clone();
         request.model = model;
         request.provider_state = contexts.contexts.get(&id).cloned();
-        provider.image_context_indices(&request)
+        let Some(summary) = contexts.summaries.get(&id) else {
+            return provider.image_context_indices(&request);
+        };
+        let projection = summary_compaction::project(request, Some(summary))?;
+        projection.image_context_indices(provider.as_ref())
+    }
+    fn compaction_image_context_indices(&self, request: &ProviderRequest) -> Result<Vec<usize>> {
+        let (id, model, provider) = self.route(&request.model)?;
+        if provider.supports_compaction(&model) || !provider.supports_summary_compaction(&model) {
+            return self.image_context_indices(request);
+        }
+        let window = self.context_window(&request.model);
+        let contexts = self.contexts(request.provider_state.clone())?;
+        let mut request = request.clone();
+        request.model = model;
+        request.provider_state = contexts.contexts.get(&id).cloned();
+        let projection = summary_compaction::compaction_projection(
+            request,
+            contexts.summaries.get(&id),
+            window,
+        )?;
+        projection.image_context_indices(provider.as_ref())
     }
     async fn accepts_images(&self, model: &str, cancel: CancellationToken) -> Result<bool> {
         let (id, bare, provider) = self.route(model)?;
@@ -353,17 +386,47 @@ impl ChatProvider for ProviderRegistry {
             .or_else(|| provider.context_window(&bare))
     }
     fn supports_compaction(&self, model: &str) -> bool {
-        self.route(model)
-            .is_ok_and(|(_, model, p)| p.supports_compaction(&model))
+        self.route(model).is_ok_and(|(_, model, p)| {
+            p.supports_compaction(&model) || p.supports_summary_compaction(&model)
+        })
+    }
+    fn auto_compaction_threshold_percent(&self, model: &str) -> u64 {
+        let Ok((_, model, provider)) = self.route(model) else {
+            return 95;
+        };
+        if provider.supports_compaction(&model) {
+            provider.auto_compaction_threshold_percent(&model)
+        } else if provider.supports_summary_compaction(&model) {
+            80
+        } else {
+            95
+        }
     }
     async fn compact(&self, mut request: ProviderRequest) -> Result<Value> {
+        let window = self.context_window(&request.model);
         let (id, model, provider) = self.route(&request.model)?;
         let _access = self.read_access(&id)?;
         let mut contexts = self.contexts(request.provider_state.take())?;
         request.model = model;
         request.provider_state = contexts.contexts.get(&id).cloned();
-        let state = provider.compact(request).await?;
-        contexts.contexts.insert(id, state);
+        if provider.supports_compaction(&request.model)
+            || !provider.supports_summary_compaction(&request.model)
+        {
+            // Preserve native delegation (including its errors) for existing adapters.
+            let request =
+                summary_compaction::project(request, contexts.summaries.get(&id))?.request;
+            let state = provider.compact(request).await?;
+            contexts.contexts.insert(id, state);
+        } else {
+            let summary = summary_compaction::compact(
+                provider.as_ref(),
+                request,
+                contexts.summaries.get(&id),
+                window,
+            )
+            .await?;
+            contexts.summaries.insert(id, summary);
+        }
         serde_json::to_value(contexts).map_err(|_| Error::Internal)
     }
     async fn settle(&self) {
@@ -646,6 +709,9 @@ impl ChatProvider for ProviderRegistry {
                 contexts.contexts.insert(id, state);
             }
         }
+        contexts.summaries.retain(|id, summary| {
+            self.providers.contains_key(id) && summary.retain_for_fork(message_ids, messages)
+        });
         Ok(Some(serde_json::to_value(contexts)?))
     }
     fn stream(&self, mut request: ProviderRequest) -> BoxStream<'static, Result<ProviderEvent>> {
@@ -658,6 +724,7 @@ impl ChatProvider for ProviderRegistry {
         Box::pin(async_stream::try_stream! {
             let (id,model,provider,mut contexts,_access) = prepared?;
             request.model = model; request.provider_state = contexts.contexts.get(&id).cloned();
+            let request = summary_compaction::project(request, contexts.summaries.get(&id))?.request;
             let cancel = request.cancel.clone(); check_cancel(&cancel)?;
             let mut source = provider.stream(request);
             while let Some(event) = source.next().await {

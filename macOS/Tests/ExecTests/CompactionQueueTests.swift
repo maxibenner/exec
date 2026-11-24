@@ -38,6 +38,7 @@ private actor CompactionQueueTransport: AgentTransport {
             throw CheckFailure(description: "Expected snapshot fixture")
         }
         fields["model"] = .string("openai/test")
+        fields["supportsCompaction"] = .bool(true)
         fields["operation"] = .object(["id": .string(operationID.uuidString), "state": .string(state)])
         fields["pendingInput"] = .array(queued ? [.object([
             "id": .string(Self.queuedID.uuidString), "role": .string("user"), "text": .string("Queued message")

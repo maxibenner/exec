@@ -16,7 +16,11 @@ import Foundation
         let text = String(decoding: data, as: UTF8.self)
             .replacingOccurrences(of: "deepseek/test", with: model)
             .replacingOccurrences(of: "\"autoApprove\":false", with: "\"autoApprove\":\(auto)")
-        return try JSONDecoder().decode(AgentJSON.self, from: Data(text.utf8))
+        guard case .object(var fields) = try JSONDecoder().decode(AgentJSON.self, from: Data(text.utf8)) else {
+            throw CheckFailure(description: "Expected snapshot fixture")
+        }
+        fields["supportsCompaction"] = .bool(true)
+        return .object(fields)
     }
     private func snapshot(_ state: String, model: String = "openai/test", auto: Bool = false) throws -> AgentSnapshot {
         try snapshotJSON(state, model: model, auto: auto).decoded(AgentSnapshot.self)
@@ -312,7 +316,7 @@ import Foundation
         for _ in 0..<5 { await Task.yield() }
         let before = await transport.requests
         try expect(before.isEmpty && actions.isEmpty && store.tools.pendingApproval?.id == oldApproval)
-        try expect(store.canCompact && store.canRequestFork && store.canFork)
+        try expect(!store.canCompact && store.canRequestFork && store.canFork)
         let terminal = try snapshot("completed")
         let desired = try snapshot("completed", model: "openai/next", auto: true)
         let value = try snapshotJSON("completed", model: "openai/next", auto: true)

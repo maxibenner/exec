@@ -121,6 +121,7 @@ struct AgentMetadata: Decodable, Sendable, Equatable {
 struct AgentSnapshot: Decodable, Sendable, Equatable {
     let id: UUID
     let model: String
+    let supportsCompaction: Bool?
     let workspace: String
     let configuration: AgentConfiguration
     let metadata: AgentMetadata

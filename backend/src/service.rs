@@ -742,12 +742,14 @@ async fn handle(
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Register {
             os_screen_permission: bool,
+            #[serde(default)]
+            accepts_remote_conversations: bool,
         }
         let input: Register = body(request, &request_cancel).await?;
-        let mut connection = options
-            .manager
-            .native()
-            .register(input.os_screen_permission)?;
+        let mut connection = options.manager.native().register(
+            input.os_screen_permission,
+            input.accepts_remote_conversations,
+        )?;
         let stop = host.stop.clone();
         let frames = async_stream::stream! {
             let line=serde_json::to_vec(&crate::native::NativeEvent::Registered{frontend_id:connection.id.clone()}).unwrap();yield Ok::<_,std::io::Error>(bytes::Bytes::from([line,b"\n".to_vec()].concat()));
@@ -1250,6 +1252,9 @@ async fn handle(
             }
             if host.stop.is_cancelled() {
                 return Err(ApiError::rejected(503, "Service is stopping."));
+            }
+            if remote_client {
+                options.manager.bind_remote_desktop(parts[0])?;
             }
             let run = options
                 .manager
@@ -1811,3 +1816,7 @@ mod change_tests {
         host.options.manager.close().await.unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "service/remote_desktop_tests.rs"]
+mod remote_desktop_tests;
