@@ -320,6 +320,12 @@ impl ChatProvider for ProviderRegistry {
             .values()
             .any(|p| p.supports_image_generation())
     }
+    fn max_image_generation_inputs(&self) -> usize {
+        self.providers
+            .values()
+            .find(|p| p.supports_image_generation())
+            .map_or(0, |p| p.max_image_generation_inputs())
+    }
     fn image_generation_available(&self) -> bool {
         self.providers
             .values()

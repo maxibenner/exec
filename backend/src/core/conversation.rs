@@ -579,6 +579,7 @@ impl Conversation {
         // after a restore with a different catalog.
         if !self.definitions.is_empty() || !record.tool_availability.is_empty() {
             let context = ToolContext {
+                available_images: vec![],
                 conversation_id: self.id.clone(),
                 operation_id: record.operation.as_ref().unwrap().id.clone(),
                 call_id: String::new(),
@@ -1852,15 +1853,11 @@ impl Conversation {
         let mut total_bytes = 0usize;
         for index in self.provider.image_context_indices(request)? {
             let id = request.message_ids.get(index).ok_or(Error::Internal)?;
-            let refs = match history.iter().find(|m| m.id() == id) {
-                Some(Message::User { images, .. }) => images.clone(),
-                Some(Message::Tool {
-                    outcome: ToolOutcome::Completed,
-                    details: Some(ToolDetails::Image { image, .. }),
-                    ..
-                }) => vec![image.clone()],
-                _ => vec![],
-            };
+            let refs = history
+                .iter()
+                .find(|m| m.id() == id)
+                .map(Message::images)
+                .unwrap_or_default();
             if refs.is_empty() {
                 continue;
             }
@@ -1895,7 +1892,7 @@ impl Conversation {
                         "Active image context exceeds 16 MiB. Compact or start a new conversation.",
                     ));
                 }
-                inputs.push(reader.load(&image).await?);
+                inputs.push(reader.load(image).await?);
             }
             request.images.insert(index, inputs);
         }
@@ -1987,11 +1984,25 @@ impl Conversation {
                 } else if let Some(tool) = self.tools.get(&call.name) {
                     let mut started = false;
                     let action = AssertUnwindSafe(async {
-                        let workspace = self.state().record.workspace.clone();
-                        let model = self.state().record.model.clone();
-                        let search_model = self.state().record.configuration.as_ref().unwrap().settings.search_model.clone();
-                        let operation_id=self.state().record.operation.as_ref().unwrap().id.clone();
-                        let context = ToolContext{conversation_id:self.id.clone(),operation_id,search_model,call_id:call.id.clone(),model,workspace,cancel:cancel.clone()};
+                        let context = {
+                            let state = self.state();
+                            let record = &state.record;
+                            let owned: HashSet<_> = record.resources.iter()
+                                .filter(|r| r.kind == ResourceKind::Image)
+                                .map(|r| r.id.as_str()).collect();
+                            let available_images = record.messages.iter().flat_map(Message::images)
+                                .filter(|image| owned.contains(image.id.as_str())).cloned().collect();
+                            ToolContext {
+                                available_images,
+                                conversation_id: self.id.clone(),
+                                operation_id: record.operation.as_ref().unwrap().id.clone(),
+                                search_model: record.configuration.as_ref().unwrap().settings.search_model.clone(),
+                                call_id: call.id.clone(),
+                                model: record.model.clone(),
+                                workspace: record.workspace.clone(),
+                                cancel: cancel.clone(),
+                            }
+                        };
                         if !tool.available(&context) {
                             return Ok((ToolOutcome::NotExecuted, "Tool is currently unavailable. Nothing was executed. Do not retry without a new user request.".into()));
                         }

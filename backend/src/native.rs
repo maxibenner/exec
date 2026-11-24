@@ -396,6 +396,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     fn context() -> ToolContext {
         ToolContext {
+            available_images: vec![],
             conversation_id: new_id(),
             operation_id: new_id(),
             call_id: "call".into(),

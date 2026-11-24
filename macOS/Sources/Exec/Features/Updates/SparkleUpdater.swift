@@ -6,22 +6,26 @@ import Sparkle
 final class SparkleUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     @Published private(set) var canCheckForUpdates = false
     let notice = UpdateNotice()
+    private let isEnabled = (Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     private lazy var controller = SPUStandardUpdaterController(
         startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
 
     override init() {
         super.init()
+        guard isEnabled else { return }
         controller.startUpdater()
         controller.updater.publisher(for: \.canCheckForUpdates)
             .assign(to: &$canCheckForUpdates)
     }
 
     func checkForUpdates() {
-        guard canCheckForUpdates else { return }
+        guard isEnabled, canCheckForUpdates else { return }
         controller.checkForUpdates(nil)
     }
 
     func checkSilentlyIfNeeded() {
+        guard isEnabled else { return }
         guard notice.beginSilentCheck(canCheck: canCheckForUpdates && !controller.updater.sessionInProgress) else { return }
         controller.updater.checkForUpdateInformation()
     }

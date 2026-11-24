@@ -56,6 +56,26 @@ fn response(value: Value) -> HttpResponse {
         body: Box::pin(stream::iter([Ok(bytes::Bytes::from(value.to_string()))])),
     }
 }
+fn image_input(format: image::ImageFormat) -> ImageInput {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(2, 2)
+        .write_to(&mut bytes, format)
+        .unwrap();
+    ImageInput {
+        media_type: format.to_mime_type().into(),
+        base64: base64::engine::general_purpose::STANDARD.encode(bytes.into_inner()),
+    }
+}
+fn image_edit() -> ImageGeneration {
+    ImageGeneration {
+        prompt: "Combine these images in order".into(),
+        transparent_background: false,
+        input_images: vec![
+            image_input(image::ImageFormat::Png),
+            image_input(image::ImageFormat::Jpeg),
+        ],
+    }
+}
 fn wire(events: Vec<Value>) -> HttpResponse {
     let text = events
         .into_iter()
@@ -1124,15 +1144,18 @@ async fn openai_services_and_compaction_use_separate_context_and_keep_only_compa
             )),
             Endpoint::Images => {
                 let body: Value = serde_json::from_str(request.body.as_ref().unwrap()).unwrap();
-                assert_eq!(body["model"], "gpt-image-2");
-                assert_eq!(body["background"], "transparent");
-                use base64::engine::general_purpose::STANDARD;
-                let mut bytes = std::io::Cursor::new(Vec::new());
-                image::DynamicImage::new_rgb8(2, 2)
-                    .write_to(&mut bytes, image::ImageFormat::Png)
-                    .unwrap();
+                assert_eq!(
+                    body,
+                    json!({
+                        "model": "gpt-image-2",
+                        "prompt": "small cat",
+                        "background": "transparent",
+                        "quality": "auto",
+                        "size": "auto",
+                    })
+                );
                 Ok(response(
-                    json!({"data":[{"b64_json":STANDARD.encode(bytes.into_inner())}]}),
+                    json!({"data":[{"b64_json":image_input(image::ImageFormat::Png).base64}]}),
                 ))
             }
             Endpoint::Responses => {
@@ -1179,7 +1202,8 @@ async fn openai_services_and_compaction_use_separate_context_and_keep_only_compa
         !p.generate_image(
             ImageGeneration {
                 prompt: "small cat".into(),
-                transparent_background: true
+                transparent_background: true,
+                input_images: vec![],
             },
             CancellationToken::new()
         )
@@ -1221,6 +1245,197 @@ async fn openai_services_and_compaction_use_separate_context_and_keep_only_compa
     assert!(events.iter().all(Result::is_ok));
     assert!(matches!(events.last(), Some(Ok(ProviderEvent::Done))));
     assert_eq!(transport.requests.lock().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn image_edits_route_to_image_provider_preserve_order_and_decode_response() {
+    let root = support::directory();
+    let path = root.path().join("credentials.json");
+    save(&path, &session(false));
+    let input = image_edit();
+    let expected = json!({
+        "model": "gpt-image-2",
+        "prompt": input.prompt,
+        "background": "opaque",
+        "quality": "auto",
+        "size": "auto",
+        "images": [
+            {"image_url": format!("data:image/png;base64,{}", input.input_images[0].base64)},
+            {"image_url": format!("data:image/jpeg;base64,{}", input.input_images[1].base64)},
+        ],
+    });
+    let encoded = image_input(image::ImageFormat::Png).base64;
+    let expected_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&encoded)
+        .unwrap();
+    let transport = Fake::new(move |request| {
+        let expected = expected.clone();
+        let encoded = encoded.clone();
+        async move {
+            assert!(matches!(request.endpoint, Endpoint::ImageEdits));
+            assert_eq!(request.access, Some(access("synthetic-account")));
+            assert_eq!(request.account.as_deref(), Some("synthetic-account"));
+            let body: Value = serde_json::from_str(request.body.as_ref().unwrap()).unwrap();
+            assert_eq!(body, expected);
+            Ok(response(json!({"data":[{"b64_json":encoded}]})))
+        }
+    });
+    let auth = Authentication::open(path, None, transport.clone())
+        .await
+        .unwrap();
+    let provider = OpenAIProvider::new(auth, transport.clone());
+    assert_eq!(provider.max_image_generation_inputs(), 5);
+    let chat = support::FakeProvider::new(vec![]);
+    let registry = exec_agent::providers::ProviderRegistry::new(
+        "chat",
+        vec![
+            ("chat".into(), chat.clone()),
+            ("openai".into(), Arc::new(provider)),
+        ],
+    )
+    .unwrap();
+    assert_eq!(registry.max_image_generation_inputs(), 5);
+    assert_eq!(
+        registry.image_generation_provider_id().as_deref(),
+        Some("openai")
+    );
+    assert_eq!(
+        registry
+            .generate_image(input, CancellationToken::new())
+            .await
+            .unwrap()
+            .bytes,
+        expected_bytes
+    );
+    assert_eq!(transport.requests.lock().unwrap().len(), 1);
+    assert_eq!(chat.count(), 0);
+}
+
+#[test]
+fn image_generation_input_limit_is_zero_without_image_provider() {
+    let chat = support::FakeProvider::new(vec![]);
+    assert_eq!(chat.max_image_generation_inputs(), 0);
+    let registry =
+        exec_agent::providers::ProviderRegistry::new("chat", vec![("chat".into(), chat)]).unwrap();
+    assert_eq!(registry.max_image_generation_inputs(), 0);
+}
+
+#[tokio::test]
+async fn image_edits_reject_excess_inputs_before_authentication_or_transport() {
+    let root = support::directory();
+    let path = root.path().join("credentials.json");
+    save(&path, &session(true));
+    let transport = Fake::new(|_| async { panic!("excess image inputs must not send a request") });
+    let auth = Authentication::open(path, None, transport.clone())
+        .await
+        .unwrap();
+    let provider = OpenAIProvider::new(auth, transport.clone());
+    let mut input = image_edit();
+    input.input_images = vec![image_input(image::ImageFormat::Png); 6];
+    assert!(matches!(
+        provider
+            .generate_image(input, CancellationToken::new())
+            .await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(transport.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn image_edits_cancel_during_send_or_body_without_retry() {
+    for during_body in [false, true] {
+        let root = support::directory();
+        let path = root.path().join("credentials.json");
+        save(&path, &session(false));
+        let entered = CancellationToken::new();
+        let signal = entered.clone();
+        let transport = Fake::new(move |request| {
+            let signal = signal.clone();
+            async move {
+                assert!(matches!(request.endpoint, Endpoint::ImageEdits));
+                if during_body {
+                    Ok(HttpResponse {
+                        status: 200,
+                        content_type: Some("application/json".into()),
+                        body: Box::pin(stream::once(async move {
+                            signal.cancel();
+                            std::future::pending().await
+                        })),
+                    })
+                } else {
+                    signal.cancel();
+                    std::future::pending().await
+                }
+            }
+        });
+        let auth = Authentication::open(path, None, transport.clone())
+            .await
+            .unwrap();
+        let provider = OpenAIProvider::new(auth, transport.clone());
+        let cancel = CancellationToken::new();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                provider.generate_image(image_edit(), cancel.clone()),
+                async {
+                    entered.cancelled().await;
+                    cancel.cancel();
+                }
+            )
+            .0
+        })
+        .await
+        .unwrap();
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+        // An already-cancelled edit must not send at all.
+        assert!(matches!(
+            provider.generate_image(image_edit(), cancel).await,
+            Err(Error::Cancelled)
+        ));
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn image_edits_fail_without_retry_refresh_or_response_body_disclosure() {
+    for status in [None, Some(200), Some(401), Some(403), Some(429), Some(503)] {
+        let root = support::directory();
+        let path = root.path().join("credentials.json");
+        save(&path, &session(false));
+        let transport = Fake::new(move |request| async move {
+            assert!(matches!(request.endpoint, Endpoint::ImageEdits));
+            let Some(status) = status else {
+                return Err(Error::Provider(ProviderFailure::Transport));
+            };
+            let mut response = response(json!({"error":"synthetic-private-image-error"}));
+            response.status = status;
+            Ok(response)
+        });
+        let auth = Authentication::open(path, None, transport.clone())
+            .await
+            .unwrap();
+        let provider = OpenAIProvider::new(auth, transport.clone());
+        let error = provider
+            .generate_image(image_edit(), CancellationToken::new())
+            .await
+            .err()
+            .expect("failed edit must not succeed");
+        let expected = match status {
+            None => Error::Provider(ProviderFailure::Transport),
+            Some(200) => Error::Provider(ProviderFailure::Response),
+            Some(status) => Error::ProviderDetailed {
+                reason: match status {
+                    401 | 403 => ProviderFailure::Authentication,
+                    429 => ProviderFailure::RateLimit,
+                    _ => ProviderFailure::Transport,
+                },
+                detail: exec_agent::ProviderDiagnostic::HttpStatus { status },
+            },
+        };
+        assert_eq!(error, expected);
+        assert!(!error.to_string().contains("synthetic-private-image-error"));
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+    }
 }
 
 #[tokio::test]

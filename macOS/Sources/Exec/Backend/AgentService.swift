@@ -3,11 +3,11 @@ import Observation
 import Darwin
 
 @MainActor @Observable final class AgentService {
-    static var profile: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Exec/Agent", isDirectory: true)
-    }
-    static var hasSavedSessions: Bool {
+    // A malformed override must never fall back to reading the production profile.
+    static var profile: URL? { try? AgentBundleConfiguration().profile() }
+    static var hasSavedSessions: Bool { hasSavedSessions(in: profile) }
+    static func hasSavedSessions(in profile: URL?) -> Bool {
+        guard let profile else { return false }
         let directory = profile.appendingPathComponent("conversations")
         return (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.contains {
             $0.hasSuffix(".json") && UUID(uuidString: String($0.dropLast(5))) != nil
@@ -15,7 +15,8 @@ import Darwin
     }
     /// Synchronous first-frame fallback when the backend catalog is not ready.
     /// Read only the record header; full transcript validation belongs to Rust.
-    static func savedSessionCount(in profile: URL = AgentService.profile) -> Int {
+    static func savedSessionCount(in profile: URL? = AgentService.profile) -> Int {
+        guard let profile else { return 0 }
         let directory = profile.appendingPathComponent("conversations", isDirectory: true)
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
         guard let files = try? FileManager.default.contentsOfDirectory(
@@ -47,14 +48,14 @@ import Darwin
 
     func start() async throws -> AgentAPI {
         if let api, process?.isRunning == true { return api }
+        let configuration = try AgentHTTPConfiguration()
         guard let executable = Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("exec-agent"),
               FileManager.default.isExecutableFile(atPath: executable.path) else {
             throw ExecError("The bundled Exec backend is missing. Rebuild or reinstall Exec.")
         }
-        let configuration = try AgentHTTPConfiguration()
         let process = Process()
         process.executableURL = executable
-        process.arguments = ["--profile", Self.profile.path, "--workspace-tools",
+        process.arguments = ["--profile", configuration.bundleConfiguration.profile().path, "--workspace-tools",
                              "--host", configuration.host, "--port", String(configuration.port)]
         process.environment = configuration.childEnvironment(inherited: ProcessInfo.processInfo.environment)
         process.standardInput = FileHandle.nullDevice

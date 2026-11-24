@@ -26,6 +26,7 @@ async fn prepare(
         .prepare(
             args.as_object().unwrap().clone(),
             ToolContext {
+                available_images: vec![],
                 conversation_id: new_id(),
                 operation_id: new_id(),
                 search_model: None,

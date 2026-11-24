@@ -24,6 +24,7 @@ pub enum Endpoint {
     Models,
     Responses,
     Images,
+    ImageEdits,
     Usage,
 }
 #[async_trait]
@@ -70,6 +71,7 @@ impl Transport for Http {
                 "https://chatgpt.com/backend-api/codex/images/generations",
                 false,
             ),
+            Endpoint::ImageEdits => ("https://chatgpt.com/backend-api/codex/images/edits", false),
             Endpoint::Usage => ("https://chatgpt.com/backend-api/wham/usage", false),
         };
         let mut builder = if let Some(body) = request.body {
@@ -112,7 +114,7 @@ impl Transport for Http {
                 .header("OpenAI-Beta", "responses=experimental")
                 .header("x-client-request-id", crate::core::new_id());
         }
-        if matches!(request.endpoint, Endpoint::Images) {
+        if matches!(request.endpoint, Endpoint::Images | Endpoint::ImageEdits) {
             builder = builder.header("x-codex-image-turn-id", crate::core::new_id());
         }
         let response = tokio::select! {biased;_=cancel.cancelled()=>return Err(Error::Cancelled), response=builder.send()=>response.map_err(|e| transport_error(e, Phase::Send))?};
@@ -146,7 +148,7 @@ pub(crate) async fn json(
     limit: usize,
     cancel: CancellationToken,
 ) -> Result<serde_json::Value> {
-    let deadline = if matches!(request.endpoint, Endpoint::Images) {
+    let deadline = if matches!(request.endpoint, Endpoint::Images | Endpoint::ImageEdits) {
         600
     } else {
         30

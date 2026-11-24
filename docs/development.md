@@ -38,6 +38,15 @@ REQUIRE_STABLE_SIGNING=1 ./scripts/build-app.sh
 
 The scripts keep `CARGO_PROFILE_RELEASE_STRIP=none`: some Rust/macOS combinations produce unloadable stripped proc-macro dylibs. Do not work around this by modifying or re-signing compiler artifacts.
 
+### Parallel test builds
+
+Renaming an app alone does not isolate its backend. To run a copied test bundle alongside production, give the copy a distinct `CFBundleIdentifier`, `CFBundleName` and `CFBundleDisplayName`, plus these optional Info.plist overrides:
+
+- `ExecProfileName` (string): a single directory name, for example `Exec Image Editing`. Data and provider credentials then live under `Application Support/<name>/Agent`. The default remains `Exec`.
+- `ExecAgentPort` (integer): an unused loopback port, for example `8766`. The default remains `8765`.
+
+Malformed overrides fail closed. Use a fresh profile, never a symlink to production or a copy of its credentials; sign in separately. Remove `SUFeedURL` from the copied bundle to disable its updater. Do not change the published production feed. Re-sign the copied helper and app inside out with the configured stable certificate after modifying the bundle, verify the signatures, and open that exact app path. Keep the test app outside a feature worktree before removing the worktree. These settings isolate application state, not filesystem or desktop access; use a disposable test workspace.
+
 ## Backend
 
 From `backend/`:

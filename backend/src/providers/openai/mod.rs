@@ -487,7 +487,7 @@ impl OpenAIProvider {
                 access: Some(session.access_token),
                 account: Some(session.account_id),
             },
-            if matches!(endpoint, Endpoint::Images) {
+            if matches!(endpoint, Endpoint::Images | Endpoint::ImageEdits) {
                 12 * 1024 * 1024
             } else {
                 1024 * 1024
@@ -560,13 +560,43 @@ impl ChatProvider for OpenAIProvider {
     fn supports_image_generation(&self) -> bool {
         true
     }
+    fn max_image_generation_inputs(&self) -> usize {
+        5
+    }
     async fn generate_image(
         &self,
         input: ImageGeneration,
         cancel: CancellationToken,
     ) -> Result<GeneratedImage> {
+        check_cancel(&cancel)?;
         input.validate()?;
-        let value=self.request(Endpoint::Images,Some(json!({"model":"gpt-image-2","prompt":input.prompt,"background":if input.transparent_background{"transparent"}else{"opaque"},"quality":"auto","size":"auto"})),cancel).await?;
+        if input.input_images.len() > self.max_image_generation_inputs() {
+            return Err(Error::Invalid(
+                "OpenAI image editing supports at most 5 input images.",
+            ));
+        }
+        let mut body = json!({
+            "model": "gpt-image-2",
+            "prompt": input.prompt,
+            "background": if input.transparent_background { "transparent" } else { "opaque" },
+            "quality": "auto",
+            "size": "auto",
+        });
+        let endpoint = if input.input_images.is_empty() {
+            Endpoint::Images
+        } else {
+            body["images"] = Value::Array(
+                input
+                    .input_images
+                    .iter()
+                    .map(|image| {
+                        json!({"image_url": format!("data:{};base64,{}", image.media_type, image.base64)})
+                    })
+                    .collect(),
+            );
+            Endpoint::ImageEdits
+        };
+        let value = self.request(endpoint, Some(body), cancel).await?;
         let data = value["data"]
             .as_array()
             .filter(|a| a.len() == 1)

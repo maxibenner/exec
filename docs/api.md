@@ -1131,13 +1131,38 @@ Forks share immutable assets. Last-reference cleanup is excluded from live forks
 unreadable sessions cause conservative retention. Orphan files/staging are never replayed
 or promoted automatically. Version 7 adds images; versions 1–6 remain readable.
 
-The `generate_image` tool uses the one image-generation provider selected by composition
-(OpenAI in standalone), not a concrete wire model chosen by a frontend/tool. Ambiguous
-multi-image-provider registry composition is rejected; there is no provider fallback.
-Generation uses the same runner approval/cancellation/intent/result lifecycle as other
-tools. Only request it for an explicit user image request. It consumes subscription quota,
-never writes directly into a workspace, and is never retried automatically. Completed image
-results have `details:{type:"image",image:ImageRef,origin:"generated"|"screenshot"}`.
+The `generate_image` tool accepts `{prompt,transparent_background,input_image_ids?}`:
+
+- `prompt` is a nonempty string, at most 16 KiB of UTF-8, without NUL bytes;
+  `transparent_background` is a required boolean.
+- Omitted, `null` or empty `input_image_ids` generates from text. A nonempty array selects
+  ordered, unique managed image IDs for editing or visual reference. Describe each image's
+  role in the prompt (image 1, image 2, etc.); paths, URLs and inline image data are not IDs.
+- IDs must be available in the current conversation's consumed history: user image
+  attachments or completed image tool results, including inherited fork history. Unused
+  uploads, pending input and cleanup-only reservations do not make an image available.
+- The selected image adapter determines the input-count limit: Exec's OpenAI adapter allows at most
+  **5 input images**; other providers default to no image-input support. Inputs retain the PNG/JPEG,
+  8 MiB per-image and dimension limits above, with **16 MiB combined** checked from reference
+  metadata before loading any source. Loaded bytes must match the source's integrity metadata.
+- Malformed, duplicate, unavailable, unsupported, over-limit or unreadable inputs fail before
+  provider generation; they are never silently discarded or converted to text-only generation.
+  Masks and mask-based editing are not supported.
+
+The tool uses the one image-generation provider selected by composition (OpenAI in standalone),
+not a concrete wire model chosen by a frontend/tool. This routing is independent of the chat
+provider and its vision support: for example, a DeepSeek chat can send the prompt and selected
+image contents to OpenAI for editing. The tool description and approval disclose this boundary;
+never include secrets. Ambiguous multi-image-provider registry composition is rejected; there
+is no provider fallback. Live image-edit availability and acceptance depend on the provider and
+account; local validation and mocked tests are not a live API guarantee.
+
+Generation/editing uses the same runner approval/cancellation/intent/result lifecycle as other
+tools. Only request it for an explicit user image or edit request. It consumes subscription quota,
+never writes directly into a workspace, and is never retried automatically, including after a
+failure or interruption. Every successful edit creates a **new immutable managed image**;
+original sources remain unchanged. Completed image results have
+`details:{type:"image",image:ImageRef,origin:"generated"|"screenshot"}`.
 A managed source is read-only: copy it explicitly, never regenerate just to save it.
 OpenAI hosted search uses a separate Responses request and does not mutate chat state.
 

@@ -106,6 +106,7 @@ mod tests {
     }
     fn context(cancel: CancellationToken) -> ToolContext {
         ToolContext {
+            available_images: vec![],
             conversation_id: "session".into(),
             operation_id: "operation".into(),
             call_id: "call".into(),

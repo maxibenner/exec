@@ -189,6 +189,9 @@ import Foundation
             ("Tool summaries describe inputs and preserve results", { try ToolPresentationTests().describesInputsAndPreservesResults() }),
             ("Tool presentation preserves failures and unknown arguments", { try ToolPresentationTests().handlesFailuresAndUnknownArgumentsHonestly() }),
             ("Single-line tool headers and selectable expanded inputs", { try ToolPresentationTests().keepsHeadersOnOneLineAndBodiesSelectable() }),
+            ("Image references preserve prompt headers and structured inputs", { try ImageReferencePreviewTests().presentationKeepsReferencesOutOfHeadersAndTextFields() }),
+            ("Image references resolve only managed transcript history in input order", { try ImageReferencePreviewTests().resolvesOnlyEarlierManagedTranscriptImagesInInputOrder() }),
+            ("Image references appear only in expanded pending and completed cards", { try await ImageReferencePreviewTests().referencePreviewsAppearOnlyInExpandedCards() }),
             ("Sent-message navigation traverses user rows and returns to the bottom", { try MessageNavigationTests().traversesSentMessagesAndReturnsToBottom() }),
             ("Sent-message navigation preserves targets and resumes from manual scrolling", { try MessageNavigationTests().preservesTargetDuringUpdatesAndResumesFromManualScroll() }),
             ("Sent-message navigation handles empty and independent transcripts", { try MessageNavigationTests().emptySingleAndIndependentTranscripts() }),
@@ -298,6 +301,10 @@ import Foundation
             ("Uncertain submissions never retry", { try await AgentIntegrationTests().uncertainSendIsNotRetried() }),
             ("HTTP redirects and interrupted mutations never replay", { try await HTTPConsumerTests().redirectsAndInterruptedMutationsAreNotReplayed() }),
             ("HTTPS rejects an untrusted certificate without fallback", { try await HTTPConsumerTests().tlsRejectsUntrustedCertificate() }),
+            ("Bundle configuration preserves defaults and accepts isolated overrides", { try AgentBundleConfigurationTests().defaultsAndOverrides() }),
+            ("Bundle configuration rejects malformed profile names", { try AgentBundleConfigurationTests().rejectsInvalidProfiles() }),
+            ("Bundle configuration rejects invalid or noninteger ports", { try AgentBundleConfigurationTests().rejectsInvalidPorts() }),
+            ("Bundle configuration isolates saved checks and fails closed", { try AgentBundleConfigurationTests().savedChecksStayIsolatedAndFailClosed() }),
             ("Bundled backend ignores external settings and provisions private credentials", { try AgentIntegrationTests().httpConfiguration() }),
             ("Agent transport connects to isolated Rust service", { try await AgentIntegrationTests().realService() })
         ]

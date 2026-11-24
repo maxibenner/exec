@@ -130,6 +130,18 @@ impl Message {
             Self::User { id, .. } | Self::Assistant { id, .. } | Self::Tool { id, .. } => id,
         }
     }
+    /// Only consumed attachments and completed image results are eligible inputs.
+    pub fn images(&self) -> &[super::ImageRef] {
+        match self {
+            Self::User { images, .. } => images,
+            Self::Tool {
+                outcome: ToolOutcome::Completed,
+                details: Some(ToolDetails::Image { image, .. }),
+                ..
+            } => std::slice::from_ref(image),
+            _ => &[],
+        }
+    }
     pub fn text(&self) -> &str {
         match self {
             Self::User { text, .. } | Self::Assistant { text, .. } | Self::Tool { text, .. } => {
@@ -171,8 +183,8 @@ pub fn context(messages: &[Message]) -> Vec<ContextMessage> {
         .iter()
         .filter(|m| m.in_context())
         .filter_map(|m| match m {
-            Message::User { text, files, .. } => Some(ContextMessage::User {
-                text: super::file_context(text, files),
+            Message::User { text, files, images, .. } => Some(ContextMessage::User {
+                text: super::image_context(&super::file_context(text, files), images),
             }),
             Message::Assistant {
                 text,
@@ -325,6 +337,11 @@ pub trait ChatProvider: Send + Sync {
     fn supports_image_generation(&self) -> bool {
         false
     }
+    /// Image-provider capability, independent of the selected chat model's vision support.
+    /// Zero means text-to-image only (or no image generation).
+    fn max_image_generation_inputs(&self) -> usize {
+        0
+    }
     fn image_generation_available(&self) -> bool {
         self.supports_image_generation()
             && (self.connections().is_empty() || self.connections().iter().any(|c| c.connected))
@@ -422,6 +439,8 @@ pub trait ChatProvider: Send + Sync {
 }
 #[derive(Clone)]
 pub struct ToolContext {
+    /// Runtime-owned allowlist from consumed history, never pending or cleanup-only assets.
+    pub available_images: Vec<super::ImageRef>,
     pub conversation_id: String,
     pub operation_id: String,
     pub search_model: Option<String>,
