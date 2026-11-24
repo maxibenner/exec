@@ -27,7 +27,9 @@ import Observation
     func start() async throws {
         guard channel == nil, frontendID == nil else { return }
         reportedPermission = preflight()
-        let body = try JSONEncoder().encode(AgentJSON.object(["osScreenPermission": .bool(reportedPermission)]))
+        let body = try JSONEncoder().encode(AgentJSON.object([
+            "osScreenPermission": .bool(reportedPermission),
+            "acceptsRemoteConversations": .bool(true)]))
         let events = api.transport.events("POST", "/v1/native/events", body: body)
         let deadline = Task { [weak self] in
             try await Task.sleep(for: .seconds(15))
@@ -54,6 +56,14 @@ import Observation
                             }
                             try await self.reportPermission()
                             switch event["type"].string {
+                            case "conversation_bound":
+                                guard event["frontendID"].string == self.frontendID,
+                                      let conversation = event["conversationID"].string.flatMap(UUID.init(uuidString:)) else {
+                                    throw ExecError("The screenshot channel returned an invalid conversation binding.")
+                                }
+                                // The trusted helper binds remote chats before inference.
+                                // This ordered event precedes any approved capture request.
+                                self.enabled.insert(conversation)
                             case "request": self.receive(event["request"])
                             case "cancelled":
                                 if let id = event["request"]["id"].string { self.captures.removeValue(forKey: id)?.cancel() }

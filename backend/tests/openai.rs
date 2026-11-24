@@ -141,10 +141,16 @@ async fn steering_commentary_continues_through_tools_to_final_and_replays_phase(
     let held = release.clone();
     let requests = Arc::new(AtomicUsize::new(0));
     let count = requests.clone();
+    let tool_output = vec![
+        json!({"id":"reasoning","type":"reasoning","encrypted_content":"retained-reasoning"}),
+        phased_message("tool-preamble", json!("commentary"), "About to act"),
+        json!({"type":"function_call","id":"fc","call_id":"action","name":"change","arguments":"{}","status":"completed"}),
+    ];
     let transport = Fake::new(move |request| {
         let signal = signal.clone();
         let held = held.clone();
         let count = count.clone();
+        let tool_output = tool_output.clone();
         async move {
             if matches!(request.endpoint, Endpoint::Models) {
                 return Ok(response(
@@ -155,6 +161,14 @@ async fn steering_commentary_continues_through_tools_to_final_and_replays_phase(
             let body: Value = serde_json::from_str(request.body.as_ref().unwrap()).unwrap();
             let input = body["input"].as_array().unwrap();
             let step = count.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(
+                body["tools"],
+                if step == 4 {
+                    json!([])
+                } else {
+                    json!([{"type":"function","name":"change","description":"Test effect","parameters":{"type":"object"},"strict":true}])
+                }
+            );
             if step > 0 {
                 assert!(
                     input
@@ -193,10 +207,7 @@ async fn steering_commentary_continues_through_tools_to_final_and_replays_phase(
                         json!({"type":"response.completed","response":{"status":"completed","output":[]}}),
                     ]));
                 }
-                2 => vec![
-                    phased_message("tool-preamble", json!("commentary"), "About to act"),
-                    json!({"type":"function_call","id":"fc","call_id":"action","name":"change","arguments":"{}","status":"completed"}),
-                ],
+                2 => tool_output,
                 3 => {
                     assert!(
                         input.iter().any(
@@ -207,6 +218,18 @@ async fn steering_commentary_continues_through_tools_to_final_and_replays_phase(
                         phased_message("last-progress", json!("commentary"), "Checking results"),
                         phased_message("final", json!("final_answer"), "Actual final answer"),
                     ]
+                }
+                4 => {
+                    // Removing the current definition must not flatten saved output.
+                    assert!(
+                        input
+                            .windows(tool_output.len())
+                            .any(|items| items == tool_output.as_slice())
+                    );
+                    assert!(input.contains(&json!({
+                        "type":"function_call_output","call_id":"action","output":"done"
+                    })));
+                    vec![phased_message("continued", json!("final_answer"), "Done")]
                 }
                 _ => panic!("unexpected inference or retry"),
             };
@@ -249,7 +272,7 @@ async fn steering_commentary_continues_through_tools_to_final_and_replays_phase(
     assert!(
         matches!(record.messages.last(), Some(Message::Assistant { text, .. }) if text == "Actual final answer")
     );
-    let state = record.provider_state.unwrap();
+    let state = record.provider_state.clone().unwrap();
     assert!(state.to_string().contains("last-progress"));
     assert!(state.to_string().contains("final_answer"));
     // Existing flattened transcripts still retain phase on a fork.
@@ -259,10 +282,23 @@ async fn steering_commentary_continues_through_tools_to_final_and_replays_phase(
         *text = "Checking resultsActual final answer".into();
     }
     let forked = provider
-        .fork_state(state, &ids, &messages)
+        .fork_state(state.clone(), &ids, &messages)
         .unwrap()
         .unwrap();
     assert!(forked.to_string().contains("last-progress"));
+
+    let mut options = support::options(provider, vec![]);
+    options.model = "test".into();
+    let restored = Conversation::new(options, Some(record)).unwrap();
+    assert_eq!(restored.record().provider_state, Some(state));
+    assert_eq!(
+        support::complete(restored.submit("Continue without tools".into()).unwrap())
+            .await
+            .state,
+        OperationState::Completed
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 5);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -1059,11 +1095,10 @@ async fn missing_response_content_type_still_requires_a_valid_completed_stream()
         let mut options = support::options(provider, vec![]);
         options.model = "test".into();
         let conversation = Conversation::new(options, None).unwrap();
+        let operation = support::complete(conversation.submit("hello".into()).unwrap()).await;
         assert_eq!(
-            support::complete(conversation.submit("hello".into()).unwrap())
-                .await
-                .state,
-            expected
+            operation.state, expected,
+            "Content type {content_type:?}, completed={completed}: {operation:?}"
         );
         assert_eq!(
             transport
@@ -1757,7 +1792,7 @@ async fn legacy_compaction_supplements_incomplete_replies_until_recompacted() {
         text: "new input".into(),
     });
     let events: Vec<_> = provider.stream(request.clone()).collect().await;
-    assert!(events.iter().all(Result::is_ok));
+    assert!(events.iter().all(Result::is_ok), "{events:?}");
     let compacted = provider.compact(request.clone()).await.unwrap();
     assert_eq!(compacted["prefix"]["includes_incomplete"], true);
     request.provider_state = Some(compacted);

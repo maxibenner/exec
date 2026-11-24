@@ -248,7 +248,18 @@ async fn long_thinking_continuation_remains_restorable_after_crossing_256_tool_s
 
 #[tokio::test]
 async fn thinking_checkpoints_prune_only_unreferenced_reasoning_and_reject_oversized_state() {
-    let transport = Transport::new(|_| async {
+    let transport = Transport::new(|request| async move {
+        let body: serde_json::Value = serde_json::from_str(request.body.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            body["messages"][1],
+            json!({"role":"assistant","content":"","reasoning_content":"retain","tool_calls":[{
+                "id":"needed","type":"function","function":{"name":"change","arguments":"{}"}
+            }]})
+        );
+        assert_eq!(
+            body["messages"][2],
+            json!({"role":"tool","tool_call_id":"needed","content":"result"})
+        );
         Ok(wire(
             event(delta(
                 json!({"reasoning_content":"new reasoning","tool_calls":[{"index":0,"id":"new","type":"function","function":{"name":"change","arguments":"{}"}}]}),
@@ -277,18 +288,35 @@ async fn thinking_checkpoints_prune_only_unreferenced_reasoning_and_reject_overs
     request.provider_state = Some(
         json!({"provider":"deepseek","version":1,"reasoning":{"stale":"discard","needed":"retain"}}),
     );
-    let events = collect(&p, request.clone()).await.unwrap();
-    let state = events
-        .iter()
-        .find_map(|event| match event {
-            ProviderEvent::Metadata { state, .. } => state.as_ref(),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(
-        state["reasoning"],
-        json!({"needed":"retain","new":"new reasoning"})
-    );
+    let mut other = support::tool(None, |_| async { Ok(String::new()) }).definition();
+    other.name = "other".into();
+    // Neither catalog contains the historical call's definition; keep its reasoning.
+    for tools in [vec![other], vec![]] {
+        request.tools = tools;
+        let events = collect(&p, request.clone()).await.unwrap();
+        let state = events
+            .iter()
+            .find_map(|event| match event {
+                ProviderEvent::Metadata { state, .. } => state.as_ref(),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            state["reasoning"],
+            json!({"needed":"retain","new":"new reasoning"})
+        );
+        let requests = transport.requests.lock().unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(requests.last().unwrap().body.as_ref().unwrap()).unwrap();
+        if request.tools.is_empty() {
+            assert!(body.get("tools").is_none());
+        } else {
+            assert_eq!(
+                body["tools"],
+                json!([{"type":"function","function":request.tools[0]}])
+            );
+        }
+    }
     request.provider_state = Some(
         json!({"provider":"deepseek","version":1,"reasoning":{"a":"x".repeat(3*1024*1024),"b":"x".repeat(3*1024*1024),"c":"x".repeat(3*1024*1024)}}),
     );
@@ -296,7 +324,7 @@ async fn thinking_checkpoints_prune_only_unreferenced_reasoning_and_reject_overs
         collect(&p, request).await.unwrap_err(),
         Error::Provider(exec_agent::ProviderFailure::Request)
     );
-    assert_eq!(transport.count(), 1);
+    assert_eq!(transport.count(), 2);
 }
 
 #[tokio::test]

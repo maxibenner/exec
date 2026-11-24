@@ -102,6 +102,13 @@ struct ProviderConnection: Identifiable, Equatable {
     func providerID(for model: String) -> String?
 }
 
+extension ChatProvider {
+    /// Match the search override submitted with conversation settings.
+    func effectiveSearchModel(_ searchModel: String, for model: String) -> String? {
+        !searchModel.isEmpty && providerID(for: searchModel) == providerID(for: model) ? searchModel : nil
+    }
+}
+
 struct ExecError: LocalizedError, Sendable {
     let message: String
     init(_ message: String) { self.message = message }

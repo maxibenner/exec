@@ -39,8 +39,12 @@ impl Tool for Probe {
             ..self.inner.definition()
         }
     }
-    fn available(&self, _: &ToolContext) -> bool {
-        self.available.load(Ordering::SeqCst)
+    fn availability(&self, _: &ToolContext) -> RuntimeToolAvailability {
+        if self.available.load(Ordering::SeqCst) {
+            RuntimeToolAvailability::available()
+        } else {
+            RuntimeToolAvailability::unavailable("Probe capability is unavailable.")
+        }
     }
     async fn prepare(
         &self,
@@ -57,11 +61,13 @@ impl Tool for Probe {
 }
 
 #[tokio::test]
-async fn disabled_tools_keep_stable_catalog_and_prefix_but_cannot_execute() {
+async fn disabled_tools_filter_catalog_preserve_history_and_cannot_execute() {
     let provider = FakeProvider::new(vec![
         response(vec![call("disabled"), ProviderEvent::Done]),
         answer(),
         response(vec![call("enabled"), ProviderEvent::Done]),
+        answer(),
+        answer(),
         answer(),
     ]);
     let probe = Probe::new();
@@ -79,7 +85,7 @@ async fn disabled_tools_keep_stable_catalog_and_prefix_but_cannot_execute() {
     assert_eq!(probe.saved.load(Ordering::SeqCst), 0);
     assert!(c.snapshot().approval.is_none());
     for request in provider.requests.lock().unwrap().iter() {
-        assert_eq!(request.tools, [probe.definition()]);
+        assert!(request.tools.is_empty());
         assert!(request.instructions.contains("Use the provided tools"));
         assert!(
             request
@@ -102,17 +108,45 @@ async fn disabled_tools_keep_stable_catalog_and_prefix_but_cannot_execute() {
     );
     assert_eq!(probe.preparations.load(Ordering::SeqCst), 1);
     assert_eq!(probe.saved.load(Ordering::SeqCst), 1);
+    assert_eq!(c.record().tool_availability.len(), 2);
+    let history = c.snapshot().messages;
+    c.update_disabled_tools(vec!["change".into()])
+        .await
+        .unwrap();
+    complete(c.submit("continue without tools".into()).unwrap()).await;
+    assert!(c.snapshot().messages.starts_with(&history));
+    c.update_disabled_tools(vec![]).await.unwrap();
+    complete(c.submit("tools re-enabled".into()).unwrap()).await;
     let requests = provider.requests.lock().unwrap();
-    assert_eq!(requests[2].tools[0].name, "change");
-    for request in requests.iter() {
-        assert_eq!(request.tools, requests[0].tools);
+    assert_eq!(requests.len(), 6);
+    for (request, enabled) in requests.iter().zip([false, false, true, true, false, true]) {
+        assert_eq!(
+            request.tools,
+            if enabled {
+                vec![probe.definition()]
+            } else {
+                vec![]
+            }
+        );
         assert_eq!(request.instructions, requests[0].instructions);
+        assert_eq!(request.messages.len(), request.message_ids.len());
     }
-    assert!(requests[2].messages.starts_with(&requests[1].messages));
+    for pair in requests.windows(2) {
+        assert!(pair[1].messages.starts_with(&pair[0].messages));
+        assert!(pair[1].message_ids.starts_with(&pair[0].message_ids));
+    }
     assert!(
         matches!(requests[2].messages.last(), Some(ContextMessage::ToolAvailability { enabled }) if enabled == &["change"])
     );
-    assert_eq!(c.record().tool_availability.len(), 2);
+    assert!(requests[4].messages.iter().any(|message| {
+        matches!(message, ContextMessage::Assistant { calls, .. }
+            if calls.iter().any(|call| call.id == "enabled" && call.name == "change"))
+    }));
+    assert!(requests[4].messages.iter().any(|message| {
+        matches!(message, ContextMessage::Tool { call_id, text, outcome: ToolOutcome::Completed }
+            if call_id == "enabled" && text == "done")
+    }));
+    assert_eq!(c.record().tool_availability.len(), 4);
     c.record().validate().unwrap();
 }
 
@@ -172,16 +206,16 @@ async fn only_net_changes_append_at_requests_and_restore_preserves_order_and_ids
     assert_eq!(restored.record().tool_availability, history);
     {
         let requests = provider.requests.lock().unwrap();
-        for request in requests.iter() {
+        for (index, request) in requests.iter().enumerate() {
+            let expected: &[&str] = if index < 2 { &["change", "zeta"] } else { &[] };
             assert_eq!(
                 request
                     .tools
                     .iter()
                     .map(|d| d.name.as_str())
                     .collect::<Vec<_>>(),
-                ["change", "zeta"]
+                expected
             );
-            assert_eq!(request.tools, requests[0].tools);
             assert_eq!(request.instructions, requests[0].instructions);
             assert_eq!(request.messages.len(), request.message_ids.len());
         }
@@ -216,7 +250,7 @@ async fn only_net_changes_append_at_requests_and_restore_preserves_order_and_ids
 }
 
 #[tokio::test]
-async fn capability_changes_keep_schemas_and_are_checked_again_before_preparation() {
+async fn capability_changes_filter_catalog_and_are_checked_again_before_preparation() {
     let probe = Probe::new();
     let unavailable = probe.clone();
     let provider = FakeProvider::new(vec![
@@ -230,12 +264,31 @@ async fn capability_changes_keep_schemas_and_are_checked_again_before_preparatio
         answer(),
     ]);
     let c = conversation(provider.clone(), vec![probe.clone()]);
+    let names = vec!["change".into()];
+    assert_eq!(
+        c.tool_availability(&names, "fake", None)["change"],
+        RuntimeToolAvailability::available()
+    );
     complete(c.submit("act".into()).unwrap()).await;
+    assert_eq!(
+        c.tool_availability(&names, "fake", None)["change"],
+        RuntimeToolAvailability::unavailable("Probe capability is unavailable.")
+    );
     assert_eq!(probe.preparations.load(Ordering::SeqCst), 0);
+    assert_eq!(probe.saved.load(Ordering::SeqCst), 0);
+    assert!(c.snapshot().approval.is_none());
     assert_eq!(outcomes(&c), [ToolOutcome::NotExecuted]);
     let requests = provider.requests.lock().unwrap();
-    assert_eq!(requests[0].tools, requests[1].tools);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].tools, [probe.definition()]);
+    assert!(requests[1].tools.is_empty());
     assert_eq!(requests[0].instructions, requests[1].instructions);
+    assert!(requests[1].messages.starts_with(&requests[0].messages));
+    assert!(
+        requests[1]
+            .message_ids
+            .starts_with(&requests[0].message_ids)
+    );
     assert!(
         matches!(requests[1].messages.last(), Some(ContextMessage::ToolAvailability { enabled }) if enabled.is_empty())
     );
@@ -357,7 +410,7 @@ async fn selections_publish_only_after_save_and_failed_save_blocks_work() {
 async fn selections_survive_restart_forks_and_temporarily_missing_tools() {
     let profile = directory();
     let workspace = directory();
-    let provider = FakeProvider::new(vec![]);
+    let provider = FakeProvider::new(vec![answer(), answer(), answer(), answer()]);
     let manager = AgentManager::open(
         JsonConversationStore::open(profile.path()).await.unwrap(),
         |_| (provider.clone(), vec![Probe::new()]),
@@ -383,7 +436,9 @@ async fn selections_survive_restart_forks_and_temporarily_missing_tools() {
         fork.snapshot().metadata.disabled_tools,
         ["change", "delegate"]
     );
+    complete(fork.submit("inherited selection".into()).unwrap()).await;
     fork.update_disabled_tools(vec![]).await.unwrap();
+    complete(fork.submit("fork selection changed".into()).unwrap()).await;
     assert_eq!(c.snapshot().metadata.disabled_tools, ["change", "delegate"]);
     manager.close().await.unwrap();
     // An unavailable tool in persisted metadata must not make a session unreadable.
@@ -398,17 +453,35 @@ async fn selections_survive_restart_forks_and_temporarily_missing_tools() {
         restored.snapshot().metadata.disabled_tools,
         ["change", "delegate"]
     );
-    assert!(
-        manager
-            .get(&fork.id)
-            .unwrap()
-            .snapshot()
-            .metadata
-            .disabled_tools
-            .is_empty()
-    );
+    let restored_fork = manager.get(&fork.id).unwrap();
+    assert!(restored_fork.snapshot().metadata.disabled_tools.is_empty());
+    complete(restored.submit("restored selection".into()).unwrap()).await;
+    complete(restored_fork.submit("missing change tool".into()).unwrap()).await;
     restored.update_disabled_tools(vec![]).await.unwrap();
     manager.close().await.unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    for (request, names) in
+        requests
+            .iter()
+            .zip([vec![], vec!["change", "delegate"], vec![], vec!["delegate"]])
+    {
+        assert_eq!(
+            request
+                .tools
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
+            names
+        );
+        assert_eq!(request.messages.len(), request.message_ids.len());
+    }
+    assert!(requests[3].messages.starts_with(&requests[1].messages));
+    assert!(
+        requests[3]
+            .message_ids
+            .starts_with(&requests[1].message_ids)
+    );
 }
 
 #[test]
@@ -421,6 +494,17 @@ fn old_records_default_to_all_tools_and_invalid_names_are_rejected() {
         .remove("disabledTools");
     let old: ConversationRecord = serde_json::from_value(value).unwrap();
     assert!(old.recover().unwrap().metadata.disabled_tools.is_empty());
+    // Availability queries have a stricter syntax and a 128-name limit. Saved
+    // selections retain their original 256-name, non-whitespace contract.
+    let retained: Vec<_> = (0..256).map(|n| format!("legacy.tool/{n}")).collect();
+    let mut record = c.record();
+    record.metadata.disabled_tools = retained.clone();
+    record.validate().unwrap();
+    let library = LibraryConfiguration {
+        default_disabled_tools: retained,
+        ..Default::default()
+    };
+    library.validate().unwrap();
     for names in [
         vec!["".into()],
         vec!["change".into(), "change".into()],
@@ -428,6 +512,7 @@ fn old_records_default_to_all_tools_and_invalid_names_are_rejected() {
         vec!["bad name".into()],
         vec!["x".repeat(129)],
         vec!["change".into(); 257],
+        (0..257).map(|n| format!("legacy.tool/{n}")).collect(),
     ] {
         let mut record = c.record();
         record.metadata.disabled_tools = names;
@@ -458,8 +543,7 @@ async fn delegated_children_inherit_enforcement_and_cannot_change_selection() {
             let release = release.clone();
             move |request| {
                 Box::pin(async_stream::try_stream! {
-                    assert_eq!(request.tools.len(), 1);
-                    assert_eq!(request.tools[0].name, "change");
+                    assert!(request.tools.is_empty());
                     assert!(matches!(request.messages.last(), Some(ContextMessage::ToolAvailability { enabled }) if enabled.is_empty()));
                     entered.cancel();
                     release.cancelled().await;

@@ -68,6 +68,13 @@ import Observation
     }
     var searchModel = "" { didSet { guard !restoringDefaults else { return }; saveDefaults(); for item in openConversations { item.searchModel = searchModel; item.scheduleSave() } } }
     var defaultSessionModel: ChatModel? { models.first { $0.id == defaultModel } ?? models.first }
+    private var newConversationModel: String { defaultSessionModel?.id ?? defaultModel }
+    var toolAvailabilityAPI: AgentAPI { provider.api }
+    var defaultToolAvailabilityQuery: ToolAvailabilityQuery {
+        // makeConversation uses the raw search selection, not the settings picker's fallback.
+        ToolAvailabilityQuery(names: SessionTool.names, model: newConversationModel,
+                              searchModel: provider.effectiveSearchModel(searchModel, for: newConversationModel))
+    }
     var effectiveDefaultModel: String { defaultModel.isEmpty ? "" : defaultSessionModel?.id ?? "" }
     var effectiveDefaultEffort: String? { defaultSessionModel?.efforts.contains { $0.id == defaultEffort } == true ? defaultEffort : nil }
     var effectiveSearchModel: String { searchModels.first { $0.id == searchModel }?.id ?? searchModels.first?.id ?? "" }
@@ -387,7 +394,7 @@ import Observation
             conversation.systemPrompt = systemPrompt
             conversation.searchModel = searchModel
         }
-        if needsDefault { conversation.selectedModel = defaultSessionModel?.id ?? defaultModel; conversation.selectedEffort = effectiveDefaultEffort }
+        if needsDefault { conversation.selectedModel = newConversationModel; conversation.selectedEffort = effectiveDefaultEffort }
         if conversation.currentSessionID == nil, conversation.workspace != nil { conversation.scheduleSave() }
     }
     private func matchesUsageAccount(_ providerID: String) -> Bool {
@@ -749,7 +756,7 @@ import Observation
         let conversation = ChatStore(provider: provider, defaultAutoApproveTools: defaultAutoApproveTools,
                                      disabledTools: defaultDisabledTools.intersection(SessionTool.names))
         conversation.installModels(models)
-        conversation.selectedModel = defaultSessionModel?.id ?? defaultModel
+        conversation.selectedModel = newConversationModel
         conversation.selectedEffort = effectiveDefaultEffort
         conversation.systemPrompt = systemPrompt
         conversation.searchModel = searchModel

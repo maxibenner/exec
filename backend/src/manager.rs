@@ -40,9 +40,12 @@ pub struct AgentManager {
 }
 impl Default for AgentManager {
     fn default() -> Self {
+        let changes = Arc::new(ChangeHub::default());
+        let catalog = Catalog::default();
+        catalog.native.attach_changes(&changes);
         Self {
-            changes: Arc::new(ChangeHub::default()),
-            catalog: Arc::new(Mutex::new(Catalog::default())),
+            changes,
+            catalog: Arc::new(Mutex::new(catalog)),
             store: None,
         }
     }
@@ -72,9 +75,8 @@ impl AgentManager {
         configure: impl Fn(&ConversationRecord) -> (Arc<dyn ChatProvider>, Vec<Arc<dyn Tool>>),
     ) -> Result<Arc<Self>> {
         let manager = Arc::new(Self {
-            changes: Arc::new(ChangeHub::default()),
-            catalog: Arc::new(Mutex::new(Catalog::default())),
             store: Some(store.clone()),
+            ..Self::default()
         });
         let restore = async {
             let library = store.load_library().await?;
@@ -628,6 +630,54 @@ impl AgentManager {
         tools
     }
 
+    /// Preview normal top-level composition without creating or persisting a session.
+    pub fn default_tool_availability(
+        self: &Arc<Self>,
+        provider: Arc<dyn ChatProvider>,
+        tools: Vec<Arc<dyn Tool>>,
+        names: &[String],
+        model: &str,
+        search_model: Option<&str>,
+    ) -> Result<BTreeMap<String, RuntimeToolAvailability>> {
+        if self.catalog.lock().unwrap().closed {
+            return Err(Error::Closed);
+        }
+        let tools = self
+            .delegation_tools(provider, tools)
+            .into_iter()
+            .map(|tool| (tool.definition().name, tool))
+            .collect();
+        let context = ToolContext::idle(
+            String::new(),
+            model.into(),
+            search_model.map(str::to_owned),
+            String::new(),
+        );
+        Ok(runtime_tool_availability(names, &tools, &context))
+    }
+
+    /// Read-only access remains available during work and catalog reservations.
+    pub fn tool_availability(
+        &self,
+        id: &str,
+        names: &[String],
+        model: &str,
+        search_model: Option<&str>,
+    ) -> Result<BTreeMap<String, RuntimeToolAvailability>> {
+        let conversation = {
+            let catalog = self.catalog.lock().unwrap();
+            if catalog.closed {
+                return Err(Error::Closed);
+            }
+            catalog
+                .conversations
+                .get(id)
+                .cloned()
+                .ok_or(Error::ConversationNotFound)?
+        };
+        Ok(conversation.tool_availability(names, model, search_model))
+    }
+
     /// Only the executing parent tool can create a child. Persist its provenance
     /// before starting inference; never resume or recreate it after interruption.
     pub(crate) async fn create_children(
@@ -1088,7 +1138,19 @@ impl AgentManager {
         self.catalog.lock().unwrap().native.clone()
     }
     pub(crate) fn attach_native(&self, native: Arc<crate::native::NativeHub>) {
+        native.attach_changes(&self.changes);
         self.catalog.lock().unwrap().native = native;
+    }
+    pub(crate) fn bind_remote_desktop(&self, id: &str) -> Result<()> {
+        let conversation = self.get(id)?;
+        if conversation.busy() {
+            return Err(Error::Busy);
+        }
+        let metadata = conversation.summary().metadata;
+        if metadata.parent.is_none() && metadata.tool_enabled("take_screenshot") {
+            self.native().bind_remote(id)?;
+        }
+        Ok(())
     }
     pub fn desktop_permission(&self, id: &str) -> Result<crate::native::DesktopPermission> {
         self.get(id)?;

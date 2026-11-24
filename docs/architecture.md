@@ -32,7 +32,7 @@ These folders organize existing modules; they do not introduce additional packag
 - A completed provider response is not necessarily a completed task. `ProviderEvent::Continue` marks an explicitly intermediate response; the runtime checkpoints it and advances within the same operation and step budget, even without tools. `Done` can settle only with no tool calls and no pending steering. Stream failures never request continuation, and restored/completed operations never resume automatically. Delegation returns only after successful operation settlement; parent result checkpointing still precedes child cleanup.
 - Sub-agents are ordinary conversations with immutable parent/session-operation/tool-call provenance. Blocking delegation reuses the runner, persistence, approvals and cancellation; children start with fresh context, cannot recursively delegate, and share the parent workspace without filesystem isolation.
 - Tools prepare exact actions without effects. Manual approval is single-use and identifies the conversation, operation and action. Persisted auto mode still validates, checkpoints intent and honors cancellation. Auto mode permits screenshot requests but cannot bypass native OS permission.
-- Tool schemas form a stable, name-ordered catalog. Session selection and runtime capabilities are conveyed by append-only, trusted provider-neutral availability context, checkpointed only when the effective set changes at a request boundary. This context has stable IDs but is not part of UI transcripts; adapters use developer/system roles, not provider-native allowlists. Execution still rejects disabled/unavailable tools before preparation. Selection mutations remain durable and idle-only; clients may coalesce desired changes locally during active work.
+- The core filters tool schemas centrally for every inference and compaction request to the name-ordered intersection of session selection and runtime capabilities. That same snapshot supplies append-only, trusted provider-neutral availability context, checkpointed only when the effective set changes at a request boundary. Historical calls/results and opaque provider state survive catalog changes; reduced prompt-cache reuse is possible, not a context reset. Availability context has stable IDs but is not part of UI transcripts; adapters use developer/system roles, not provider-native allowlists. Execution still rejects disabled/unavailable tools before preparation, including changes after request construction. Selection mutations remain durable and idle-only; clients may coalesce desired changes locally during active work.
 - Cancellation retains ownership until provider/tool cleanup and final persistence settle. It cannot undo effects. Dropping an observer or completion receiver only detaches; embedders must explicitly cancel, await settlement, and close the manager.
 - The runtime never automatically retries inference, tools, rotating-token exchanges, mutations or uncertain checkpoint writes. A failed acknowledgement does not prove the operation had no effects. Agent instructions permit diagnosing clear local setup failures and rerunning safe verification commands after correcting the environment, but prohibit blind retries and approval bypasses. Interrupted or partially completed operations require state inspection; retries that may duplicate external effects, incur charges or consume credentials require renewed user authorization. Tool-specific no-retry restrictions still apply.
 - Failed/interrupted assistant output remains in provider context with an explicit incomplete-response annotation, never as a successful reply or executable partial calls. Streaming output stays out of context. Finalized tool calls receive outcomes, including denial, failure, interruption and non-execution. Execution begins only after the complete provider response validates.
@@ -40,6 +40,32 @@ These folders organize existing modules; they do not introduce additional packag
 - Commands, events, settlement and durability are distinct guarantees. An accepted command or observed tool result is not itself a durable receipt.
 - Reconnect with a current snapshot and live events, not command replay. Slow observers are disconnected rather than blocking execution. A lost native channel revokes its capability and invalidates correlated results.
 - Bound streams, files, subprocess output and execution time. Keep secrets out of workspaces, logs and tool environments. Workspaces and approvals are **not a sandbox** against same-user processes or escaped descendants.
+
+## Runtime tool capability previews
+
+Core `RuntimeToolAvailability` is the canonical local status: `available` and an optional
+owned, fixed short `reason`. Builtins implement `Tool::availability(&ToolContext)`; the
+existing `Tool::available` boolean wrapper remains the central schema filter and execution
+guard. Capability does not incorporate saved disabled-tool selection or approval policy.
+Image generation depends only on the independent image-provider connection. Search uses
+a provider-neutral local availability method; the provider registry owns selected-route
+resolution and connection/disconnect gating, without discovery, authentication or fallback.
+
+Authenticated `POST /v1/tools/availability` previews requested names against supplied
+client-effective model/search-model settings. Session queries inspect that conversation's
+actual executors, preserving child executor removal; default queries reuse the manager's
+normal composition including delegation. Missing executors have a fixed unavailable status.
+An idle `ToolContext` has empty operation/call IDs, no images and a fresh cancellation token;
+no fabricated conversation, persistence or provider request is needed. Library/snapshot
+schemas and deny-list validation are unchanged. See the [API contract](api.md#runtime-tool-availability).
+
+Native capture availability checks a live session binding, or any connected frontend for a
+no-session preview. It never checks OS permission or grants consent, selects/binds a frontend,
+or requests capture. First-use permission remains reachable through the normal approved tool
+path. The manager attaches the existing `ChangeHub` weakly to `NativeHub`; registration,
+binding/revocation and disconnect publish catalog invalidations only after native locks are
+released. Clients refresh open selectors on those existing hints and effective-setting changes,
+without polling or storing runtime capability as selection state.
 
 ## Native frontend
 
@@ -63,7 +89,7 @@ The existing single-operation and sequential-tool invariants guarantee at most o
 
 ### Screenshots
 
-Capture requires a separately authenticated live native channel and macOS Screen Recording permission. The macOS app binds its local adapter before sending a turn, without prompting for OS access. Manual mode asks for screen access on the first screenshot tool call per conversation; later calls reuse that consent. Auto mode allows requests without a chat prompt and does not create manual consent. An authorized request triggers the native OS permission dialog if needed. Window capture requires prior enumeration through the same session/channel. Swift echoes exact correlation fields; cancellation, revocation and disconnect invalidate late results. Grants are transient, are not inherited by forks, and are never restored automatically. The backend does not capture screens itself.
+Capture requires a separately authenticated live native channel and macOS Screen Recording permission. The macOS app binds its local adapter before sending a local turn, without prompting for OS access. It also explicitly opts into remote-conversation binding: before a remote turn with screenshots selected, the backend binds an unbound top-level chat to the sole opted-in live adapter and notifies it on the ordered native channel before any capture request. Remote clients cannot grant native capabilities themselves. Manual mode asks for screen access on the first screenshot tool call per conversation; later calls reuse that consent. Auto mode allows requests without a chat prompt and does not create manual consent. An authorized request triggers the native OS permission dialog if needed. Window capture requires prior enumeration through the same session/channel. Swift echoes exact correlation fields; cancellation, revocation and disconnect invalidate late results. Grants are transient and not inherited by forks; manual consent is never restored automatically. The backend does not capture screens itself.
 
 ## Current behavior and limitations
 
@@ -74,7 +100,7 @@ Capture requires a separately authenticated live native channel and macOS Screen
 - OpenAI Responses maps the last message's documented `phase: commentary` to intermediate completion and `final_answer` to final output, preserving original items/phases in opaque replay context. Item/delta events alone never complete a response. Missing/null phase retains legacy completion behavior; unknown phases fail closed. Undocumented channel fields and progress-like wording are not completion signals. If a provider omits the distinction or labels progress as final, Exec cannot reliably detect it and does not invent a continuation. See the [Responses reference](https://developers.openai.com/api/reference/resources/responses/methods/create).
 - Drafts clear on backend acknowledgement. Uncertain acceptance retains the draft and reconciles state without resubmission; inspect history before explicitly resending.
 - Account allowance refreshes only when Settings opens. No per-turn quota attribution is invented.
-- Manual/automatic compaction is backend-owned, but distinct durable compaction activity rows are not exposed by the API. The frontend does not fabricate them from token counts.
+- Manual/automatic compaction is backend-owned: OpenAI keeps its native strategy, while DeepSeek opts into shared text summarization. Snapshots report model capability; the frontend does not infer it from provider IDs or token counts. Both strategies preserve the transcript and share operation/checkpoint/cancellation handling. Native failures never trigger summary retries. Compaction activity uses ordinary assistant/tool rows.
 - History remains readable without credentials. There is no cache-only model catalog endpoint for identical offline picker startup behavior.
 - A model is required to create a durable session. A workspace/draft without a model remains local, not a fabricated persisted conversation.
 

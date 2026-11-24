@@ -4,6 +4,10 @@ use async_trait::async_trait;
 use futures_util::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 use tokio_util::sync::CancellationToken;
 
 pub type Arguments = Map<String, Value>;
@@ -331,6 +335,10 @@ pub trait ChatProvider: Send + Sync {
     fn image_context_indices(&self, request: &ProviderRequest) -> Result<Vec<usize>> {
         Ok((0..request.message_ids.len()).collect())
     }
+    /// Compaction may summarize only an older prefix; avoid loading retained images.
+    fn compaction_image_context_indices(&self, request: &ProviderRequest) -> Result<Vec<usize>> {
+        self.image_context_indices(request)
+    }
     async fn accepts_images(&self, _model: &str, _cancel: CancellationToken) -> Result<bool> {
         Ok(false)
     }
@@ -390,6 +398,15 @@ pub trait ChatProvider: Send + Sync {
     fn supports_compaction(&self, _model: &str) -> bool {
         false
     }
+    /// Explicit opt-in to the registry's shared text-summary strategy when native
+    /// compaction is unavailable. Summarization uses this adapter and model only.
+    fn supports_summary_compaction(&self, _model: &str) -> bool {
+        false
+    }
+    /// Earlier triggers leave room for providers which summarize through ordinary inference.
+    fn auto_compaction_threshold_percent(&self, _model: &str) -> u64 {
+        95
+    }
     async fn compact(&self, _request: ProviderRequest) -> Result<Value> {
         Err(crate::Error::Provider(crate::ProviderFailure::Unsupported))
     }
@@ -402,6 +419,24 @@ pub trait ChatProvider: Send + Sync {
     }
     fn supports_web_search(&self) -> bool {
         false
+    }
+    /// Local capability/connection check only: never discover models or obtain credentials.
+    /// Routing providers override this to inspect only the selected route.
+    fn web_search_availability(&self, model: &str) -> RuntimeToolAvailability {
+        if model.is_empty() {
+            RuntimeToolAvailability::unavailable("Select a model.")
+        } else if !super::valid_model_id(model) || !self.supports_web_search() {
+            RuntimeToolAvailability::unavailable(
+                "Search is not supported by the selected provider.",
+            )
+        } else {
+            let connections = self.connections();
+            if !connections.is_empty() && !connections.iter().any(|c| c.connected && !c.blocked) {
+                RuntimeToolAvailability::unavailable("Connect the selected search provider.")
+            } else {
+                RuntimeToolAvailability::available()
+            }
+        }
     }
     async fn search_web(
         &self,
@@ -449,6 +484,67 @@ pub struct ToolContext {
     pub workspace: String,
     pub cancel: CancellationToken,
 }
+impl ToolContext {
+    /// Read-only capability preview, not an operation or a fabricated conversation.
+    pub(crate) fn idle(
+        conversation_id: String,
+        model: String,
+        search_model: Option<String>,
+        workspace: String,
+    ) -> Self {
+        Self {
+            available_images: vec![],
+            conversation_id,
+            operation_id: String::new(),
+            call_id: String::new(),
+            model,
+            search_model,
+            workspace,
+            cancel: CancellationToken::new(),
+        }
+    }
+}
+
+/// Runtime capability only, independent of saved tool selection and approval policy.
+/// Reasons are fixed application strings, never provider errors or account details.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeToolAvailability {
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+impl RuntimeToolAvailability {
+    pub fn available() -> Self {
+        Self {
+            available: true,
+            reason: None,
+        }
+    }
+    pub fn unavailable(reason: &'static str) -> Self {
+        Self {
+            available: false,
+            reason: Some(reason.into()),
+        }
+    }
+}
+
+pub(crate) fn runtime_tool_availability(
+    names: &[String],
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    context: &ToolContext,
+) -> BTreeMap<String, RuntimeToolAvailability> {
+    names
+        .iter()
+        .map(|name| {
+            let status = tools.get(name).map_or_else(
+                || RuntimeToolAvailability::unavailable("Not provided by this backend."),
+                |tool| tool.availability(context),
+            );
+            (name.clone(), status)
+        })
+        .collect()
+}
+
 pub const MAX_DELEGATION_OUTPUT_BYTES: usize = 32 * 1024;
 // Leave space for a terminal interruption/failure notice without discarding results.
 pub(crate) const DELEGATION_RESULT_BYTES: usize = MAX_DELEGATION_OUTPUT_BYTES - 256;
@@ -542,8 +638,12 @@ pub trait Tool: Send + Sync {
     fn execution_policy(&self) -> ToolExecutionPolicy {
         ToolExecutionPolicy::Standard
     }
-    fn available(&self, _context: &ToolContext) -> bool {
-        true
+    /// Local, side-effect-free runtime authority, shared by previews and execution.
+    fn availability(&self, _context: &ToolContext) -> RuntimeToolAvailability {
+        RuntimeToolAvailability::available()
+    }
+    fn available(&self, context: &ToolContext) -> bool {
+        self.availability(context).available
     }
     fn definition(&self) -> ToolDefinition;
     /// Optional cleanup after the tool result is durably checkpointed. Never
@@ -597,6 +697,7 @@ pub struct Approval {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSummary {
     pub id: String,
+    pub supports_compaction: bool,
     pub configuration: super::ConversationConfiguration,
     pub pending_input: Vec<Message>,
     pub metadata: super::SessionMetadata,
@@ -628,6 +729,7 @@ impl ConversationSummary {
             context_usage: self.context_usage,
             resources: self.resources,
             model: self.model,
+            supports_compaction: self.supports_compaction,
             workspace: self.workspace,
             can_change_workspace: self.can_change_workspace,
             operation: self.operation,
@@ -643,6 +745,9 @@ impl ConversationSummary {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationSnapshot {
     pub id: String,
+    /// Model capability, not current operation eligibility; recomputed by the backend.
+    #[serde(default)]
+    pub supports_compaction: bool,
     pub configuration: super::ConversationConfiguration,
     pub pending_input: Vec<Message>,
     pub metadata: super::SessionMetadata,

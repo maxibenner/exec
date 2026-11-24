@@ -303,6 +303,7 @@ The server bounds TCP connections to 64 and separately admits at most 64 non-GET
 | GET | `/v1/library` | Shared defaults and ordering |
 | PUT | `/v1/library` | `{defaultModel,settings,order}` → saved configuration |
 | GET | `/v1/models` | Neutral model array: `id`, `name`, optional `contextWindow`, `maxOutputTokens` |
+| POST | `/v1/tools/availability` | `{names:[string],conversationID?:string,model:string,searchModel?:string|null}` → object keyed by requested names, each `{available:boolean,reason?:string}` |
 | GET | `/v1/conversations` | Summary array, omitting `messages` and `approval` |
 | POST | `/v1/conversations` | `{model,workspace,settings?,disabledTools?:[string]}` → `201 ConversationSnapshot`, after durable creation |
 | PATCH | `/v1/conversations/:id` | `{disabledTools:[string]}` → `200 ConversationSnapshot`, after durable idle-only replacement |
@@ -431,6 +432,70 @@ The API has no client authentication; prompts/project instructions are exposed t
 clients and the selected provider. Auto mode does not sandbox tools or enable any future
 desktop capture capability/OS permission.
 
+## Runtime tool availability
+
+`POST /v1/tools/availability` is an authenticated, read-only local preview. Send
+`Content-Type: application/json` and the normal API bearer credential, not the native
+credential. It shares the bounded non-GET handler budget but performs no mutation.
+The existing encrypted-device route allowlist is unchanged.
+
+```json
+{"names":["web_search","generate_image","take_screenshot","delegate"],"conversationID":"00000000-0000-4000-8000-000000000001","model":"deepseek/deepseek-chat","searchModel":null}
+```
+
+The response is `200 application/json`, with exactly the requested names as keys:
+
+```json
+{
+  "web_search":{"available":true},
+  "generate_image":{"available":false,"reason":"Connect an image provider."},
+  "take_screenshot":{"available":false,"reason":"Screen access is not enabled for this session."},
+  "delegate":{"available":true}
+}
+```
+
+- `names` is required: at most 128 unique names, each 1–128 ASCII bytes using
+  `[A-Za-z0-9_-]`, the provider tool-name syntax. An empty array returns `{}`.
+  A syntactically valid unknown name is not an error; it returns
+  `{"available":false,"reason":"Not provided by this backend."}`.
+- `model` is required; `""` means no model selected. Otherwise it uses the existing
+  model-ID validation: nonblank, at most 128 UTF-16 code units, no control characters.
+  `searchModel` may be omitted or null to use `model`; a supplied string must pass
+  the same nonempty model-ID validation. No model catalog is fetched or required.
+- Optional `conversationID` must be a valid conversation UUID; explicit null is invalid.
+  A missing session returns 404. Malformed fields, duplicate/invalid names, oversized
+  arrays and unknown request fields return 400. The preview remains readable during work or
+  catalog reservations, until actual removal; a closed/stopping service returns 503.
+- With a conversation ID, the query uses that session's actual executable tools,
+  including child restrictions (no delegate, image generation or screenshot executor).
+  Without an ID, it uses normal top-level backend composition, including delegation,
+  without creating a session. Supplied `model`/`searchModel` always preview the client's
+  effective settings, rather than silently using saved/default settings.
+- Availability is independent of `disabledTools` and `defaultDisabledTools`: available
+  means runtime capability, not selected, approved or guaranteed to succeed. Library,
+  snapshot and saved selection schemas and deny-list validation are unchanged.
+- Image generation checks only the separately connected image provider, never the chat
+  model's vision support. Web search checks only the selected search-model route (or
+  chat-model route when no search override is supplied), its support and local connection
+  state. Fixed search reasons are `Select a model.`,
+  `Search is not supported by the selected provider.` and
+  `Connect the selected search provider.`; no alternate route is selected automatically.
+- Screenshots require a bound live capture frontend for a supplied session. Without a
+  session they report whether any live capture frontend exists, without selecting or
+  binding one. Reasons are `Screen access is not enabled for this session.` or
+  `Capture frontend disconnected.`. OS permission and first-use consent are deliberately
+  not availability gates: an authorized first tool call must still reach the permission flow.
+- This query does not persist records, load images, discover models, authenticate providers,
+  obtain/refresh tokens, invoke models, bind capture, request OS access or execute tools.
+  The result is a point-in-time preview; runtime checks still run before preparation.
+
+Clients should refresh when their effective model/search model or session changes and
+on existing `/v1/changes` catalog invalidations while the settings/selector is open.
+Provider changes already invalidate that catalog; native registration, binding/revocation
+and disconnect now do too. Invalidation is published after native locks are released.
+Grey/unavailable presentation must not change the saved selection or make checkboxes
+uneditable; reasons describe runtime capability, not an approval grant or a new deny-list.
+
 ## Per-session tool selection
 
 Snapshots and catalog metadata include `metadata.disabledTools:[string]`, defaulting to
@@ -448,10 +513,16 @@ tools are disabled. This is session policy, not a shared library default or appr
   set, rather than adding/removing individual names. Send `[]` to re-enable all tools.
   Success returns the saved snapshot. Updates are idle-only; active operations or a
   blocked storage state return 409. Unknown names and duplicate entries return 400.
-- Model requests keep the complete registered tool catalog in stable name order, including
-  disabled and temporarily unavailable tools. Selection changes do not rewrite schemas or
-  the tool-safety instruction prefix, even when every tool is disabled. No provider-native
-  tool allowlists are used.
+- Model and compaction requests include only the currently enabled tool definitions, in
+  stable name order: session selection intersected with runtime capabilities. The core
+  selects the definitions and trusted availability instruction from the same capability
+  snapshot for every request; adapters do not implement separate filters or provider-native
+  allowlists. All disabled/unavailable tools may yield an empty offered catalog.
+- Historical tool calls, results and opaque provider context remain intact when definitions
+  are removed or re-enabled. A catalog change never replays previous executions or resets
+  conversation state. The tool-safety instruction prefix stays unchanged. Changing offered
+  definitions can reduce provider prompt-cache reuse and increase input processing cost or
+  latency; cache hits and the extent/duration of a miss depend on the provider.
 - Trusted, provider-neutral runtime availability instructions specify the effective enabled
   set (session selection intersected with runtime capabilities). Adapters encode these as
   application instructions: OpenAI `developer`, DeepSeek `system`, never fake user messages
@@ -1043,28 +1114,62 @@ disables further cache writes until restart; it does not retry or block conversa
 `POST /v1/conversations/:id/compact` with `{}` returns `202 {operationID}`.
 This starts an exclusive runner operation, not a manager/provider side loop. The same
 operation-targeted cancellation and terminal durability guarantees apply. Manual compaction
-rejects pending input/busy sessions and models without compaction support. Once accepted,
-manual compaction accepts `/steer` input through the same operation-targeted queue as a turn.
-After successful, durable compaction, queued input starts a response within that operation;
-without queued input it finishes without inference. Failure or cancellation retains pending
-input without resuming inference. A rejected or uncertain queue request is never retried as
-a new turn.
+rejects pending input/busy sessions and models without compaction support. Snapshots and
+catalog summaries expose `supportsCompaction`, a backend-derived capability for their
+selected model, not permission to compact a busy session. Clients treat a missing field as
+false and recheck capability after model selection rather than hardcoding provider IDs.
+Once accepted, manual compaction accepts `/steer` input through the same operation-targeted
+queue as a turn. After successful, durable compaction, queued input starts a response within
+that operation; without queued input it finishes without starting an ordinary response.
+Failure or cancellation retains pending input without resuming inference. A rejected or
+uncertain queue request is never retried as a new turn.
 
-The OpenAI provider supports manual compaction and automatic compaction at 95% of the
-last completed measured context window. Before inference the runner prepares required
-model metadata. Automatic compaction includes finalized history/tool outcomes and explicitly
-marked failed/interrupted replies, but excludes
+Before inference the runner prepares required model metadata. Automatic compaction includes
+finalized history/tool outcomes and explicitly marked failed/interrupted replies, but excludes
 new trailing user input; accepted steering is checkpointed while the request is in flight.
-The provider appends the Responses v2 `compaction_trigger`, accepts exactly one encrypted
-compaction item, and discards incidental text/calls without executing them. There is no
-obsolete `/responses/compact` call and no implicit text-summary fallback for DeepSeek.
+Strategies share this lifecycle:
 
-The opaque replacement is checkpointed before further inference. Visible messages and
-stable IDs remain unchanged. Failure/cancellation retains the original context; uncertain
-checkpoint acknowledgement blocks work. A successful compaction clears stale token usage
-until the next ordinary response measures it. `contextUsage:{tokens,limit}` is a completed
-provider measurement, not an estimate of newly appended input. Neither compaction usage
-nor stale pre-compaction usage is presented as the replacement context's size.
+- **Native:** OpenAI uses the Responses v2 `compaction_trigger`, accepts exactly one encrypted
+  compaction item, and discards incidental text/calls without executing them. Automatic
+  compaction starts at 95% of the last completed measured context window. There is no
+  obsolete `/responses/compact` call and no text-summary retry after a native failure.
+- **Text summary:** DeepSeek explicitly opts into a shared backend strategy. It uses the same
+  selected provider/model with tools disabled, normally in one inference, to summarize an
+  older completed prefix. It prefers keeping two recent whole user turns but reduces that
+  suffix when needed for the budget; a single large turn can be summarized in full. Tool
+  call/result batches stay intact. Automatic compaction starts at 80% of measured capacity
+  to leave inference headroom, and requires known context-window metadata.
+
+Summary requests use conservative byte/framing budgets, reserving room for a rolling summary
+and output. Each request is capped at the smaller of the model window and 128 Ki tokens;
+unknown windows use that conservative cap for manual compaction. Oversized text histories
+are serialized as untrusted fragments and summarized sequentially, with at most 32 inferences
+and no retries or silent truncation. An intermediate failure commits no partial summary.
+Oversized image-bearing prefixes, unbudgetable instructions/state, and histories exceeding
+these bounds fail closed. These budgets are not exact provider tokenization guarantees.
+Only images in the selected prefix are loaded for compaction; previously summarized images
+and retained suffix images are excluded.
+
+Text summaries are nonempty and at most 32 KiB. A complete terminal response is required;
+tool calls, continuation requests, incomplete streams, and invalid output fail compaction.
+Summary-inference metadata and usage never overwrite live provider state. Both strategies
+are lossy. Summaries enter subsequent requests as untrusted historical context, never as
+system instructions; the latest covered runtime tool policy remains a separate trusted
+message, followed by any newer policy updates.
+
+The replacement is checkpointed before further inference. Visible messages and stable IDs
+remain unchanged. Summary text/boundaries live separately from opaque state in per-provider
+registry context, never in API snapshots. Recompaction consumes the previous summary plus
+newly covered history, not the original covered prefix. Forks retain a summary only when its
+boundary remains in the fork. Switching providers never forwards another provider's opaque
+state or summary; it reconstructs that provider's view from the retained transcript and its
+own saved context. A large conversation may need manual compaction after switching.
+
+Failure/cancellation retains the original context; uncertain checkpoint acknowledgement
+blocks work. A successful compaction clears stale token usage until the next ordinary
+response measures it. `contextUsage:{tokens,limit}` is a completed provider measurement, not
+an estimate of newly appended input. Neither compaction usage nor stale pre-compaction usage
+is presented as the replacement context's size.
 
 ## Local file attachments
 
@@ -1188,11 +1293,22 @@ execute host tools: these credentials are not an OS sandbox against same-user co
 
 | Method | Path | Contract |
 |---|---|---|
-| POST | `/v1/native/events` | `{osScreenPermission:boolean}` → live NDJSON: `registered`, `request`, `cancelled`, `ping` |
+| POST | `/v1/native/events` | `{osScreenPermission:boolean,acceptsRemoteConversations?:boolean}` → live NDJSON: `registered`, `conversation_bound`, `request`, `cancelled`, `ping` |
 | PUT | `/v1/native/permission` | `{frontendID,granted}`; update the registered frontend’s reported OS permission |
 | POST | `/v1/native/results` | `{request:NativeRequest,result:NativePayload}`; exact, live, single-use correlation required |
 | GET | `/v1/conversations/:id/desktop` | `{frontendID,enabled}`; initially disabled |
 | PUT | `/v1/conversations/:id/desktop` | Bind one frontend or disable; binding alone grants neither tool consent nor OS permission |
+
+A trusted adapter may opt into binding remote conversations with
+`acceptsRemoteConversations:true` (omitted defaults to false). The macOS app opts in.
+Before a remote user turn, an unbound top-level conversation with screenshots selected
+is bound only when exactly one live adapter has opted in. No eligible adapter leaves
+screenshots unavailable; ambiguous adapters or a full notification queue reject the turn.
+An existing live binding is unchanged. The adapter receives
+`{type:"conversation_bound",frontendID,conversationID}` on its ordered native channel
+before any capture request, and updates its local authorized-session set. Binding grants
+neither manual tool consent nor OS permission. Remote clients still cannot register native
+adapters, report OS permission, submit capture results or directly grant desktop access.
 
 The registration event supplies `frontendID`. `NativeRequest` is
 `{id,frontendID,conversationID,operationID,callID,action:{target,windowID}}`.
@@ -1214,8 +1330,8 @@ The native adapter must cancel its own capture work when notified or disconnecte
 
 OS permission reports are claims from explicitly authorized adapters; the backend cannot
 verify macOS TCC on behalf of Swift and never grants it. Reporting OS permission restored
-does not restore manual conversation consent. Native permissions/channels are transient, never restored
-or forked. General observer disconnects still only detach; disconnecting the bound native
+does not restore manual conversation consent. Native permissions/channels are transient, never loaded
+from storage or inherited by forks. General observer disconnects still only detach; disconnecting the bound native
 capability channel specifically revokes that capability and invalidates its pending calls.
 The macOS app
 implements the local adapter and on-demand screenshot permission flow; see

@@ -660,14 +660,11 @@ async fn automatic_failure_and_cancellation_publish_terminal_activity() {
 }
 
 #[tokio::test]
-async fn compaction_keeps_catalog_and_availability_at_completed_request_boundaries() {
+async fn compaction_filters_catalog_and_keeps_availability_at_completed_request_boundaries() {
     let provider = Arc::new(Provider::default());
-    let mut options = support::options(
-        provider.clone(),
-        vec![support::tool(None, |_| async {
-            panic!("unexpected tool execution")
-        })],
-    );
+    let tool = support::tool(None, |_| async { panic!("unexpected tool execution") });
+    let definition = tool.definition();
+    let mut options = support::options(provider.clone(), vec![tool]);
     options.metadata.disabled_tools = vec!["change".into()];
     let c = Conversation::new(options, None).unwrap();
     support::complete(c.submit("first".into()).unwrap()).await;
@@ -684,24 +681,43 @@ async fn compaction_keeps_catalog_and_availability_at_completed_request_boundari
     // Automatic compaction excludes the new user message, but records the latest
     // policy before its own request. The following inference must not duplicate it.
     support::complete(c.submit("third".into()).unwrap()).await;
+    c.update_disabled_tools(vec![]).await.unwrap();
+    assert_eq!(
+        support::complete(c.compact().unwrap()).await.state,
+        OperationState::Completed
+    );
     let requests = provider.requests.lock().unwrap();
     let compactions = provider.compactions.lock().unwrap();
-    assert_eq!(compactions.len(), 2);
+    assert_eq!(requests.len(), 3);
+    assert_eq!(compactions.len(), 3);
     for request in requests.iter().chain(compactions.iter()) {
-        assert_eq!(request.tools, requests[0].tools);
         assert_eq!(request.instructions, requests[0].instructions);
         assert_eq!(request.messages.len(), request.message_ids.len());
     }
-    assert_eq!(requests[0].tools[0].name, "change");
+    assert!(requests[0].tools.is_empty());
+    assert_eq!(requests[1].tools, std::slice::from_ref(&definition));
+    assert!(requests[2].tools.is_empty());
+    assert!(compactions[0].tools.is_empty());
+    assert!(compactions[1].tools.is_empty());
+    assert_eq!(compactions[2].tools, [definition]);
     assert!(
         matches!(compactions[1].messages.last(), Some(ContextMessage::ToolAvailability { enabled }) if enabled.is_empty())
     );
     assert!(requests[2].messages.starts_with(&compactions[1].messages));
     assert!(
+        requests[2]
+            .message_ids
+            .starts_with(&compactions[1].message_ids)
+    );
+    assert!(
         matches!(requests[2].messages.last(), Some(ContextMessage::User { text }) if text == "third")
     );
+    for pair in compactions.windows(2) {
+        assert!(pair[1].messages.starts_with(&pair[0].messages));
+        assert!(pair[1].message_ids.starts_with(&pair[0].message_ids));
+    }
     let record = c.record();
-    assert_eq!(record.tool_availability.len(), 3);
+    assert_eq!(record.tool_availability.len(), 4);
     record.validate().unwrap();
     assert_eq!(record.clone().recover().unwrap(), record);
 }
