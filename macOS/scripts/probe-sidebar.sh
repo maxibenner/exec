@@ -47,9 +47,10 @@ for role in parent child footer group; do
     require_once "role: \"$role\"" .build/ProbeSessionSidebar.swift
 done
 require_once 'private var reduceMotion: Bool { SidebarAnimationProbe.reduceMotion }' .build/ProbeSessionSidebar.swift
+source ./scripts/shared-transcript.sh
 sources=()
 while IFS= read -r file; do sources+=("$file"); done < <(
-    find Sources/Exec ../shared/ExecRemote/Sources/ExecRemote ../shared/ExecTranscript/Sources/ExecTranscript \
+    find Sources/Exec ../shared/ExecRemote/Sources/ExecRemote \
         -name '*.swift' ! -name ExecApp.swift ! -name SparkleUpdater.swift ! -name SessionSidebar.swift | sort
 )
 # Use PROBE_OPTIMIZE=1 for release-like large catalogs; default preserves baseline.
@@ -57,10 +58,12 @@ optimization=()
 if [[ "${PROBE_OPTIMIZE:-0}" == 1 ]]; then optimization=(-O); fi
 # Save provenance next to this binary, not beside a later production rebuild.
 shasum -a 256 "$sidebar" "${sources[@]}" .build/ProbeSessionSidebar.swift \
+    scripts/shared-transcript.sh Package.resolved "$exec_transcript_bin/libExecTranscript.a" \
     scripts/probe-sidebar.sh Tools/Benchmarks/SidebarAnimationProbe.swift > .build/sidebar-animation-probe.sources
 printf 'PROBE_OPTIMIZE=%s\n' "${PROBE_OPTIMIZE:-0}" >> .build/sidebar-animation-probe.sources
 git rev-parse HEAD >> .build/sidebar-animation-probe.sources
 swiftc --version >> .build/sidebar-animation-probe.sources
-swiftc -swift-version 6 -parse-as-library ${optimization[@]+"${optimization[@]}"} "${sources[@]}" .build/ProbeSessionSidebar.swift \
+swiftc -swift-version 6 -parse-as-library "${exec_transcript_flags[@]}" ${optimization[@]+"${optimization[@]}"} "${sources[@]}" .build/ProbeSessionSidebar.swift \
     Tools/Benchmarks/SidebarAnimationProbe.swift -o .build/sidebar-animation-probe
+copy_exec_transcript_resources .build
 .build/sidebar-animation-probe "$@"

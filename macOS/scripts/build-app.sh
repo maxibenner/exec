@@ -46,6 +46,8 @@ trap 'rm -rf "$staging"' EXIT
 built="$staging/Exec.app"
 mkdir -p "$built/Contents/MacOS" "$built/Contents/Resources"
 cp "$bin/Exec" "$built/Contents/MacOS/Exec"
+# SwiftPM's syntax queries and their license notices must travel with the app.
+ditto "$bin/ExecTranscript_ExecTranscript.bundle" "$built/Contents/Resources/ExecTranscript_ExecTranscript.bundle"
 cp "$agent_target/release/exec-agent" "$built/Contents/MacOS/exec-agent"
 codesign "${options[@]}" --sign "$identity" --identifier app.exec.agent "$built/Contents/MacOS/exec-agent"
 cp Resources/Info.plist "$built/Contents/Info.plist"

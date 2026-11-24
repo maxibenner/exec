@@ -4,6 +4,8 @@ import SwiftUI
 /// Render a reply into one TextKit document so selection can cross every block.
 @MainActor enum MarkdownText {
     static let codeSnippet = NSAttributedString.Key("ExecCodeSnippet")
+    /// Present only on original fenced-code characters, not labels or synthetic terminators.
+    static let codeLanguage = NSAttributedString.Key("ExecCodeLanguage")
     nonisolated private static let blockSpacing: CGFloat = 12
 
     /// Keep TextKit's cells, padding and hit geometry; only replace their paint.
@@ -118,7 +120,8 @@ import SwiftUI
                 if let language, !language.isEmpty {
                     paragraph(AttributedString(language), indent: indent, containers: containers + [panel], size: 11)
                 }
-                paragraph(block.text, indent: indent, containers: containers + [panel], marker: marker, code: true)
+                paragraph(block.text, indent: indent, containers: containers + [panel], marker: marker,
+                          code: true, codeLanguage: language)
             case .thematicBreak:
                 let rule = NSTextBlock()
                 rule.setWidth(1, type: .absoluteValueType, for: .border, edge: .minY)
@@ -185,12 +188,14 @@ import SwiftUI
 
         private func paragraph(_ source: AttributedString, indent: CGFloat, containers: [NSTextBlock],
                                marker: String? = nil, size: CGFloat = NSFont.systemFontSize,
-                               weight: NSFont.Weight = .regular, alignment: NSTextAlignment = .left, code: Bool = false) {
+                               weight: NSFont.Weight = .regular, alignment: NSTextAlignment = .left,
+                               code: Bool = false, codeLanguage: String? = nil) {
             let content: NSMutableAttributedString
             if code {
                 content = NSMutableAttributedString(string: String(source.characters), attributes: [
                     .font: NSFont.monospacedSystemFont(ofSize: size, weight: weight),
-                    .foregroundColor: NSColor.labelColor, Self.codeKey: String(source.characters)
+                    .foregroundColor: NSColor.labelColor, Self.codeKey: String(source.characters),
+                    MarkdownText.codeLanguage: codeLanguage ?? ""
                 ])
             } else {
                 content = NSMutableAttributedString(attributedString: LinkedText.attributed(source, fontSize: size, weight: weight))

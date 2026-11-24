@@ -9,12 +9,14 @@ mkdir -p .build/lifecycle-probe
 # --completed / --catalog-first vary lifecycle ordering. --checks runs focused tests.
 # Run distinct cases explicitly; failures are never retried. No mixed-version baseline.
 sed '/@main struct TestRunner/,$d' Tests/ExecTests/Runner.swift > .build/lifecycle-probe/Checks.swift
+source ./scripts/shared-transcript.sh
 sources=()
 while IFS= read -r file; do sources+=("$file"); done < <(
-    find Sources/Exec ../shared/ExecRemote/Sources/ExecRemote ../shared/ExecTranscript/Sources/ExecTranscript \
+    find Sources/Exec ../shared/ExecRemote/Sources/ExecRemote \
         -name '*.swift' ! -name ExecApp.swift ! -name SparkleUpdater.swift | sort
 )
-swiftc -swift-version 6 -parse-as-library "${sources[@]}" \
+swiftc -swift-version 6 -parse-as-library "${exec_transcript_flags[@]}" "${sources[@]}" \
     .build/lifecycle-probe/Checks.swift Tests/ExecTests/SessionLifecycleTests.swift \
     Tools/Benchmarks/SidebarLifecycleProbe.swift -o .build/lifecycle-probe/run
+copy_exec_transcript_resources .build/lifecycle-probe
 .build/lifecycle-probe/run "$@"

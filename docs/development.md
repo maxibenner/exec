@@ -22,6 +22,12 @@ The test script builds this checkout's Rust helper, then compiles and runs the S
 
 The app bundles `Contents/MacOS/exec-agent`, built with the committed Cargo lockfile. It does not fall back to an installed helper. SwiftPM discovers nested source folders automatically; the test and transcript benchmark scripts likewise enumerate sources recursively.
 
+`shared/ExecTranscript` is a static library with pinned Tree-sitter dependencies. Keep the generated application and shared-package `Package.resolved` files after resolving dependencies. Direct `swiftc` harnesses source `scripts/shared-transcript.sh` to build that product in `macOS/.build/` and use its module/link flags instead of compiling its sources directly. They copy `ExecTranscript_ExecTranscript.bundle` beside the executable; `build-app.sh` places it in `Contents/Resources` before signing. The bundle contains syntax queries and third-party license notices for the grammars, runtime and Swift wrapper.
+
+Fenced code highlighting supports Swift, JavaScript/JSX, TypeScript/TSX, Python, Rust, Go, C/C++, Bash/shell, HTML, CSS, JSON and YAML. The fence language selects the grammar; unknown/unlabeled blocks stay plain. Tokenization runs on a shared actor with bounded parser state and a 2 MiB token cache. Native views coalesce changing code for 60 ms and discard superseded results. macOS applies display-only TextKit colors; UIKit changes foreground attributes without invalidating the code-block measurement cache. Neither path changes fonts or source text. Diffs and inline code retain their existing rendering.
+
+Highlighting falls back to plain text above 128 KiB per block, on parser timeout or when token/query-work limits are exhausted. The query deadline is cooperative: the pinned SwiftTreeSitter wrapper cannot interrupt an individual native query traversal. These limits are work safeguards, not a frame-time guarantee. Focused tests cover language resources, incremental Unicode edits, cancellation/reuse, and storage/geometry preservation; actual scrolling and streaming smoothness still require interactive profiling.
+
 App packaging resources live in `macOS/Resources/`: `Info.plist` and the layered `Glass_Icon.icon` document. `build-app.sh` compiles the icon and bundles/signs the helper and Sparkle framework. These are packaging resources outside the SwiftPM executable target, not copied source assets.
 
 ### Stable signing

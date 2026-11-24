@@ -8,10 +8,12 @@ mkdir -p .build
 # Options: --screen=N --speed=fast|slow --sidebar=hidden|visible --forks=2...20
 # Optional --move-to=N moves the same scene after fork one (e.g. between scales).
 # Reuse .build/composer-scene-probe for DISTINCT cases after this compilation.
+source ./scripts/shared-transcript.sh
 sources=()
 while IFS= read -r file; do sources+=("$file"); done < <(
-    find Sources/Exec Tests/ExecTests ../shared/ExecRemote/Sources/ExecRemote ../shared/ExecTranscript/Sources/ExecTranscript \
+    find Sources/Exec Tests/ExecTests ../shared/ExecRemote/Sources/ExecRemote \
         -name '*.swift' ! -name ExecApp.swift ! -name SparkleUpdater.swift ! -name Runner.swift | sort
 )
-swiftc -swift-version 6 -parse-as-library "${sources[@]}" Tools/Benchmarks/ComposerSceneProbe.swift -o .build/composer-scene-probe
+swiftc -swift-version 6 -parse-as-library "${exec_transcript_flags[@]}" "${sources[@]}" Tools/Benchmarks/ComposerSceneProbe.swift -o .build/composer-scene-probe
+copy_exec_transcript_resources .build
 .build/composer-scene-probe "$@"

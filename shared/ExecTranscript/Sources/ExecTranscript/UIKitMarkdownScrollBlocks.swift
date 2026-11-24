@@ -61,8 +61,23 @@ import UIKit
     let text = MarkdownSelectableTextView()
     private let language = UILabel()
     private var naturalWidth: CGFloat = 0
+    // Compare configuration against uncolored attributes, never textStorage's syntax colors.
+    private var baseContent = NSAttributedString(string: "")
+    private var highlightingLanguage: String?
+    private var highlighting: CodeHighlighting!
     override init() {
         super.init()
+        configure()
+        highlighting = CodeHighlighting { [weak self] in self?.applyHighlighting($0) }
+    }
+    init(highlightingDelay: Duration, worker: @escaping CodeHighlighting.Worker) {
+        super.init()
+        configure()
+        highlighting = CodeHighlighting(delay: highlightingDelay, worker: worker) { [weak self] in
+            self?.applyHighlighting($0)
+        }
+    }
+    private func configure() {
         accessibilityIdentifier = "markdown-code-block"
         scroll.accessibilityIdentifier = "markdown-code-scroll"
         text.accessibilityIdentifier = "markdown-code-text"
@@ -82,15 +97,43 @@ import UIKit
         paragraph.defaultTabInterval = ("    " as NSString).size(withAttributes: [.font: UIFont.monospacedSystemFont(ofSize: font.pointSize, weight: .regular)]).width
         content.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: content.length))
         if content.length == 0 { text.font = UIFont.monospacedSystemFont(ofSize: font.pointSize, weight: .regular) }
-        if text.setContent(content) {
+        let contentChanged = !baseContent.string.utf8.elementsEqual(content.string.utf8) || !baseContent.isEqual(to: content)
+        if contentChanged {
+            baseContent = NSAttributedString(attributedString: content)
+            text.setContent(content)
             naturalWidth = ceil(content.size().width) + 1
             measuredWidth = -1
         }
         let captionFont = UIFont.preferredFont(forTextStyle: .caption1, compatibleWith: traits)
         if language.text != label || language.font != captionFont { measuredWidth = -1 }
         language.text = label; language.font = captionFont
-        blockText = String(block.text.characters); self.message = message
+        blockText = content.string; self.message = message
         text.blockTitle = blockTitle; text.blockText = blockText; text.message = message
+        let normalizedLanguage = CodeHighlighter.normalizedLanguage(label)
+        if contentChanged || highlightingLanguage != normalizedLanguage {
+            highlightingLanguage = normalizedLanguage
+            highlighting.update([.init(source: content.string, language: normalizedLanguage,
+                                       range: NSRange(location: 0, length: content.length))])
+        }
+    }
+    private func applyHighlighting(_ tokens: [SyntaxToken]) {
+        let storage = text.textStorage
+        guard storage.length == baseContent.length,
+              storage.string.utf8.elementsEqual(baseContent.string.utf8) else { return }
+        let whole = NSRange(location: 0, length: storage.length)
+        storage.beginEditing()
+        baseContent.enumerateAttribute(.foregroundColor, in: whole) { color, range, _ in
+            if let color { storage.addAttribute(.foregroundColor, value: color, range: range) }
+            else { storage.removeAttribute(.foregroundColor, range: range) }
+        }
+        for token in tokens {
+            let range = token.range
+            guard range.location >= 0, range.length > 0, range.location <= storage.length,
+                  range.length <= storage.length - range.location else { continue }
+            storage.addAttribute(.foregroundColor, value: SyntaxPalette.color(for: token.kind), range: range)
+        }
+        storage.endEditing()
+        // No setContent, measurement invalidation, selection, or scroll mutation here.
     }
     override func height(for width: CGFloat) -> CGFloat {
         if measuredWidth != width {

@@ -79,6 +79,9 @@ import Foundation
             ("Command-Q awaits shutdown without blocking AppKit", { try await QuitLifecycleTests().commandQuitAwaitsShutdown() })
         ]
         let allChecks: [(String, @MainActor () async throws -> Void)] = [
+            ("Syntax highlighting metadata excludes prose and labels", { try CodeSyntaxTests().metadataKeepsCodeSeparateFromProseAndLabels() }),
+            ("Syntax highlighting changes display colors without storage or geometry edits", { try await CodeSyntaxTests().highlightingChangesOnlyDisplayColors() }),
+            ("Syntax highlighting preserves streamed selection and rejects reused-view results", { try await CodeSyntaxTests().streamedCodeAndReuseRejectOldColors() }),
             ("Provider removal cancellation has no effects and bounds duplicates", { try await ProviderRemovalTests().confirmationCancellationHasNoEffectsAndDuplicatesAreBounded() }),
             ("Provider removal preserves history and permits another model", { try await ProviderRemovalTests().confirmedRemovalDiscardsOnlyAffectedQueuedWorkAndAllowsModelChange() }),
             ("Provider removal leaves unrelated running sessions alone", { try await ProviderRemovalTests().unrelatedRunningSessionsDoNotPromptOrStop() }),

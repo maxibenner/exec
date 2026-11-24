@@ -1,3 +1,5 @@
+import ExecTranscript
+
 struct SessionToolCatalogTests {
     func preservesNamesGroupsAndTranscriptIcons() throws {
         try expect(SessionTool.names == [

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ExecTranscript
 
 /// TextKit supplies link-only cursor rectangles while retaining normal text selection and wrapping.
 struct LinkedText: NSViewRepresentable {
@@ -79,6 +80,50 @@ struct LinkedText: NSViewRepresentable {
 
     final class TextView: NSTextView {
         private var changingLayout = false
+        // TextKit substitutes fallback fonts (for example emoji) in storage.
+        // Compare renderer inputs, not normalized storage, on width-only updates.
+        private var renderedText: NSAttributedString?
+        private var highlighting: CodeHighlighting?
+        private var codeRanges: [NSRange] = []
+
+        /// Syntax colors belong to the display layout, never the measured document.
+        private func updateHighlighting(_ text: NSAttributedString) {
+            var blocks: [CodeHighlighting.Block] = []
+            let source = text.string as NSString
+            text.enumerateAttribute(MarkdownText.codeLanguage, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+                guard let language = value as? String,
+                      CodeHighlighter.normalizedLanguage(language) != nil else { return }
+                blocks.append(.init(source: source.substring(with: range), language: language, range: range))
+            }
+            codeRanges = blocks.map(\.range)
+            guard !blocks.isEmpty else {
+                highlighting?.reset()
+                highlighting = nil
+                return
+            }
+            if highlighting == nil {
+                highlighting = CodeHighlighting { [weak self] tokens in self?.applySyntaxColors(tokens) }
+            }
+            highlighting?.update(blocks)
+        }
+
+        private func clearSyntaxColors() {
+            guard let layout = layoutManager, let storage = textStorage else { return }
+            for range in codeRanges where NSMaxRange(range) <= storage.length {
+                layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
+            }
+        }
+
+        private func applySyntaxColors(_ tokens: [SyntaxToken]) {
+            guard let layout = layoutManager, let storage = textStorage else { return }
+            clearSyntaxColors()
+            for token in tokens where NSMaxRange(token.range) <= storage.length {
+                layout.addTemporaryAttribute(.foregroundColor, value: SyntaxPalette.color(for: token.kind),
+                                             forCharacterRange: token.range)
+            }
+            // No storage edits, layout completion, intrinsic-size invalidation or selection changes.
+        }
+
         override func setFrameSize(_ newSize: NSSize) {
             let wasChanging = changingLayout
             changingLayout = true
@@ -156,13 +201,16 @@ struct LinkedText: NSViewRepresentable {
         }
 
         func update(_ text: NSAttributedString) {
-            guard attributedString() != text else { return }
+            guard renderedText?.isEqual(to: text) != true else { return }
+            renderedText = NSAttributedString(attributedString: text)
             let wasChanging = changingLayout
             changingLayout = true
             defer { changingLayout = wasChanging }
             let selection = selectedRange()
             let edit = RenderedTextEdit(from: string, to: text.string)
+            clearSyntaxColors()
             textStorage?.setAttributedString(text)
+            updateHighlighting(text)
             completeLayout()
             // Streaming updates must not clear an in-progress selection.
             let start = min(edit.map(selection.location, afterInsertion: selection.length > 0), text.length)
