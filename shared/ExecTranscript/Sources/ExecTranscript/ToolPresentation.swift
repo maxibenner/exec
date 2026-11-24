@@ -14,9 +14,6 @@ public struct ToolPresentation: Sendable {
     public var summary: String?
     public var detail: String?
     public var inputs: [Field] = []
-    /// Expanded image cards resolve these IDs against managed transcript assets.
-    /// They never contribute to the collapsed header or textual input fields.
-    public var referenceImageIDs: [UUID] = []
     public var outputTitle: String? = "Result"
     public var output: String
     public var showsOutput = true
@@ -48,7 +45,6 @@ public struct ToolPresentation: Sendable {
             var command: String?
             var url: String?
             var prompt: String?
-            var transparent_background: Bool?
             var task: String?
             var title: String?
             var tasks: [DelegatedTask]?
@@ -113,15 +109,8 @@ public struct ToolPresentation: Sendable {
         case "generate_image":
             summary = arguments?.prompt
             outputTitle = nil
+            // References and background options remain in the request, not the card.
             if let prompt = arguments?.prompt { inputs.append(Field(title: "Prompt", text: prompt)) }
-            if let transparent = arguments?.transparent_background {
-                inputs.append(Field(title: "Background", text: transparent ? "Transparent" : "Opaque"))
-            }
-            // Decode separately so invalid reference IDs cannot hide the prompt.
-            struct References: Decodable { let input_image_ids: [UUID]? }
-            if rawArguments.utf8.count <= 32_768 {
-                referenceImageIDs = (try? JSONDecoder().decode(References.self, from: Data(rawArguments.utf8)))?.input_image_ids ?? []
-            }
         case "take_screenshot":
             summary = Self.screenshotSummary(rawArguments)
             outputTitle = nil

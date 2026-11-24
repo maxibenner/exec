@@ -9,7 +9,6 @@ typealias ToolCallHeader = ExecTranscript.ToolCallHeader
 struct ToolMessageView: View {
     let call: ToolCall
     let result: ToolResult?
-    let referenceImages: [ImageAttachment]
     let isAwaitingApproval: Bool
     let isRunning: Bool
     let state: TranscriptState
@@ -19,12 +18,10 @@ struct ToolMessageView: View {
     @AppStorage(ToolDisplayPreferences.descriptiveShellTitlesKey) private var descriptiveShellTitles = false
     @State private var expanded: Bool?
 
-    init(call: ToolCall, result: ToolResult?, referenceImages: [ImageAttachment] = [],
-         isAwaitingApproval: Bool, isActive: Bool = false,
+    init(call: ToolCall, result: ToolResult?, isAwaitingApproval: Bool, isActive: Bool = false,
          state: TranscriptState, messageID: UUID, roundsTop: Bool = true, roundsBottom: Bool = true) {
         self.call = call
         self.result = result
-        self.referenceImages = referenceImages
         self.isAwaitingApproval = isAwaitingApproval
         isRunning = isActive || result?.outcome == "running" || (result == nil && !isAwaitingApproval)
         self.state = state
@@ -55,13 +52,14 @@ struct ToolMessageView: View {
             expanded = value
         }), isRunning: isRunning, roundsTop: roundsTop, roundsBottom: roundsBottom) {
             VStack(alignment: .leading, spacing: 12) {
-                if !presentation.referenceImageIDs.isEmpty, !referenceImages.isEmpty {
-                    ToolSection(title: "Reference images") {
-                        AttachmentStrip(images: referenceImages, scrollsWithTranscript: true)
-                    }
-                }
                 if let generated = result?.generatedImage {
-                    GeneratedImageView(attachment: generated)
+                    ForEach(presentation.inputs.indices, id: \.self) { index in
+                        let field = presentation.inputs[index]
+                        ToolTextSection(title: field.title, text: field.text)
+                    }
+                    ToolSection(title: "Generated image") {
+                        GeneratedImageView(attachment: generated)
+                    }
                 } else if let screenshot = result?.screenshot, let image = NSImage(data: screenshot.data) {
                     Image(nsImage: image).resizable().scaledToFit()
                         .frame(maxHeight: 480)

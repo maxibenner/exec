@@ -840,7 +840,7 @@ private struct MessageView: View, Equatable {
         if message.compaction != nil {
             CompactionMessageView(status: message.status)
         } else if let call = message.pendingTool?.call ?? message.toolResult?.call {
-            ToolMessageView(call: call, result: message.toolResult, referenceImages: message.images,
+            ToolMessageView(call: call, result: message.toolResult,
                             isAwaitingApproval: message.pendingTool?.isAwaitingApproval == true,
                             isActive: message.status == .streaming,
                             state: state, messageID: message.id, roundsTop: roundsTop, roundsBottom: roundsBottom)

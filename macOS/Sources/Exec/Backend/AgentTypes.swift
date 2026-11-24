@@ -151,16 +151,10 @@ extension AgentSnapshot {
         // mean the executor has settled. Keep activity separate from row presence.
         let represented = Set(messages.filter { $0.role == "tool" }.compactMap(\.callID))
         var result: [Message] = []
-        var availableImages: [UUID: ImageAttachment] = [:]
-        func referenceImages(for call: ToolCall) -> [ImageAttachment] {
-            guard call.name == "generate_image" else { return [] }
-            return ToolPresentation(call: call).referenceImageIDs.compactMap { availableImages[$0] }
-        }
         for message in messages + pendingInput.filter({ pending in !messages.contains { $0.id == pending.id } }) {
             switch message.role {
             case "user":
                 let attachments = (message.images ?? []).compactMap { images[$0.id] }
-                for image in attachments { availableImages[image.id] = image }
                 result.append(Message(id: message.id, role: .user, text: message.text, images: attachments,
                                       files: (message.files ?? []).map { FileAttachment(id: $0.id, name: $0.name, path: $0.path) }))
             case "assistant":
@@ -180,8 +174,7 @@ extension AgentSnapshot {
                     let toolCall = try call.presentation()
                     result.append(Message(id: id, role: .tool, text: "",
                         status: activeToolCallID == call.id ? .streaming : .complete,
-                        images: referenceImages(for: toolCall), pendingTool: .init(
-                            call: toolCall, isAwaitingApproval: approval?.call.id == call.id)))
+                        pendingTool: .init(call: toolCall, isAwaitingApproval: approval?.call.id == call.id)))
                 }
             case "tool":
                 guard let callID = message.callID, let call = calls[callID] else { throw ExecError("The backend returned an unmatched tool result.") }
@@ -203,14 +196,8 @@ extension AgentSnapshot {
                     }
                 }
                 let running = activeToolCallID == callID || message.outcome == "running"
-                // Tool-row images are local previews, resolved only from earlier
-                // user attachments and completed outputs in this transcript.
                 result.append(Message(id: pendingIDs[callID] ?? message.id, role: .tool, text: message.text,
-                                      status: running ? .streaming : .complete, toolResult: tool,
-                                      images: referenceImages(for: call)))
-                if message.outcome == "completed", let image = tool.generatedImage ?? tool.screenshot {
-                    availableImages[image.id] = image
-                }
+                                      status: running ? .streaming : .complete, toolResult: tool))
             default: throw ExecError("The backend returned an unknown message role.")
             }
         }
