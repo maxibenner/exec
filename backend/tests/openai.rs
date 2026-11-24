@@ -1793,7 +1793,7 @@ async fn legacy_compaction_supplements_incomplete_replies_until_recompacted() {
         text: "new input".into(),
     });
     let events: Vec<_> = provider.stream(request.clone()).collect().await;
-    assert!(events.iter().all(Result::is_ok));
+    assert!(events.iter().all(Result::is_ok), "{events:?}");
     let compacted = provider.compact(request.clone()).await.unwrap();
     assert_eq!(compacted["prefix"]["includes_incomplete"], true);
     request.provider_state = Some(compacted);
