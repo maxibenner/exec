@@ -303,6 +303,7 @@ The server bounds TCP connections to 64 and separately admits at most 64 non-GET
 | GET | `/v1/library` | Shared defaults and ordering |
 | PUT | `/v1/library` | `{defaultModel,settings,order}` → saved configuration |
 | GET | `/v1/models` | Neutral model array: `id`, `name`, optional `contextWindow`, `maxOutputTokens` |
+| POST | `/v1/tools/availability` | `{names:[string],conversationID?:string,model:string,searchModel?:string|null}` → object keyed by requested names, each `{available:boolean,reason?:string}` |
 | GET | `/v1/conversations` | Summary array, omitting `messages` and `approval` |
 | POST | `/v1/conversations` | `{model,workspace,settings?,disabledTools?:[string]}` → `201 ConversationSnapshot`, after durable creation |
 | PATCH | `/v1/conversations/:id` | `{disabledTools:[string]}` → `200 ConversationSnapshot`, after durable idle-only replacement |
@@ -430,6 +431,70 @@ snapshots on failed acknowledgements. A disconnected caller does not abort a set
 The API has no client authentication; prompts/project instructions are exposed to reachable HTTP
 clients and the selected provider. Auto mode does not sandbox tools or enable any future
 desktop capture capability/OS permission.
+
+## Runtime tool availability
+
+`POST /v1/tools/availability` is an authenticated, read-only local preview. Send
+`Content-Type: application/json` and the normal API bearer credential, not the native
+credential. It shares the bounded non-GET handler budget but performs no mutation.
+The existing encrypted-device route allowlist is unchanged.
+
+```json
+{"names":["web_search","generate_image","take_screenshot","delegate"],"conversationID":"00000000-0000-4000-8000-000000000001","model":"deepseek/deepseek-chat","searchModel":null}
+```
+
+The response is `200 application/json`, with exactly the requested names as keys:
+
+```json
+{
+  "web_search":{"available":true},
+  "generate_image":{"available":false,"reason":"Connect an image provider."},
+  "take_screenshot":{"available":false,"reason":"Screen access is not enabled for this session."},
+  "delegate":{"available":true}
+}
+```
+
+- `names` is required: at most 128 unique names, each 1–128 ASCII bytes using
+  `[A-Za-z0-9_-]`, the provider tool-name syntax. An empty array returns `{}`.
+  A syntactically valid unknown name is not an error; it returns
+  `{"available":false,"reason":"Not provided by this backend."}`.
+- `model` is required; `""` means no model selected. Otherwise it uses the existing
+  model-ID validation: nonblank, at most 128 UTF-16 code units, no control characters.
+  `searchModel` may be omitted or null to use `model`; a supplied string must pass
+  the same nonempty model-ID validation. No model catalog is fetched or required.
+- Optional `conversationID` must be a valid conversation UUID; explicit null is invalid.
+  A missing session returns 404. Malformed fields, duplicate/invalid names, oversized
+  arrays and unknown request fields return 400. The preview remains readable during work or
+  catalog reservations, until actual removal; a closed/stopping service returns 503.
+- With a conversation ID, the query uses that session's actual executable tools,
+  including child restrictions (no delegate, image generation or screenshot executor).
+  Without an ID, it uses normal top-level backend composition, including delegation,
+  without creating a session. Supplied `model`/`searchModel` always preview the client's
+  effective settings, rather than silently using saved/default settings.
+- Availability is independent of `disabledTools` and `defaultDisabledTools`: available
+  means runtime capability, not selected, approved or guaranteed to succeed. Library,
+  snapshot and saved selection schemas and deny-list validation are unchanged.
+- Image generation checks only the separately connected image provider, never the chat
+  model's vision support. Web search checks only the selected search-model route (or
+  chat-model route when no search override is supplied), its support and local connection
+  state. Fixed search reasons are `Select a model.`,
+  `Search is not supported by the selected provider.` and
+  `Connect the selected search provider.`; no alternate route is selected automatically.
+- Screenshots require a bound live capture frontend for a supplied session. Without a
+  session they report whether any live capture frontend exists, without selecting or
+  binding one. Reasons are `Screen access is not enabled for this session.` or
+  `Capture frontend disconnected.`. OS permission and first-use consent are deliberately
+  not availability gates: an authorized first tool call must still reach the permission flow.
+- This query does not persist records, load images, discover models, authenticate providers,
+  obtain/refresh tokens, invoke models, bind capture, request OS access or execute tools.
+  The result is a point-in-time preview; runtime checks still run before preparation.
+
+Clients should refresh when their effective model/search model or session changes and
+on existing `/v1/changes` catalog invalidations while the settings/selector is open.
+Provider changes already invalidate that catalog; native registration, binding/revocation
+and disconnect now do too. Invalidation is published after native locks are released.
+Grey/unavailable presentation must not change the saved selection or make checkboxes
+uneditable; reasons describe runtime capability, not an approval grant or a new deny-list.
 
 ## Per-session tool selection
 

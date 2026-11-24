@@ -13,6 +13,11 @@ import CryptoKit
     var selectedEffort: String?
     var systemPrompt = ""
     var searchModel = ""
+    var effectiveSearchModel: String? { provider.effectiveSearchModel(searchModel, for: selectedModel) }
+    var toolAvailabilityQuery: ToolAvailabilityQuery {
+        ToolAvailabilityQuery(names: SessionTool.names, conversationID: currentSessionID,
+                              model: requestModelID, searchModel: effectiveSearchModel)
+    }
     var model: ChatModel? { models.first { $0.id == selectedModel } }
     var effectiveEffort: String? { model?.efforts.contains { $0.id == selectedEffort } == true ? selectedEffort : nil }
     var account: String? { provider.account }
@@ -242,7 +247,7 @@ import CryptoKit
 
     private var settings: AgentSettings {
         AgentSettings(systemPrompt: systemPrompt, autoApprove: autoApproveTools,
-                      effort: selectedEffort, searchModel: !searchModel.isEmpty && provider.providerID(for: searchModel) == provider.providerID(for: selectedModel) ? searchModel : nil)
+                      effort: selectedEffort, searchModel: effectiveSearchModel)
     }
     func setToolEnabled(_ name: String, _ enabled: Bool) {
         guard canSelectTools, SessionTool.names.contains(name), disabledTools.contains(name) == enabled else { return }

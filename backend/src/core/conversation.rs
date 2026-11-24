@@ -569,6 +569,23 @@ impl Conversation {
         })
         .await
     }
+    /// Query actual executors, including child restrictions, without consulting the
+    /// deny-list or changing the record. Supplied settings preview the client's choice.
+    pub fn tool_availability(
+        &self,
+        names: &[String],
+        model: &str,
+        search_model: Option<&str>,
+    ) -> std::collections::BTreeMap<String, RuntimeToolAvailability> {
+        let workspace = self.state().record.workspace.clone();
+        let context = ToolContext::idle(
+            self.id.clone(),
+            model.into(),
+            search_model.map(str::to_owned),
+            workspace,
+        );
+        runtime_tool_availability(names, &self.tools, &context)
+    }
     fn request_context(
         &self,
         record: &mut ConversationRecord,

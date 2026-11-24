@@ -399,6 +399,58 @@ where
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ToolAvailabilityQuery {
+    names: Vec<String>,
+    #[serde(
+        default,
+        rename = "conversationID",
+        deserialize_with = "deserialize_availability_conversation"
+    )]
+    conversation_id: Option<String>,
+    model: String,
+    search_model: Option<String>,
+}
+// The ID may be omitted, but only searchModel accepts an explicit null.
+fn deserialize_availability_conversation<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+impl ToolAvailabilityQuery {
+    fn validate(&self) -> ApiResult<()> {
+        if let Some(id) = &self.conversation_id {
+            identifier(id)?;
+        }
+        if (!self.model.is_empty() && !valid_model_id(&self.model))
+            || self
+                .search_model
+                .as_ref()
+                .is_some_and(|model| !valid_model_id(model))
+        {
+            return Err(ApiError::rejected(400, "Invalid model."));
+        }
+        let mut names = std::collections::HashSet::new();
+        if self.names.len() > 128
+            || self.names.iter().any(|name| {
+                name.is_empty()
+                    || name.len() > 128
+                    || !name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+                    || !names.insert(name)
+            })
+        {
+            return Err(ApiError::rejected(400, "Invalid tool names."));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct PatchSession {
     disabled_tools: Vec<String>,
 }
@@ -657,6 +709,27 @@ async fn handle(
             .unwrap());
     }
     let options = &host.options;
+    if method == "POST" && route == "/v1/tools/availability" {
+        let input: ToolAvailabilityQuery = body(request, &request_cancel).await?;
+        input.validate()?;
+        let availability = if let Some(id) = &input.conversation_id {
+            options.manager.tool_availability(
+                id,
+                &input.names,
+                &input.model,
+                input.search_model.as_deref(),
+            )?
+        } else {
+            options.manager.default_tool_availability(
+                options.provider.clone(),
+                options.tools.clone(),
+                &input.names,
+                &input.model,
+                input.search_model.as_deref(),
+            )?
+        };
+        return Ok(json_response(200, availability));
+    }
     if method == "POST" && route == "/v1/workspaces/browse" {
         let input: crate::workspace_picker::Browse = body(request, &request_cancel).await?;
         return Ok(json_response(

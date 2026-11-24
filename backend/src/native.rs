@@ -3,7 +3,7 @@
 //! TCP does not attest process identity. Adapter binding, tool consent and OS access are separate.
 use crate::{
     Error, Result,
-    core::{ToolContext, new_id, valid_id},
+    core::{ChangeHub, RuntimeToolAvailability, ToolContext, new_id, valid_id},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -122,6 +122,7 @@ impl Drop for RequestGuard<'_> {
 #[derive(Default)]
 pub struct NativeHub {
     state: Mutex<State>,
+    changes: Mutex<std::sync::Weak<ChangeHub>>,
 }
 pub struct NativeConnection {
     pub id: String,
@@ -134,6 +135,36 @@ impl Drop for NativeConnection {
     }
 }
 impl NativeHub {
+    pub(crate) fn attach_changes(&self, changes: &Arc<ChangeHub>) {
+        *self.changes.lock().unwrap() = Arc::downgrade(changes);
+    }
+    /// Call only after releasing native state; never hold native locks while publishing.
+    fn availability_changed(&self) {
+        let changes = self.changes.lock().unwrap().upgrade();
+        if let Some(changes) = changes {
+            changes.catalog_changed();
+        }
+    }
+    /// Binding/transport capability only. OS permission and first-use consent are
+    /// intentionally not checked so an authorized first capture can request them.
+    pub fn capture_availability(&self, conversation: &str) -> RuntimeToolAvailability {
+        let s = self.state.lock().unwrap();
+        if conversation.is_empty() {
+            if s.frontends.values().any(|f| !f.requests.is_closed()) {
+                RuntimeToolAvailability::available()
+            } else {
+                RuntimeToolAvailability::unavailable("Capture frontend disconnected.")
+            }
+        } else if let Some(id) = s.permissions.get(conversation) {
+            if s.frontends.get(id).is_some_and(|f| !f.requests.is_closed()) {
+                RuntimeToolAvailability::available()
+            } else {
+                RuntimeToolAvailability::unavailable("Capture frontend disconnected.")
+            }
+        } else {
+            RuntimeToolAvailability::unavailable("Screen access is not enabled for this session.")
+        }
+    }
     pub(crate) fn register(self: &Arc<Self>, os_permission: bool) -> Result<NativeConnection> {
         let mut s = self.state.lock().unwrap();
         if s.frontends.len() >= 8 {
@@ -148,6 +179,8 @@ impl NativeHub {
                 requests: tx,
             },
         );
+        drop(s);
+        self.availability_changed();
         Ok(NativeConnection {
             id,
             requests,
@@ -188,6 +221,7 @@ impl NativeHub {
             return Err(Error::Invalid("Invalid conversation ID."));
         }
         let mut s = self.state.lock().unwrap();
+        let previous = s.permissions.get(conversation).cloned();
         if permission.enabled {
             let id = permission
                 .frontend_id
@@ -209,6 +243,11 @@ impl NativeHub {
             s.approved.remove(conversation);
             s.windows.retain(|(_, session), _| session != conversation);
             s.cancel_where(|request| request.conversation_id == conversation);
+        }
+        let changed = previous.as_ref() != s.permissions.get(conversation);
+        drop(s);
+        if changed {
+            self.availability_changed();
         }
         Ok(())
     }
@@ -239,14 +278,18 @@ impl NativeHub {
     }
     pub fn remove_session(&self, conversation: &str) {
         let mut s = self.state.lock().unwrap();
-        s.permissions.remove(conversation);
+        let changed = s.permissions.remove(conversation).is_some();
         s.approved.remove(conversation);
         s.windows.retain(|(_, session), _| session != conversation);
         s.cancel_where(|request| request.conversation_id == conversation);
+        drop(s);
+        if changed {
+            self.availability_changed();
+        }
     }
     fn disconnect(&self, id: &str) {
         let mut s = self.state.lock().unwrap();
-        s.frontends.remove(id);
+        let changed = s.frontends.remove(id).is_some();
         s.windows.retain(|(frontend, _), _| frontend != id);
         let sessions: Vec<_> = s
             .permissions
@@ -259,6 +302,10 @@ impl NativeHub {
         }
         s.permissions.retain(|_, frontend| frontend != id);
         s.cancel_where(|request| request.frontend_id == id);
+        drop(s);
+        if changed {
+            self.availability_changed();
+        }
     }
     pub(crate) fn reply(&self, reply: NativeReply) -> Result<()> {
         let mut s = self.state.lock().unwrap();

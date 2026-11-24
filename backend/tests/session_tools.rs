@@ -39,8 +39,12 @@ impl Tool for Probe {
             ..self.inner.definition()
         }
     }
-    fn available(&self, _: &ToolContext) -> bool {
-        self.available.load(Ordering::SeqCst)
+    fn availability(&self, _: &ToolContext) -> RuntimeToolAvailability {
+        if self.available.load(Ordering::SeqCst) {
+            RuntimeToolAvailability::available()
+        } else {
+            RuntimeToolAvailability::unavailable("Probe capability is unavailable.")
+        }
     }
     async fn prepare(
         &self,
@@ -260,7 +264,16 @@ async fn capability_changes_filter_catalog_and_are_checked_again_before_preparat
         answer(),
     ]);
     let c = conversation(provider.clone(), vec![probe.clone()]);
+    let names = vec!["change".into()];
+    assert_eq!(
+        c.tool_availability(&names, "fake", None)["change"],
+        RuntimeToolAvailability::available()
+    );
     complete(c.submit("act".into()).unwrap()).await;
+    assert_eq!(
+        c.tool_availability(&names, "fake", None)["change"],
+        RuntimeToolAvailability::unavailable("Probe capability is unavailable.")
+    );
     assert_eq!(probe.preparations.load(Ordering::SeqCst), 0);
     assert_eq!(probe.saved.load(Ordering::SeqCst), 0);
     assert!(c.snapshot().approval.is_none());
@@ -481,6 +494,17 @@ fn old_records_default_to_all_tools_and_invalid_names_are_rejected() {
         .remove("disabledTools");
     let old: ConversationRecord = serde_json::from_value(value).unwrap();
     assert!(old.recover().unwrap().metadata.disabled_tools.is_empty());
+    // Availability queries have a stricter syntax and a 128-name limit. Saved
+    // selections retain their original 256-name, non-whitespace contract.
+    let retained: Vec<_> = (0..256).map(|n| format!("legacy.tool/{n}")).collect();
+    let mut record = c.record();
+    record.metadata.disabled_tools = retained.clone();
+    record.validate().unwrap();
+    let library = LibraryConfiguration {
+        default_disabled_tools: retained,
+        ..Default::default()
+    };
+    library.validate().unwrap();
     for names in [
         vec!["".into()],
         vec!["change".into(), "change".into()],
@@ -488,6 +512,7 @@ fn old_records_default_to_all_tools_and_invalid_names_are_rejected() {
         vec!["bad name".into()],
         vec!["x".repeat(129)],
         vec!["change".into(); 257],
+        (0..257).map(|n| format!("legacy.tool/{n}")).collect(),
     ] {
         let mut record = c.record();
         record.metadata.disabled_tools = names;

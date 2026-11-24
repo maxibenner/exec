@@ -24,8 +24,12 @@ struct PreparedImage {
 }
 #[async_trait]
 impl Tool for GenerateImage {
-    fn available(&self, _: &ToolContext) -> bool {
-        self.provider.image_generation_available()
+    fn availability(&self, _: &ToolContext) -> RuntimeToolAvailability {
+        if self.provider.image_generation_available() {
+            RuntimeToolAvailability::available()
+        } else {
+            RuntimeToolAvailability::unavailable("Connect an image provider.")
+        }
     }
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

@@ -1095,11 +1095,10 @@ async fn missing_response_content_type_still_requires_a_valid_completed_stream()
         let mut options = support::options(provider, vec![]);
         options.model = "test".into();
         let conversation = Conversation::new(options, None).unwrap();
+        let operation = support::complete(conversation.submit("hello".into()).unwrap()).await;
         assert_eq!(
-            support::complete(conversation.submit("hello".into()).unwrap())
-                .await
-                .state,
-            expected
+            operation.state, expected,
+            "Content type {content_type:?}, completed={completed}: {operation:?}"
         );
         assert_eq!(
             transport

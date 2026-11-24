@@ -495,6 +495,21 @@ impl ChatProvider for ProviderRegistry {
     fn supports_web_search(&self) -> bool {
         self.providers.values().any(|p| p.supports_web_search())
     }
+    fn web_search_availability(&self, model: &str) -> RuntimeToolAvailability {
+        if model.is_empty() {
+            return RuntimeToolAvailability::unavailable("Select a model.");
+        }
+        let Ok((id, model, provider)) = self.route(model) else {
+            return RuntimeToolAvailability::unavailable(
+                "Search is not supported by the selected provider.",
+            );
+        };
+        // Nonblocking local gate only; never queue, discover or refresh credentials.
+        let Ok(_access) = self.read_access(&id) else {
+            return RuntimeToolAvailability::unavailable("Connect the selected search provider.");
+        };
+        provider.web_search_availability(&model)
+    }
     fn reserve_disconnect(&self, id: &str) -> Result<Box<dyn Send>> {
         if !self.providers.contains_key(id) {
             return Err(Error::Invalid("Unknown provider."));

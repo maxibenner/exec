@@ -5,8 +5,10 @@ struct SessionToolMenu: View {
     let conversation: ChatStore
     @Environment(\.isEnabled) private var isEnabled
     @State private var isPresented = false
+    @State private var availability = ToolAvailabilityObserver()
 
     var body: some View {
+        let query = conversation.toolAvailabilityQuery
         Button {
             isPresented.toggle()
         } label: {
@@ -19,7 +21,7 @@ struct SessionToolMenu: View {
                     GroupBox(group.rawValue) {
                         VStack(spacing: 8) {
                             ForEach(SessionTool.all.filter { $0.group == group }) { tool in
-                                toolRow(tool)
+                                toolRow(tool, query: query)
                             }
                         }
                         .padding(4)
@@ -30,17 +32,32 @@ struct SessionToolMenu: View {
             .padding(12)
             .frame(width: 280)
             .disabled(!isEnabled || !conversation.canSelectTools)
+            .task(id: query) {
+                await availability.observe(query: query, api: conversation.provider.api)
+            }
         }
     }
 
-    private func toolRow(_ tool: SessionTool) -> some View {
-        HStack(spacing: 8) {
+    private func toolRow(_ tool: SessionTool, query: ToolAvailabilityQuery) -> some View {
+        let status = availability.status(for: tool.name, query: query)
+        let unavailable = status?.available == false
+        let reason = unavailable ? status?.reason : nil
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: tool.icon)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(unavailable ? .tertiary : .secondary)
                 .frame(width: 16)
                 .accessibilityHidden(true)
-            Text(verbatim: tool.label)
-                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: tool.label)
+                    .foregroundStyle(unavailable ? .secondary : .primary)
+                if let reason {
+                    Text(verbatim: reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .accessibilityHidden(true)
             Spacer(minLength: 16)
             Toggle(tool.label, isOn: Binding(
                 get: { !conversation.disabledTools.contains(tool.name) },
@@ -49,6 +66,7 @@ struct SessionToolMenu: View {
                 .tint(AppColors.systemAccent).accentColor(AppColors.systemAccent)
                 .labelsHidden()
                 .accessibilityIdentifier(tool.name)
+                .accessibilityHint(reason ?? "")
         }
     }
 }

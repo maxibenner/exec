@@ -41,6 +41,32 @@ These folders organize existing modules; they do not introduce additional packag
 - Reconnect with a current snapshot and live events, not command replay. Slow observers are disconnected rather than blocking execution. A lost native channel revokes its capability and invalidates correlated results.
 - Bound streams, files, subprocess output and execution time. Keep secrets out of workspaces, logs and tool environments. Workspaces and approvals are **not a sandbox** against same-user processes or escaped descendants.
 
+## Runtime tool capability previews
+
+Core `RuntimeToolAvailability` is the canonical local status: `available` and an optional
+owned, fixed short `reason`. Builtins implement `Tool::availability(&ToolContext)`; the
+existing `Tool::available` boolean wrapper remains the central schema filter and execution
+guard. Capability does not incorporate saved disabled-tool selection or approval policy.
+Image generation depends only on the independent image-provider connection. Search uses
+a provider-neutral local availability method; the provider registry owns selected-route
+resolution and connection/disconnect gating, without discovery, authentication or fallback.
+
+Authenticated `POST /v1/tools/availability` previews requested names against supplied
+client-effective model/search-model settings. Session queries inspect that conversation's
+actual executors, preserving child executor removal; default queries reuse the manager's
+normal composition including delegation. Missing executors have a fixed unavailable status.
+An idle `ToolContext` has empty operation/call IDs, no images and a fresh cancellation token;
+no fabricated conversation, persistence or provider request is needed. Library/snapshot
+schemas and deny-list validation are unchanged. See the [API contract](api.md#runtime-tool-availability).
+
+Native capture availability checks a live session binding, or any connected frontend for a
+no-session preview. It never checks OS permission or grants consent, selects/binds a frontend,
+or requests capture. First-use permission remains reachable through the normal approved tool
+path. The manager attaches the existing `ChangeHub` weakly to `NativeHub`; registration,
+binding/revocation and disconnect publish catalog invalidations only after native locks are
+released. Clients refresh open selectors on those existing hints and effective-setting changes,
+without polling or storing runtime capability as selection state.
+
 ## Native frontend
 
 Swift retains the virtualized native transcript, Markdown/diff/image/tool presentation, composer, sidebar, detached windows, selection and scroll state. It also owns unsent drafts, attachment normalization, local window/selection preferences, Finder/Terminal actions and Sparkle updates. Snapshot reconciliation preserves message identity. Like iOS, macOS uses the shared incremental `/sync` cursor and prefix-proof contract rather than subscribing to full-history conversation events. It backfills older pages before publication to retain complete transcript navigation and tool-call/result pairing, then polls the changed suffix every 200 ms while active and every two seconds while idle. Unchanged snapshots do not trigger UI reconciliation; cancellation and mutations remain explicit, single-submit operations.
