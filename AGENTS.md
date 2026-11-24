@@ -34,6 +34,13 @@
 - Use stable code signing when a certificate is available; never silently change signing identity or relax Keychain access controls.
 - Do not write progress statuses or hints into the UI. E.g. "Chat only - no file or shell tools yet". The only exception is keyboard shortcut hints on sidebar items (e.g. ⌘1, ⌘2) showing their available navigation shortcuts. It is okay to use UI hints/descriptions if it is important context for evaluating the functionality of the feature.
 
+## Parallel development app
+
+- To test alongside production without replacing or restarting it, run `./scripts/build-app.sh --dev` from `macOS/`, then `open "dist/Exec Dev.app"` when launch is requested. Without `--dev`, the script still builds the normal `Exec.app`.
+- `Exec Dev` uses bundle ID `local.exec.dev`, a separate preferences domain, profile `~/Library/Application Support/Exec Dev/Agent`, and loopback port `8766` (production defaults to `8765`). Its updater is disabled; both bundles keep the configured stable signing identity. Only one copy of Exec Dev can own that profile/port at a time.
+- Builds never copy production state or credentials. Sign in separately by default. Only with explicit user authorization may a static API key (such as DeepSeek's) be copied privately into the dev credential store; never log it, symlink a profile, or duplicate OpenAI rotating sign-in/refresh tokens between running apps.
+- When building in a feature worktree, keep the final dev app outside that worktree before cleanup. These overrides isolate app state, not filesystem/tool or desktop access; use a disposable test workspace.
+
 ## Verification
 
 - Verify completed changes, not every small edit. For small presentation-only changes (copy, colors, spacing, or reordering/regrouping displayed tools without changing behavior), rebuild directly without running tests.

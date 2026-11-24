@@ -2,6 +2,27 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+usage() {
+    printf 'Usage: %s [--dev]\n' "$0"
+    printf '  --dev  Build Exec Dev with a separate profile, port, and bundle ID; disable updates.\n'
+}
+if [[ "$#" -gt 1 ]]; then usage >&2; exit 2; fi
+dev=0
+case "${1:-}" in
+    '') ;;
+    --dev) dev=1 ;;
+    --help|-h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+esac
+app_name="Exec"
+bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Resources/Info.plist)"
+helper_id="app.exec.agent"
+if [[ "$dev" == 1 ]]; then
+    app_name="Exec Dev"
+    bundle_id="local.exec.dev"
+    helper_id="$bundle_id.agent"
+fi
+
 # Pin a certificate once in local Git config, or explicitly override it per build.
 # Never pick an arbitrary certificate or fall back after a signing failure.
 identity="${SIGNING_IDENTITY:-$(git config --local --get exec.signingIdentity 2>/dev/null || true)}"
@@ -39,18 +60,28 @@ build_options=(-c release --sdk "$sdk_path"
     -Xlinker -rpath -Xlinker '@executable_path/../Frameworks')
 swift build "${build_options[@]}" --product Exec
 bin="$(swift build "${build_options[@]}" --show-bin-path)"
-app="$PWD/dist/Exec.app"
+app="$PWD/dist/$app_name.app"
 mkdir -p "$PWD/dist"
 staging="$(mktemp -d "$PWD/dist/.exec-build.XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
-built="$staging/Exec.app"
+built="$staging/$app_name.app"
 mkdir -p "$built/Contents/MacOS" "$built/Contents/Resources"
-cp "$bin/Exec" "$built/Contents/MacOS/Exec"
+cp "$bin/Exec" "$built/Contents/MacOS/$app_name"
 # SwiftPM's syntax queries and their license notices must travel with the app.
 ditto "$bin/ExecTranscript_ExecTranscript.bundle" "$built/Contents/Resources/ExecTranscript_ExecTranscript.bundle"
 cp "$agent_target/release/exec-agent" "$built/Contents/MacOS/exec-agent"
-codesign "${options[@]}" --sign "$identity" --identifier app.exec.agent "$built/Contents/MacOS/exec-agent"
+codesign "${options[@]}" --sign "$identity" --identifier "$helper_id" "$built/Contents/MacOS/exec-agent"
 cp Resources/Info.plist "$built/Contents/Info.plist"
+if [[ "$dev" == 1 ]]; then
+    plist="$built/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $bundle_id" "$plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleName $app_name" "$plist"
+    /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $app_name" "$plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $app_name" "$plist"
+    /usr/libexec/PlistBuddy -c "Add :ExecProfileName string $app_name" "$plist"
+    /usr/libexec/PlistBuddy -c 'Add :ExecAgentPort integer 8766' "$plist"
+    /usr/libexec/PlistBuddy -c 'Delete :SUFeedURL' "$plist"
+fi
 # Compile the layered glass icon and the compatibility ICNS for older macOS.
 # Use an absolute input path: the asset compiler service can outlive a worktree.
 xcrun actool "$PWD/Resources/Glass_Icon.icon" \
@@ -71,7 +102,6 @@ codesign "${options[@]}" --sign "$identity" --preserve-metadata=entitlements "$f
 codesign "${options[@]}" --sign "$identity" "$framework/Versions/B/Autoupdate"
 codesign "${options[@]}" --sign "$identity" "$framework/Versions/B/Updater.app"
 codesign "${options[@]}" --sign "$identity" "$framework"
-bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' Resources/Info.plist)"
 codesign "${options[@]}" --sign "$identity" --identifier "$bundle_id" "$built"
 codesign --verify --deep --strict "$built"
 # Never truncate a running, signed executable: macOS can kill it for invalid code pages.
@@ -87,3 +117,7 @@ if ! mv "$built" "$app"; then
     exit 1
 fi
 printf '\nBuilt %s\nRun: open "%s"\n' "$app" "$app"
+if [[ "$dev" == 1 ]]; then
+    printf 'Isolated profile: ~/Library/Application Support/Exec Dev/Agent; loopback port: 8766.\n'
+    printf 'Credentials are not copied automatically; production remains unchanged.\n'
+fi

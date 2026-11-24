@@ -46,12 +46,39 @@ The scripts keep `CARGO_PROFILE_RELEASE_STRIP=none`: some Rust/macOS combination
 
 ### Parallel test builds
 
-Renaming an app alone does not isolate its backend. To run a copied test bundle alongside production, give the copy a distinct `CFBundleIdentifier`, `CFBundleName` and `CFBundleDisplayName`, plus these optional Info.plist overrides:
+From `macOS/`, build the reusable development variant without replacing production:
 
-- `ExecProfileName` (string): a single directory name, for example `Exec Image Editing`. Data and provider credentials then live under `Application Support/<name>/Agent`. The default remains `Exec`.
-- `ExecAgentPort` (integer): an unused loopback port, for example `8766`. The default remains `8765`.
+```sh
+./scripts/build-app.sh --dev
+open "dist/Exec Dev.app"
+```
 
-Malformed overrides fail closed. Use a fresh profile, never a symlink to production or a copy of its credentials; sign in separately. Remove `SUFeedURL` from the copied bundle to disable its updater. Do not change the published production feed. Re-sign the copied helper and app inside out with the configured stable certificate after modifying the bundle, verify the signatures, and open that exact app path. Keep the test app outside a feature worktree before removing the worktree. These settings isolate application state, not filesystem or desktop access; use a disposable test workspace.
+`Exec Dev.app` has its own display/executable name, bundle ID `local.exec.dev`, preferences,
+profile `~/Library/Application Support/Exec Dev/Agent`, and loopback port `8766`.
+Its updater is disabled and the configured stable signing identity is preserved. Rebuilds
+reuse only the dev profile; they never copy production state or credentials. Running the
+script without `--dev` still produces the unchanged production variant, `Exec.app`.
+Only one dev app can own the dev profile/port at a time; do not open another worktree's copy
+while one is already running. The build does not start or stop either app automatically.
+
+Sign in separately by default. An explicitly authorized static API key, such as DeepSeek's,
+may be copied privately into the dev credential store without printing or committing it.
+Never duplicate rotating OpenAI sign-in/refresh tokens across profiles: independent refresh
+owners can invalidate each other's sessions. Never symlink the dev profile to production.
+
+For additional custom variants, renaming alone is insufficient. Give the copied bundle a
+distinct `CFBundleIdentifier`, `CFBundleName` and `CFBundleDisplayName`, plus these optional
+Info.plist overrides:
+
+- `ExecProfileName` (string): a single directory name. Data and provider credentials live under `Application Support/<name>/Agent`. The default remains `Exec`.
+- `ExecAgentPort` (integer): an unused loopback port. The default remains `8765`.
+
+Malformed overrides fail closed. Remove `SUFeedURL` from custom copies to disable their
+updater; do not change the published production feed. Re-sign the copied helper and app
+inside out with the configured stable certificate after modifying the bundle, verify the
+signatures, and open that exact app path. Keep the test app outside a feature worktree before
+removing the worktree. These settings isolate application state, not filesystem or desktop
+access; use a disposable test workspace.
 
 ## Backend
 
