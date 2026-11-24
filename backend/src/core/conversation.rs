@@ -137,6 +137,7 @@ impl State {
     fn summary(&self, provider: &dyn ChatProvider) -> ConversationSummary {
         ConversationSummary {
             id: self.record.id.clone(),
+            supports_compaction: provider.supports_compaction(&self.record.model),
             configuration: self
                 .record
                 .configuration
@@ -1110,7 +1111,11 @@ impl Conversation {
                 let Some(window) = self.provider.context_window(&s.record.model) else {
                     return Ok(());
                 };
-                if tokens < window.saturating_mul(95).div_ceil(100) {
+                let threshold = self
+                    .provider
+                    .auto_compaction_threshold_percent(&s.record.model)
+                    .clamp(1, 100);
+                if tokens < window.saturating_mul(threshold).div_ceil(100) {
                     return Ok(());
                 }
             }
@@ -1193,7 +1198,7 @@ impl Conversation {
             self.checkpoint(None).await?;
             self.diagnostic(DiagnosticEvent::CompactionStarted, Some(index), None).await;
             let history = self.state().record.messages.clone();
-            self.resolve_images(&mut request, &history).await?;
+            self.resolve_images(&mut request, &history, true).await?;
             let mut compaction = Box::pin(self.provider.compact(request));
             let state = loop {
                 tokio::select! {biased;
@@ -1725,7 +1730,7 @@ impl Conversation {
             self.diagnostic(DiagnosticEvent::ResponseStarted, Some(index), None)
                 .await;
             let history = self.state().record.messages[..index].to_vec();
-            self.resolve_images(&mut request, &history).await?;
+            self.resolve_images(&mut request, &history, false).await?;
             let mut stream = self.provider.stream(request);
             let mut calls = vec![];
             let mut last_save: Option<Instant> = None;
@@ -1848,10 +1853,16 @@ impl Conversation {
         &self,
         request: &mut ProviderRequest,
         history: &[Message],
+        compaction: bool,
     ) -> Result<()> {
         let reader = self.images.lock().unwrap().clone();
         let mut total_bytes = 0usize;
-        for index in self.provider.image_context_indices(request)? {
+        let indices = if compaction {
+            self.provider.compaction_image_context_indices(request)?
+        } else {
+            self.provider.image_context_indices(request)?
+        };
+        for index in indices {
             let id = request.message_ids.get(index).ok_or(Error::Internal)?;
             let refs = history
                 .iter()

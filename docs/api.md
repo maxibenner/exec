@@ -1043,28 +1043,62 @@ disables further cache writes until restart; it does not retry or block conversa
 `POST /v1/conversations/:id/compact` with `{}` returns `202 {operationID}`.
 This starts an exclusive runner operation, not a manager/provider side loop. The same
 operation-targeted cancellation and terminal durability guarantees apply. Manual compaction
-rejects pending input/busy sessions and models without compaction support. Once accepted,
-manual compaction accepts `/steer` input through the same operation-targeted queue as a turn.
-After successful, durable compaction, queued input starts a response within that operation;
-without queued input it finishes without inference. Failure or cancellation retains pending
-input without resuming inference. A rejected or uncertain queue request is never retried as
-a new turn.
+rejects pending input/busy sessions and models without compaction support. Snapshots and
+catalog summaries expose `supportsCompaction`, a backend-derived capability for their
+selected model, not permission to compact a busy session. Clients treat a missing field as
+false and recheck capability after model selection rather than hardcoding provider IDs.
+Once accepted, manual compaction accepts `/steer` input through the same operation-targeted
+queue as a turn. After successful, durable compaction, queued input starts a response within
+that operation; without queued input it finishes without starting an ordinary response.
+Failure or cancellation retains pending input without resuming inference. A rejected or
+uncertain queue request is never retried as a new turn.
 
-The OpenAI provider supports manual compaction and automatic compaction at 95% of the
-last completed measured context window. Before inference the runner prepares required
-model metadata. Automatic compaction includes finalized history/tool outcomes and explicitly
-marked failed/interrupted replies, but excludes
+Before inference the runner prepares required model metadata. Automatic compaction includes
+finalized history/tool outcomes and explicitly marked failed/interrupted replies, but excludes
 new trailing user input; accepted steering is checkpointed while the request is in flight.
-The provider appends the Responses v2 `compaction_trigger`, accepts exactly one encrypted
-compaction item, and discards incidental text/calls without executing them. There is no
-obsolete `/responses/compact` call and no implicit text-summary fallback for DeepSeek.
+Strategies share this lifecycle:
 
-The opaque replacement is checkpointed before further inference. Visible messages and
-stable IDs remain unchanged. Failure/cancellation retains the original context; uncertain
-checkpoint acknowledgement blocks work. A successful compaction clears stale token usage
-until the next ordinary response measures it. `contextUsage:{tokens,limit}` is a completed
-provider measurement, not an estimate of newly appended input. Neither compaction usage
-nor stale pre-compaction usage is presented as the replacement context's size.
+- **Native:** OpenAI uses the Responses v2 `compaction_trigger`, accepts exactly one encrypted
+  compaction item, and discards incidental text/calls without executing them. Automatic
+  compaction starts at 95% of the last completed measured context window. There is no
+  obsolete `/responses/compact` call and no text-summary retry after a native failure.
+- **Text summary:** DeepSeek explicitly opts into a shared backend strategy. It uses the same
+  selected provider/model with tools disabled, normally in one inference, to summarize an
+  older completed prefix. It prefers keeping two recent whole user turns but reduces that
+  suffix when needed for the budget; a single large turn can be summarized in full. Tool
+  call/result batches stay intact. Automatic compaction starts at 80% of measured capacity
+  to leave inference headroom, and requires known context-window metadata.
+
+Summary requests use conservative byte/framing budgets, reserving room for a rolling summary
+and output. Each request is capped at the smaller of the model window and 128 Ki tokens;
+unknown windows use that conservative cap for manual compaction. Oversized text histories
+are serialized as untrusted fragments and summarized sequentially, with at most 32 inferences
+and no retries or silent truncation. An intermediate failure commits no partial summary.
+Oversized image-bearing prefixes, unbudgetable instructions/state, and histories exceeding
+these bounds fail closed. These budgets are not exact provider tokenization guarantees.
+Only images in the selected prefix are loaded for compaction; previously summarized images
+and retained suffix images are excluded.
+
+Text summaries are nonempty and at most 32 KiB. A complete terminal response is required;
+tool calls, continuation requests, incomplete streams, and invalid output fail compaction.
+Summary-inference metadata and usage never overwrite live provider state. Both strategies
+are lossy. Summaries enter subsequent requests as untrusted historical context, never as
+system instructions; the latest covered runtime tool policy remains a separate trusted
+message, followed by any newer policy updates.
+
+The replacement is checkpointed before further inference. Visible messages and stable IDs
+remain unchanged. Summary text/boundaries live separately from opaque state in per-provider
+registry context, never in API snapshots. Recompaction consumes the previous summary plus
+newly covered history, not the original covered prefix. Forks retain a summary only when its
+boundary remains in the fork. Switching providers never forwards another provider's opaque
+state or summary; it reconstructs that provider's view from the retained transcript and its
+own saved context. A large conversation may need manual compaction after switching.
+
+Failure/cancellation retains the original context; uncertain checkpoint acknowledgement
+blocks work. A successful compaction clears stale token usage until the next ordinary
+response measures it. `contextUsage:{tokens,limit}` is a completed provider measurement, not
+an estimate of newly appended input. Neither compaction usage nor stale pre-compaction usage
+is presented as the replacement context's size.
 
 ## Local file attachments
 

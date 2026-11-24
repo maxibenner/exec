@@ -8,6 +8,7 @@ pub use deepseek::{
 };
 
 mod registry;
+mod summary_compaction;
 pub use registry::ProviderRegistry;
 
 pub mod openai;

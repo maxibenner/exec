@@ -516,6 +516,9 @@ fn content_type(response: &HttpResponse, expected: &str) -> Result<()> {
 }
 #[async_trait]
 impl ChatProvider for DeepSeekProvider {
+    fn supports_summary_compaction(&self, _: &str) -> bool {
+        true
+    }
     fn supports_web_search(&self) -> bool {
         true
     }
