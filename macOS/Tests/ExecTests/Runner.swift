@@ -273,6 +273,8 @@ import Foundation
             ("Uncertain compaction and queue requests never start a fallback turn", { try await CompactionQueueTests().uncertainCompactionOrQueueNeverFallsBackToANewTurn() }),
             ("Stop before compaction acceptance retains drafts and operation ownership", { try await CompactionQueueTests().stopBeforeCompactionReceiptRetainsDraftAndTargetsAcceptedOperation() }),
             ("Compaction sends preserve configuration ordering and uncertain-write safety", { try await CompactionQueueTests().compactionDoesNotBypassConfigurationSavesOrUncertainWrites() }),
+            ("Desktop binds remote chats before capture without prompting", { try await RemoteDesktopTests().remoteBindingEnablesCaptureOnUseAndClearsOnDisconnect() }),
+            ("Desktop rejects invalid remote bindings without capture", { try await RemoteDesktopTests().invalidRemoteBindingsFailClosedWithoutCapture() }),
             ("Desktop requests OS access on use and never shares late captures", { try await BackendFollowupTests().desktopRequestsOSPermissionOnUseAndDiscardsCancelledCapture() }),
             ("Desktop replies preserve correlation without retry", { try await BackendFollowupTests().desktopRepliesExactlyOnceWithoutRetry() }),
             ("Notifications share one idle stream and filter revisions", { try await ChangeNotificationTests().sharedIdleAndRevisionSpecificCatchup() }),

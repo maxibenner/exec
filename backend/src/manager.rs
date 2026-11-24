@@ -1090,6 +1090,17 @@ impl AgentManager {
     pub(crate) fn attach_native(&self, native: Arc<crate::native::NativeHub>) {
         self.catalog.lock().unwrap().native = native;
     }
+    pub(crate) fn bind_remote_desktop(&self, id: &str) -> Result<()> {
+        let conversation = self.get(id)?;
+        if conversation.busy() {
+            return Err(Error::Busy);
+        }
+        let metadata = conversation.summary().metadata;
+        if metadata.parent.is_none() && metadata.tool_enabled("take_screenshot") {
+            self.native().bind_remote(id)?;
+        }
+        Ok(())
+    }
     pub fn desktop_permission(&self, id: &str) -> Result<crate::native::DesktopPermission> {
         self.get(id)?;
         Ok(self.native().permission(id))

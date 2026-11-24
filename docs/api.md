@@ -1194,11 +1194,22 @@ execute host tools: these credentials are not an OS sandbox against same-user co
 
 | Method | Path | Contract |
 |---|---|---|
-| POST | `/v1/native/events` | `{osScreenPermission:boolean}` → live NDJSON: `registered`, `request`, `cancelled`, `ping` |
+| POST | `/v1/native/events` | `{osScreenPermission:boolean,acceptsRemoteConversations?:boolean}` → live NDJSON: `registered`, `conversation_bound`, `request`, `cancelled`, `ping` |
 | PUT | `/v1/native/permission` | `{frontendID,granted}`; update the registered frontend’s reported OS permission |
 | POST | `/v1/native/results` | `{request:NativeRequest,result:NativePayload}`; exact, live, single-use correlation required |
 | GET | `/v1/conversations/:id/desktop` | `{frontendID,enabled}`; initially disabled |
 | PUT | `/v1/conversations/:id/desktop` | Bind one frontend or disable; binding alone grants neither tool consent nor OS permission |
+
+A trusted adapter may opt into binding remote conversations with
+`acceptsRemoteConversations:true` (omitted defaults to false). The macOS app opts in.
+Before a remote user turn, an unbound top-level conversation with screenshots selected
+is bound only when exactly one live adapter has opted in. No eligible adapter leaves
+screenshots unavailable; ambiguous adapters or a full notification queue reject the turn.
+An existing live binding is unchanged. The adapter receives
+`{type:"conversation_bound",frontendID,conversationID}` on its ordered native channel
+before any capture request, and updates its local authorized-session set. Binding grants
+neither manual tool consent nor OS permission. Remote clients still cannot register native
+adapters, report OS permission, submit capture results or directly grant desktop access.
 
 The registration event supplies `frontendID`. `NativeRequest` is
 `{id,frontendID,conversationID,operationID,callID,action:{target,windowID}}`.
@@ -1220,8 +1231,8 @@ The native adapter must cancel its own capture work when notified or disconnecte
 
 OS permission reports are claims from explicitly authorized adapters; the backend cannot
 verify macOS TCC on behalf of Swift and never grants it. Reporting OS permission restored
-does not restore manual conversation consent. Native permissions/channels are transient, never restored
-or forked. General observer disconnects still only detach; disconnecting the bound native
+does not restore manual conversation consent. Native permissions/channels are transient, never loaded
+from storage or inherited by forks. General observer disconnects still only detach; disconnecting the bound native
 capability channel specifically revokes that capability and invalidates its pending calls.
 The macOS app
 implements the local adapter and on-demand screenshot permission flow; see
