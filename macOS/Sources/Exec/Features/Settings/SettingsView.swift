@@ -12,11 +12,14 @@ struct SettingsView: View {
                 set: { if let section = $0 { store.settingsTab = section } }
             )) {
                 ForEach(ChatLibrary.SettingsTab.allCases, id: \.self) { section in
-                    Label(section.title, systemImage: section.systemImage)
-                        // Use the current accent explicitly; let the native sidebar
-                        // override it for selected rows.
-                        .listItemTint(.preferred(.accentColor))
-                        .tag(section)
+                    Label {
+                        Text(section.title)
+                    } icon: {
+                        Image(systemName: section.systemImage)
+                            // Preserve native tint while compositing each symbol once.
+                            .drawingGroup()
+                    }
+                    .tag(section)
                 }
             }
             .listStyle(.sidebar)
