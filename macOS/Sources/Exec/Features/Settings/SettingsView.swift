@@ -13,9 +13,9 @@ struct SettingsView: View {
             )) {
                 ForEach(ChatLibrary.SettingsTab.allCases, id: \.self) { section in
                     Label(section.title, systemImage: section.systemImage)
-                        // Keep navigation glyphs static as the native sidebar becomes active.
-                        .symbolRenderingMode(.monochrome)
-                        .symbolEffectsRemoved()
+                        // Use the current accent explicitly; let the native sidebar
+                        // override it for selected rows.
+                        .listItemTint(.preferred(.accentColor))
                         .tag(section)
                 }
             }
