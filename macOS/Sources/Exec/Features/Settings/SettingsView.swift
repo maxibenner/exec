@@ -15,9 +15,15 @@ struct SettingsView: View {
                     Label {
                         Text(section.title)
                     } icon: {
-                        Image(systemName: section.systemImage)
-                            // Preserve native tint while compositing each symbol once.
-                            .drawingGroup()
+                        if store.settingsTab == section {
+                            // The selected symbol already renders reliably in the native style.
+                            Image(systemName: section.systemImage)
+                        } else {
+                            Image(systemName: section.systemImage)
+                                // Resolve the inherited accent before flattening the symbol.
+                                .foregroundStyle(.tint)
+                                .drawingGroup()
+                        }
                     }
                     .tag(section)
                 }
