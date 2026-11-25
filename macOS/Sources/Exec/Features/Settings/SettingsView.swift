@@ -4,8 +4,11 @@ struct SettingsView: View {
     let store: ChatLibrary
     let canCheckForUpdates: Bool
     let checkForUpdates: () -> Void
+    @Environment(\.self) private var environment
 
     var body: some View {
+        // Resolve before entering List's row-specific tint environment.
+        let sidebarAccent = Color.accentColor.resolve(in: environment)
         NavigationSplitView(columnVisibility: .constant(.all)) {
             List(selection: Binding<ChatLibrary.SettingsTab?>(
                 get: { store.settingsTab },
@@ -15,7 +18,7 @@ struct SettingsView: View {
                     Label {
                         Text(section.title)
                     } icon: {
-                        SettingsSidebarIcon(systemName: section.systemImage)
+                        SettingsSidebarIcon(systemName: section.systemImage, accent: sidebarAccent)
                     }
                     .tag(section)
                 }

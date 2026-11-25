@@ -111,6 +111,7 @@ import Foundation
             ("Fork reveals only for the second top-level session", { try await SidebarCreationTests().forkRevealsOnlyForSecondTopLevelSession() }),
             ("Navigation, deletion and catalogs never reveal the sidebar", { try await SidebarCreationTests().navigationDeletionAndCatalogChangesNeverReveal() }),
             ("Intervening catalog changes cannot trigger a second-session reveal", { try await SidebarCreationTests().interveningCatalogChangesDoNotMasqueradeAsSecondCreation() }),
+            ("Settings sidebar symbols paint the accent and native selected foreground", { try SettingsSidebarIconTests().nativeSymbolsPaintAccentAndSelectedForeground() }),
             ("Settings sidebar symbols retain native image identity, accent and row contrast", { try SettingsSidebarIconTests().nativeSymbolsRetainIdentityAndAdaptToRowStyle() }),
             ("Settings use an aligned native header and permanent sidebar", { try await SettingsWindowLayoutTests().nativeHeaderKeepsSidebarVisibleAcrossSections() }),
             ("Tool availability queries serialize exact session and default previews", { try await ToolAvailabilityTests().queriesSerializeExactSessionAndDefaultPreviews() }),

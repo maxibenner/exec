@@ -4,12 +4,13 @@ import SwiftUI
 /// Keep SwiftUI's symbol metrics, but use one native renderer across row-emphasis changes.
 struct SettingsSidebarIcon: View {
     let systemName: String
+    let accent: Color.Resolved
 
     var body: some View {
         Image(systemName: systemName)
             .hidden()
             .overlay {
-                SettingsSidebarNativeImage(systemName: systemName)
+                SettingsSidebarNativeImage(systemName: systemName, accent: accent)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }
@@ -18,6 +19,7 @@ struct SettingsSidebarIcon: View {
 
 private struct SettingsSidebarNativeImage: NSViewRepresentable {
     let systemName: String
+    let accent: Color.Resolved
 
     func makeNSView(context: Context) -> SettingsSidebarImageView {
         let view = SettingsSidebarImageView(frame: .zero)
@@ -28,8 +30,7 @@ private struct SettingsSidebarNativeImage: NSViewRepresentable {
     }
 
     func updateNSView(_ view: SettingsSidebarImageView, context: Context) {
-        let accent = NSColor(Color(Color.accentColor.resolve(in: context.environment)))
-        view.configure(systemName: systemName, accent: accent,
+        view.configure(systemName: systemName, accent: NSColor(Color(accent)),
                        isActive: context.environment.controlActiveState != .inactive)
         view.isEnabled = context.environment.isEnabled
     }
@@ -43,7 +44,7 @@ private struct SettingsSidebarNativeImage: NSViewRepresentable {
 
 final class SettingsSidebarImageView: NSImageView {
     private var systemName: String?
-    private var accent = NSColor.controlAccentColor
+    private(set) var accent = NSColor.controlAccentColor
     private var isActive = true
 
     // The sidebar supplies its material. Avoid SwiftUI's separate vibrant symbol layers.
@@ -98,5 +99,10 @@ final class SettingsSidebarImageView: NSImageView {
         // Native label colors resolve their selected contrast from backgroundStyle.
         let tint: NSColor = style == .emphasized ? .labelColor : isActive ? accent : .secondaryLabelColor
         if contentTintColor != tint { contentTintColor = tint }
+        // Specify the active accent as symbol paint, not just a template-view tint.
+        // Selected and inactive rows retain AppKit's contextual contrast/alpha.
+        let palette: NSImage.SymbolConfiguration? = isActive && style == .normal
+            ? .init(paletteColors: [accent]) : nil
+        if symbolConfiguration != palette { symbolConfiguration = palette }
     }
 }

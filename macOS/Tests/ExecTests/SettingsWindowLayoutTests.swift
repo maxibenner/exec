@@ -10,6 +10,9 @@ import SwiftUI
                                 preferences: preferences)
         let root = SettingsView(store: store, canCheckForUpdates: false, checkForUpdates: {})
             .defaultAppStorage(preferences)
+            .tint(.orange)
+            .accentColor(.orange)
+        let expectedAccent = NSColor(Color.orange).usingColorSpace(.sRGB)!
         let window = NSWindow(contentViewController: NSHostingController(rootView: root))
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
@@ -41,6 +44,12 @@ import SwiftUI
             }
             let icons = findIcons(in: sidebar.viewController.view)
             try expect(icons.count == ChatLibrary.SettingsTab.allCases.count)
+            try expect(icons.allSatisfy { icon in
+                guard let actual = icon.accent.usingColorSpace(.sRGB) else { return false }
+                return abs(actual.redComponent - expectedAccent.redComponent) < 0.0001 &&
+                    abs(actual.greenComponent - expectedAccent.greenComponent) < 0.0001 &&
+                    abs(actual.blueComponent - expectedAccent.blueComponent) < 0.0001
+            })
             try expect(icons.allSatisfy { $0.image != nil && !$0.allowsVibrancy && $0.bounds.width > 0 && $0.bounds.height > 0 })
             if let mountedIcons {
                 try expect(zip(mountedIcons, icons).allSatisfy { $0 === $1 })
