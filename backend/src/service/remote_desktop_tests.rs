@@ -183,6 +183,57 @@ async fn next_native(frontend: &mut NativeConnection) -> NativeEvent {
 }
 
 #[tokio::test]
+async fn remote_availability_previews_only_opted_in_capture_without_binding() {
+    let fixture = Fixture::new().await;
+    let query = json!({"names":["take_screenshot"],"model":"test"});
+    let status = fixture
+        .call("POST", "/v1/tools/availability", query.clone(), 200)
+        .await;
+    assert_eq!(status["take_screenshot"]["available"], false);
+    let mut local = fixture.native.register(true, false).unwrap();
+    let status = fixture
+        .call("POST", "/v1/tools/availability", query.clone(), 200)
+        .await;
+    assert_eq!(status["take_screenshot"]["available"], false);
+    let mut remote = fixture.native.register(false, true).unwrap();
+    let id = fixture.create(false, false).await;
+    for conversation in [None, Some(id.as_str())] {
+        let mut body = query.clone();
+        if let Some(id) = conversation {
+            body["conversationID"] = json!(id);
+        }
+        let status = fixture
+            .call("POST", "/v1/tools/availability", body, 200)
+            .await;
+        assert_eq!(status["take_screenshot"]["available"], true);
+        assert!(!fixture.native.permission(&id).enabled);
+        assert!(!fixture.native.approved(&id));
+    }
+    let extra = fixture.native.register(true, true).unwrap();
+    let status = fixture
+        .call("POST", "/v1/tools/availability", query.clone(), 200)
+        .await;
+    assert_eq!(status["take_screenshot"]["available"], false);
+    drop(extra);
+    let mut spoofed = query;
+    spoofed["captureFrontendID"] = json!(local.id);
+    fixture
+        .call("POST", "/v1/tools/availability", spoofed, 400)
+        .await;
+    fixture
+        .call(
+            "POST",
+            "/v1/native/events",
+            json!({"osScreenPermission":true}),
+            403,
+        )
+        .await;
+    assert!(local.requests.try_recv().is_err() && remote.requests.try_recv().is_err());
+    assert!(fixture.provider.requests.lock().unwrap().is_empty());
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn first_remote_turn_offers_screenshot_and_binds_before_native_request() {
     for auto_approve in [true, false] {
         let fixture = Fixture::new().await;

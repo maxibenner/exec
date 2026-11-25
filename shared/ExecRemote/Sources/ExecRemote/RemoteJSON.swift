@@ -40,8 +40,11 @@ public struct RemoteFailure: LocalizedError, Sendable {
     }
     public let message: String
     public let kind: Kind
-    public init(_ message: String, kind: Kind = .uncertain) {
-        self.message = message; self.kind = kind
+    /// Authenticated HTTP status, when supplied by the transport. Used only for
+    /// read-only endpoint compatibility, never as evidence of command delivery.
+    public let statusCode: Int?
+    public init(_ message: String, kind: Kind = .uncertain, statusCode: Int? = nil) {
+        self.message = message; self.kind = kind; self.statusCode = statusCode
     }
     public var errorDescription: String? { message }
 }

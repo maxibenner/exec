@@ -465,7 +465,7 @@ public actor RelayClient {
             // Only an authenticated, explicitly recognized no-effect marker is definite.
             let kind: RemoteFailure.Kind = body?["delivery"].string == "rejected" ? .rejected : .uncertain
             let message = body?["error"].string ?? "Request failed (HTTP \(reply.status)). Inspect agent state before continuing."
-            result = .failure(APIRejection(status: reply.status, failure: RemoteFailure(message, kind: kind)))
+            result = .failure(APIRejection(status: reply.status, failure: RemoteFailure(message, kind: kind, statusCode: reply.status)))
         }
         timeout?.cancel(); timeout = nil; active = nil
         completed.continuation?.resume(with: result)

@@ -871,6 +871,58 @@ import UIKit
         XCTAssertTrue(app.navigationBars["New Session 1"].waitForExistence(timeout: 10), app.debugDescription)
     }
 
+    func testNewSessionUnavailableAndUnknownToolsKeepInheritedChecksAndLocalEdits() {
+        let app = launch(["--tool-availability-fixture"])
+        app.buttons["New Session"].tap()
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        let form = element("new-session-form", in: app)
+        scrollToBottom(form)
+        let editable = app.switches["new-session-tool-edit_file"]
+        wait(NSPredicate(format: "enabled == true"), on: editable)
+        let screenshot = app.switches["new-session-tool-take_screenshot"]
+        let shell = app.switches["new-session-tool-shell"]
+        let unknown = app.switches["new-session-tool-generate_image"]
+        XCTAssertFalse(screenshot.isEnabled)
+        XCTAssertEqual(screenshot.value as? String, "1")
+        XCTAssertFalse(shell.isEnabled)
+        XCTAssertEqual(shell.value as? String, "0")
+        XCTAssertFalse(unknown.isEnabled)
+        XCTAssertEqual(unknown.value as? String, "1")
+        XCTAssertFalse(app.staticTexts["Fixture availability reason must not be displayed."].exists)
+        // Even an attempted tap on a checked unavailable native switch keeps it checked.
+        screenshot.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        XCTAssertEqual(screenshot.value as? String, "1")
+        editable.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        XCTAssertEqual(editable.value as? String, "0")
+        form.swipeDown(); form.swipeDown()
+        app.buttons["new-session-model"].tap()
+        app.buttons["Fixture Basic"].tap()
+        scrollToBottom(form)
+        wait(NSPredicate(format: "enabled == true"), on: editable)
+        XCTAssertEqual(editable.value as? String, "0", "A configuration availability refresh must not reinitialize the draft")
+        XCTAssertEqual(screenshot.value as? String, "1")
+        XCTAssertEqual(shell.value as? String, "0")
+        XCTAssertFalse(screenshot.isEnabled)
+        XCTAssertFalse(shell.isEnabled)
+    }
+
+    func testNewSessionLoadingToolsAreNoninteractiveWithoutChangingChecksOrAddingHints() {
+        let app = launch(["--slow-tool-availability"])
+        app.buttons["New Session"].tap()
+        XCTAssertTrue(app.navigationBars["New Session"].waitForExistence(timeout: 5))
+        scrollToBottom(element("new-session-form", in: app))
+        let shell = app.switches["new-session-tool-shell"]
+        let screenshot = app.switches["new-session-tool-take_screenshot"]
+        XCTAssertFalse(shell.isEnabled)
+        XCTAssertFalse(screenshot.isEnabled)
+        XCTAssertEqual(shell.value as? String, "0")
+        XCTAssertEqual(screenshot.value as? String, "1")
+        XCTAssertFalse(app.staticTexts["Loading"].exists)
+        wait(NSPredicate(format: "enabled == true"), on: shell, timeout: 20)
+        XCTAssertEqual(shell.value as? String, "0")
+        XCTAssertEqual(screenshot.value as? String, "1")
+    }
+
     func testNewSessionToolsStaySelectedWhenChoosingDuringFolderRead() {
         let app = launch(["--slow-folders"])
         app.buttons["New Session"].tap()
@@ -879,6 +931,7 @@ import UIKit
         let shell = app.switches["new-session-tool-shell"]
         scrollToBottom(form)
         XCTAssertTrue(shell.waitForExistence(timeout: 5))
+        wait(NSPredicate(format: "enabled == true"), on: shell)
         XCTAssertEqual(shell.value as? String, "0")
         shell.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
         XCTAssertEqual(shell.value as? String, "1")

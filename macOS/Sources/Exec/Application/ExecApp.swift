@@ -23,7 +23,7 @@ import SwiftUI
                     .accentColor(AppColors.blue)
             }
         }
-        .defaultSize(width: 760, height: 560)
+        .defaultSize(width: 800, height: 560)
         .windowResizability(.contentSize)
     }
 

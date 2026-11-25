@@ -152,6 +152,61 @@ final class RemoteSessionCreationTests: XCTestCase {
         assertInherits(body(tools))
     }
 
+    func testAvailabilityQueryMatchesExactCreationModelAndSearchOverrideWithoutProviderInference() {
+        let models: [RemoteJSON] = [model, .object(["id": .string("other/provider-model")])]
+        let settingsCases: [RemoteJSON] = [settings, .object([:]), .object(["searchModel": .null]),
+                                            .object(["searchModel": .string("")]), .null]
+        for model in models {
+            for settings in settingsCases {
+                let create = RemoteSessionCreation.body(workspace: "/Fixture", model: model, effort: "", settings: settings)
+                let query = RemoteSessionCreation.AvailabilityQuery(model: model, settings: settings)
+                XCTAssertEqual(query.body["model"], create["model"])
+                XCTAssertEqual(query.body["searchModel"], create["settings"]["searchModel"])
+                XCTAssertEqual(query.body["names"], .array(RemoteSessionCreation.tools.map { .string($0.id) }))
+                XCTAssertEqual(query.body["captureFrontendID"], .null)
+                XCTAssertEqual(query.body["conversationID"], .null)
+                XCTAssertEqual(query.body["remote_client"], .null, "Remote context belongs to the host route, not client provider logic")
+            }
+        }
+    }
+
+    func testAvailabilityUsesOnlyExplicitBooleansAndIgnoresReasonsAndUnknownNames() {
+        let statuses = RemoteSessionCreation.availabilityStatuses(.object([
+            "shell": .object(["available": .bool(false), "reason": .string("Synthetic unavailable reason")]),
+            "read_file": .object(["available": .bool(true)]),
+            "generate_image": .object(["available": .string("true")]),
+            "web_search": .object(["reason": .string("No status")]),
+            "delegate": .object(["available": .bool(true)]),
+            "future_tool": .object(["available": .bool(true)])
+        ]))
+        XCTAssertEqual(statuses, ["shell": false, "read_file": true])
+        XCTAssertEqual(RemoteSessionCreation.availabilityStatuses(.null), [:])
+        XCTAssertEqual(RemoteSessionCreation.availabilityStatuses(.object([:])), [:])
+    }
+
+    func testAvailabilityRefreshesDoNotChangeInheritedCheckStateOrEditedCreationBody() {
+        let defaults = library(["shell", "future_tool"])
+        var tools = RemoteSessionCreation.ToolSelection(library: defaults)
+        let inherited = body(tools)
+        XCTAssertTrue(tools.isEnabled("take_screenshot"))
+        XCTAssertFalse(tools.isEnabled("shell"))
+        for available in [false, true, false] {
+            _ = RemoteSessionCreation.availabilityStatuses(.object([
+                "shell": .object(["available": .bool(available)]),
+                "take_screenshot": .object(["available": .bool(available)])
+            ]))
+            XCTAssertEqual(body(tools), inherited)
+            XCTAssertNil(tools.creationDisabledTools)
+        }
+        tools.setEnabled("shell", true)
+        tools.setEnabled("read_file", false)
+        let edited = body(tools)
+        _ = RemoteSessionCreation.availabilityStatuses(.object([:]))
+        XCTAssertEqual(body(tools), edited)
+        XCTAssertEqual(edited["disabledTools"], .array([.string("read_file")]))
+        XCTAssertEqual(edited["settings"], settings)
+    }
+
     func testSeparateSessionDraftsDoNotShareToolEdits() {
         let first = RemoteSessionCreation.ToolSelection(library: library(["shell"]))
         var second = first

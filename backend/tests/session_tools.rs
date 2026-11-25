@@ -266,12 +266,12 @@ async fn capability_changes_filter_catalog_and_are_checked_again_before_preparat
     let c = conversation(provider.clone(), vec![probe.clone()]);
     let names = vec!["change".into()];
     assert_eq!(
-        c.tool_availability(&names, "fake", None)["change"],
+        c.tool_availability(&names, "fake", None, None)["change"],
         RuntimeToolAvailability::available()
     );
     complete(c.submit("act".into()).unwrap()).await;
     assert_eq!(
-        c.tool_availability(&names, "fake", None)["change"],
+        c.tool_availability(&names, "fake", None, None)["change"],
         RuntimeToolAvailability::unavailable("Probe capability is unavailable.")
     );
     assert_eq!(probe.preparations.load(Ordering::SeqCst), 0);

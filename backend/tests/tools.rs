@@ -28,6 +28,7 @@ async fn prepare(
             ToolContext {
                 available_images: vec![],
                 conversation_id: new_id(),
+                capture_preview: None,
                 operation_id: new_id(),
                 search_model: None,
                 call_id: "test-call".into(),

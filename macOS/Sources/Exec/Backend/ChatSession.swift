@@ -16,7 +16,8 @@ import CryptoKit
     var effectiveSearchModel: String? { provider.effectiveSearchModel(searchModel, for: selectedModel) }
     var toolAvailabilityQuery: ToolAvailabilityQuery {
         ToolAvailabilityQuery(names: SessionTool.names, conversationID: currentSessionID,
-                              model: requestModelID, searchModel: effectiveSearchModel)
+                              model: requestModelID, searchModel: effectiveSearchModel,
+                              captureFrontendID: api.desktop.frontendID)
     }
     var model: ChatModel? { models.first { $0.id == selectedModel } }
     var effectiveEffort: String? { model?.efforts.contains { $0.id == selectedEffort } == true ? selectedEffort : nil }

@@ -20,6 +20,7 @@ fn context(images: Vec<ImageRef>) -> ToolContext {
     ToolContext {
         available_images: images,
         conversation_id: new_id(),
+        capture_preview: None,
         operation_id: new_id(),
         call_id: new_id(),
         model: "test".into(),

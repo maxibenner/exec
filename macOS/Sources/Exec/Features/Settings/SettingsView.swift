@@ -19,7 +19,7 @@ struct SettingsView: View {
             .listStyle(.sidebar)
             .contentMargins(.top, 0, for: .scrollContent)
             .accessibilityLabel("Settings sections")
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 260)
+            .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 300)
             .toolbar(removing: .sidebarToggle)
         } detail: {
             settingsDetail
@@ -34,7 +34,7 @@ struct SettingsView: View {
         }
         .toolbar(.visible, for: .windowToolbar)
         .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 700, idealWidth: 760, minHeight: 400, idealHeight: 560)
+        .frame(minWidth: 740, idealWidth: 800, minHeight: 400, idealHeight: 560)
     }
 
     @ViewBuilder private var settingsDetail: some View {

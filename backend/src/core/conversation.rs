@@ -577,6 +577,7 @@ impl Conversation {
         names: &[String],
         model: &str,
         search_model: Option<&str>,
+        capture_preview: Option<CapturePreview>,
     ) -> std::collections::BTreeMap<String, RuntimeToolAvailability> {
         let workspace = self.state().record.workspace.clone();
         let context = ToolContext::idle(
@@ -584,6 +585,7 @@ impl Conversation {
             model.into(),
             search_model.map(str::to_owned),
             workspace,
+            capture_preview,
         );
         runtime_tool_availability(names, &self.tools, &context)
     }
@@ -600,6 +602,7 @@ impl Conversation {
             let context = ToolContext {
                 available_images: vec![],
                 conversation_id: self.id.clone(),
+                capture_preview: None,
                 operation_id: record.operation.as_ref().unwrap().id.clone(),
                 call_id: String::new(),
                 model: record.model.clone(),
@@ -2029,6 +2032,7 @@ impl Conversation {
                             ToolContext {
                                 available_images,
                                 conversation_id: self.id.clone(),
+                                capture_preview: None,
                                 operation_id: record.operation.as_ref().unwrap().id.clone(),
                                 search_model: record.configuration.as_ref().unwrap().settings.search_model.clone(),
                                 call_id: call.id.clone(),

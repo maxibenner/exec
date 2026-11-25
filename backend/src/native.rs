@@ -3,7 +3,7 @@
 //! TCP does not attest process identity. Adapter binding, tool consent and OS access are separate.
 use crate::{
     Error, Result,
-    core::{ChangeHub, RuntimeToolAvailability, ToolContext, new_id, valid_id},
+    core::{CapturePreview, ChangeHub, RuntimeToolAvailability, ToolContext, new_id, valid_id},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -148,16 +148,43 @@ impl NativeHub {
     }
     /// Binding/transport capability only. OS permission and first-use consent are
     /// intentionally not checked so an authorized first capture can request them.
-    pub fn capture_availability(&self, conversation: &str) -> RuntimeToolAvailability {
+    /// A preview frontend describes prospective readiness, never a binding or fallback.
+    pub fn capture_availability(
+        &self,
+        conversation: &str,
+        preview: Option<&CapturePreview>,
+    ) -> RuntimeToolAvailability {
         let s = self.state.lock().unwrap();
-        if conversation.is_empty() {
-            if s.frontends.values().any(|f| !f.requests.is_closed()) {
+        // A binding, even a closed one, always takes precedence over preview metadata.
+        let frontend = s
+            .permissions
+            .get(conversation)
+            .map(String::as_str)
+            .or(match preview {
+                Some(CapturePreview::Frontend(id)) => Some(id.as_str()),
+                _ => None,
+            });
+        if let Some(id) = frontend {
+            if s.frontends.get(id).is_some_and(|f| !f.requests.is_closed()) {
                 RuntimeToolAvailability::available()
             } else {
                 RuntimeToolAvailability::unavailable("Capture frontend disconnected.")
             }
-        } else if let Some(id) = s.permissions.get(conversation) {
-            if s.frontends.get(id).is_some_and(|f| !f.requests.is_closed()) {
+        } else if matches!(preview, Some(CapturePreview::Remote)) {
+            let eligible = s
+                .frontends
+                .values()
+                .filter(|f| f.accepts_remote_conversations && !f.requests.is_closed())
+                .count();
+            if eligible == 1 {
+                RuntimeToolAvailability::available()
+            } else {
+                RuntimeToolAvailability::unavailable(
+                    "Remote capture requires one eligible frontend.",
+                )
+            }
+        } else if conversation.is_empty() {
+            if s.frontends.values().any(|f| !f.requests.is_closed()) {
                 RuntimeToolAvailability::available()
             } else {
                 RuntimeToolAvailability::unavailable("Capture frontend disconnected.")
@@ -497,6 +524,7 @@ mod tests {
         ToolContext {
             available_images: vec![],
             conversation_id: new_id(),
+            capture_preview: None,
             operation_id: new_id(),
             call_id: "call".into(),
             model: "m".into(),
@@ -504,6 +532,43 @@ mod tests {
             workspace: "/".into(),
             cancel: CancellationToken::new(),
         }
+    }
+    #[test]
+    fn capture_preview_never_replaces_a_closed_existing_binding() {
+        let hub = Arc::new(NativeHub::default());
+        let mut bound = hub.register(false, false).unwrap();
+        let mut other = hub.register(true, false).unwrap();
+        let conversation = new_id();
+        let permission = DesktopPermission {
+            frontend_id: Some(bound.id.clone()),
+            enabled: true,
+        };
+        hub.set_permission(&conversation, permission.clone())
+            .unwrap();
+        hub.approve(&conversation, &bound.id).unwrap();
+        // Closing the receiver leaves the binding in place until disconnect cleanup.
+        bound.requests.close();
+        for preview in [
+            None,
+            Some(CapturePreview::Frontend(other.id.clone())),
+            Some(CapturePreview::Remote),
+        ] {
+            assert_eq!(
+                hub.capture_availability(&conversation, preview.as_ref()),
+                RuntimeToolAvailability::unavailable("Capture frontend disconnected.")
+            );
+        }
+        assert!(hub.capture_availability("", None).available);
+        assert!(
+            !hub.capture_availability("", Some(&CapturePreview::Frontend(bound.id.clone())))
+                .available
+        );
+        assert_eq!(hub.permission(&conversation), permission);
+        assert!(hub.approved(&conversation));
+        assert!(matches!(
+            other.requests.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
     #[tokio::test]
     async fn only_exact_live_request_can_answer() {

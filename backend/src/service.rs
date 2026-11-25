@@ -407,10 +407,12 @@ struct ToolAvailabilityQuery {
         deserialize_with = "deserialize_availability_conversation"
     )]
     conversation_id: Option<String>,
+    #[serde(rename = "captureFrontendID")]
+    capture_frontend_id: Option<String>,
     model: String,
     search_model: Option<String>,
 }
-// The ID may be omitted, but only searchModel accepts an explicit null.
+// The conversation ID may be omitted but cannot be null; preview options accept null.
 fn deserialize_availability_conversation<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<String>, D::Error>
@@ -422,6 +424,9 @@ where
 impl ToolAvailabilityQuery {
     fn validate(&self) -> ApiResult<()> {
         if let Some(id) = &self.conversation_id {
+            identifier(id)?;
+        }
+        if let Some(id) = &self.capture_frontend_id {
             identifier(id)?;
         }
         if (!self.model.is_empty() && !valid_model_id(&self.model))
@@ -712,12 +717,24 @@ async fn handle(
     if method == "POST" && route == "/v1/tools/availability" {
         let input: ToolAvailabilityQuery = body(request, &request_cancel).await?;
         input.validate()?;
+        let capture_preview = if remote_client {
+            if input.capture_frontend_id.is_some() {
+                return Err(ApiError::rejected(
+                    400,
+                    "Remote previews cannot select a local capture frontend.",
+                ));
+            }
+            Some(CapturePreview::Remote)
+        } else {
+            input.capture_frontend_id.map(CapturePreview::Frontend)
+        };
         let availability = if let Some(id) = &input.conversation_id {
             options.manager.tool_availability(
                 id,
                 &input.names,
                 &input.model,
                 input.search_model.as_deref(),
+                capture_preview,
             )?
         } else {
             options.manager.default_tool_availability(
@@ -726,6 +743,7 @@ async fn handle(
                 &input.names,
                 &input.model,
                 input.search_model.as_deref(),
+                capture_preview,
             )?
         };
         return Ok(json_response(200, availability));

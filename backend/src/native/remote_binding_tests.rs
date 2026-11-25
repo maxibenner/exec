@@ -37,9 +37,9 @@ fn remote_binding_requires_explicit_opt_in_but_not_existing_os_permission() {
     hub.attach_changes(&changes);
     let notices = changes.subscribe();
     let before = notices.borrow().catalog.clone();
-    assert!(!hub.capture_availability(&conversation).available);
+    assert!(!hub.capture_availability(&conversation, None).available);
     hub.bind_remote(&conversation).unwrap();
-    assert!(hub.capture_availability(&conversation).available);
+    assert!(hub.capture_availability(&conversation, None).available);
     assert_ne!(notices.borrow().catalog, before);
     assert_eq!(hub.bound_frontend(&conversation).unwrap(), remote.id);
     assert!(!hub.approved(&conversation));

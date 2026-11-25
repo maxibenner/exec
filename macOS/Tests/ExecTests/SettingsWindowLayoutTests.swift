@@ -12,7 +12,7 @@ import SwiftUI
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
         window.title = "Exec Settings"
-        window.setContentSize(CGSize(width: 760, height: 560))
+        window.setContentSize(CGSize(width: 800, height: 560))
         defer {
             window.orderOut(nil)
             window.contentViewController = nil

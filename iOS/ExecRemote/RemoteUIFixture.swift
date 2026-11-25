@@ -113,6 +113,22 @@ import ExecRemote
             deleted.insert(String(path.split(separator: "/").last!))
             return .null
         }
+        if method == "POST", path == "/v1/tools/availability" {
+            if ProcessInfo.processInfo.arguments.contains("--slow-tool-availability") {
+                try await Task.sleep(for: .seconds(10))
+            }
+            let restricted = ProcessInfo.processInfo.arguments.contains("--tool-availability-fixture")
+            var statuses: [String: RemoteJSON] = [:]
+            for name in body?["names"].array.compactMap(\.string) ?? [] {
+                // Exercise unknown as well as inherited checked/unchecked false.
+                if restricted, name == "generate_image" { continue }
+                statuses[name] = .object([
+                    "available": .bool(!restricted || !["take_screenshot", "shell"].contains(name)),
+                    "reason": .string("Fixture availability reason must not be displayed.")
+                ])
+            }
+            return .object(statuses)
+        }
         if method == "POST", path == "/v1/workspaces/browse" {
             return try await browse(body?["path"].string ?? "/Fixture")
         }

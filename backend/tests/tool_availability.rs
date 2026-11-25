@@ -183,9 +183,22 @@ impl Fixture {
             .unwrap()
     }
     async fn availability(&self, id: Option<&str>, model: &str, search: Option<&str>) -> Value {
+        self.availability_with_frontend(id, model, search, None)
+            .await
+    }
+    async fn availability_with_frontend(
+        &self,
+        id: Option<&str>,
+        model: &str,
+        search: Option<&str>,
+        frontend: Option<&str>,
+    ) -> Value {
         let mut body = json!({"names":NAMES,"model":model,"searchModel":search});
         if let Some(id) = id {
             body["conversationID"] = json!(id);
+        }
+        if let Some(frontend) = frontend {
+            body["captureFrontendID"] = json!(frontend);
         }
         self.client.call("POST", ROUTE, Some(body)).await.unwrap()
     }
@@ -432,6 +445,11 @@ async fn availability_rejects_invalid_unbounded_and_unauthorized_requests() {
         json!({"model":"","names":[],"conversationID":null}),
         json!({"model":"","names":[],"conversationID":""}),
         json!({"model":"","names":[],"conversationID":"../bad"}),
+        json!({"model":"","names":[],"captureFrontendID":""}),
+        json!({"model":"","names":[],"captureFrontendID":"../bad"}),
+        json!({"model":"","names":[],"captureFrontendID":"not-a-uuid"}),
+        json!({"model":"","names":[],"captureFrontendID":42}),
+        json!({"model":"","names":[],"captureFrontendID":{}}),
         json!({"model":"","names":[],"searchModel":42}),
         json!({"model":"","names":[],"searchModel":""}),
         json!({"model":"bad\nmodel","names":[]}),
@@ -471,6 +489,8 @@ async fn availability_rejects_invalid_unbounded_and_unauthorized_requests() {
     );
     for body in [
         json!({"model":"","names":[],"searchModel":null}),
+        json!({"model":"","names":[],"captureFrontendID":null}),
+        json!({"model":"","names":[],"captureFrontendID":new_id()}),
         json!({"model":"chat/model:1.2","names":[]}),
     ] {
         assert_eq!(
@@ -556,6 +576,113 @@ async fn register(client: &AgentClient) -> (String, BoxStream<'static, Result<Na
 }
 
 #[tokio::test]
+async fn screenshot_frontend_preview_is_prospective_read_only_and_never_substitutes() {
+    let f = Fixture::new(vec![support::answer()]).await;
+    let snapshot = f.create().await;
+    let c = f.manager.get(&snapshot.id).unwrap();
+    let native = f.manager.native();
+    // Both adapters report OS permission false and neither opts into remote binding.
+    let (selected, mut events) = register(&f.client).await;
+    let (other, other_events) = register(&f.client).await;
+    let missing = new_id();
+    let disabled = DesktopPermission {
+        frontend_id: None,
+        enabled: false,
+    };
+    let disconnected = unavailable("Capture frontend disconnected.");
+    let unbound = unavailable("Screen access is not enabled for this session.");
+    let before = f.read_state();
+    assert!(c.record().messages.is_empty());
+    for id in [None, Some(c.id.as_str())] {
+        let baseline = f.availability(id, "chat/main", None).await;
+        assert_eq!(
+            baseline["take_screenshot"],
+            if id.is_some() {
+                unbound.clone()
+            } else {
+                available()
+            }
+        );
+        let preview = f
+            .availability_with_frontend(id, "chat/main", None, Some(&selected))
+            .await;
+        assert_eq!(preview["take_screenshot"], available());
+        for name in ["delegate", "generate_image", "web_search"] {
+            assert_eq!(preview[name], baseline[name]);
+        }
+        // A different live frontend cannot stand in for an explicitly missing one.
+        assert_eq!(
+            f.availability_with_frontend(id, "chat/main", None, Some(&missing))
+                .await["take_screenshot"],
+            disconnected
+        );
+    }
+    assert_eq!(native.permission(&c.id), disabled);
+    assert!(native.bound_frontend(&c.id).is_err());
+    assert!(!native.approved(&c.id));
+    assert_eq!(f.read_state(), before);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), events.next())
+            .await
+            .is_err()
+    );
+
+    // Preview metadata never reaches runtime schema filtering or grants a binding.
+    assert_eq!(
+        support::complete(c.submit("Continue without binding".into()).unwrap())
+            .await
+            .state,
+        OperationState::Completed
+    );
+    {
+        let requests = f.chat.inference.requests.lock().unwrap();
+        let request = requests.last().unwrap();
+        assert!(request.tools.iter().all(|t| t.name != "take_screenshot"));
+        assert!(request.messages.iter().any(|m| {
+            matches!(m, ContextMessage::ToolAvailability { enabled }
+                if !enabled.iter().any(|name| name == "take_screenshot"))
+        }));
+    }
+    assert_eq!(native.permission(&c.id), disabled);
+    assert!(!native.approved(&c.id));
+
+    let mut changes = f.manager.subscribe_changes();
+    changes.borrow_and_update();
+    drop(events);
+    tokio::time::timeout(Duration::from_secs(5), changes.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    let before = f.read_state();
+    for id in [None, Some(c.id.as_str())] {
+        // A disconnected selected adapter is not replaced by the other live one.
+        assert_eq!(
+            f.availability_with_frontend(id, "chat/main", None, Some(&selected))
+                .await["take_screenshot"],
+            disconnected
+        );
+        assert_eq!(
+            f.availability_with_frontend(id, "chat/main", None, Some(&other))
+                .await["take_screenshot"],
+            available()
+        );
+    }
+    assert_eq!(
+        f.availability(None, "chat/main", None).await["take_screenshot"],
+        available()
+    );
+    assert_eq!(
+        f.availability(Some(&c.id), "chat/main", None).await["take_screenshot"],
+        unbound
+    );
+    assert_eq!(native.permission(&c.id), disabled);
+    assert!(!native.approved(&c.id));
+    assert_eq!(f.read_state(), before);
+    drop(other_events);
+    f.service.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn screenshot_reads_preserve_consent_and_binding_and_native_changes_invalidate_catalog() {
     let f = Fixture::new(vec![]).await;
     let c = f.create().await;
@@ -604,10 +731,13 @@ async fn screenshot_reads_preserve_consent_and_binding_and_native_changes_invali
         .unwrap();
     assert_ne!(changes.borrow_and_update().catalog, previous);
     let before = f.read_state();
-    for _ in 0..2 {
-        // Registration explicitly reported OS permission false; it is not a prerequisite.
+    let missing = new_id();
+    for preview in [None, Some(frontend.as_str()), Some(missing.as_str())] {
+        // A live binding wins over preview metadata, including a missing adapter.
+        // Registration reported OS permission false; it is not a prerequisite.
         assert_eq!(
-            f.availability(Some(&c.id), "", None).await["take_screenshot"],
+            f.availability_with_frontend(Some(&c.id), "", None, preview)
+                .await["take_screenshot"],
             available()
         );
         assert_eq!(native.permission(&c.id), permission);
@@ -634,11 +764,16 @@ async fn screenshot_reads_preserve_consent_and_binding_and_native_changes_invali
         tool_call_id: "delegate".into(),
     });
     let child = f.manager.create(child_options).await.unwrap();
-    let status = f.availability(Some(&child.id), "search/main", None).await;
-    for name in ["delegate", "generate_image", "take_screenshot"] {
-        assert_eq!(status[name], unavailable("Not provided by this backend."));
+    for preview in [None, Some(frontend.as_str())] {
+        let status = f
+            .availability_with_frontend(Some(&child.id), "search/main", None, preview)
+            .await;
+        for name in ["delegate", "generate_image", "take_screenshot"] {
+            assert_eq!(status[name], unavailable("Not provided by this backend."));
+        }
+        assert_eq!(status["web_search"], available());
     }
-    assert_eq!(status["web_search"], available());
+    assert!(!native.permission(&child.id).enabled);
 
     // Another live frontend must not silently replace the session's bound one.
     let (_, other_events) = register(&f.client).await;

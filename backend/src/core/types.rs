@@ -472,11 +472,20 @@ pub trait ChatProvider: Send + Sync {
         Ok(vec![])
     }
 }
+/// Read-only readiness for the adapter a client would bind before its next turn.
+/// This is never carried into execution or persisted as capture authorization.
+#[derive(Clone)]
+pub enum CapturePreview {
+    Frontend(String),
+    Remote,
+}
 #[derive(Clone)]
 pub struct ToolContext {
     /// Runtime-owned allowlist from consumed history, never pending or cleanup-only assets.
     pub available_images: Vec<super::ImageRef>,
     pub conversation_id: String,
+    /// Metadata preview only; runtime contexts must leave this unset.
+    pub capture_preview: Option<CapturePreview>,
     pub operation_id: String,
     pub search_model: Option<String>,
     pub call_id: String,
@@ -491,10 +500,12 @@ impl ToolContext {
         model: String,
         search_model: Option<String>,
         workspace: String,
+        capture_preview: Option<CapturePreview>,
     ) -> Self {
         Self {
             available_images: vec![],
             conversation_id,
+            capture_preview,
             operation_id: String::new(),
             call_id: String::new(),
             model,

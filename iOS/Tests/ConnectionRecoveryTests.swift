@@ -8,6 +8,12 @@ actor FakeTransport: RemoteTransport {
     var connectionAttempts = 0
     var failConnections = false
     var requests: [String] = []
+    var availabilityBodies: [RemoteJSON] = []
+    private var availability: RemoteJSON = .object([:])
+    private var availabilityFailure: RemoteFailure?
+    func setAvailability(_ value: RemoteJSON, failure: RemoteFailure? = nil) {
+        availability = value; availabilityFailure = failure
+    }
     var conversation: RemoteJSON = .object(["id": .string("session"), "messages": .array([])])
     private var failures: [String: (disconnect: Bool, cancelled: Bool)] = [:]
     private var holdConnection = false
@@ -119,6 +125,7 @@ actor FakeTransport: RemoteTransport {
         guard isConnected else { throw RemoteFailure("Disconnected.") }
         let key = method + " " + path
         requests.append(key)
+        if path == "/v1/tools/availability" { availabilityBodies.append(body ?? .null) }
         var captured: RemoteJSON?
         if heldRequest == key {
             if captureHeldResponse { captured = response(path) }
@@ -133,10 +140,12 @@ actor FakeTransport: RemoteTransport {
             if failure.cancelled { throw CancellationError() }
             throw RemoteFailure(failure.disconnect ? "Interrupted." : "Request rejected.")
         }
+        if path == "/v1/tools/availability", let availabilityFailure { throw availabilityFailure }
         return captured ?? response(path)
     }
     private func response(_ path: String) -> RemoteJSON {
         switch path {
+        case "/v1/tools/availability": return availability
         case "/v1/models": return .array([])
         case "/v1/conversations": return .array(sessions)
         case let path where path.hasPrefix("/v1/conversations/") && path.contains("/sync"): return sync(path)

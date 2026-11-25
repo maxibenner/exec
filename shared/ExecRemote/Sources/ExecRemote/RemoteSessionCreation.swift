@@ -14,6 +14,39 @@ public enum RemoteSessionCreation {
         "edit_file", "generate_image", "shell"
     ].map { ToolDisplayMetadata(name: $0) }
 
+    /// The prospective configuration actually sent by `body`, with no provider
+    /// inference or frontend binding. Availability never changes tool selection.
+    public struct AvailabilityQuery: Hashable, Sendable {
+        public let model: String
+        public let searchModel: String?
+
+        public init(model: RemoteJSON, settings: RemoteJSON) {
+            self.model = model["id"].string ?? ""
+            self.searchModel = settings["searchModel"].string
+        }
+
+        public var body: RemoteJSON {
+            var fields: [String: RemoteJSON] = [
+                "names": .array(RemoteSessionCreation.tools.map { .string($0.id) }),
+                "model": .string(model)
+            ]
+            if let searchModel { fields["searchModel"] = .string(searchModel) }
+            return .object(fields)
+        }
+    }
+
+    /// Missing/malformed statuses remain unknown, not available. Reasons are not
+    /// presentation state: changing only a reason must not redraw the selector.
+    public static func availabilityStatuses(_ response: RemoteJSON) -> [String: Bool] {
+        var statuses: [String: Bool] = [:]
+        for tool in tools {
+            if case .bool(let available) = response[tool.id]["available"] {
+                statuses[tool.id] = available
+            }
+        }
+        return statuses
+    }
+
     private static let alwaysEnabledTools: Set<String> = ["delegate", "wait"]
 
     public struct ToolSelection: Sendable {

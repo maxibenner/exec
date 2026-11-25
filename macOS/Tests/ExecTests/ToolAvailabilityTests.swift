@@ -1,4 +1,6 @@
 import Foundation
+import Observation
+import os
 
 @MainActor struct ToolAvailabilityTests {
     private let path = "/v1/tools/availability"
@@ -25,22 +27,28 @@ import Foundation
     private func settle() async { for _ in 0..<200 { await Task.yield() } }
 
     /// Always release captured reads and close subscriptions, including on assertion failure.
+    /// Teardown must finish before a held read returns, without discarding its cached result.
     private func observing(_ query: ToolAvailabilityQuery, transport: NotificationTestTransport,
+                           cachedObserver: ToolAvailabilityObserver? = nil,
                            check: @MainActor (ToolAvailabilityObserver, AgentAPI) async throws -> Void) async throws {
-        let observer = ToolAvailabilityObserver(), api = AgentAPI(transport: transport)
+        let observer = cachedObserver ?? ToolAvailabilityObserver(), api = AgentAPI(transport: transport)
         var finished = false
         let task = Task { await observer.observe(query: query, api: api); finished = true }
         var failure: (any Error)?
         do { try await check(observer, api) } catch { failure = error }
+        let cached = observer.statuses
         task.cancel()
+        do { try await wait { finished } } catch { if failure == nil { failure = error } }
         await transport.release()
         await api.changes.close()
         try await wait {
             let connections = await transport.connectionCount
             return finished && connections == 0
         }
-        try expect(observer.statuses.isEmpty && observer.status(for: "web_search", query: query) == nil)
+        await settle()
         if let failure { throw failure }
+        try expect(observer.statuses == cached)
+        for (name, status) in cached { try expect(observer.status(for: name, query: query) == status) }
     }
 
     func queriesSerializeExactSessionAndDefaultPreviews() async throws {
@@ -109,7 +117,63 @@ import Foundation
         try expect(requests.allSatisfy { $0.method == "GET" || ($0.method == "POST" && $0.path == path) })
     }
 
-    func unavailableStatusDoesNotChangeSessionSelection() async throws {
+    func frontendChangesInvalidatePreviewsAndSerializeCanonicalID() async throws {
+        let suite = "exec-availability-frontend-\(UUID())", preferences = UserDefaults(suiteName: suite)!
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let transport = ControlledAgentTransport(), api = AgentAPI(transport: transport)
+        var permissionRequests = 0, captures = 0
+        api.desktop = AgentDesktop(api: api, preflight: { false }, requestPermission: {
+            permissionRequests += 1; return false
+        }, capture: { _ in
+            captures += 1
+            throw ExecError("A metadata preview must not capture")
+        })
+        defer { api.desktop.stop() }
+        let library = ChatLibrary(provider: AgentAccounts(api: api), preferences: preferences)
+        defer { library.closePresentations() }
+        let store = library.current
+        let disconnected = store.toolAvailabilityQuery
+        try expect(disconnected == library.defaultToolAvailabilityQuery && disconnected.captureFrontendID == nil)
+        guard case .object(let disconnectedBody) = try json(disconnected) else {
+            throw CheckFailure(description: "Expected a disconnected preview object")
+        }
+        try expect(disconnectedBody["captureFrontendID"] == nil)
+
+        // Registration supplies the helper's canonical ID, not a generated UUID or
+        // a conversation binding. Both selectors must use that exact live channel.
+        let frontend = "abcdefab-cdef-4abc-8def-abcdefabcdef"
+        try transport.emit(.object(["type": .string("registered"), "frontendID": .string(frontend)]))
+        try await api.desktop.start()
+        let connected = store.toolAvailabilityQuery
+        try expect(connected != disconnected && connected.captureFrontendID == frontend)
+        try expect(connected == library.defaultToolAvailabilityQuery && connected.conversationID == nil)
+        try await transport.requests.reply(path, response(true, names: ["screenshot"]))
+        _ = try await api.toolAvailability(connected)
+        let requests = await transport.requests.requests
+        guard let body = requests.first?.body else { throw CheckFailure(description: "Missing frontend preview body") }
+        try expect(requests.count == 1 && requests[0].method == "POST" && requests[0].path == path)
+        try expect(try JSONDecoder().decode(AgentJSON.self, from: body) == .object([
+            "names": .array(connected.names.map(AgentJSON.string)), "model": .string(connected.model),
+            "captureFrontendID": .string(frontend)
+        ]))
+        try store.apply(AgentIntegrationTests.fixture(state: "completed", result: true).decoded(AgentSnapshot.self))
+        let session = store.toolAvailabilityQuery
+        let sessionBody = try json(session)
+        try expect(session.captureFrontendID == frontend && session.conversationID == AgentIntegrationTests.conversationID)
+        try expect(sessionBody["conversationID"].string == AgentIntegrationTests.conversationID.uuidString.lowercased())
+        try expect(sessionBody["captureFrontendID"].string == frontend)
+        try expect(library.defaultToolAvailabilityQuery == connected)
+        try expect(api.desktop.enabled.isEmpty && permissionRequests == 0 && captures == 0)
+
+        transport.channel.continuation.finish(throwing: ExecError("Synthetic disconnect"))
+        try await wait { api.desktop.frontendID == nil }
+        try expect(library.defaultToolAvailabilityQuery == disconnected)
+        try expect(store.toolAvailabilityQuery != session && store.toolAvailabilityQuery.captureFrontendID == nil)
+        let finalRequests = await transport.requests.requests
+        try expect(finalRequests.count == 1 && permissionRequests == 0 && captures == 0)
+    }
+
+    func unavailableMetadataPreservesSelectionAndAllowsProgrammaticChanges() async throws {
         let transport = NotificationTestTransport(status: 404)
         let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)), disabledTools: ["shell"])
         defer { store.closePresentation() }
@@ -120,9 +184,10 @@ import Foundation
             try await wait { observer.status(for: "web_search", query: query)?.available == false }
             try expect(store.disabledTools == ["shell"] && store.canSelectTools)
             try expect(observer.status(for: "shell", query: query)?.available == false)
-            try expect(observer.status(for: "read_file", query: query) == nil) // Unknown is not unavailable.
-            // Both checked and unchecked unavailable tools remain editable, without
-            // creating a conversation merely to inspect or change a local selection.
+            try expect(observer.status(for: "read_file", query: query) == nil) // Unknown metadata; the session UI still disables it.
+            // Metadata does not rewrite saved choices. These are programmatic
+            // settings changes, not UI clicks: unavailable session rows are disabled.
+            // No conversation is created merely to inspect or change a local choice.
             store.setToolEnabled("web_search", false)
             store.setToolEnabled("shell", true)
             await store.waitForPendingSave()
@@ -136,93 +201,161 @@ import Foundation
         }
     }
 
-    func newerQueryAndDisappearanceRejectLateResponses() async throws {
-        // Legacy notifications avoid an unrelated initial catalog catch-up during
-        // this deliberately held, cancellation-insensitive transport read.
-        let transport = NotificationTestTransport(status: 404), api = AgentAPI(transport: transport)
-        let observer = ToolAvailabilityObserver()
-        let old = ToolAvailabilityQuery(names: ["web_search"], model: "openai/old", searchModel: "openai/search-old")
-        let new = ToolAvailabilityQuery(names: ["web_search"], model: "openai/new", searchModel: "openai/search-new")
-        try await transport.responses.reply(path, response(false, reason: "Old query only"))
-        await transport.hold(path)
-        var oldFinished = false, newFinished = false
-        let older = Task { await observer.observe(query: old, api: api); oldFinished = true }
-        var newer: Task<Void, Never>?
-        var failure: (any Error)?
-        do {
-            try await wait { await transport.isHolding }
-            try await transport.responses.reply(path, response(true))
-            newer = Task { await observer.observe(query: new, api: api); newFinished = true }
-            try await wait { observer.status(for: "web_search", query: new)?.available == true }
-            try expect(observer.status(for: "web_search", query: old) == nil)
-            for mismatch in [
-                ToolAvailabilityQuery(names: ["shell"], model: new.model, searchModel: new.searchModel),
-                ToolAvailabilityQuery(names: new.names, conversationID: AgentIntegrationTests.conversationID, model: new.model, searchModel: new.searchModel),
-                ToolAvailabilityQuery(names: new.names, model: new.model, searchModel: "openai/different-search")
-            ] {
-                try expect(observer.status(for: "web_search", query: mismatch) == nil)
+    func newerQueriesRejectLateResponses() async throws {
+        let old = ToolAvailabilityQuery(names: ["web_search"], model: "openai/chat", searchModel: "openai/search",
+                                        captureFrontendID: "abcdefab-cdef-4abc-8def-abcdefabcdef")
+        // Vary each context independently so a missing key cannot hide behind a model change.
+        for new in [
+            ToolAvailabilityQuery(names: old.names, model: "openai/new", searchModel: old.searchModel, captureFrontendID: old.captureFrontendID),
+            ToolAvailabilityQuery(names: old.names, conversationID: AgentIntegrationTests.conversationID, model: old.model,
+                                  searchModel: old.searchModel, captureFrontendID: old.captureFrontendID),
+            ToolAvailabilityQuery(names: old.names, model: old.model, searchModel: "openai/new-search", captureFrontendID: old.captureFrontendID),
+            ToolAvailabilityQuery(names: old.names, model: old.model, searchModel: old.searchModel,
+                                  captureFrontendID: "11111111-2222-4333-8444-555555555555")
+        ] {
+            // Legacy notifications avoid unrelated initial catalog catch-up reads.
+            let transport = NotificationTestTransport(status: 404), api = AgentAPI(transport: transport)
+            let observer = ToolAvailabilityObserver()
+            try await transport.responses.reply(path, response(false, reason: "Old query only"))
+            await transport.hold(path)
+            var oldFinished = false, newFinished = false
+            let older = Task { await observer.observe(query: old, api: api); oldFinished = true }
+            var newer: Task<Void, Never>?
+            var failure: (any Error)?
+            do {
+                try await wait { await transport.isHolding }
+                try await transport.responses.reply(path, response(true))
+                newer = Task { await observer.observe(query: new, api: api); newFinished = true }
+                try await wait { observer.status(for: "web_search", query: new)?.available == true }
+                try expect(observer.status(for: "web_search", query: old) == nil)
+                let differentNames = ToolAvailabilityQuery(names: ["shell"], conversationID: new.conversationID, model: new.model,
+                                                           searchModel: new.searchModel, captureFrontendID: new.captureFrontendID)
+                try expect(observer.status(for: "web_search", query: differentNames) == nil)
+                await transport.release() // Not cancelled: exercise the query-generation guard.
+                await settle()
+                try expect(observer.statuses == ["web_search": .init(available: true, reason: nil)])
+                older.cancel()
+                try await wait { oldFinished }
+                try expect(observer.status(for: "web_search", query: new)?.available == true)
+                newer?.cancel()
+                try await wait { newFinished }
+                try expect(observer.status(for: "web_search", query: new)?.available == true)
+            } catch { failure = error }
+            older.cancel(); newer?.cancel()
+            await transport.release()
+            await api.changes.close()
+            try await wait {
+                let connections = await transport.connectionCount
+                return oldFinished && (newer == nil || newFinished) && connections == 0
             }
-            await transport.release() // Still subscribed and not cancelled: exercise the query-generation guard.
-            await settle()
-            try expect(observer.statuses["web_search"] == .init(available: true, reason: nil))
-            older.cancel()
-            try await wait { oldFinished }
-            try expect(observer.status(for: "web_search", query: new)?.available == true) // Old teardown cannot clear new state.
-            newer?.cancel() // The view's disappearance must clear already-published metadata.
-            try await wait { newFinished }
-            try expect(observer.statuses.isEmpty && observer.status(for: "web_search", query: new) == nil)
-        } catch { failure = error }
-        older.cancel(); newer?.cancel()
-        await transport.release()
-        await api.changes.close()
-        try await wait {
-            let connections = await transport.connectionCount
-            return oldFinished && (newer == nil || newFinished) && connections == 0
+            if let failure { throw failure }
+            try expect(observer.status(for: "web_search", query: new)?.available == true)
         }
-        await settle()
-        try expect(observer.statuses.isEmpty)
-        if let failure { throw failure }
     }
 
-    func catalogRefreshClearsFailedStatusWithoutSettingsWrites() async throws {
+    func disappearanceCancelsReadsButRetainsOnlySameQueryCache() async throws {
+        let transport = NotificationTestTransport(status: 404), observer = ToolAvailabilityObserver()
+        let query = ToolAvailabilityQuery(names: ["web_search"], model: "openai/chat", captureFrontendID: "frontend-a")
+        let cached = ["web_search": ToolAvailabilityStatus(available: true, reason: nil)]
+        try await transport.responses.reply(path, response(true))
+        try await observing(query, transport: transport, cachedObserver: observer) { observer, _ in
+            try await wait { observer.statuses == cached }
+        }
+        try expect(observer.status(for: "web_search", query: query)?.available == true)
+
+        try await transport.responses.reply(path, response(false, reason: "Cancelled read must not publish"))
+        await transport.hold(path)
+        try await observing(query, transport: transport, cachedObserver: observer) { observer, _ in
+            try await wait { await transport.isHolding }
+            try expect(observer.statuses == cached && observer.status(for: "web_search", query: query)?.available == true)
+            // The helper cancels before releasing this read, just like closing the popover.
+        }
+        try expect(observer.statuses == cached)
+        await transport.responses.failNext(path)
+        try await observing(query, transport: transport, cachedObserver: observer) { observer, _ in
+            try await wait { await transport.responses.requests.count == 3 }
+            await settle()
+            try expect(observer.statuses == cached)
+        }
+
+        let differentFrontend = ToolAvailabilityQuery(names: query.names, model: query.model, captureFrontendID: "frontend-b")
+        try expect(observer.status(for: "web_search", query: differentFrontend) == nil)
+        await transport.responses.failNext(path)
+        try await observing(differentFrontend, transport: transport, cachedObserver: observer) { observer, _ in
+            try await wait { await transport.responses.requests.count == 4 }
+            await settle()
+            try expect(observer.statuses.isEmpty && observer.status(for: "web_search", query: query) == nil)
+            try expect(observer.status(for: "web_search", query: differentFrontend) == nil)
+        }
+        let requests = await transport.responses.requests
+        try expect(requests.count == 4 && requests.allSatisfy { $0.method == "POST" && $0.path == path })
+    }
+
+    func catalogRefreshRetainsCacheAndPublishesOnlyChangedMetadata() async throws {
         let transport = NotificationTestTransport()
         let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)), disabledTools: ["shell"])
         defer { store.closePresentation() }
         store.selectedModel = "openai/chat"
         let query = store.toolAvailabilityQuery
-        try await transport.responses.reply(path, response(false, reason: "Old backend reason"))
+        let cached: [String: ToolAvailabilityStatus] = [
+            "web_search": .init(available: true, reason: nil),
+            "shell": .init(available: false, reason: "Synthetic workspace restriction")
+        ]
+        try await transport.responses.reply(path, .object([
+            "web_search": response(true)["web_search"],
+            "shell": response(false, reason: "Synthetic workspace restriction", names: ["shell"])["shell"]
+        ]))
         try await observing(query, transport: transport) { observer, _ in
-            try await wait { observer.status(for: "web_search", query: query)?.reason == "Old backend reason" }
+            try await wait { observer.statuses == cached }
             try await wait { await transport.connectionCount == 1 }
             try await transport.emit(notice("1"))
             try await wait { await transport.responses.requests.count == 2 }
-            try await wait { observer.status(for: "web_search", query: query)?.reason == "Old backend reason" }
-            // A failed catalog-triggered read must remove the old reason, not keep
-            // claiming a tool is unavailable based on a previous account/model state.
-            await transport.responses.failNext(path)
-            try await transport.emit(notice("2"))
-            try await wait {
-                let reads = await transport.responses.requests.count
-                return reads == 3 && observer.statuses.isEmpty
-            }
             await settle()
-            try expect(observer.status(for: "web_search", query: query) == nil && store.disabledTools == ["shell"])
-            try await transport.responses.reply(path, response(true))
+            let published = OSAllocatedUnfairLock(initialState: false)
+            withObservationTracking {
+                _ = observer.statuses
+            } onChange: { published.withLock { $0 = true } }
+
+            await transport.hold(path)
+            store.setToolEnabled("web_search", false)
+            await store.waitForPendingSave()
+            try await transport.emit(notice("2"))
+            try await wait { await transport.isHolding }
+            try expect(store.disabledTools == ["shell", "web_search"] && store.toolAvailabilityQuery == query)
+            try expect(observer.statuses == cached)
+            try expect(observer.status(for: "web_search", query: query)?.available == true)
+            try expect(observer.status(for: "shell", query: query)?.available == false)
+            store.setToolEnabled("web_search", true)
+            await store.waitForPendingSave()
+            try expect(store.disabledTools == ["shell"] && store.toolAvailabilityQuery == query)
+            try expect(observer.statuses == cached && !published.withLock { $0 })
+            await transport.release()
+            await settle()
+            try expect(observer.statuses == cached && !published.withLock { $0 }) // Identical response does not republish.
+
+            await transport.responses.failNext(path)
             try await transport.emit(notice("3"))
-            try await wait { observer.status(for: "web_search", query: query)?.available == true }
+            try await wait { await transport.responses.requests.count == 4 }
+            await settle()
+            try expect(observer.statuses == cached && !published.withLock { $0 })
+            try expect(store.disabledTools == ["shell"] && store.error == nil)
+            try await transport.responses.reply(path, response(true, names: ["shell", "web_search"]))
+            try await transport.emit(notice("4"))
+            try await wait { observer.status(for: "shell", query: query)?.available == true }
+            try expect(published.withLock { $0 }) // The tracking assertion is live, not an unobserved false flag.
+            try expect(observer.status(for: "shell", query: query)?.reason == nil && store.disabledTools == ["shell"])
             await settle()
             let requests = await transport.responses.requests
-            try expect(requests.count == 4 && requests.allSatisfy { $0.method == "POST" && $0.path == path })
-            try expect(store.disabledTools == ["shell"] && store.error == nil)
+            try expect(requests.count == 5 && requests.allSatisfy { $0.method == "POST" && $0.path == path })
             let subscriptions = await transport.subscriptions
             try expect(subscriptions == 1)
         }
     }
 
-    func defaultSelectionsStayEditableWithoutChangingExistingSessions() async throws {
+    func defaultSelectionsRetainMetadataDuringRefreshWithoutChangingExistingSessions() async throws {
         let suite = "exec-availability-defaults-\(UUID())", preferences = UserDefaults(suiteName: suite)!
         defer { preferences.removePersistentDomain(forName: suite) }
-        let transport = NotificationTestTransport(status: 404), api = AgentAPI(transport: transport)
+        let transport = NotificationTestTransport(), api = AgentAPI(transport: transport)
         let library = ChatLibrary(provider: AgentAccounts(api: api), preferences: preferences)
         defer { library.closePresentations() }
         let query = library.defaultToolAvailabilityQuery
@@ -232,19 +365,57 @@ import Foundation
         try await transport.responses.reply("/v1/library", json(config))
         try await observing(query, transport: transport) { observer, _ in
             try await wait { observer.status(for: "read_file", query: query)?.available == false }
+            try await wait { await transport.connectionCount == 1 }
+            try await transport.emit(notice("1"))
+            try await wait { await transport.responses.requests.count == 2 }
+            await settle()
+            let cached = observer.statuses
+            let published = OSAllocatedUnfairLock(initialState: false)
+            withObservationTracking {
+                _ = observer.statuses
+            } onChange: { published.withLock { $0 = true } }
             try expect(library.defaultDisabledTools == ["shell"])
-            let before = await transport.responses.requests
-            try expect(before.count == 1 && before[0].path == path)
-            library.setDefaultToolEnabled("read_file", false)
+            await transport.hold(path)
+            try await transport.emit(notice("2"))
+            try await wait { await transport.isHolding }
+            library.setDefaultToolEnabled("read_file", false) // Unavailable defaults remain user-editable.
             try await wait { !library.accountBusy }
             try expect(library.defaultDisabledTools == ["shell", "read_file"])
-            try expect(library.current.disabledTools == ["shell"])
-            try expect(observer.status(for: "read_file", query: query)?.available == false)
+            try expect(library.current.disabledTools == ["shell"] && library.defaultToolAvailabilityQuery == query)
+            try expect(observer.statuses == cached && observer.status(for: "read_file", query: query)?.available == false)
+            try expect(!published.withLock { $0 })
+            await transport.release()
+            await settle()
+            try expect(observer.statuses == cached && !published.withLock { $0 })
             let writes = await transport.responses.requests.filter { $0.path != path }
             try expect(writes.count == 1 && writes[0].method == "PATCH" && writes[0].path == "/v1/library")
+            guard let body = writes[0].body else { throw CheckFailure(description: "Missing default tool selection body") }
+            let saved = try JSONDecoder().decode(AgentJSON.self, from: body)
+            try expect(Set(saved["defaultDisabledTools"].array.compactMap(\.string)) == ["shell", "read_file"])
             library.newConversation()
             try expect(library.pendingNewConversation?.disabledTools == ["shell", "read_file"])
-            try expect(library.error == nil)
+            try expect(library.current.disabledTools == ["shell"] && library.error == nil)
         }
+    }
+
+    func selectorSourcesKeepMetadataOutOfGeometryAndGateOnlySessionRows() throws {
+        // Structural guard only: Form does not expose reliable checkbox AX elements.
+        // Native hit testing and rendered geometry still require a manual check.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let session = try String(contentsOf: root.appendingPathComponent("Sources/Exec/Features/Chat/SessionToolMenu.swift"), encoding: .utf8)
+        let defaults = try String(contentsOf: root.appendingPathComponent("Sources/Exec/Features/Settings/ToolsSettingsView.swift"), encoding: .utf8)
+        for source in [session, defaults] {
+            try expect(!source.contains(".reason") && !source.contains(".description"))
+            try expect(source.contains(".opacity(unavailable ? 0.35 : 1)"))
+        }
+        try expect(session.contains(".frame(width: 280)") && session.contains("Text(verbatim: tool.label)"))
+        try expect(session.contains("let unavailable = status?.available != true") && session.contains(".disabled(unavailable)"))
+        try expect(session.contains("if !unavailable { conversation.setToolEnabled(tool.name, $0) }"))
+        try expect(!session.replacingOccurrences(of: ".help(\"Session tools\")", with: "").contains(".help("))
+        try expect(defaults.contains("let unavailable = status?.available == false"))
+        let compactDefaults = defaults.filter { !$0.isWhitespace }
+        try expect(compactDefaults.contains("Label(tool.label,systemImage:tool.icon).opacity(unavailable?0.35:1)"))
+        try expect(defaults.contains("set: { store.setDefaultToolEnabled(tool.name, $0) }"))
+        try expect(!defaults.contains(".disabled(") && !defaults.contains(".help("))
     }
 }

@@ -638,6 +638,7 @@ impl AgentManager {
         names: &[String],
         model: &str,
         search_model: Option<&str>,
+        capture_preview: Option<CapturePreview>,
     ) -> Result<BTreeMap<String, RuntimeToolAvailability>> {
         if self.catalog.lock().unwrap().closed {
             return Err(Error::Closed);
@@ -652,6 +653,7 @@ impl AgentManager {
             model.into(),
             search_model.map(str::to_owned),
             String::new(),
+            capture_preview,
         );
         Ok(runtime_tool_availability(names, &tools, &context))
     }
@@ -663,6 +665,7 @@ impl AgentManager {
         names: &[String],
         model: &str,
         search_model: Option<&str>,
+        capture_preview: Option<CapturePreview>,
     ) -> Result<BTreeMap<String, RuntimeToolAvailability>> {
         let conversation = {
             let catalog = self.catalog.lock().unwrap();
@@ -675,7 +678,7 @@ impl AgentManager {
                 .cloned()
                 .ok_or(Error::ConversationNotFound)?
         };
-        Ok(conversation.tool_availability(names, model, search_model))
+        Ok(conversation.tool_availability(names, model, search_model, capture_preview))
     }
 
     /// Only the executing parent tool can create a child. Persist its provenance

@@ -73,7 +73,8 @@ import Observation
     var defaultToolAvailabilityQuery: ToolAvailabilityQuery {
         // makeConversation uses the raw search selection, not the settings picker's fallback.
         ToolAvailabilityQuery(names: SessionTool.names, model: newConversationModel,
-                              searchModel: provider.effectiveSearchModel(searchModel, for: newConversationModel))
+                              searchModel: provider.effectiveSearchModel(searchModel, for: newConversationModel),
+                              captureFrontendID: provider.api.desktop.frontendID)
     }
     var effectiveDefaultModel: String { defaultModel.isEmpty ? "" : defaultSessionModel?.id ?? "" }
     var effectiveDefaultEffort: String? { defaultSessionModel?.efforts.contains { $0.id == defaultEffort } == true ? defaultEffort : nil }

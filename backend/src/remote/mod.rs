@@ -379,7 +379,12 @@ pub(crate) fn permits(method: &str, path: &str) -> bool {
     if method == "PATCH" && path == "/v1/library" {
         return true;
     }
-    if method == "POST" && matches!(path, "/v1/conversations" | "/v1/workspaces/browse") {
+    if method == "POST"
+        && matches!(
+            path,
+            "/v1/conversations" | "/v1/workspaces/browse" | "/v1/tools/availability"
+        )
+    {
         return true;
     }
     let parts: Vec<_> = path.split('/').collect();

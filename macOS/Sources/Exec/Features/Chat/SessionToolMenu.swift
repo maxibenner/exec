@@ -40,33 +40,24 @@ struct SessionToolMenu: View {
 
     private func toolRow(_ tool: SessionTool, query: ToolAvailabilityQuery) -> some View {
         let status = availability.status(for: tool.name, query: query)
-        let unavailable = status?.available == false
-        let reason = unavailable ? status?.reason : nil
-        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+        let unavailable = status?.available != true
+        return HStack(spacing: 8) {
             Image(systemName: tool.icon)
-                .foregroundStyle(unavailable ? .tertiary : .secondary)
+                .foregroundStyle(.secondary)
                 .frame(width: 16)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(verbatim: tool.label)
-                    .foregroundStyle(unavailable ? .secondary : .primary)
-                if let reason {
-                    Text(verbatim: reason)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .accessibilityHidden(true)
+            Text(verbatim: tool.label)
+                .accessibilityHidden(true)
             Spacer(minLength: 16)
             Toggle(tool.label, isOn: Binding(
                 get: { !conversation.disabledTools.contains(tool.name) },
-                set: { conversation.setToolEnabled(tool.name, $0) }))
+                set: { if !unavailable { conversation.setToolEnabled(tool.name, $0) } }))
                 .toggleStyle(.checkbox)
                 .tint(AppColors.systemAccent).accentColor(AppColors.systemAccent)
                 .labelsHidden()
                 .accessibilityIdentifier(tool.name)
-                .accessibilityHint(reason ?? "")
         }
+        .disabled(unavailable)
+        .opacity(unavailable ? 0.35 : 1)
     }
 }

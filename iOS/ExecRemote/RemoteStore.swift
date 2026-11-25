@@ -175,6 +175,22 @@ extension RelayClient: RemoteTransport {}
     private var hostGeneration = 0
     private var connectionGeneration = 0
     private var catalogReadTicket = 0
+    private var toolAvailabilityRevision = 0
+    fileprivate struct ToolAvailabilityContext: Equatable {
+        let query: RemoteSessionCreation.AvailabilityQuery
+        let host: Int
+        let backend: [String?]
+        let connection: Int
+    }
+    struct ToolAvailabilityRequest: Equatable {
+        fileprivate let context: ToolAvailabilityContext
+        fileprivate let connected: Bool
+        fileprivate let revision: Int
+    }
+    private var toolAvailabilityContext: ToolAvailabilityContext?
+    private var toolAvailabilityStatuses: [String: Bool] = [:]
+    @ObservationIgnored private var toolAvailabilityReadTicket = 0
+    @ObservationIgnored private var toolAvailabilityUnsupportedContext: ToolAvailabilityContext?
     private(set) var observationGeneration = 0
     private var observationTask: Task<Void, Never>?
     private(set) var lastChangeNotification: RemoteChangeNotification?
@@ -470,6 +486,56 @@ extension RelayClient: RemoteTransport {}
             error = nil
         } catch { self.error = error.localizedDescription }
     }
+    /// Key the visible selector's task to configuration, backend identity,
+    /// connection, shared settings changes and catalog revision notices.
+    func toolAvailabilityRequest(model: RemoteJSON, settings: RemoteJSON) -> ToolAvailabilityRequest {
+        toolAvailabilityRequest(query: .init(model: model, settings: settings))
+    }
+    private func toolAvailabilityRequest(query: RemoteSessionCreation.AvailabilityQuery) -> ToolAvailabilityRequest {
+        .init(context: .init(query: query, host: hostGeneration,
+                             backend: [host?.invitation.relay, host?.invitation.route, host?.invitation.hostKey],
+                             connection: connectionGeneration),
+              connected: connected, revision: toolAvailabilityRevision)
+    }
+    func toolAvailability(for request: ToolAvailabilityRequest) -> [String: Bool] {
+        guard connected, request.context == toolAvailabilityRequest(query: request.context.query).context,
+              request.context == toolAvailabilityContext else { return [:] }
+        return toolAvailabilityStatuses
+    }
+    /// POST is a read here, like folder browsing: no mutation scope, selection
+    /// writes, shared defaults or automatic retry. The screen owns cancellation.
+    func refreshToolAvailability(_ request: ToolAvailabilityRequest) async {
+        guard !Task.isCancelled, request.connected, !request.context.query.model.isEmpty,
+              request == toolAvailabilityRequest(query: request.context.query) else { return }
+        toolAvailabilityReadTicket += 1
+        let ticket = toolAvailabilityReadTicket
+        if toolAvailabilityContext != request.context {
+            toolAvailabilityContext = request.context
+            if !toolAvailabilityStatuses.isEmpty { toolAvailabilityStatuses = [:] }
+        }
+        if let unsupported = toolAvailabilityUnsupportedContext,
+           unsupported.host == request.context.host, unsupported.backend == request.context.backend,
+           unsupported.connection == request.context.connection { return }
+        do {
+            let response = try await client.request("POST", "/v1/tools/availability", body: request.context.query.body)
+            guard !Task.isCancelled, ticket == toolAvailabilityReadTicket,
+                  request == toolAvailabilityRequest(query: request.context.query) else { return }
+            guard case .object = response else { return }
+            let statuses = RemoteSessionCreation.availabilityStatuses(response)
+            if statuses != toolAvailabilityStatuses { toolAvailabilityStatuses = statuses }
+        } catch {
+            guard !Task.isCancelled, !(error is CancellationError), ticket == toolAvailabilityReadTicket,
+                  request == toolAvailabilityRequest(query: request.context.query) else { return }
+            if let status = (error as? RemoteFailure)?.statusCode, [404, 405, 501].contains(status) {
+                // Older hosts stay conservatively unknown. Re-probe only on a
+                // new connection, not on each catalog notice or model edit.
+                toolAvailabilityUnsupportedContext = request.context
+            } else {
+                await recordDisconnectedFailure(error, connection: request.context.connection)
+            }
+            // Keep the last successful same-context booleans on read failure.
+        }
+    }
     func browseFolders(_ path: String?, showHidden: Bool) async throws -> RemoteJSON {
         guard connected else { throw RemoteFailure(Self.hostConnectionRequiredMessage) }
         let connection = connectionGeneration
@@ -496,6 +562,9 @@ extension RelayClient: RemoteTransport {}
         cancelPendingMessage()
         hasConnectionFailure = false
         hostGeneration += 1
+        toolAvailabilityContext = nil
+        if !toolAvailabilityStatuses.isEmpty { toolAvailabilityStatuses = [:] }
+        toolAvailabilityUnsupportedContext = nil
         thinking.reset()
         transcriptViewStates.removeAll()
         settings = RemoteSettingsDraft()
@@ -523,7 +592,7 @@ extension RelayClient: RemoteTransport {}
         guard try await refreshCatalog() else { return }
         if selected == visibleID, let readFailure { throw readFailure }
     }
-    @discardableResult private func refreshCatalog() async throws -> Bool {
+    @discardableResult private func refreshCatalog(invalidateToolAvailability: Bool = false) async throws -> Bool {
         let generation = hostGeneration, readGeneration = snapshotGeneration, connection = connectionGeneration
         catalogReadTicket += 1
         let ticket = catalogReadTicket
@@ -541,6 +610,12 @@ extension RelayClient: RemoteTransport {}
         guard generation == hostGeneration, connection == connectionGeneration, !Task.isCancelled,
               readGeneration == snapshotGeneration, ticket == catalogReadTicket else { return false }
         guard case .object = settings else { throw RemoteFailure("Invalid shared settings response. Refresh the library before editing.") }
+        // Identical legacy polling reads must not cancel a slow selector task.
+        // A catalog revision notice can still signal capability/auth changes
+        // without changing the library payload itself.
+        if invalidateToolAvailability || !hasLoadedLibrary || library != settings {
+            toolAvailabilityRevision += 1
+        }
         conversations = deletions.reconcile(list); library = settings
         hasLoadedConversations = true; hasLoadedLibrary = true
         let ids = Set(conversations.compactMap { $0["id"].string }).union(deletions.pendingIDs)
@@ -754,7 +829,7 @@ extension RelayClient: RemoteTransport {}
         while isObserving(generation), host == hostGeneration, connection == connectionGeneration {
             let readGeneration = snapshotGeneration
             if catchUp || previous?.catalog != notice.catalog {
-                guard try await refreshCatalog() else { continue }
+                guard try await refreshCatalog(invalidateToolAvailability: true) else { continue }
             }
             guard isObserving(generation), host == hostGeneration, connection == connectionGeneration else { return }
             var residents = Set(readTickets.keys.filter { recentConversations.contains($0) })

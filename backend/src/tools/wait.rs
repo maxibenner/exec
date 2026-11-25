@@ -108,6 +108,7 @@ mod tests {
         ToolContext {
             available_images: vec![],
             conversation_id: "session".into(),
+            capture_preview: None,
             operation_id: "operation".into(),
             call_id: "call".into(),
             model: "fake".into(),

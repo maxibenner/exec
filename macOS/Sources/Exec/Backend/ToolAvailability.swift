@@ -6,8 +6,9 @@ struct ToolAvailabilityQuery: Encodable, Equatable, Sendable {
     let conversationID: UUID?
     let model: String
     let searchModel: String?
+    let captureFrontendID: String?
 
-    private enum CodingKeys: String, CodingKey { case names, conversationID, model, searchModel }
+    private enum CodingKeys: String, CodingKey { case names, conversationID, model, searchModel, captureFrontendID }
 
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
@@ -15,13 +16,16 @@ struct ToolAvailabilityQuery: Encodable, Equatable, Sendable {
         try values.encodeIfPresent(conversationID?.uuidString.lowercased(), forKey: .conversationID)
         try values.encode(model, forKey: .model)
         try values.encodeIfPresent(searchModel, forKey: .searchModel)
+        try values.encodeIfPresent(captureFrontendID, forKey: .captureFrontendID)
     }
 
-    init(names: [String], conversationID: UUID? = nil, model: String, searchModel: String? = nil) {
+    init(names: [String], conversationID: UUID? = nil, model: String, searchModel: String? = nil,
+         captureFrontendID: String? = nil) {
         self.names = names
         self.conversationID = conversationID
         self.model = model
         self.searchModel = searchModel
+        self.captureFrontendID = captureFrontendID
     }
 }
 
@@ -52,8 +56,8 @@ extension AgentAPI {
     func observe(query: ToolAvailabilityQuery, api: AgentAPI) async {
         let generation = UUID()
         observationGeneration = generation
+        if self.query != query { statuses = [:] }
         self.query = query
-        statuses = [:]
         let subscription = await api.changes.subscribe(.catalog)
         var refreshTask: Task<Void, Never>?
         defer {
@@ -61,8 +65,9 @@ extension AgentAPI {
             refreshTask?.cancel()
             if observationGeneration == generation {
                 observationGeneration = UUID()
-                self.query = nil
-                statuses = [:]
+                // Keep this query's last result for the next presentation. A new
+                // context clears it; closing a popover must not flash every row.
+                requestGeneration = UUID()
             }
         }
         guard !Task.isCancelled, observationGeneration == generation else { return }
@@ -84,8 +89,8 @@ extension AgentAPI {
                          subscription: AgentChangeSubscription) -> Task<Void, Never> {
         let request = UUID()
         requestGeneration = request
-        // Loading and failed refreshes must not retain a stale unavailability reason.
-        statuses = [:]
+        // Catalog writes include tool selections. Retain this context's last
+        // successful snapshot during revalidation instead of flashing all rows.
         return Task { [weak self] in
             do {
                 try Task.checkCancellation()
@@ -93,11 +98,12 @@ extension AgentAPI {
                 try Task.checkCancellation()
                 guard let self, self.observationGeneration == generation,
                       self.requestGeneration == request, self.query == query else { return }
-                self.statuses = statuses
+                if self.statuses != statuses { self.statuses = statuses }
             } catch {
                 guard !Task.isCancelled, let self, self.observationGeneration == generation,
                       self.requestGeneration == request, self.query == query else { return }
-                self.statuses = [:]
+                // A failed metadata read is not evidence of a capability change.
+                // Runtime checks remain authoritative at execution.
                 // Do not repeatedly ask an older backend for an unsupported endpoint.
                 if let error = error as? AgentHTTPError, error.status == 404 || error.status == 405 {
                     subscription.close()

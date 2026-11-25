@@ -16,22 +16,13 @@ struct ToolsSettingsView: View {
                             get: { !store.defaultDisabledTools.contains(tool.name) },
                             set: { store.setDefaultToolEnabled(tool.name, $0) }
                         )) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Label(tool.label, systemImage: tool.icon)
-                                    .foregroundStyle(unavailable ? .secondary : .primary)
-                                if unavailable, let reason = status?.reason {
-                                    Text(verbatim: reason)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
+                            Label(tool.label, systemImage: tool.icon)
+                                .opacity(unavailable ? 0.35 : 1)
                         }
                         .toggleStyle(.checkbox)
                         .tint(AppColors.systemAccent).accentColor(AppColors.systemAccent)
                         .accessibilityIdentifier("default-tool-\(tool.name)")
                         .accessibilityLabel(tool.label)
-                        .accessibilityHint(unavailable ? status?.reason ?? "" : "")
                     }
                 } header: {
                     Text(group.rawValue)

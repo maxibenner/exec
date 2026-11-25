@@ -208,6 +208,7 @@ async fn files_are_shell_readable_owned_and_retained_until_last_fork_is_deleted(
             ToolContext {
                 available_images: vec![],
                 conversation_id: c.id.clone(),
+                capture_preview: None,
                 operation_id: new_id(),
                 search_model: None,
                 call_id: new_id(),

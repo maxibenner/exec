@@ -52,20 +52,37 @@ a provider-neutral local availability method; the provider registry owns selecte
 resolution and connection/disconnect gating, without discovery, authentication or fallback.
 
 Authenticated `POST /v1/tools/availability` previews requested names against supplied
-client-effective model/search-model settings. Session queries inspect that conversation's
-actual executors, preserving child executor removal; default queries reuse the manager's
-normal composition including delegation. Missing executors have a fixed unavailable status.
-An idle `ToolContext` has empty operation/call IDs, no images and a fresh cancellation token;
-no fabricated conversation, persistence or provider request is needed. Library/snapshot
+client-effective model/search-model settings and optional `captureFrontendID` metadata
+(a validated string UUID; omitted or null means absent). Session queries inspect that
+conversation's actual executors, preserving child executor removal; default queries reuse
+the manager's normal composition including delegation. Missing executors have a fixed
+unavailable status. An idle `ToolContext` has empty operation/call IDs, no images, a fresh
+cancellation token and an optional preview-only `CapturePreview` (a specific local frontend or remote readiness). Actual runtime
+contexts and execution fixtures leave it `None`; it is never saved as session state.
+No fabricated conversation, persistence or provider request is needed. Library/snapshot
 schemas and deny-list validation are unchanged. See the [API contract](api.md#runtime-tool-availability).
 
-Native capture availability checks a live session binding, or any connected frontend for a
-no-session preview. It never checks OS permission or grants consent, selects/binds a frontend,
-or requests capture. First-use permission remains reachable through the normal approved tool
-path. The manager attaches the existing `ChangeHub` weakly to `NativeHub`; registration,
+Native capture previews prefer an existing session binding, including an unavailable closed
+binding, over any supplied frontend ID. An unbound session can report prospective readiness
+for an explicitly supplied live frontend: the app will bind its own adapter before the next
+ordinary turn, not earlier. Defaults with a supplied ID check only that adapter; without an
+ID they retain the any-live-frontend rule. No other live adapter substitutes for a missing or
+disconnected specified frontend or a closed existing binding. Runtime contexts with no
+preview ID still require a bound live frontend. Previews never register, select/bind, check
+OS access, grant consent or request capture; first-use permission remains on the normal
+approved tool path. Child sessions still lack the screenshot executor entirely. Native
+clients supply their own `AgentDesktop.frontendID` for both default and session previews,
+without changing native-auth routes or remote binding. Paired iOS clients can access only
+the read-only availability endpoint; their transport selects remote readiness, requiring
+exactly one live, opted-in adapter when unbound. They cannot supply a local frontend ID.
+This derives eligibility from the same opt-in rules as remote turn binding, with no binding,
+consent or OS permission side effects.
+
+The manager attaches the existing `ChangeHub` weakly to `NativeHub`; registration,
 binding/revocation and disconnect publish catalog invalidations only after native locks are
-released. Clients refresh open selectors on those existing hints and effective-setting changes,
-without polling or storing runtime capability as selection state.
+released. Clients refresh open selectors on those existing hints and effective-setting/frontend
+changes, without polling or storing runtime capability as selection state. Backend reason
+strings remain available even when the UI does not display descriptions.
 
 ## Native frontend
 
@@ -109,3 +126,10 @@ Capture requires a separately authenticated live native channel and macOS Screen
 Automated tests use fake providers/transports, isolated profiles, synthetic credentials, local HTTP connections and real subprocesses. They cover authentication, native capability boundaries, approvals, cancellation, context integrity, persistence/recovery and native rendering regressions. They do not access the user's Keychain, call live models, open browser sign-in or capture the screen.
 
 Historical one-off OpenAI/DeepSeek streaming and synthetic-image checks are not continuous live-service guarantees. Interactive OAuth/token rotation, full multi-window UX, physical Screen Recording permission changes, actual remote proxy/VPN deployment, Linux production deployment, notarization/update distribution, Intel/universal builds and machine power-loss durability require separate verification. Mocks do not verify live providers or OS permission UX.
+
+Tool selectors keep last-successful, context-scoped availability during refreshes and
+transient failures and suppress identical publications. New context reads cannot reuse old
+model/session/frontend/backend results. Neither client displays availability reasons or hints.
+macOS global defaults remain editable; macOS session and iOS new-session controls disable
+unavailable/unknown checkboxes while preserving their stored/inherited checks. Capability
+updates do not mutate tool selection.

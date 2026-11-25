@@ -531,6 +531,8 @@ struct NewChatScreen: View {
     @State private var choosingFolder = false
     private var selectedModel: RemoteJSON { store.models.first { $0.id == model } ?? .null }
     var body: some View {
+        let availabilityRequest = store.toolAvailabilityRequest(model: selectedModel, settings: store.library["settings"])
+        let availability = store.toolAvailability(for: availabilityRequest)
         NavigationStack {
             Form {
                 Section("Workspace") {
@@ -554,6 +556,7 @@ struct NewChatScreen: View {
                     Picker("Model", selection: $model) {
                         ForEach(store.models, id: \.id) { model in Text(model["name"].string ?? model.id).tag(model.id) }
                     }
+                    .accessibilityIdentifier("new-session-model")
                     Picker("Reasoning", selection: $effort) {
                         Text("Default").tag("")
                         ForEach(selectedModel["efforts"].array, id: \.id) { option in
@@ -569,6 +572,8 @@ struct NewChatScreen: View {
                                              set: { tools.setEnabled(tool.id, $0) })) {
                             Label(tool.label, systemImage: tool.icon)
                         }
+                        .disabled(availability[tool.id] != true)
+                        .opacity(availability[tool.id] == true ? 1 : 0.35)
                         .accessibilityIdentifier("new-session-tool-\(tool.id)")
                     }
                 }
@@ -598,6 +603,9 @@ struct NewChatScreen: View {
             .onAppear(perform: initializeDefaults)
             .onChange(of: store.hasLoadedLibrary) { _, _ in initializeDefaults() }
             .onChange(of: model) { _, _ in resetEffort() }
+            .task(id: availabilityRequest) {
+                await store.refreshToolAvailability(availabilityRequest)
+            }
             .overlay(alignment: .bottom) {
                 if !choosingFolder {
                     SessionNotice(message: Binding(get: { store.visibleError }, set: { store.error = $0 }))

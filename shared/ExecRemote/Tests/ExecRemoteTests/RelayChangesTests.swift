@@ -243,6 +243,25 @@ final class RelayChangesTests: XCTestCase, @unchecked Sendable {
         await client.disconnect()
     }
 
+    func testAvailabilityEndpointErrorsExposeAuthenticatedStatusWithoutRetryOrDeliveryInference() async throws {
+        let (client, host) = try await connected()
+        for status in [404, 405, 501] {
+            let task = Task { try await client.request("POST", "/v1/tools/availability", body: .object(["names": .array([]), "model": .string("fixture/model")])) }
+            let command = await host.nextCommand()
+            XCTAssertEqual(command["method"].string, "POST")
+            XCTAssertEqual(command["path"].string, "/v1/tools/availability")
+            try await host.chunk(command, Data("Legacy non-JSON error".utf8), status: status)
+            do { _ = try await task.value; XCTFail("Expected unsupported endpoint") }
+            catch let failure as RemoteFailure {
+                XCTAssertEqual(failure.statusCode, status)
+                XCTAssertEqual(failure.kind, .uncertain, "HTTP status must not alter command delivery evidence")
+            }
+        }
+        let commands = await host.commands
+        XCTAssertEqual(commands.count, 3)
+        await client.disconnect()
+    }
+
     func testActiveLossIsUncertainButQueuedLossIsNotDispatchedAndReconnectNeverReplays() async throws {
         for mode in 0..<4 { // disconnect, lost reply, deadline, malformed successful body
             let old = try FakeHost(), fresh = try FakeHost()

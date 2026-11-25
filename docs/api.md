@@ -303,7 +303,7 @@ The server bounds TCP connections to 64 and separately admits at most 64 non-GET
 | GET | `/v1/library` | Shared defaults and ordering |
 | PUT | `/v1/library` | `{defaultModel,settings,order}` → saved configuration |
 | GET | `/v1/models` | Neutral model array: `id`, `name`, optional `contextWindow`, `maxOutputTokens` |
-| POST | `/v1/tools/availability` | `{names:[string],conversationID?:string,model:string,searchModel?:string|null}` → object keyed by requested names, each `{available:boolean,reason?:string}` |
+| POST | `/v1/tools/availability` | `{names:[string],conversationID?:string,captureFrontendID?:string|null,model:string,searchModel?:string|null}` → object keyed by requested names, each `{available:boolean,reason?:string}` |
 | GET | `/v1/conversations` | Summary array, omitting `messages` and `approval` |
 | POST | `/v1/conversations` | `{model,workspace,settings?,disabledTools?:[string]}` → `201 ConversationSnapshot`, after durable creation |
 | PATCH | `/v1/conversations/:id` | `{disabledTools:[string]}` → `200 ConversationSnapshot`, after durable idle-only replacement |
@@ -437,7 +437,7 @@ desktop capture capability/OS permission.
 `POST /v1/tools/availability` is an authenticated, read-only local preview. Send
 `Content-Type: application/json` and the normal API bearer credential, not the native
 credential. It shares the bounded non-GET handler budget but performs no mutation.
-The existing encrypted-device route allowlist is unchanged.
+Paired encrypted devices may call this read-only endpoint; native registration, permissions and capture replies remain forbidden to remote devices.
 
 ```json
 {"names":["web_search","generate_image","take_screenshot","delegate"],"conversationID":"00000000-0000-4000-8000-000000000001","model":"deepseek/deepseek-chat","searchModel":null}
@@ -466,6 +466,11 @@ The response is `200 application/json`, with exactly the requested names as keys
   A missing session returns 404. Malformed fields, duplicate/invalid names, oversized
   arrays and unknown request fields return 400. The preview remains readable during work or
   catalog reservations, until actual removal; a closed/stopping service returns 503.
+- Optional `captureFrontendID` is a string UUID identifying the client's specific capture
+  frontend for metadata preview only. Omit it when absent; explicit null is also treated as
+  absent. Malformed UUIDs and non-string/non-null values return 400. Native clients supply
+  their own `AgentDesktop.frontendID` for both default and session previews when connected;
+  this is not native authorization, a binding request or an approval grant.
 - With a conversation ID, the query uses that session's actual executable tools,
   including child restrictions (no delegate, image generation or screenshot executor).
   Without an ID, it uses normal top-level backend composition, including delegation,
@@ -480,21 +485,40 @@ The response is `200 application/json`, with exactly the requested names as keys
   state. Fixed search reasons are `Select a model.`,
   `Search is not supported by the selected provider.` and
   `Connect the selected search provider.`; no alternate route is selected automatically.
-- Screenshots require a bound live capture frontend for a supplied session. Without a
-  session they report whether any live capture frontend exists, without selecting or
-  binding one. Reasons are `Screen access is not enabled for this session.` or
+- Screenshot previews follow the existing live session binding when present, regardless of
+  `captureFrontendID`. A closed existing binding stays unavailable; another adapter is never
+  silently substituted. For an unbound session, an explicitly supplied live frontend reports
+  prospective readiness because the app binds it before the next ordinary turn, not during
+  preview. Without that ID the unbound session remains unavailable. No executor (including
+  a child's removed screenshot executor) always means `Not provided by this backend.`.
+- Without a session, screenshots check the specific `captureFrontendID` when supplied; a
+  missing/disconnected specified frontend is unavailable even if another is live. Only when
+  the frontend ID is absent does the defaults preview retain the any-live-frontend rule.
+  Native reasons remain `Screen access is not enabled for this session.` or
   `Capture frontend disconnected.`. OS permission and first-use consent are deliberately
   not availability gates: an authorized first tool call must still reach the permission flow.
+- Remote-device previews cannot supply a non-null `captureFrontendID` (400). Their capture
+  readiness is derived from the authenticated transport, not a client JSON flag: an existing
+  binding wins; otherwise exactly one live frontend must explicitly accept remote conversations.
+  Zero, local-only, or ambiguous eligible frontends are unavailable. The preview never performs
+  the binding or emits a native binding event.
 - This query does not persist records, load images, discover models, authenticate providers,
-  obtain/refresh tokens, invoke models, bind capture, request OS access or execute tools.
-  The result is a point-in-time preview; runtime checks still run before preparation.
+  obtain/refresh tokens, invoke models, register/select/bind capture, grant consent, request
+  OS access or execute tools. It adds no persisted availability status. Actual runtime
+  `ToolContext`s always leave the preview frontend unset: runtime catalog filtering and
+  execution still require a bound live frontend, and preparation rechecks that binding.
+  The result is a point-in-time preview, not a guarantee that capture will succeed.
 
-Clients should refresh when their effective model/search model or session changes and
-on existing `/v1/changes` catalog invalidations while the settings/selector is open.
+Clients should refresh when their effective model/search model, session or capture frontend
+changes and on existing `/v1/changes` catalog invalidations while the settings/selector is open.
 Provider changes already invalidate that catalog; native registration, binding/revocation
 and disconnect now do too. Invalidation is published after native locks are released.
-Grey/unavailable presentation must not change the saved selection or make checkboxes
-uneditable; reasons describe runtime capability, not an approval grant or a new deny-list.
+Unavailable tool labels are strongly dimmed without reason text or hints. Global default
+checkboxes remain editable. Session-specific and iOS new-session checkboxes are disabled
+while unavailable (or unknown), preserving their inherited/saved checked state. Availability
+never rewrites selection. Clients retain successful same-context results during revalidation
+and transient failures, publish only changed results, and reject late replies from a different
+model/session/frontend/backend. Tool selection writes must not clear the availability display.
 
 ## Per-session tool selection
 
