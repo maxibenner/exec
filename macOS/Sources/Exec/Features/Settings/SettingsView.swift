@@ -13,6 +13,9 @@ struct SettingsView: View {
             )) {
                 ForEach(ChatLibrary.SettingsTab.allCases, id: \.self) { section in
                     Label(section.title, systemImage: section.systemImage)
+                        // Keep navigation glyphs static as the native sidebar becomes active.
+                        .symbolRenderingMode(.monochrome)
+                        .symbolEffectsRemoved()
                         .tag(section)
                 }
             }
