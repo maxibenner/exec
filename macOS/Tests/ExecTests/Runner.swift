@@ -45,6 +45,9 @@ import Foundation
                 ("Native scrollbar actions preserve reader intent across styles", {
                     try await TranscriptScrollerTests().nativeActionsPreserveReaderIntentAcrossStyles()
                 }),
+                ("Session rename dialogs repeatedly select the current title", {
+                    try await SessionRenameTests().repeatedRenamesSelectTheCurrentTitle()
+                }),
                 ("Sidebar context clicks cover parents without stealing child menus", {
                     try await SidebarContextMenuTests().parentAndChildHitTargetsStayScoped()
                 })

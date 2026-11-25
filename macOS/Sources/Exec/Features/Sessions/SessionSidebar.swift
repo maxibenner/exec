@@ -22,9 +22,7 @@ struct SessionSidebar: View {
     @Bindable var store: ChatLibrary
     let open: (UUID) -> Void
     let delete: (SessionSummary) -> Void
-    @State private var renaming = false
-    @State private var renameID: UUID?
-    @State private var renameTitle = ""
+    @State private var renamePrompt = SessionRenamePrompt()
     private var rowAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.25) }
     private var groups: [SidebarSessionGroup] { SidebarSessionGroup.snapshot(store) }
 
@@ -50,8 +48,11 @@ struct SessionSidebar: View {
     }
 
     private func beginRenaming(_ session: SessionSummary) {
-        guard store.canRenameSession(session.id) else { return }
-        renameID = session.id; renameTitle = session.title; renaming = true
+        guard store.canRenameSession(session.id),
+              let current = store.sessionList.first(where: { $0.id == session.id }) else { return }
+        renamePrompt.present(title: current.title) { title in
+            store.renameSession(session.id, title: title)
+        }
     }
 
     var body: some View {
@@ -134,15 +135,7 @@ struct SessionSidebar: View {
                 displayedGroups = updated
             }
         }
-        .alert("Rename Conversation", isPresented: $renaming) {
-            TextField("Name", text: $renameTitle)
-            Button("Rename") {
-                if let id = renameID { store.renameSession(id, title: renameTitle) }
-            }
-            .keyboardShortcut(.defaultAction)
-            .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) {}
-        }
+        .background(WindowReference { renamePrompt.window = $0 })
     }
 }
 
