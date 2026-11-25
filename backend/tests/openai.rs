@@ -131,6 +131,130 @@ fn phased_message(id: &str, phase: Value, text: &str) -> Value {
 }
 
 #[tokio::test]
+async fn current_catalog_models_preserve_metadata_routing_and_reasoning_efforts() {
+    use futures_util::StreamExt;
+
+    let root = support::directory();
+    let path = root.path().join("credentials.json");
+    save(&path, &session(false));
+    let entries = [
+        ("gpt-6.2-astra", "GPT-6.2 Astra", 272_000, "low"),
+        ("gpt-6.2-sol", "GPT-6.2 Sol", 500_000, "medium"),
+    ];
+    let efforts = ["low", "medium", "high", "xhigh", "max", "ultra"];
+    // Synthetic public metadata only; no recorded account responses or credentials.
+    let mut catalog: Vec<Value> = entries
+        .iter()
+        .map(|(slug, name, limit, default)| {
+            json!({
+                "slug": slug, "display_name": name, "visibility": "list",
+                "context_window": limit, "input_modalities": ["text", "image"],
+                "default_reasoning_level": default,
+                "supported_reasoning_levels": efforts.iter().map(|effort| json!({"effort": effort})).collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    catalog.push(json!({"slug": "hidden-model", "visibility": "hide"}));
+    let transport = Fake::new(move |request| {
+        let catalog = catalog.clone();
+        async move {
+            match request.endpoint {
+                Endpoint::Models => Ok(response(json!({"models": catalog}))),
+                Endpoint::Responses => Ok(wire(vec![
+                    json!({"type":"response.output_text.delta","delta":"Ready"}),
+                    json!({"type":"response.completed","response":{"status":"completed","output":[
+                        phased_message("reply", json!("final_answer"), "Ready")
+                    ]}}),
+                ])),
+                _ => panic!("unexpected authentication or provider request"),
+            }
+        }
+    });
+    let auth = Authentication::open(path, None, transport.clone())
+        .await
+        .unwrap();
+    let provider = Arc::new(OpenAIProvider::new(auth, transport.clone()));
+    let registry =
+        exec_agent::providers::ProviderRegistry::new("openai", vec![("openai".into(), provider)])
+            .unwrap();
+    let models = registry.models(CancellationToken::new()).await.unwrap();
+    assert_eq!(models.len(), entries.len());
+    for (model, (slug, name, limit, default)) in models.iter().zip(entries) {
+        assert_eq!(model.id, format!("openai/{slug}"));
+        assert_eq!(model.provider.as_deref(), Some("openai"));
+        assert_eq!(model.name, name);
+        assert_eq!(model.context_window, Some(limit));
+        assert_eq!(model.default_effort.as_deref(), Some(default));
+        assert_eq!(model.accepts_images, Some(true));
+        assert_eq!(
+            model
+                .efforts
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>(),
+            efforts
+        );
+        registry
+            .prepare_model(&model.id, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(registry.context_window(&model.id), Some(limit));
+        assert!(
+            registry
+                .accepts_images(&model.id, CancellationToken::new())
+                .await
+                .unwrap()
+        );
+        for effort in [None, Some("max"), Some("ultra")] {
+            let request = ProviderRequest {
+                model: model.id.clone(),
+                message_ids: vec![new_id()],
+                incomplete_message_ids: Default::default(),
+                messages: vec![ContextMessage::User {
+                    text: "Hello".into(),
+                }],
+                images: Default::default(),
+                instructions: String::new(),
+                effort: effort.map(str::to_owned),
+                provider_state: None,
+                tools: vec![],
+                cancel: CancellationToken::new(),
+            };
+            let events: Vec<_> = registry.stream(request).collect().await;
+            assert!(events.iter().all(Result::is_ok));
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, Ok(ProviderEvent::Text(text)) if text == "Ready"))
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, Ok(ProviderEvent::Done)))
+            );
+            let body: Value = {
+                let requests = transport.requests.lock().unwrap();
+                let sent = requests.last().unwrap();
+                assert!(matches!(sent.endpoint, Endpoint::Responses));
+                serde_json::from_str(sent.body.as_ref().unwrap()).unwrap()
+            };
+            assert_eq!(body["model"], slug);
+            assert_eq!(
+                body.get("reasoning"),
+                effort.map(|effort| json!({"effort": effort})).as_ref()
+            );
+            assert_eq!(body["stream"], true);
+            assert_eq!(body["store"], false);
+        }
+    }
+    // Preparation/image checks reuse fetched metadata, with no extra discovery or retries.
+    assert_eq!(
+        transport.requests.lock().unwrap().len(),
+        1 + entries.len() * 3
+    );
+}
+
+#[tokio::test]
 async fn steering_commentary_continues_through_tools_to_final_and_replays_phase() {
     let root = support::directory();
     let path = root.path().join("credentials.json");

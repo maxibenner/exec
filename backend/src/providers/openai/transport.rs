@@ -62,8 +62,9 @@ impl Transport for Http {
             ),
             Endpoint::Keys => ("https://auth.openai.com/.well-known/jwks.json", false),
             Endpoint::Revoke => ("https://auth.openai.com/api/accounts/oauth/revoke", true),
+            // Codex filters model visibility by this client compatibility version.
             Endpoint::Models => (
-                "https://chatgpt.com/backend-api/codex/models?client_version=0.162.1",
+                "https://chatgpt.com/backend-api/codex/models?client_version=0.172.0",
                 false,
             ),
             Endpoint::Responses => ("https://chatgpt.com/backend-api/codex/responses", false),
