@@ -15,15 +15,7 @@ struct SettingsView: View {
                     Label {
                         Text(section.title)
                     } icon: {
-                        if store.settingsTab == section {
-                            // The selected symbol already renders reliably in the native style.
-                            Image(systemName: section.systemImage)
-                        } else {
-                            Image(systemName: section.systemImage)
-                                // Resolve the inherited accent before flattening the symbol.
-                                .foregroundStyle(.tint)
-                                .drawingGroup()
-                        }
+                        SettingsSidebarIcon(systemName: section.systemImage)
                     }
                     .tag(section)
                 }

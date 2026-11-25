@@ -3,11 +3,13 @@ import SwiftUI
 
 @MainActor struct SettingsWindowLayoutTests {
     func nativeHeaderKeepsSidebarVisibleAcrossSections() async throws {
+        _ = NSApplication.shared
         let suite = "exec-settings-layout-\(UUID())"
         let preferences = UserDefaults(suiteName: suite)!
         let store = ChatLibrary(provider: AgentAccounts(api: AgentAPI(transport: FakeAgentTransport())),
                                 preferences: preferences)
         let root = SettingsView(store: store, canCheckForUpdates: false, checkForUpdates: {})
+            .defaultAppStorage(preferences)
         let window = NSWindow(contentViewController: NSHostingController(rootView: root))
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
@@ -21,6 +23,7 @@ import SwiftUI
             preferences.removePersistentDomain(forName: suite)
         }
 
+        var mountedIcons: [SettingsSidebarImageView]?
         // Providers uses a padded stack rather than a grouped Form; both must
         // retain the same compact native header when switching sections.
         for section: ChatLibrary.SettingsTab in [.modelsAndTools, .tools, .systemPrompt, .accounts] {
@@ -36,6 +39,14 @@ import SwiftUI
                   let toolbar = window.toolbar else {
                 throw CheckFailure(description: "Settings must have a native split view and toolbar")
             }
+            let icons = findIcons(in: sidebar.viewController.view)
+            try expect(icons.count == ChatLibrary.SettingsTab.allCases.count)
+            try expect(icons.allSatisfy { $0.image != nil && !$0.allowsVibrancy && $0.bounds.width > 0 && $0.bounds.height > 0 })
+            if let mountedIcons {
+                try expect(zip(mountedIcons, icons).allSatisfy { $0 === $1 })
+            } else {
+                mountedIcons = icons
+            }
             try expect(window.titleVisibility == .hidden && window.toolbarStyle == .unifiedCompact)
             try expect(!sidebar.canCollapse && !sidebar.isCollapsed)
             try expect(!toolbar.items.contains { $0.itemIdentifier == .toggleSidebar })
@@ -50,6 +61,11 @@ import SwiftUI
             let contentTop = detailContent.convert(detailContent.bounds, to: nil).maxY
             try expect(abs(contentTop - detailTop) < 1)
         }
+    }
+
+    private func findIcons(in view: NSView) -> [SettingsSidebarImageView] {
+        if let icon = view as? SettingsSidebarImageView { return [icon] }
+        return view.subviews.flatMap { findIcons(in: $0) }
     }
 
     private func findDetailContent(in view: NSView) -> SettingsWindowConfiguration.ConfigurationView? {
