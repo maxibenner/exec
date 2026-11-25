@@ -6,6 +6,26 @@
         <description>Stable updates for Exec on macOS.</description>
         <language>en</language>
         <item>
+            <title>0.1.13</title>
+            <pubDate>Wed, 25 Nov 2026 17:13:52 +0100</pubDate>
+            <link>https://github.com/maxibenner/exec</link>
+            <sparkle:version>16</sparkle:version>
+            <sparkle:shortVersionString>0.1.13</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[## Features
+- Added syntax highlighting for markdown code-blocks.
+- Updated the image generation tool to allow editing through reference images
+- Added client-side compaction for providers without dedicated endpoints.
+- Updated OpenAI model catalog to enable Astra and Sol 6.2.
+
+## Fixes
+- Session title wouldn't auto populate the rename input field after renaming for the first time.
+- Enabled hosts's screenshot functionality for sessions created from the iOS app.
+]]></description>
+            <enclosure url="https://github.com/maxibenner/exec/releases/download/v0.1.13/Exec-0.1.13-macOS-arm64.zip" length="14499144" type="application/octet-stream" sparkle:edSignature="n8UeXjwFEAW9VBLG+KFduYUpGw1zKZdjAxA6XFsp6YGbZqL/HllwHU5jXalCWRL16PVHgykPh5OL5arW1p9/CQ=="/>
+        </item>
+        <item>
             <title>0.1.12</title>
             <pubDate>Fri, 20 Nov 2026 20:38:12 -0500</pubDate>
             <link>https://github.com/maxibenner/exec</link>
