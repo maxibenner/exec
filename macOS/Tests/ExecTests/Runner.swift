@@ -272,7 +272,7 @@ import Foundation
             ("Markdown selection across blocks and streaming updates", { try MarkdownSelectionTests().selectsAndCopiesAcrossBlocksWithoutLosingFormatting() }),
             ("Markdown blocks and streaming code", { try MarkdownTests().preservesBlocksAndStreamingCode() }),
             ("Markdown link and image safety", { try MarkdownTests().stripsActiveContentAndUnsafeLinks() }),
-            ("Diff column alignment and literal content", { try DiffTests().pairsReplacementsWithoutLosingMarkersOrPlusSigns() }),
+            ("Compact edit diff line numbers and inline highlights", { try DiffTests().compactGutterAndInlineChanges() }),
             ("Sidebar drops publish immediately and reconcile persistence without retry", { try await SessionPresentationTests().reorderPublishesBeforePersistenceAndReconciles() }),
             ("Workspace picker and creation preserve the current conversation until success", { try await SidebarCreationTests().pickerKeepsCurrentUntilCreationCompletes() }),
             ("New session rows and selection arrive together at the top", { try await SessionPresentationTests().newSessionStartsAtTop() }),
