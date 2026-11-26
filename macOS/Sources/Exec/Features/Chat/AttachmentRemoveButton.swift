@@ -27,7 +27,8 @@ struct ChatRemoveButton: View {
                         .stroke(.white, style: StrokeStyle(lineWidth: 1, lineCap: .round))
                         .frame(width: 5, height: 5)
                 }
-                .padding(3)
+                // Shared inset when anchored in the top-trailing corner.
+                .padding(6)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

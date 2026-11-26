@@ -17,7 +17,6 @@ struct UserMessageBubble: View {
         HStack {
             Spacer(minLength: 40)
             bubbleContents
-                .padding(.horizontal, 12).padding(.vertical, 8)
                 .foregroundStyle(isQueued ? Color.primary : .white)
                 .background(isQueued ? Color.primary.opacity(0.08) : AppColors.systemAccent, in: shape)
                 .background {
@@ -33,7 +32,7 @@ struct UserMessageBubble: View {
 
     @ViewBuilder private var bubbleContents: some View {
         if let queuedAction {
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .top, spacing: 4) {
                 messageContents
                 ChatRemoveButton(label: "Cancel queued message", role: .destructive, action: queuedAction.cancel)
                     .disabled(!queuedAction.isEnabled)
@@ -59,6 +58,8 @@ struct UserMessageBubble: View {
                 }
             }
         }
+        .padding(isQueued ? .leading : .horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     private var accessibilityTitle: Text {
