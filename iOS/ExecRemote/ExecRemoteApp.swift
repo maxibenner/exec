@@ -366,6 +366,7 @@ struct ConversationScreen: View {
                              showsThinkingIndicator: store.thinking.visible.contains(conversationID),
                              descriptiveShellTitles: descriptiveShellTitles,
                              viewState: store.transcriptViewState(for: conversationID),
+                             sendPin: store.transcriptSendPin(for: conversationID),
                              saveViewState: { id, value in store.saveTranscriptViewState(value, for: id) },
                              bottomPadding: bottomOverlayHeight, hasEarlier: store.connected && store.selected == conversationID && store.hasEarlierMessages,
                              isLoadingEarlier: store.selected == conversationID && store.isLoadingEarlierMessages,

@@ -117,6 +117,37 @@ private struct QueuedInputTransport: RemoteTransport {
         XCTAssertEqual(commands.last?.body, .object(["operationID": .string(operation), "messageID": .string(transport.sentID)]))
     }
 
+    func testDirectSteerPromotionKeepsReadingAndReusesTheQueueRow() async throws {
+        let transport = QueuedInputTransport(), store = try makeStore(transport)
+        await transport.base.setSnapshot(snapshot(pending: [], committed: [existingID], state: "running"))
+        await store.connect()
+        await store.open(id).value
+        var scroll = TranscriptScrollState()
+        scroll.restoreRows(TranscriptItem.project(store.displaySnapshot).flatMap(\.rows))
+        scroll.readerScrolled(towardLatest: false, atBottom: false)
+
+        await transport.base.hold("POST", steer)
+        store.drafts[id] = "Same text"
+        let sending = try XCTUnwrap(store.beginSend()); defer { sending.cancel() }
+        try await untilWaiting(transport, "POST", steer)
+        let rowID = try XCTUnwrap(store.queuedMessages(for: id).last?.id)
+        await transport.base.setSnapshot(snapshot(pending: [transport.sentID], committed: [existingID], state: "running"))
+        await transport.base.release("POST", steer)
+        await sending.value
+        XCTAssertEqual(store.queuedMessages(for: id).map(\.id), [rowID])
+        XCTAssertTrue(store.canCancelQueuedMessage(rowID: rowID, conversationID: id))
+
+        await transport.base.setSnapshot(snapshot(pending: [], committed: [existingID, transport.sentID], state: "running"))
+        await store.poll()
+        let delivered = TranscriptItem.project(store.displaySnapshot).flatMap(\.rows)
+        XCTAssertEqual(delivered.map(\.id), [existingID, rowID])
+        XCTAssertTrue(store.queuedMessages(for: id).isEmpty)
+        XCTAssertFalse(store.canCancelQueuedMessage(rowID: rowID, conversationID: id))
+        XCTAssertFalse(scroll.update(rows: delivered, pinTo: store.transcriptSendPin(for: id)?.take(in: delivered)))
+        XCTAssertEqual(scroll.intent, .reading)
+        XCTAssertNil(scroll.reservedTurnID)
+    }
+
     func testStaleAndUnconfirmedCancellationOnlyReadBackTheHostState() async throws {
         for failure in [RemoteFailure("No longer pending.", kind: .rejected, statusCode: 409), RemoteFailure("Lost reply.")] {
             let transport = QueuedInputTransport(cancelFailure: failure), store = try makeStore(transport)

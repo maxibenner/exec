@@ -34,7 +34,11 @@ extension RelayClient: RemoteTransport {}
     static let hostConnectionRequiredMessage = "Connect to the host first."
 
     var host: PairedHost?
-    var connected = false { didSet { if !connected { thinking.reset() } } }
+    var connected = false {
+        didSet {
+            if !connected { thinking.reset(); immediateSend = nil }
+        }
+    }
     private(set) var isConnecting = false
     private(set) var hasLoadedLibrary = false
     // This aggregate is for diagnostics/tests, never for admitting UI actions.
@@ -101,6 +105,7 @@ extension RelayClient: RemoteTransport {}
     var selected: String? {
         didSet {
             guard selected != oldValue else { return }
+            immediateSend = nil
             if pendingMessage?.conversationID != selected { cancelPendingMessage() }
             snapshot = selected.flatMap { recentConversations.visit($0) } ?? .null
             syncStates = syncStates.filter { recentConversations.contains($0.key) }
@@ -116,6 +121,54 @@ extension RelayClient: RemoteTransport {}
     }
     var drafts: [String:String] = [:]
     private var optimisticMessages: [String: RemoteOptimisticMessages] = [:]
+    /// Viewport intent belongs to a direct, foreground /turns send, not the
+    /// optimistic row (whose identity is also used by queued input).
+    private struct ImmediateSend {
+        enum Phase {
+            case submitting(latestRead: RemoteTranscriptSync?)
+            case accepted(RemoteJSON)
+            case delivered(messageID: String)
+        }
+        let conversationID: String
+        let rowID: String
+        let text: String
+        let baseline: RemoteTranscriptSync
+        var phase: Phase = .submitting(latestRead: nil)
+        // Incremental reads retain prepended history in their assembled snapshot.
+        var pagedMessageIDs: Set<String> = []
+
+        func deliveredIndex(in state: RemoteTranscriptSync, receipt: RemoteJSON) -> Int? {
+            let messages = state.snapshot["messages"].array
+            let previous = baseline.snapshot["messages"].array
+            let knownIDs = Set((previous + baseline.snapshot["pendingInput"].array).map(\.id))
+            func isNewUser(_ message: RemoteJSON) -> Bool {
+                message["role"].string == "user" && !message.id.isEmpty && !knownIDs.contains(message.id)
+            }
+            if receipt["messageID"] != .null {
+                return messages.firstIndex { $0.id == receipt["messageID"].string && isNewUser($0) }
+            }
+
+            // Legacy ACKs identify only the operation. The optimistic mapper
+            // can be more permissive; only pin with an intact pre-send tail,
+            // the acknowledged operation, and a unique new matching user row.
+            guard let operation = receipt["operationID"].string, !operation.isEmpty,
+                  operation == state.snapshot["operation"]["id"].string,
+                  operation != baseline.snapshot["operation"]["id"].string else { return nil }
+            let start: Int
+            if let tail = previous.last {
+                guard let index = messages.firstIndex(where: { $0.id == tail.id }) else { return nil }
+                start = index + 1
+            } else {
+                guard baseline.total == 0, state.offset == 0 else { return nil }
+                start = 0
+            }
+            let matches = messages.indices.dropFirst(start).filter {
+                isNewUser(messages[$0]) && messages[$0]["text"].string == text
+            }
+            return matches.count == 1 ? matches.first : nil
+        }
+    }
+    private var immediateSend: ImmediateSend?
     private var deletions = RemoteSessionDeletions()
     // A notice can be acknowledged while a DELETE defers a resident history or
     // a send loses its acknowledgement. Keep it dirty until a read applies or it leaves cache.
@@ -311,6 +364,43 @@ extension RelayClient: RemoteTransport {}
         guard value.generation == hostGeneration, recentConversations.contains(id) else { return }
         transcriptViewStates[id] = value
     }
+    func transcriptSendPin(for id: String) -> TranscriptSendPin? {
+        guard let send = immediateSend, send.conversationID == id, case .delivered = send.phase else { return nil }
+        let rowID = send.rowID
+        return TranscriptSendPin(rowID: rowID) { [weak self] in
+            guard let self, let send = self.immediateSend, send.rowID == rowID,
+                  send.conversationID == id, case .delivered = send.phase else { return false }
+            self.immediateSend = nil
+            return true
+        }
+    }
+    private func matchedImmediateSend(_ send: ImmediateSend, receipt: RemoteJSON,
+                                      in state: RemoteTranscriptSync) -> ImmediateSend? {
+        guard let index = send.deliveredIndex(in: state, receipt: receipt) else { return nil }
+        let messageID = state.snapshot["messages"].array[index].id
+        // Projection relabels messages in place. Check the confirmed canonical
+        // row is the one that actually inherited this send's local ID.
+        guard !send.pagedMessageIDs.contains(messageID),
+              let projected = optimisticMessages[send.conversationID]?.project(state.snapshot)["messages"].array,
+              projected.indices.contains(index), projected[index].id == send.rowID else { return nil }
+        var send = send
+        send.phase = .delivered(messageID: messageID)
+        return send
+    }
+    private func recordLiveTranscript(_ state: RemoteTranscriptSync) {
+        guard var send = immediateSend, send.conversationID == state.snapshot.id else { return }
+        switch send.phase {
+        case .submitting:
+            send.phase = .submitting(latestRead: state)
+            immediateSend = send
+        case .accepted(let receipt):
+            // /turns commits before ACK. If the first post-ACK live page can't
+            // confirm delivery, don't wait for old history to supply a match.
+            immediateSend = matchedImmediateSend(send, receipt: receipt, in: state)
+        case .delivered(let messageID):
+            if !state.snapshot["messages"].array.contains(where: { $0.id == messageID }) { immediateSend = nil }
+        }
+    }
     func pair(_ text: String) async {
         guard !isConnecting, !hasPendingCommands else { return }
         do {
@@ -388,6 +478,7 @@ extension RelayClient: RemoteTransport {}
         }
         guard !sceneIsBackground else { return }
         sceneIsBackground = true
+        immediateSend = nil
         sceneGeneration += 1
         // Pause read observation, without invoking observe()'s owner teardown.
         observationGeneration += 1
@@ -702,7 +793,10 @@ extension RelayClient: RemoteTransport {}
             summary["operation"] = state.snapshot["operation"]
             conversations[index] = .object(summary)
         }
-        if selected == id { snapshot = state.snapshot }
+        if selected == id {
+            snapshot = state.snapshot
+            recordLiveTranscript(state)
+        }
         return true
     }
     func loadEarlier() async {
@@ -720,6 +814,9 @@ extension RelayClient: RemoteTransport {}
                   selected == id, let current = syncStates[id],
                   current.snapshot["messages"].array.first?["id"].string == first else { return }
             let older = try current.prepending(value)
+            if immediateSend?.conversationID == id {
+                immediateSend?.pagedMessageIDs.formUnion(value["snapshot"]["messages"].array.map(\.id))
+            }
             syncStates[id] = older
             optimisticMessages[id]?.reconcile(older.snapshot)
             snapshot = older.snapshot
@@ -1025,6 +1122,9 @@ extension RelayClient: RemoteTransport {}
         if connected, conversationConnections[id] == connectionGeneration, sending[id] == nil, target != .unresolved {
             // Reserve the slot synchronously so a second button action depends on it.
             sending[id] = message.id
+            if target == .newTurn, let baseline = syncStates[id] {
+                immediateSend = ImmediateSend(conversationID: id, rowID: message.rowID, text: text, baseline: baseline)
+            }
             let task = Task {
                 await performSend(message, target: target)
             }
@@ -1047,6 +1147,7 @@ extension RelayClient: RemoteTransport {}
         guard !Task.isCancelled, bufferNow() < message.expiresAt, connected, sending[id] == intent,
               !sceneIsBackground || backgroundEnd != nil,
               !isUpdatingConversation(id), !isCancelling(id) else {
+            if immediateSend?.rowID == message.rowID { immediateSend = nil }
             if sending[id] == intent { sending.removeValue(forKey: id) }
             if pendingMessage?.target == .afterSend(intent) { cancelPendingMessage() }
             restoreDraft(text, for: id); return
@@ -1069,6 +1170,10 @@ extension RelayClient: RemoteTransport {}
             let response = try await client.request("POST", path, body: body)
             guard generation == hostGeneration else { return }
             let needsSnapshot = optimisticMessages[id]?.accept(localID, response: response) ?? false
+            if var send = immediateSend, send.rowID == localID, case .submitting(let read) = send.phase {
+                send.phase = .accepted(response)
+                immediateSend = read.flatMap { matchedImmediateSend(send, receipt: response, in: $0) } ?? send
+            }
             if let operation = response["operationID"].string {
                 if needsSnapshot { acceptedOperations[id] = operation }
                 else { acceptedOperations.removeValue(forKey: id) }
@@ -1080,6 +1185,7 @@ extension RelayClient: RemoteTransport {}
             finishSendIntent(intent) // ACK, not history download, ends the assertion.
         } catch {
             guard generation == hostGeneration else { return }
+            if immediateSend?.rowID == localID { immediateSend = nil }
             sending.removeValue(forKey: id)
             snapshotGeneration += 1
             optimisticMessages[id]?.remove(localID)

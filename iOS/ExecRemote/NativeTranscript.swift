@@ -17,6 +17,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
     let showsThinkingIndicator: Bool
     let descriptiveShellTitles: Bool
     let viewState: TranscriptViewState?
+    let sendPin: TranscriptSendPin?
     let saveViewState: (String, TranscriptViewState) -> Void
     let bottomPadding: CGFloat
     let hasEarlier: Bool
@@ -50,7 +51,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
         table.verticalScrollIndicatorInsets.bottom = bottomPadding
         table.configureEarlierHistory(conversationID: conversationID, hasEarlier: hasEarlier,
                                       isLoadingEarlier: isLoadingEarlier, loadEarlier: loadEarlier)
-        context.coordinator.update(conversationID: conversationID, snapshot: snapshot,
+        context.coordinator.update(conversationID: conversationID, snapshot: snapshot, sendPin: sendPin,
                                    showsThinkingIndicator: showsThinkingIndicator, descriptiveShellTitles: descriptiveShellTitles,
                                    viewState: viewState, table: table)
     }
@@ -61,6 +62,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
         private struct Update {
             let conversationID: String?
             let snapshot: RemoteJSON
+            let sendPin: TranscriptSendPin?
             let showsThinkingIndicator: Bool
             let descriptiveShellTitles: Bool
             let viewState: TranscriptViewState?
@@ -181,10 +183,10 @@ struct NativeTranscript: UIViewControllerRepresentable {
             dirtyGroups.insert(group)
             scheduleUpdate(table)
         }
-        func update(conversationID: String?, snapshot: RemoteJSON,
+        func update(conversationID: String?, snapshot: RemoteJSON, sendPin: TranscriptSendPin? = nil,
                     showsThinkingIndicator: Bool, descriptiveShellTitles: Bool,
                     viewState: TranscriptViewState?, table: TranscriptTableView) {
-            pendingUpdate = Update(conversationID: conversationID, snapshot: snapshot,
+            pendingUpdate = Update(conversationID: conversationID, snapshot: snapshot, sendPin: sendPin,
                                    showsThinkingIndicator: showsThinkingIndicator,
                                    descriptiveShellTitles: descriptiveShellTitles, viewState: viewState)
             scheduleUpdate(table)
@@ -211,7 +213,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
             dirtyGroups.removeAll()
             let validSnapshot = update.snapshot["id"].string == update.conversationID && update.conversationID != nil
             guard changedConversation || changedDisplay || currentUpdate?.showsThinkingIndicator != update.showsThinkingIndicator
-                    || next != items || !dirty.isEmpty || (!hasSnapshot && validSnapshot) else { return }
+                    || next != items || !dirty.isEmpty || (validSnapshot && (!hasSnapshot || update.sendPin != nil)) else { return }
             applying = true
             if changedConversation {
                 savePresentation(table)
@@ -225,6 +227,9 @@ struct NativeTranscript: UIViewControllerRepresentable {
             table.beginContentUpdate()
             table.setThinkingIndicator(update.showsThinkingIndicator)
             let rows = projected.flatMap(\.rows)
+            // Opening restores the viewport, even if an unhandled receipt was
+            // coalesced into the initial snapshot. Don't carry it forward.
+            let pinRowID = validSnapshot ? update.sendPin?.take(in: rows) : nil
             if initial {
                 presentation = update.viewState
                 expansion = presentation?.expansion ?? [:]
@@ -238,7 +243,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
                 // The first real history establishes the scroll baseline.
                 table.scrollState.restoreRows(rows)
             } else {
-                _ = table.scrollState.update(rows: rows)
+                _ = table.scrollState.update(rows: rows, pinTo: pinRowID)
             }
             hasSnapshot = hasSnapshot || validSnapshot
             let previousIDs = Set(source.snapshot().itemIdentifiers)

@@ -26,44 +26,39 @@ struct TranscriptItem: Equatable {
     }
 }
 
-/// Only reader input changes follow intent. Geometry, keyboard changes and
-/// delayed self-sizing must never infer permission to return to the latest row.
+/// One matched local Send, not a property of the transcript rows. The store
+/// checks that the request is still current when UIKit applies its update.
+struct TranscriptSendPin {
+    let rowID: String
+    let consume: @MainActor () -> Bool
+
+    @MainActor func take(in rows: [RemoteTranscriptRow]) -> String? {
+        guard rows.contains(where: { $0.id == rowID && $0.message["role"].string == "user" }),
+              consume() else { return nil }
+        return rowID
+    }
+}
+
+/// Only reader input and an explicit Send change follow intent. Geometry,
+/// streaming, and queued promotions must not infer a new turn to pin.
 struct TranscriptScrollState {
     enum Intent: Equatable { case latest, turn(String), reading }
     private(set) var intent: Intent = .latest
     private(set) var reservedTurnID: String?
-    private var previousIDs: Set<String> = []
-    private var lastUserID: String?
-    private var initialized = false
 
-    /// Returns true when a newly delivered user turn should be followed, not for
-    /// a history page, initial snapshot, or acknowledgement of a visible row.
-    mutating func update(rows: [RemoteTranscriptRow]) -> Bool {
-        let ids = Set(rows.map(\.id))
-        let user = rows.last { $0.message["role"].string == "user" }
-        let appended = initialized && (previousIDs.isEmpty || !previousIDs.isDisjoint(with: ids))
-        let isNewUser = appended && user.map { $0.id != lastUserID && !previousIDs.contains($0.id) } == true
-        let shouldFollow = isNewUser && user.map { intent != .reading || $0.id.hasPrefix("local-") } == true
-        if shouldFollow, let user {
-            intent = .turn(user.id)
-            reservedTurnID = user.id
-        } else if let reservedTurnID, !ids.contains(reservedTurnID) {
-            self.reservedTurnID = nil
-            if case .turn = intent { intent = .latest }
+    mutating func update(rows: [RemoteTranscriptRow], pinTo rowID: String? = nil) -> Bool {
+        if let rowID, rows.contains(where: { $0.id == rowID && $0.message["role"].string == "user" }) {
+            intent = .turn(rowID)
+            reservedTurnID = rowID
+            return true
         }
-        previousIDs = ids
-        lastUserID = user?.id
-        initialized = true
-        return shouldFollow
+        restoreRows(rows)
+        return false
     }
 
-    /// Reopening adopts the current cached history without replaying messages
-    /// received while hidden as a newly sent turn.
+    /// Reopening adopts cached history without applying a new send request.
     mutating func restoreRows(_ rows: [RemoteTranscriptRow]) {
-        previousIDs = Set(rows.map(\.id))
-        lastUserID = rows.last { $0.message["role"].string == "user" }?.id
-        initialized = true
-        if let reservedTurnID, !previousIDs.contains(reservedTurnID) {
+        if let reservedTurnID, !rows.contains(where: { $0.id == reservedTurnID }) {
             self.reservedTurnID = nil
             if case .turn = intent { intent = .latest }
         }
