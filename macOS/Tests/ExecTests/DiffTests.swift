@@ -3,9 +3,12 @@ import SwiftUI
 
 struct DiffTests {
     @MainActor func compactGutterAndInlineChanges() throws {
+        let headers = #"""
+        --- "a/Sources/nested space/quoted \"name\" 🧪.swift"
+        +++ "b/Sources/nested space/quoted \"name\" 🧪.swift"
+        """#
         let source = """
-        --- "file"
-        +++ "file"
+        \(headers)
         @@ -132,3 +132,4 @@
           context
         -  let value = "👩🏾‍💻old"
@@ -27,12 +30,29 @@ struct DiffTests {
         try expect(cache.value(for: source) === rendered)
         try expect(rendered.text.string == " context\n  let value = \"👩🏾‍💻old\"\n  let value = \"👩🏾‍💻new\"\n"
                    + "++counter\ntail\n\n    only\n\\ No newline at end of file\n[Diff preview truncated; not a complete patch.]")
-        var highlights: [String] = []
-        rendered.text.enumerateAttribute(.backgroundColor, in: NSRange(location: 0, length: rendered.text.length)) { color, range, _ in
-            if color != nil { highlights.append((rendered.text.string as NSString).substring(with: range)) }
+        let approval = cache.value(for: source, showsPatchHeaders: true)
+        try expect(approval.text.string == """
+        \(headers)
+        @@ -132,3 +132,4 @@
+         context
+          let value = "👩🏾‍💻old"
+          let value = "👩🏾‍💻new"
+        ++counter
+        tail
+        @@ -900 +901,0 @@
+            only
+        \\ No newline at end of file
+        [Diff preview truncated; not a complete patch.]
+        """)
+        try expect(approval.gutter.sorted { $0.key < $1.key }.map { $0.value.number } == [132, 133, 133, 134, 135, 900])
+        try expect(cache.value(for: source).text.string == rendered.text.string)
+        for diff in [rendered, approval] {
+            var highlights: [String] = []
+            diff.text.enumerateAttribute(.backgroundColor, in: NSRange(location: 0, length: diff.text.length)) { color, range, _ in
+                if color != nil { highlights.append((diff.text.string as NSString).substring(with: range)) }
+            }
+            try expect(highlights == ["old", "new", "++counter", "only"])
         }
-        try expect(highlights == ["old", "new", "++counter", "only"])
-        try expect(String(DiffView.highlighted(source).characters) == source)
 
         let blank = cache.value(for: "@@ -0,0 +1,2 @@\r\n+first\r\n+\r\n")
         try expect(blank.text.string == "first\n\n" && blank.gutter[6]?.number == 2)

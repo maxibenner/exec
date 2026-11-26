@@ -158,7 +158,7 @@ private actor ClearSnapshotTransport: AgentTransport {
             let initial = try snapshot()
             var settings = savedSettings
             settings.effort = "high"; settings.systemPrompt = "Pending prompt"
-            settings.searchModel = "openai/pending-search"; settings.autoApprove = scheduled
+            settings.searchModel = "openai/pending-search"
             let disabled = scheduled ? ["shell", "delegate"] : ["shell"]
             let cleared = try snapshot(model: "openai/updated", settings: settings, disabled: disabled, cleared: true)
             let transport = ClearSnapshotTransport(path: path, snapshot: initial)
@@ -174,10 +174,7 @@ private actor ClearSnapshotTransport: AgentTransport {
             store.draft = "/clear"
             store.selectedModel = "openai/updated"; store.selectedEffort = settings.effort
             store.systemPrompt = settings.systemPrompt; store.searchModel = settings.searchModel!
-            if scheduled {
-                store.setToolEnabled("delegate", false)
-                store.setAutoApproveTools(true)
-            }
+            if scheduled { store.setToolEnabled("delegate", false) }
             store.clear()
             await store.waitUntilIdle()
             try expectSnapshot(store, cleared)

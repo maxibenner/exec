@@ -3,12 +3,137 @@ use exec_agent::{Error, core::*, manager::AgentManager, storage::JsonConversatio
 use std::{
     fs,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 use support::*;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
+
+#[tokio::test]
+async fn live_auto_approval_preserves_pending_prompt_and_applies_to_later_calls() {
+    const BEFORE_SAVE: &str = "Starting the next batch";
+    const DURING_SAVE: &str = "Starting the next batch with more text";
+
+    let saving = CancellationToken::new();
+    let acknowledge = CancellationToken::new();
+    let offer_call = CancellationToken::new();
+    let writing = saving.clone();
+    let proceed = offer_call.clone();
+    let provider = FakeProvider::new(vec![
+        response(vec![
+            call("pending"),
+            call("auto-1"),
+            call("auto-2"),
+            ProviderEvent::Done,
+        ]),
+        script(move |_| {
+            Box::pin(async_stream::try_stream! {
+                yield ProviderEvent::TextSnapshot(BEFORE_SAVE.into());
+                writing.cancelled().await;
+                yield ProviderEvent::TextSnapshot(DURING_SAVE.into());
+                proceed.cancelled().await;
+                yield call("manual-again");
+                yield ProviderEvent::Done;
+            })
+        }),
+        answer(),
+    ]);
+    let executions = Arc::new(AtomicUsize::new(0));
+    let count = executions.clone();
+    let mut opts = options(
+        provider,
+        vec![tool(Some("exact effect"), move |context| {
+            count.fetch_add(1, Ordering::SeqCst);
+            async move { Ok(context.call_id) }
+        })],
+    );
+    let saved = Arc::new(Mutex::new(None::<ConversationRecord>));
+    let slot = saved.clone();
+    let ack = acknowledge.clone();
+    opts.checkpoint = Some(checkpoint(move |record| {
+        let (slot, saving, ack) = (slot.clone(), saving.clone(), ack.clone());
+        async move {
+            record.validate()?;
+            if !record.configuration.as_ref().unwrap().settings.auto_approve
+                && record.messages.last().map(Message::text) == Some(BEFORE_SAVE)
+            {
+                saving.cancel();
+                ack.cancelled().await;
+            }
+            *slot.lock().unwrap() = Some(record);
+            Ok(())
+        }
+    }));
+    let saved_record = || saved.lock().unwrap().clone().unwrap();
+    let c = Conversation::new(opts, None).unwrap();
+    let run = c.submit("Act".into()).unwrap();
+    let first = approval(&c).await;
+    assert_eq!(first.call.id, "pending");
+
+    let wait = Duration::from_secs(5);
+    timeout(wait, c.update_auto_approve(true))
+        .await
+        .unwrap()
+        .unwrap();
+    let enabled = c.snapshot();
+    assert!(enabled.configuration.settings.auto_approve);
+    assert!(saved_record().configuration.unwrap().settings.auto_approve);
+    assert_eq!(enabled.approval.as_ref(), Some(&first));
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert!(c.resolve_approval(&run.operation_id, &first.id, false));
+
+    // Both remaining calls in the first batch finish without an approval reply.
+    until(&c, |s| {
+        s.messages.last().map(Message::text) == Some(BEFORE_SAVE)
+    })
+    .await;
+    assert_eq!(
+        outcomes(&c),
+        [
+            ToolOutcome::Denied,
+            ToolOutcome::Completed,
+            ToolOutcome::Completed
+        ]
+    );
+
+    // Let the transcript advance while disabling is saving, but don't offer the
+    // later call until the flag update has been acknowledged.
+    let updating = c.clone();
+    let disable = tokio::spawn(async move { updating.update_auto_approve(false).await });
+    let streaming = until(&c, |s| {
+        s.messages.last().map(Message::text) == Some(DURING_SAVE)
+    })
+    .await;
+    assert!(streaming.configuration.settings.auto_approve);
+    assert!(!disable.is_finished());
+    acknowledge.cancel();
+    timeout(wait, disable).await.unwrap().unwrap().unwrap();
+    let disabled = c.snapshot();
+    assert!(!disabled.configuration.settings.auto_approve);
+    assert!(!saved_record().configuration.unwrap().settings.auto_approve);
+    assert_eq!(disabled.messages, streaming.messages);
+
+    offer_call.cancel();
+    let prompting = until(&c, |s| s.approval.is_some()).await;
+    assert_eq!(
+        prompting.messages.last().map(Message::text),
+        Some(DURING_SAVE)
+    );
+    let later = prompting.approval.unwrap();
+    assert_eq!(later.call.id, "manual-again");
+    assert_eq!(later.operation_id, run.operation_id);
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
+    assert!(c.resolve_approval(&run.operation_id, &later.id, true));
+    assert_eq!(complete(run).await.state, OperationState::Completed);
+    assert_eq!(executions.load(Ordering::SeqCst), 3);
+    let persisted = saved_record();
+    assert!(!persisted.configuration.unwrap().settings.auto_approve);
+    assert!(persisted.messages.starts_with(&prompting.messages));
+    assert_eq!(persisted.messages, c.snapshot().messages);
+}
 
 #[tokio::test]
 async fn default_auto_policy_executes_prepared_action_without_an_observer() {

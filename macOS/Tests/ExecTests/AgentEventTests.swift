@@ -109,7 +109,8 @@ struct ControlledAgentTransport: AgentTransport {
         let store = ChatStore(provider: AgentAccounts(api: AgentAPI(transport: transport)))
         defer { store.closePresentation() }
         try store.apply(snapshot.decoded(AgentSnapshot.self))
-        store.setAutoApproveTools(true)
+        store.systemPrompt = "Updated prompt"
+        store.scheduleSave()
         await store.waitForPendingSave()
         try expect(store.hasUnsavedChanges)
         // A later snapshot is not permission to retry a failed acknowledgement.

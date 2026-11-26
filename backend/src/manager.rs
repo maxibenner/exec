@@ -1089,6 +1089,9 @@ impl AgentManager {
     ) -> Result<ConversationSnapshot> {
         self.get(id)?.update_settings(settings).await
     }
+    pub async fn update_auto_approve(&self, id: &str, auto_approve: bool) -> Result<bool> {
+        self.get(id)?.update_auto_approve(auto_approve).await
+    }
     /// Read-only observers keep access during catalog reservations, until actual removal.
     /// Do not expose a Conversation handle here: get() remains mutation-guarded.
     pub fn snapshot(&self, id: &str) -> Result<ConversationSnapshot> {

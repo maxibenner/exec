@@ -121,7 +121,6 @@ private actor ForkSnapshotTransport: AgentTransport {
             settings.effort = "high"
             settings.systemPrompt = "Pending session prompt"
             settings.searchModel = "openai/pending-search"
-            settings.autoApprove = scheduled
             let disabled = scheduled ? ["shell", "delegate"] : ["shell"]
             let saved = try snapshot(id: sourceID, model: "openai/updated", settings: settings, disabled: disabled)
             let copied = try snapshot(id: forkID, model: "openai/updated", settings: settings, disabled: disabled)
@@ -141,10 +140,7 @@ private actor ForkSnapshotTransport: AgentTransport {
             source.selectedEffort = settings.effort
             source.systemPrompt = settings.systemPrompt
             source.searchModel = settings.searchModel!
-            if scheduled {
-                source.setToolEnabled("delegate", false)
-                source.setAutoApproveTools(true)
-            }
+            if scheduled { source.setToolEnabled("delegate", false) }
             // Also cover direct model/effort edits with no scheduled save task to await.
             library.forkConversation(source)
             await library.waitForNavigation()

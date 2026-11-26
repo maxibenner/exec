@@ -30,7 +30,7 @@ private actor CompactionQueueTransport: AgentTransport {
     private static let queuedID = UUID(uuidString: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff")!
     private var path: String { AgentAPI.path(AgentIntegrationTests.conversationID) }
 
-    private func snapshot(_ state: String, queued: Bool = false, auto: Bool = false,
+    private func snapshot(_ state: String, queued: Bool = false, systemPrompt: String? = nil,
                           operationID: UUID = CompactionQueueTests.operationID) throws -> AgentJSON {
         guard case .object(var fields) = try AgentIntegrationTests.fixture(state: state, result: true),
               case .object(var configuration) = fields["configuration"],
@@ -43,7 +43,7 @@ private actor CompactionQueueTransport: AgentTransport {
         fields["pendingInput"] = .array(queued ? [.object([
             "id": .string(Self.queuedID.uuidString), "role": .string("user"), "text": .string("Queued message")
         ])] : [])
-        settings["autoApprove"] = .bool(auto)
+        if let systemPrompt { settings["systemPrompt"] = .string(systemPrompt) }
         configuration["settings"] = .object(settings)
         fields["configuration"] = .object(configuration)
         return .object(fields)
@@ -172,11 +172,13 @@ private actor CompactionQueueTransport: AgentTransport {
             let transport = CompactionQueueTransport(holding: "/settings")
             try await withPanel(transport) { panel in
                 let store = panel.current
-                try await transport.requests.reply(path + "/settings", snapshot("completed", auto: true))
-                try await transport.requests.reply(path, snapshot("completed", auto: true))
-                try await transport.setCompactionSnapshot(snapshot("running", auto: true))
+                let prompt = "Updated prompt before compaction"
+                try await transport.requests.reply(path + "/settings", snapshot("completed", systemPrompt: prompt))
+                try await transport.requests.reply(path, snapshot("completed", systemPrompt: prompt))
+                try await transport.setCompactionSnapshot(snapshot("running", systemPrompt: prompt))
                 if fail { await transport.requests.fail(path + "/settings") }
-                panel.setAutoApproveTools(true)
+                store.systemPrompt = prompt
+                store.scheduleSave()
                 panel.compact()
                 try await wait { await transport.waiting }
                 panel.draft = "Send only after a confirmed save"

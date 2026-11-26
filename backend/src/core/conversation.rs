@@ -548,6 +548,61 @@ impl Conversation {
         })
         .await
     }
+    /// Durably change the policy for future tool decisions, even during an active turn.
+    pub async fn update_auto_approve(self: &Arc<Self>, auto_approve: bool) -> Result<bool> {
+        {
+            let mut state = self.state();
+            if state.disposed {
+                return Err(Error::Invalid("Conversation is closed."));
+            }
+            if state.storage_error.is_some() {
+                return Err(Error::Storage);
+            }
+            if state.updating {
+                return Err(Error::Busy);
+            }
+            // Reserve against other mutations and disposal, not the active runner.
+            state.updating = true;
+        }
+        let conversation = self.clone();
+        // Own the save even if the caller detaches. Keep the checkpoint lock through
+        // publication so subsequent runner saves (including settlement) see the new flag.
+        tokio::spawn(async move {
+            let _checkpoint = conversation.checkpoint_lock.lock().await;
+            let saved = AssertUnwindSafe(async {
+                let (persist, mut record) = {
+                    let state = conversation.state();
+                    // A checkpoint ahead of this update may have failed while we waited.
+                    if state.storage_error.is_some() {
+                        return Err(Error::Storage);
+                    }
+                    let Some(persist) = &conversation.persist else {
+                        return Ok(());
+                    };
+                    (persist, state.record.clone())
+                };
+                record.configuration.as_mut().unwrap().settings.auto_approve = auto_approve;
+                persist.save(record).await
+            })
+            .catch_unwind()
+            .await
+            .unwrap_or(Err(Error::Storage));
+            let mut state = conversation.state();
+            state.updating = false;
+            if saved.is_ok() {
+                // The transcript and execution state may have advanced during the save.
+                let config = state.record.configuration.as_mut().unwrap();
+                config.settings.auto_approve = auto_approve;
+            } else {
+                state.storage_error = Some(Error::Storage.to_string());
+            }
+            conversation.publish_snapshot(&state);
+            saved.map_err(|_| Error::Storage)?;
+            Ok(auto_approve)
+        })
+        .await
+        .map_err(|_| Error::Internal)?
+    }
     /// Tool policy uses the same idle-only, durable boundary as session settings.
     pub async fn update_disabled_tools(
         self: &Arc<Self>,
@@ -1480,7 +1535,7 @@ impl Conversation {
             .await;
     }
     async fn checkpoint(&self, terminal: Option<OperationState>) -> Result<()> {
-        // Upload ownership and the runner share ordered, fresh snapshots.
+        // The runner and live mutations share ordered, fresh snapshots.
         let _checkpoint = self.checkpoint_lock.lock().await;
         let mut record = {
             let s = self.state();
@@ -1500,7 +1555,7 @@ impl Conversation {
             self.state().storage_error = Some(Error::Storage.to_string());
             return Err(Error::Storage);
         }
-        // Keep later upload checkpoints from persisting a pre-terminal operation.
+        // Keep later checkpoints from persisting a pre-terminal operation.
         if let Some(terminal) = terminal
             && let Some(operation) = &mut self.state().record.operation
         {
@@ -2046,6 +2101,7 @@ impl Conversation {
                         }
                         let prepared = tool.prepare(call.arguments.clone(), context).await?;
                         check_cancel(cancel)?;
+                        // Read once per call: updates do not resolve an approval or revoke authorization.
                         let auto_approve = self.state().record.configuration.as_ref().unwrap().settings.auto_approve;
                         let asks_approval = !auto_approve && prepared.approval().is_some();
                         let approved = if let Some(description) = prepared.approval().filter(|_| !auto_approve) { self.ask(call,description.into(),prepared.details(),cancel).await? } else { true };
@@ -2105,7 +2161,11 @@ impl Conversation {
                             text = t;
                         }
                         Err(Error::Storage) => {
-                            self.state().record.executing_tool_id = None;
+                            // If execution started, keep its intent until settlement
+                            // finalizes it and any running result under the same lock.
+                            if !started {
+                                self.state().record.executing_tool_id = None;
+                            }
                             return Err(Error::Storage);
                         }
                         Err(error) => {

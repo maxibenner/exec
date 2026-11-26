@@ -3,23 +3,27 @@ import SwiftUI
 
 struct DiffView: View {
     let source: String
+    var showsPatchHeaders = false
 
+    static let lineHeight: CGFloat = 22
     @State private var cache = RenderCache()
 
     var body: some View {
-        DiffCodeView(diff: cache.value(for: source))
+        DiffCodeView(diff: cache.value(for: source, showsPatchHeaders: showsPatchHeaders))
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @MainActor final class RenderCache {
         private var source: String?
+        private var showsPatchHeaders = false
         private var rendered: RenderedDiff?
 
-        func value(for source: String) -> RenderedDiff {
-            if self.source == source, let rendered { return rendered }
-            let value = RenderedDiff(source)
+        func value(for source: String, showsPatchHeaders: Bool = false) -> RenderedDiff {
+            if self.source == source, self.showsPatchHeaders == showsPatchHeaders, let rendered { return rendered }
+            let value = RenderedDiff(source, showsPatchHeaders: showsPatchHeaders)
             self.source = source
+            self.showsPatchHeaders = showsPatchHeaders
             rendered = value
             return value
         }
@@ -44,11 +48,11 @@ struct DiffView: View {
         let gutter: [Int: GutterEntry]
         let numberDigits: Int
 
-        init(_ source: String) {
-            let lines = DiffDocument(source).lines
+        init(_ source: String, showsPatchHeaders: Bool = false) {
+            let lines = DiffDocument(source, showsPatchHeaders: showsPatchHeaders).lines
             let styled = NSMutableAttributedString(string: "")
             let paragraph = NSMutableParagraphStyle()
-            paragraph.minimumLineHeight = 22
+            paragraph.minimumLineHeight = DiffView.lineHeight
             var gutter: [Int: GutterEntry] = [:]
             var highestNumber = 0
             for (index, line) in lines.enumerated() {
@@ -59,9 +63,10 @@ struct DiffView: View {
                 }
                 // A final blank row still needs a glyph to align its number and marker.
                 let newline = index < lines.count - 1 || line.text.isEmpty ? "\n" : ""
+                let isAnnotation = line.kind == .note || line.kind == .header
                 styled.append(NSAttributedString(string: line.text + newline, attributes: [
                     .font: Self.font, .paragraphStyle: paragraph,
-                    .foregroundColor: line.kind == .note ? NSColor.secondaryLabelColor : NSColor.labelColor
+                    .foregroundColor: isAnnotation ? NSColor.secondaryLabelColor : NSColor.labelColor
                 ]))
                 if let span = line.emphasis {
                     styled.addAttribute(.backgroundColor,
@@ -84,26 +89,5 @@ struct DiffView: View {
                                alpha: isDark ? darkAlpha : 1)
             }
         }
-    }
-
-    // Before approval, show the raw patch, including the file it would change.
-    static func highlighted(_ source: String) -> AttributedString {
-        let lines = DiffDocument.sourceLines(source)
-        var result = AttributedString()
-        for (index, line) in lines.enumerated() {
-            var text = AttributedString(line.text)
-            switch line.kind {
-            case .added: text.backgroundColor = Color.green.opacity(0.24)
-            case .removed: text.backgroundColor = AppColors.subduedRed
-            case .header: text.foregroundColor = Color.secondary
-            case .note where line.text.hasPrefix("\\"): text.foregroundColor = Color.secondary
-            default: break
-            }
-            result.append(text)
-            if index < lines.count - 1 || source.utf8.last == 0x0A {
-                result.append(AttributedString("\n"))
-            }
-        }
-        return result
     }
 }

@@ -308,6 +308,7 @@ The server bounds TCP connections to 64 and separately admits at most 64 non-GET
 | POST | `/v1/conversations` | `{model,workspace,settings?,disabledTools?:[string]}` → `201 ConversationSnapshot`, after durable creation |
 | PATCH | `/v1/conversations/:id` | `{disabledTools:[string]}` → `200 ConversationSnapshot`, after durable idle-only replacement |
 | PUT | `/v1/conversations/:id/settings` | `{systemPrompt,autoApprove}` → `200 ConversationSnapshot`, after durable idle-only replacement |
+| PUT | `/v1/conversations/:id/auto-approve` | `{"autoApprove":boolean}` → `200 {"autoApprove":boolean}`; authenticated local only, works during a turn |
 | GET | `/v1/conversations/:id` | `ConversationSnapshot` |
 | GET | `/v1/conversations/:id/sync` | Latest 32 entries, older `?before=messageID`, or incremental `?after=messageID&prefix=proof` → `{snapshot,offset,total,reset,prefix}` |
 | PUT | `/v1/conversations/:id/title` | `{title}` → saved idle snapshot |
@@ -394,8 +395,23 @@ opaque provider state that could reference omitted calls; they do not resume tha
 
 Optional creation `settings` is `{systemPrompt:string,autoApprove:boolean}`; when omitted,
 its default is `{systemPrompt:"",autoApprove:true}`. Both fields are required when supplying
-settings. Settings replacement is idle-only (409 while working/updating); no live approval
-is implicitly resolved by a configuration request. Failed writes block further work.
+settings. Full settings replacement is idle-only (409 while working or updating).
+
+`PUT /v1/conversations/:id/auto-approve` sets only that conversation's Auto mode. It
+requires `application/json` with exactly one boolean `autoApprove` field, and returns
+`200` with the saved flag. It uses the authenticated local API and is not available over
+remote access. It does not change library defaults or other settings.
+
+The new mode takes effect after the save succeeds. Each prepared tool call reads the mode
+at its own authorization decision, including later calls in the same batch. An approval
+already required by that decision remains manual: resolve it once with the exact
+`operationID` and `approvalID`. Calls already authorized are not interrupted or prompted
+again. Explicit approval decisions and cancellation are still accepted during the save.
+
+Conflicting conversation mutations return `409`. An accepted save finishes even if the
+caller disconnects. If saving fails, the endpoint returns `500`, keeps the previous mode
+in memory, and reports `storageError` in snapshots, blocking further work until storage
+recovery. Inspect state rather than automatically retrying an uncertain write.
 
 Workspace replacement uses the same absolute, existing-directory validation and
 canonicalization as creation. It is checkpointed before publication and remains available

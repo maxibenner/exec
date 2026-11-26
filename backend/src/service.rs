@@ -459,6 +459,12 @@ impl ToolAvailabilityQuery {
 struct PatchSession {
     disabled_tools: Vec<String>,
 }
+// An externally tagged newtype requires exactly one object member in JSON.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum UpdateAutoApprove {
+    AutoApprove(bool),
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ReadLog {
@@ -1091,6 +1097,7 @@ async fn handle(
                 "cancel",
                 "approvals",
                 "settings",
+                "auto-approve",
                 "steer",
                 "title",
                 "model",
@@ -1260,6 +1267,18 @@ async fn handle(
                 200,
                 options.manager.update_settings(parts[0], settings).await?,
             ))
+        }
+        ("PUT", Some("auto-approve")) => {
+            let UpdateAutoApprove::AutoApprove(auto_approve) =
+                body(request, &request_cancel).await?;
+            if host.stop.is_cancelled() {
+                return Err(ApiError::rejected(503, "Service is stopping."));
+            }
+            let auto_approve = options
+                .manager
+                .update_auto_approve(parts[0], auto_approve)
+                .await?;
+            Ok(json_response(200, json!({"autoApprove":auto_approve})))
         }
         ("POST", Some("turns")) => {
             let submit: Submit = body(request, &request_cancel).await?;

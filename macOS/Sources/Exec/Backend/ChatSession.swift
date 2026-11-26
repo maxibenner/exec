@@ -258,10 +258,32 @@ import CryptoKit
         else { disabledTools.insert(name) }
         scheduleSave()
     }
+    var canSetAutoApproveTools: Bool {
+        canRequestCommands && !deletedRemotely && !deletionPending && !hasUnsavedChanges &&
+            !submitting && !isStopping && !isSaving && saveTask == nil && commandTask == nil && clearTask == nil
+    }
     func setAutoApproveTools(_ enabled: Bool) {
-        guard canRequestCommands else { return }
-        autoApproveTools = enabled
-        scheduleSave()
+        guard canSetAutoApproveTools, enabled != autoApproveTools else { return }
+        guard let id = currentSessionID else {
+            autoApproveTools = enabled
+            scheduleSave()
+            return
+        }
+        isSaving = true
+        saveTask = Task {
+            defer { isSaving = false; saveTask = nil; drainCommands() }
+            do {
+                _ = try await api.request("PUT", AgentAPI.path(id, "/auto-approve"), .object(["autoApprove": .bool(enabled)]))
+            } catch {
+                self.error = "Could not change Auto mode: \(error.localizedDescription)"
+            }
+            // The response (or a lost acknowledgement) never replaces live tool or
+            // transcript state. Confirm by reading; never resend the mutation.
+            guard !commandsClosed, !deletedRemotely, !deletionPending, !isStopping, !isRestoringSession,
+                  currentSessionID == id else { return }
+            do { try await resynchronize(id) }
+            catch { self.error = self.error ?? "Could not confirm Auto mode: \(error.localizedDescription)" }
+        }
     }
     func scheduleSave(force: Bool = false) {
         settingsDirty = true
@@ -286,7 +308,7 @@ import CryptoKit
         // An inherited workspace can be saved before sending; the backend keeps it
         // editable until the first accepted input.
         guard currentSessionID != nil || workspaceChosen || commitInheritedWorkspace || allowInheritedWorkspace else { return }
-        let desiredSettings = settings
+        var desiredSettings = settings
         let desiredModel = selectedModel
         let desiredDisabledTools = disabledTools
         pauseObservation()
@@ -298,6 +320,8 @@ import CryptoKit
                     let value = try await api.request("PUT", AgentAPI.path(id, "/model"), .object(["model": .string(desiredModel)]))
                     try apply(value.decoded(AgentSnapshot.self), preserveSettings: true)
                 }
+                // Auto is not a queued local preference for an existing session.
+                desiredSettings.autoApprove = autoApproveTools
                 if snapshot?.configuration.settings != desiredSettings {
                     let value = try await api.send("PUT", AgentAPI.path(id, "/settings"), body: desiredSettings)
                     try apply(value.decoded(AgentSnapshot.self), preserveSettings: true)
@@ -363,9 +387,14 @@ import CryptoKit
     }
     private func resynchronize(_ id: UUID) async throws {
         pauseObservation()
-        defer { observe() }
+        let generation = observerGeneration
+        defer { if observerGeneration == generation { observe() } }
         let reader = api.transcriptReader(id)
         let value = try await reader.read()
+        guard observerGeneration == generation, !Task.isCancelled else {
+            await reader.close()
+            return
+        }
         transcriptReader = reader
         try apply(value)
     }
@@ -441,9 +470,10 @@ import CryptoKit
             selectedEffort = value.configuration.settings.effort
             systemPrompt = value.configuration.settings.systemPrompt
             searchModel = value.configuration.settings.searchModel ?? ""
-            autoApproveTools = value.configuration.settings.autoApprove
             disabledTools = Set(value.metadata.disabledTools ?? [])
         }
+        // Live policy follows authoritative state even while idle-only edits are queued.
+        autoApproveTools = value.configuration.settings.autoApprove
         contextUsage = value.contextUsage
         hasUnsavedChanges = configurationUncertain || value.storageError != nil
         if let failure = value.storageError ?? value.operation?.error { error = failure }

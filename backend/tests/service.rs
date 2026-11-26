@@ -442,6 +442,74 @@ async fn api_default_auto_and_durable_settings_updates_reconcile_observers() {
 }
 
 #[tokio::test]
+async fn api_auto_approve_has_a_strict_body_and_keeps_full_settings_idle_only() {
+    let entered = CancellationToken::new();
+    let f = setup(FakeProvider::new(vec![waiting(entered.clone())]), vec![]).await;
+    let mut settings = SessionSettings {
+        system_prompt: "Keep these instructions".into(),
+        ..SessionSettings::default()
+    };
+    let c = f
+        .client
+        .create_with_settings("fake", f.root.path().to_str().unwrap(), settings.clone())
+        .await
+        .unwrap();
+    let operation = f.client.submit(&c.id, "Act").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), entered.cancelled())
+        .await
+        .unwrap();
+
+    let path = format!("/v1/conversations/{}/auto-approve", c.id);
+    for invalid in [
+        json!({}),
+        json!({"autoApprove": "false"}),
+        json!({"autoApprove": false, "systemPrompt": "replace"}),
+    ] {
+        assert_eq!(
+            f.client
+                .call("PUT", &path, Some(invalid))
+                .await
+                .unwrap_err(),
+            Error::Api(400)
+        );
+    }
+    assert_eq!(
+        f.client
+            .update_settings(&c.id, SessionSettings::default())
+            .await
+            .unwrap_err(),
+        Error::Api(409)
+    );
+
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+        .put(format!("http://{}{path}", f.service.address))
+        .bearer_auth(support::API_TOKEN)
+        .json(&json!({"autoApprove": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        response.json::<Value>().await.unwrap(),
+        json!({"autoApprove": false})
+    );
+    settings.auto_approve = false;
+    assert_eq!(
+        f.client.get(&c.id).await.unwrap().configuration.settings,
+        settings
+    );
+
+    f.client.cancel(&c.id, &operation).await.unwrap();
+    f.service.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn api_delete_is_durable_and_does_not_repeat() {
     let root = directory();
     let provider = FakeProvider::new(vec![]);

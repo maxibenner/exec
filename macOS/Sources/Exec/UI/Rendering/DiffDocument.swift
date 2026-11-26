@@ -11,7 +11,7 @@ struct DiffDocument {
 
     let lines: [Line]
 
-    init(_ source: String) {
+    init(_ source: String, showsPatchHeaders: Bool = false) {
         var lines: [Line] = []
         var removed: [Int] = [], added: [Int] = []
         var oldNumber: Int?, newNumber: Int?
@@ -33,9 +33,11 @@ struct DiffDocument {
             let text = raw.last == "\r" ? String(raw.dropLast()) : raw
             switch kind {
             case .header:
+                // Approval needs the prepared patch's exact paths and ranges.
+                if showsPatchHeaders { lines.append(Line(text: text, kind: .header, number: nil)) }
                 guard text.hasPrefix("@@ ") else { continue }
                 finishChanges()
-                if !lines.isEmpty { lines.append(Line(text: "", kind: .context, number: nil)) }
+                if !showsPatchHeaders && !lines.isEmpty { lines.append(Line(text: "", kind: .context, number: nil)) }
                 let fields = text.split(separator: " ")
                 if fields.count >= 4, fields[3] == "@@" {
                     oldNumber = Self.hunkStart(fields[1], sign: "-")
@@ -67,8 +69,7 @@ struct DiffDocument {
         self.lines = lines
     }
 
-    // Keep the original patch available to the approval prompt, including the target path.
-    static func sourceLines(_ source: String) -> [(text: String, kind: Kind)] {
+    private static func sourceLines(_ source: String) -> [(text: String, kind: Kind)] {
         var raw = source.components(separatedBy: "\n")
         if raw.last == "" { raw.removeLast() }
         let hasFileHeaders = raw.count >= 2 && raw[0].hasPrefix("--- ") && raw[1].hasPrefix("+++ ")

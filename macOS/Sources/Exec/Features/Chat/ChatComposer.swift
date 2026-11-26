@@ -34,7 +34,7 @@ struct ChatComposer: View {
         return model?.efforts.first { $0.id == (store.selectedEffort ?? model?.defaultEffort) }?.name ?? "Default"
     }
     private var canApprove: Bool {
-        store.canNavigate && store.workspace != nil && store.account != nil && store.current.canRequestCommands
+        store.canNavigate && store.workspace != nil && store.account != nil && store.current.canSetAutoApproveTools
     }
     private var choices: [Choice] {
         let items: [Choice]

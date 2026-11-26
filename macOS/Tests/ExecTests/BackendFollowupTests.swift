@@ -9,21 +9,21 @@ import Foundation
         }
         throw CheckFailure(description: "Timed out awaiting follow-up state")
     }
-    private func snapshotJSON(_ state: String, model: String = "openai/test", auto: Bool = false) throws -> AgentJSON {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .withoutEscapingSlashes
-        let data = try encoder.encode(AgentIntegrationTests.fixture(state: state, result: state != "running"))
-        let text = String(decoding: data, as: UTF8.self)
-            .replacingOccurrences(of: "deepseek/test", with: model)
-            .replacingOccurrences(of: "\"autoApprove\":false", with: "\"autoApprove\":\(auto)")
-        guard case .object(var fields) = try JSONDecoder().decode(AgentJSON.self, from: Data(text.utf8)) else {
+    private func snapshotJSON(_ state: String, model: String = "openai/test", systemPrompt: String? = nil) throws -> AgentJSON {
+        guard case .object(var fields) = try AgentIntegrationTests.fixture(state: state, result: state != "running"),
+              case .object(var configuration) = fields["configuration"],
+              case .object(var settings) = configuration["settings"] else {
             throw CheckFailure(description: "Expected snapshot fixture")
         }
+        fields["model"] = .string(model)
         fields["supportsCompaction"] = .bool(true)
+        if let systemPrompt { settings["systemPrompt"] = .string(systemPrompt) }
+        configuration["settings"] = .object(settings)
+        fields["configuration"] = .object(configuration)
         return .object(fields)
     }
-    private func snapshot(_ state: String, model: String = "openai/test", auto: Bool = false) throws -> AgentSnapshot {
-        try snapshotJSON(state, model: model, auto: auto).decoded(AgentSnapshot.self)
+    private func snapshot(_ state: String) throws -> AgentSnapshot {
+        try snapshotJSON(state).decoded(AgentSnapshot.self)
     }
     func localDraftSurvivesNavigationAndUncertainCreate() async throws {
         for fail in [false, true] {
@@ -306,9 +306,10 @@ import Foundation
         defer { store.closePresentation() }
         try store.apply(snapshot("running"))
         let oldApproval = store.tools.pendingApproval?.id
+        let prompt = "Updated session instructions"
         store.selectedModel = "openai/next"
+        store.systemPrompt = prompt
         store.scheduleSave()
-        store.setAutoApproveTools(true)
         var actions: [String] = []
         store.whenIdle("fork") { actions.append("stale fork") }
         store.whenIdle("fork") { actions.append("fork") }
@@ -318,17 +319,19 @@ import Foundation
         try expect(before.isEmpty && actions.isEmpty && store.tools.pendingApproval?.id == oldApproval)
         try expect(!store.canCompact && store.canRequestFork && store.canFork)
         let terminal = try snapshot("completed")
-        let desired = try snapshot("completed", model: "openai/next", auto: true)
-        let value = try snapshotJSON("completed", model: "openai/next", auto: true)
-        try await transport.reply(AgentAPI.path(terminal.id, "/model"), value)
-        try await transport.reply(AgentAPI.path(terminal.id, "/settings"), value)
+        let path = AgentAPI.path(terminal.id)
+        let value = try snapshotJSON("completed", model: "openai/next", systemPrompt: prompt)
+        try await transport.reply(path + "/model", snapshotJSON("completed", model: "openai/next"))
+        try await transport.reply(path + "/settings", value)
+        try await transport.reply(path, value)
         try store.apply(terminal)
         try await wait { !store.busy }
-        try expect(actions == ["fork", "workspace"] && store.selectedModel == "openai/next" && store.autoApproveTools)
-        let requests = await transport.requests
-        try expect(requests.filter { $0.path.hasSuffix("/model") }.count == 1)
-        try expect(requests.allSatisfy { !$0.path.hasSuffix("/approvals") })
+        try expect(actions == ["fork", "workspace"] && store.selectedModel == "openai/next" && store.systemPrompt == prompt)
+        let writes = await transport.requests.filter { $0.method != "GET" }
+        try expect(writes.map(\.path) == [path + "/model", path + "/settings"])
+        try expect(try JSONDecoder().decode(AgentSettings.self, from: writes[1].body!).systemPrompt == prompt)
         // Terminal snapshots do not run the queue twice; shutdown must discard queued effects.
+        let desired = try value.decoded(AgentSnapshot.self)
         try store.apply(desired)
         try store.apply(snapshot("running"))
         store.whenIdle("fork") { actions.append("must not run") }
@@ -356,7 +359,8 @@ import Foundation
         let compactions = await transport.requests.filter { $0.path.hasSuffix("/compact") }
         try expect(compactions.count == 1)
         try store.apply(snapshot("running"))
-        store.setAutoApproveTools(true)
+        store.systemPrompt = "Updated session instructions"
+        store.scheduleSave()
         await transport.fail(AgentAPI.path(terminal.id, "/settings"))
         var ran = false
         store.whenIdle("fork") { ran = true }
