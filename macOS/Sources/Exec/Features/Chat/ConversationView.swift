@@ -68,39 +68,38 @@ struct ConversationView: View {
     }
 
     private var conversation: some View {
-        ZStack(alignment: .bottom) {
-            // Keep the scroll surface full-height. The measured overlay height is
-            // trailing document space, not a clipped viewport or safe-area inset.
-            TranscriptView(messages: panel.current.messages, state: presentation, bottomInset: composerHeight,
-                           showsThinkingIndicator: panel.current.showsThinkingIndicator)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            VStack(spacing: 0) {
-                if let approval = panel.current.tools.pendingApproval {
-                    let executor = panel.current.tools
-                    ToolApprovalView(approval: approval, executor: executor,
-                                     canResolve: { panel.canNavigate && panel.current.tools === executor })
-                        .id(approval.id)
-                        .disabled(!panel.canNavigate).layoutPriority(1)
-                }
-                if let error { errorView(error).background(.background) }
-                let destination = panel.current
-                let queuedMessages = destination.queuedMessages
-                if !queuedMessages.isEmpty {
-                    QueuedMessagesView(messages: queuedMessages,
-                                       canCancel: panel.canNavigate && destination.canCancelQueuedInput) { messageID in
-                        guard panel.canNavigate, panel.current === destination, destination.canCancelQueuedInput,
-                              destination.queuedMessages.contains(where: { $0.id == messageID }) else { return }
-                        destination.cancelQueuedInput(messageID)
+        // The transcript determines the viewport. A tall queue grows above the
+        // composer without making the viewport bigger than the window.
+        TranscriptView(messages: panel.current.messages, state: presentation, bottomInset: composerHeight,
+                       showsThinkingIndicator: panel.current.showsThinkingIndicator)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 0) {
+                    let destination = panel.current
+                    if !destination.queuedMessages.isEmpty {
+                        QueuedMessagesView(messages: destination.queuedMessages,
+                                           canCancel: panel.canNavigate && destination.canCancelQueuedInput) { messageID in
+                            guard panel.canNavigate, panel.current === destination, destination.canCancelQueuedInput,
+                                  destination.queuedMessages.contains(where: { $0.id == messageID }) else { return }
+                            destination.cancelQueuedInput(messageID)
+                        }
                     }
-                    .layoutPriority(-1) // Approval, errors, and the editor keep their space first.
+                    if let approval = destination.tools.pendingApproval {
+                        let executor = destination.tools
+                        ToolApprovalView(approval: approval, executor: executor,
+                                         canResolve: { panel.canNavigate && panel.current.tools === executor })
+                            .id(approval.id)
+                            .disabled(!panel.canNavigate)
+                    }
+                    if let error { errorView(error).background(.background) }
+                    ChatComposer(store: panel, focused: $composerFocused, focusRequest: composerFocusRequest,
+                                 editingState: presentation.composerEditingState)
+                        .disabled(panel.navigating)
                 }
-                ChatComposer(store: panel, focused: $composerFocused, focusRequest: composerFocusRequest,
-                             editingState: presentation.composerEditingState)
-                    .disabled(panel.navigating)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.trailing, presentation.trailingInset)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
             }
-            .padding(.trailing, presentation.trailingInset)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
-        }
     }
 
     private func errorView(_ error: String) -> some View {

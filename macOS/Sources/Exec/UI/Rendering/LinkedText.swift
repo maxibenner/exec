@@ -5,11 +5,13 @@ import ExecTranscript
 /// TextKit supplies link-only cursor rectangles while retaining normal text selection and wrapping.
 struct LinkedText: NSViewRepresentable {
     let text: NSAttributedString
+    private var fitsContentWidth = false
     @Environment(\.openURL) private var openURL
 
     init(source: AttributedString, fontSize: CGFloat = NSFont.systemFontSize, weight: NSFont.Weight = .regular,
-         foregroundColor: NSColor = .labelColor) {
+         foregroundColor: NSColor = .labelColor, fitsContentWidth: Bool = false) {
         text = Self.attributed(source, fontSize: fontSize, weight: weight, foregroundColor: foregroundColor)
+        self.fitsContentWidth = fitsContentWidth
     }
 
     init(text: NSAttributedString) { self.text = text }
@@ -240,7 +242,12 @@ struct LinkedText: NSViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: TextView, context: Context) -> CGSize? {
-        context.coordinator.measurement.size(width: proposal.width)
+        let measurement = context.coordinator.measurement
+        if fitsContentWidth, let width = proposal.width {
+            let natural = measurement.size(width: nil)
+            if natural.width <= width { return natural }
+        }
+        return measurement.size(width: proposal.width)
     }
 
     static func measuredSize(of text: NSAttributedString, width: CGFloat?) -> CGSize {

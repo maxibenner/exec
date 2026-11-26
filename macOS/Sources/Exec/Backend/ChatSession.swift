@@ -25,10 +25,7 @@ import CryptoKit
     var hasUsableModel: Bool { model != nil && provider.isModelAvailable(selectedModel) && !hasUnsavedChanges && !deletedRemotely }
     var requestModelID: String { selectedModel }
     private(set) var messages: [Message] = []
-    var queuedMessages: [Message] {
-        guard !deletedRemotely, let snapshot else { return [] }
-        return snapshot.queuedMessages(images: imageCache)
-    }
+    private(set) var queuedMessages: [Message] = []
     private(set) var deletedRemotely = false { didSet { updateThinkingIndicator() } }
     var draft = ""
     var draftImages: [ImageAttachment] = []
@@ -178,6 +175,7 @@ import CryptoKit
         isSending = false; isCompacting = false; isStopping = false
         try? tools.apply(nil)
         messages = []
+        queuedMessages = []
         // Confirmed deletion replaces only presentation warnings, never a real
         // operation/configuration failure. A stale remote `cancelling` snapshot
         // is not a local cancellation task and must not pin a removed child.
@@ -509,7 +507,12 @@ import CryptoKit
     func apply(_ value: AgentSnapshot, preserveSettings: Bool = false) throws {
         if let id = currentSessionID, id != value.id { throw ExecError("The backend returned a different conversation.") }
         let wasActive = operationActive
+        // Reproject on queue/row changes, not each presentation read or streamed text update.
+        let queuedInputChanged = snapshot?.pendingInput != value.pendingInput ||
+            (!value.pendingInput.isEmpty && (snapshot?.messages.count != value.messages.count ||
+                                             snapshot?.messages.last?.id != value.messages.last?.id))
         snapshot = value
+        if queuedInputChanged { updateQueuedMessages(from: value) }
         currentSessionID = value.id
         workspace = Workspace(root: URL(fileURLWithPath: value.workspace))
         if !preserveSettings && !settingsDirty {
@@ -540,6 +543,11 @@ import CryptoKit
             }
         }
     }
+    private func updateQueuedMessages(from snapshot: AgentSnapshot) {
+        guard !deletedRemotely else { return }
+        let next = snapshot.queuedMessages(images: imageCache)
+        if next != queuedMessages { queuedMessages = next }
+    }
     private func loadImages() {
         guard imageTask == nil, let snapshot,
               snapshot.imageReferences.contains(where: { imageCache[$0.id] == nil && !failedImageIDs.contains($0.id) }) else { return }
@@ -556,6 +564,9 @@ import CryptoKit
                     }
                     imageCache[ref.id] = ImageAttachment(id: ref.id, name: ref.name, mediaType: ref.mediaType, data: data)
                     if let snapshot = self.snapshot {
+                        if snapshot.pendingInput.contains(where: { $0.images?.contains(where: { $0.id == ref.id }) == true }) {
+                            updateQueuedMessages(from: snapshot)
+                        }
                         let streamed = Dictionary(uniqueKeysWithValues: messages.filter { $0.status == .streaming }.map { ($0.id, $0.text) })
                         messages = try snapshot.transcript(images: imageCache, pendingIDs: &pendingIDs).map { row in
                             var row = row

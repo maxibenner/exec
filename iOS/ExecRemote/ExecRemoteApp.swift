@@ -401,6 +401,14 @@ struct ConversationScreen: View {
         }
         .overlay(alignment: .bottom) {
             VStack(spacing: 10) {
+                if !queued.isEmpty {
+                    QueuedMessageBubbles(messages: queued,
+                        canCancel: { store.canCancelQueuedMessage(rowID: $0, conversationID: conversationID) },
+                        cancel: { rowID in
+                            Task { await store.cancelQueuedMessage(rowID: rowID, conversationID: conversationID) }
+                        })
+                        .padding(.horizontal, TranscriptMessageStyle.rowInset - bottomOverlayInset)
+                }
                 if let failure = current.snapshot["operation"]["error"].string ?? current.snapshot["storageError"].string {
                     Text(failure).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                         .padding(10)
@@ -432,16 +440,9 @@ struct ConversationScreen: View {
                     .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
                     .disabled(target.map { store.canApprove($0) } != true)
                 }
-                if !queued.isEmpty {
-                    QueuedMessageBubbles(messages: queued,
-                        canCancel: { store.canCancelQueuedMessage(rowID: $0, conversationID: conversationID) },
-                        cancel: { rowID in
-                            Task { await store.cancelQueuedMessage(rowID: rowID, conversationID: conversationID) }
-                        })
-                        .padding(.horizontal, TranscriptMessageStyle.rowInset - bottomOverlayInset)
-                }
                 RemoteChatComposer(store: store)
             }
+            .fixedSize(horizontal: false, vertical: true)
             .disabled(store.selected != conversationID)
             .padding(.horizontal, bottomOverlayInset).padding(.vertical, 8)
             // The queue and restored multiline drafts both affect scroll clearance.

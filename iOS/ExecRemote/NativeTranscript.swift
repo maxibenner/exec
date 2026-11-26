@@ -842,12 +842,7 @@ struct QueuedMessageBubbles: View {
     let cancel: (String) -> Void
 
     var body: some View {
-        ViewThatFits(in: .vertical) {
-            bubbles.fixedSize(horizontal: false, vertical: true)
-            ScrollView { bubbles }
-                .scrollDismissesKeyboard(.never)
-        }
-        .frame(maxHeight: 200)
+        bubbles.fixedSize(horizontal: false, vertical: true)
     }
 
     private struct Row: Identifiable {
@@ -861,7 +856,7 @@ struct QueuedMessageBubbles: View {
             ForEach(rows) { row in
                 let isCancellable = canCancel(row.id)
                 QueuedMessageText(message: row.message, rowID: row.id, isCancellable: isCancellable)
-                    .overlay(alignment: .topTrailing) {
+                    .overlay(alignment: .trailing) {
                         if isCancellable {
                             Button(role: .destructive) { cancel(row.id) } label: {
                                 Image(systemName: "xmark")

@@ -33,7 +33,7 @@ struct UserMessageBubble: View {
 
     @ViewBuilder private var bubbleContents: some View {
         if let queuedAction {
-            HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
                 messageContents
                 Button(role: .destructive, action: queuedAction.cancel) {
                     Label("Cancel queued message", systemImage: "xmark")
@@ -59,15 +59,10 @@ struct UserMessageBubble: View {
                 FileAttachmentStrip(files: message.files, scrollsWithTranscript: !isQueued)
             }
             if !message.text.isEmpty {
-                let text = LinkedText(source: AttributedString(message.text), foregroundColor: isQueued ? .labelColor : .white)
                 if isQueued {
-                    // Fit short previews to the text; retain TextKit wrapping when it doesn't fit.
-                    ViewThatFits(in: .horizontal) {
-                        text.fixedSize(horizontal: true, vertical: false)
-                        text
-                    }
+                    QueuedBubbleText(text: message.text).equatable()
                 } else {
-                    text
+                    LinkedText(source: AttributedString(message.text), foregroundColor: .white)
                 }
             }
         }
@@ -77,5 +72,13 @@ struct UserMessageBubble: View {
         if !isQueued { return Text("You: \(message.text)") }
         if message.text.isEmpty { return Text("Queued message") }
         return Text("Queued: \(message.text)")
+    }
+}
+
+private struct QueuedBubbleText: View, Equatable {
+    let text: String
+
+    var body: some View {
+        LinkedText(source: AttributedString(text), fitsContentWidth: true)
     }
 }
