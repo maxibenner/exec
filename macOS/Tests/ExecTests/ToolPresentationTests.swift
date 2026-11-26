@@ -188,23 +188,34 @@ import SwiftUI
             try expect(texts.contains { $0.contains("old content") } && texts.contains { $0.contains("new content") })
         }
 
-        // Read output starts at the same inset as both unified and side-by-side edits.
+        // Both code surfaces use the same inner inset. The diff's fixed native
+        // gutter sits in front of the selectable code, not inside its inset.
         let read = result("read_file", #"{"path":"file.swift"}"#, "1: old content")
+        func diffSurface(in view: NSView) -> DiffCodeSurface? {
+            if let surface = view as? DiffCodeSurface { return surface }
+            return view.subviews.lazy.compactMap { diffSurface(in: $0) }.first
+        }
         for width in [CGFloat(600), 820] {
-            func contentOrigin(_ result: ToolResult, containing text: String) throws -> CGPoint {
+            func codeGeometry(_ result: ToolResult, containing text: String) throws -> (origin: CGPoint, gutter: CGFloat) {
                 try withHost(result, width: width) { host, elements in
                     guard let element = elements.first(where: { ($0.accessibilityValue() as? String)?.contains(text) == true }),
                           let window = host.window else {
                         throw CheckFailure(description: "Expected expanded tool content")
                     }
                     let frame = host.convert(window.convertFromScreen(element.accessibilityFrame()), from: nil)
-                    return CGPoint(x: frame.minX, y: host.isFlipped ? frame.minY : host.bounds.height - frame.maxY)
+                    let origin = CGPoint(x: frame.minX, y: host.isFlipped ? frame.minY : host.bounds.height - frame.maxY)
+                    guard result.edit != nil else { return (origin, 0) }
+                    guard let surface = diffSurface(in: host) else {
+                        throw CheckFailure(description: "Expected expanded edit to use the native diff surface")
+                    }
+                    return (origin, surface.scrollView.frame.minX - surface.bounds.minX)
                 }
             }
-            let readOrigin = try contentOrigin(read, containing: read.text)
-            let editOrigin = try contentOrigin(edit, containing: "old content")
-            try expect(abs(readOrigin.x - editOrigin.x) < 1)
-            try expect(abs(readOrigin.y - editOrigin.y) < 1)
+            let readCode = try codeGeometry(read, containing: read.text)
+            let editCode = try codeGeometry(edit, containing: "old content")
+            try expect(editCode.gutter > 0)
+            try expect(abs(readCode.origin.x + editCode.gutter - editCode.origin.x) < 1)
+            try expect(abs(readCode.origin.y - editCode.origin.y) < 1)
         }
     }
 }
