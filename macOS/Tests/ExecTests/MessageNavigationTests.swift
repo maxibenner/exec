@@ -118,7 +118,7 @@ import AppKit
         a.navigateSentMessage(.next)
         try expect(a.contentView.bounds.minY == 0)
         let messages = [Message(role: .user, text: "Only sent message"), Message(role: .assistant, text: "Reply")]
-        a.update(messages: messages, jumpRequest: 0)
+        a.update(messages: messages, jumpRequest: 0, immediateSendID: messages[0].id)
         b.update(messages: messages, jumpRequest: 0)
         a.navigateSentMessage(.previous)
         try aligned(0, in: a)

@@ -71,7 +71,8 @@ struct ConversationView: View {
         // The transcript determines the viewport. A tall queue grows above the
         // composer without making the viewport bigger than the window.
         TranscriptView(messages: panel.current.messages, state: presentation, bottomInset: composerHeight,
-                       showsThinkingIndicator: panel.current.showsThinkingIndicator)
+                       showsThinkingIndicator: panel.current.showsThinkingIndicator,
+                       immediateSendID: panel.current.latestImmediateSendID)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .bottom) {
                 VStack(spacing: 0) {

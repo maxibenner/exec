@@ -128,8 +128,9 @@ import AppKit
         try update()
         messages[0].status = .complete
         try update()
-        messages.append(Message(role: .user, text: "Next question"))
-        view.update(messages: messages, jumpRequest: state.jumpRequest)
+        let sent = Message(role: .user, text: "Next question")
+        messages.append(sent)
+        view.update(messages: messages, jumpRequest: state.jumpRequest, immediateSendID: sent.id)
         try expect(!state.followsLatest)
         try expect(view.isAnimatingScroll == !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         state.jumpToLatest()
@@ -212,7 +213,7 @@ import AppKit
         view.update(messages: [], jumpRequest: 0)
         let sent = Message(role: .user, text: "Question")
         var reply = Message(role: .assistant, text: "Short answer", status: .streaming)
-        view.update(messages: [sent, reply], jumpRequest: 0)
+        view.update(messages: [sent, reply], jumpRequest: 0, immediateSendID: sent.id)
         view.layoutSubtreeIfNeeded(); view.viewWillDraw()
         let y = view.contentView.bounds.minY
         try expect(view.contentView.bounds.maxY == view.documentView!.bounds.height)
