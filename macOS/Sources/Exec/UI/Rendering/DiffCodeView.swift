@@ -91,7 +91,8 @@ struct DiffCodeView: NSViewRepresentable {
         func update(_ diff: DiffView.RenderedDiff) {
             rows = diff.gutter
             let digits = String(repeating: "0", count: diff.numberDigits) as NSString
-            width = rows.isEmpty ? 0 : 10 + max(31, ceil(digits.size(withAttributes: numberAttributes).width)) + spacing + markerWidth
+            let numberWidth = ceil(digits.size(withAttributes: numberAttributes).width)
+            width = rows.isEmpty ? 0 : numberWidth + spacing + markerWidth
             needsDisplay = true
         }
 
@@ -113,8 +114,7 @@ struct DiffCodeView: NSViewRepresentable {
             let markerLeft = bounds.maxX - markerWidth
             if let number = row.number {
                 let label = String(number) as NSString
-                let x = markerLeft - spacing - label.size(withAttributes: numberAttributes).width
-                label.draw(at: NSPoint(x: x, y: baseline - layout.defaultBaselineOffset(for: RenderedDiff.font)),
+                label.draw(at: NSPoint(x: bounds.minX, y: baseline - layout.defaultBaselineOffset(for: RenderedDiff.font)),
                            withAttributes: numberAttributes)
             }
             if row.kind == .added || row.kind == .removed {
