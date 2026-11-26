@@ -1,4 +1,5 @@
 import AppKit
+import ExecTranscript
 import SwiftUI
 
 struct UserMessageBubble: View {
@@ -18,10 +19,14 @@ struct UserMessageBubble: View {
             Spacer(minLength: 40)
             bubbleContents
                 .foregroundStyle(isQueued ? Color.primary : .white)
-                .background(isQueued ? Color.primary.opacity(0.08) : AppColors.systemAccent, in: shape)
                 .background {
-                    // Keep the transcript from showing through the sidebar tint.
-                    if isQueued { shape.fill(Color(nsColor: .windowBackgroundColor)) }
+                    if isQueued {
+                        shape.fill(Color(nsColor: .windowBackgroundColor))
+                            .overlay { shape.fill(ToolCardAppearance.fill) }
+                            .overlay { shape.strokeBorder(Color(nsColor: .separatorColor)) }
+                    } else {
+                        shape.fill(AppColors.systemAccent)
+                    }
                 }
                 .frame(maxWidth: 600, alignment: .trailing)
                 .accessibilityElement(children: .contain)
