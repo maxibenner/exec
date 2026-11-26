@@ -47,46 +47,44 @@ final class TranscriptScrollTests: XCTestCase {
         XCTAssertEqual(cached.intent, .latest)
     }
 
-    func testQueueDoesNotPinOnColdLoadOrExpiryAndPromotionFollowsOnce() {
-        var state = TranscriptScrollState()
+    func testQueuedPromotionKeepsLatestFollowingOrReading() {
         let queued = message("local-queue")
-        let cold = rows([], pending: [queued])
-        XCTAssertTrue(cold.isEmpty)
-        state.restoreRows(cold)
-        XCTAssertEqual(state.intent, .latest)
-        XCTAssertNil(state.reservedTurnID)
-
+        XCTAssertTrue(rows([], pending: [queued]).isEmpty, "A cold queue is not transcript history")
         let history = [message("old-user"), message("old-answer", "assistant")]
-        state.restoreRows(rows(history, pending: [queued])) // First successful read.
-        XCTAssertFalse(state.update(rows: rows(history)), "Expiry must not affect the delivered transcript")
-        XCTAssertEqual(state.intent, .latest)
-        XCTAssertNil(state.reservedTurnID)
-        XCTAssertFalse(state.update(rows: rows(history, pending: [queued])))
+        for reading in [false, true] {
+            var state = TranscriptScrollState()
+            state.restoreRows(rows(history, pending: [queued]))
+            if reading { state.readerScrolled(towardLatest: false, atBottom: false) }
+            XCTAssertFalse(state.update(rows: rows(history)), "Expiry must not affect the transcript")
+            XCTAssertFalse(state.update(rows: rows(history, pending: [queued])))
 
-        let promoted = rows(history + [queued], pending: [queued])
-        XCTAssertEqual(promoted.map(\.id), ["old-user", "old-answer", "local-queue"])
-        XCTAssertTrue(state.update(rows: promoted))
-        XCTAssertEqual(state.intent, .turn("local-queue"))
-        XCTAssertFalse(state.update(rows: rows(history + [queued])), "Reconciliation must not replay the pin")
+            let promoted = rows(history + [message("host-queue"), queued], pending: [queued])
+            XCTAssertEqual(promoted.map(\.id), ["old-user", "old-answer", "host-queue", "local-queue"])
+            XCTAssertFalse(state.update(rows: promoted))
+            XCTAssertEqual(state.intent, reading ? .reading : .latest)
+            XCTAssertNil(state.reservedTurnID)
+        }
     }
 
-    func testSendAnchorsEvenWhenFirstResponseArrivesInSameUpdate() {
+    func testExplicitSendFromReadingPinsExactRowWithCoalescedResponseAndOtherInput() {
         var state = TranscriptScrollState()
-        XCTAssertFalse(state.update(rows: []))
-        let turn = [message("local-send"), message("response", "assistant", text: "Already answering")]
-        XCTAssertTrue(state.update(rows: rows(turn)))
+        let history = [message("old")]
+        state.restoreRows(rows(history))
+        state.readerScrolled(towardLatest: false, atBottom: false)
+        let otherInput = [message("local-queue"), message("response", "assistant", text: "Already answering")]
+        XCTAssertFalse(state.update(rows: rows(history + otherInput), pinTo: "local-send"))
+        XCTAssertEqual(state.intent, .reading, "Don't pin another row while the intended row is missing")
+        let turn = rows(history + [message("local-send")] + otherInput)
+        XCTAssertTrue(state.update(rows: turn, pinTo: "local-send"))
         XCTAssertEqual(state.intent, .turn("local-send"))
         XCTAssertEqual(state.reservedTurnID, "local-send")
-        XCTAssertFalse(state.update(rows: rows([turn[0], message("response", "assistant", text: "Longer response")])) )
-        XCTAssertEqual(state.intent, .turn("local-send"))
-        // The optimistic ID remains stable on acknowledgement, not a second send.
-        XCTAssertFalse(state.update(rows: rows(turn)))
+        XCTAssertFalse(state.update(rows: turn + rows([message("more-queued-input")])))
+        XCTAssertEqual(state.intent, .turn("local-send"), "Later promotions do not replace the existing turn pin")
     }
 
     func testOnlyAnExplicitDownwardScrollToBottomResumesFollowing() {
         var state = TranscriptScrollState()
-        _ = state.update(rows: [])
-        _ = state.update(rows: rows([message("local-send")]))
+        _ = state.update(rows: rows([message("local-send")]), pinTo: "local-send")
         state.readerScrolled(towardLatest: false, atBottom: true)
         XCTAssertEqual(state.intent, .reading)
         XCTAssertEqual(state.reservedTurnID, "local-send")
@@ -99,36 +97,21 @@ final class TranscriptScrollTests: XCTestCase {
         XCTAssertNil(state.reservedTurnID)
     }
 
-    func testRemoteUpdatesRespectReadingButExplicitLocalSendsCanFollow() {
-        var state = TranscriptScrollState()
-        _ = state.update(rows: rows([message("old")]))
-        state.readerScrolled(towardLatest: false, atBottom: false)
-        XCTAssertFalse(state.update(rows: rows([message("old"), message("remote")])))
-        XCTAssertEqual(state.intent, .reading)
-        XCTAssertTrue(state.update(rows: rows([message("old"), message("remote"), message("local-next")])))
-        XCTAssertEqual(state.intent, .turn("local-next"))
-        // A rejected local send removes its pin and reservation without replaying it.
-        _ = state.update(rows: rows([message("old"), message("remote")]))
-        XCTAssertNil(state.reservedTurnID)
-        XCTAssertEqual(state.intent, .latest)
-    }
-
     func testRestorationAdoptsHiddenUpdatesWithoutReplayingASend() {
         var state = TranscriptScrollState()
-        _ = state.update(rows: rows([message("old")]))
+        state.restoreRows(rows([message("old")]))
         state.readerScrolled(towardLatest: false, atBottom: false)
         let cached = rows([message("old"), message("local-delivered-while-hidden")])
         state.restoreRows(cached)
         XCTAssertEqual(state.intent, .reading)
         XCTAssertFalse(state.update(rows: cached))
-        XCTAssertTrue(state.update(rows: cached + rows([message("local-next")])) )
+        XCTAssertTrue(state.update(rows: cached + rows([message("local-next")]), pinTo: "local-next"))
         XCTAssertEqual(state.intent, .turn("local-next"))
     }
 
     func testRestorationDropsATurnRemovedByHistoryReset() {
         var state = TranscriptScrollState()
-        _ = state.update(rows: [])
-        _ = state.update(rows: rows([message("local-send")]))
+        _ = state.update(rows: rows([message("local-send")]), pinTo: "local-send")
         let reset = rows([message("summary", "assistant")])
         state.restoreRows(reset)
         XCTAssertEqual(state.intent, .latest)
@@ -186,7 +169,7 @@ final class TranscriptScrollTests: XCTestCase {
         XCTAssertEqual(state.intent, .reading)
         state.readerScrolled(towardLatest: true, atBottom: true)
         XCTAssertEqual(state.intent, .latest)
-        XCTAssertTrue(state.update(rows: history + rows([message("local-question")])))
+        XCTAssertTrue(state.update(rows: history + rows([message("local-question")]), pinTo: "local-question"))
         state.disclosedTool()
         XCTAssertEqual(state.intent, .reading)
         XCTAssertEqual(state.reservedTurnID, "local-question", "Do not collapse reserved response space underneath a reader")

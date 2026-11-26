@@ -21,11 +21,19 @@ actor ActionReadinessTransport: RemoteTransport {
     private var failConnections = false
     private var failures: [String: (disconnect: Bool, failure: RemoteFailure)] = [:]
     private var snapshots: [String: RemoteJSON] = [:]
+    private var syncPages: [String: RemoteJSON] = [:]
+    private var turnMessageID: String?
     private var held: Set<String> = []
     private var waiters: [String: [UUID: CheckedContinuation<Void, Error>]] = [:]
 
     func setFailConnections(_ value: Bool) { failConnections = value }
+    static let syncPrefix = String(repeating: "a", count: 64)
     func setSnapshot(_ value: RemoteJSON) { snapshots[value["id"].string!] = value }
+    func setSyncPage(_ path: String, snapshot: RemoteJSON, offset: Int, total: Int, reset: Bool) {
+        syncPages[path] = .object(["snapshot": snapshot, "offset": .number(Double(offset)),
+                                   "total": .number(Double(total)), "reset": .bool(reset), "prefix": .string(Self.syncPrefix)])
+    }
+    func setTurnMessageID(_ id: String) { turnMessageID = id }
     func failNext(_ method: String, _ path: String, disconnect: Bool = true,
                   kind: RemoteFailure.Kind = .uncertain, message: String? = nil) {
         failures[method + " " + path] = (disconnect, RemoteFailure(message ?? (disconnect ? "Interrupted." : "Request rejected."), kind: kind))
@@ -90,15 +98,17 @@ actor ActionReadinessTransport: RemoteTransport {
         case ("GET", "/v1/conversations"):
             return .array(["session", "other"].map { .object(["id": .string($0)]) })
         case ("GET", let path) where path.contains("/sync"):
+            if let page = syncPages[path] { return page }
             let id = String(path.split(separator: "/")[2])
             let snapshot = snapshots[id] ?? .object(["id": .string(id), "messages": .array([])])
             let messages = snapshot["messages"].array
             return .object(["snapshot": snapshot, "offset": .number(0),
                             "total": .number(Double(messages.count)), "reset": .bool(true),
-                            "prefix": messages.isEmpty ? .null : .string(String(repeating: "a", count: 64))])
+                            "prefix": messages.isEmpty ? .null : .string(Self.syncPrefix)])
         case ("POST", let path) where path.hasSuffix("/turns") || path.hasSuffix("/steer"):
+            let messageID = path.hasSuffix("/steer") ? "sent-message" : turnMessageID
             return .object(["operationID": .string(body?["operationID"].string ?? "sent-operation"),
-                            "messageID": path.hasSuffix("/steer") ? .string("sent-message") : .null])
+                            "messageID": .optional(messageID)])
         case ("POST", "/v1/conversations"): return .object(["id": .string("created")])
         default: return .object([:])
         }
@@ -152,8 +162,13 @@ actor ActionBufferClock {
         return RemoteStore(client: transport, loadHost: { host }, saveHost: { _ in }, forgetHost: {},
                            bufferSleep: { try await clock.sleep() })
     }
-    private func snapshot(operation: String? = nil, state: String = "running", approval: Bool = false) -> RemoteJSON {
-        var fields: [String: RemoteJSON] = ["id": .string("session"), "messages": .array([])]
+    private func message(_ id: String, role: String = "user", text: String = "Same text") -> RemoteJSON {
+        .object(["id": .string(id), "role": .string(role), "text": .string(text)])
+    }
+    private func snapshot(operation: String? = nil, state: String = "running", approval: Bool = false,
+                          messages: [RemoteJSON] = [], pending: [RemoteJSON] = []) -> RemoteJSON {
+        var fields: [String: RemoteJSON] = ["id": .string("session"), "messages": .array(messages)]
+        if !pending.isEmpty { fields["pendingInput"] = .array(pending) }
         if let operation {
             fields["operation"] = .object(["id": .string(operation), "state": .string(state)])
             if approval {
@@ -176,6 +191,144 @@ actor ActionBufferClock {
         }
         XCTFail("Store did not reach the expected state", file: file, line: line)
         throw RemoteFailure("Test synchronization failed.")
+    }
+
+    func testDirectTurnPinsItsReceiptOnceWhetherAckOrReadArrivesFirst() async throws {
+        for readBeforeAck in [false, true] {
+            let transport = ActionReadinessTransport(), store = try makeStore(transport)
+            let history = [message("old-question"), message("old-answer", role: "assistant")]
+            await ready(store, transport, snapshot: snapshot(messages: history))
+            let before = TranscriptItem.project(store.displaySnapshot).flatMap(\.rows)
+            var scroll = TranscriptScrollState()
+            scroll.restoreRows(before)
+            scroll.readerScrolled(towardLatest: false, atBottom: false)
+
+            await transport.setTurnMessageID("ours")
+            await transport.hold("POST", turns)
+            store.drafts["session"] = "Same text"
+            let sending = try XCTUnwrap(store.beginSend()); defer { sending.cancel() }
+            try await until { await transport.waiting("POST", self.turns) }
+            let localID = try XCTUnwrap(store.queuedMessages(for: "session").last?.id)
+            await transport.setSnapshot(snapshot(operation: "sent-operation", messages: history + [
+                message("promoted"), message("ours"), message("another-input"), message("first-chunk", role: "assistant")
+            ]))
+            if readBeforeAck { await store.open("session").value }
+            XCTAssertNil(store.transcriptSendPin(for: "session"), "A read alone is not a Send receipt")
+            await transport.release("POST", turns)
+            await sending.value
+
+            let rows = TranscriptItem.project(store.displaySnapshot).flatMap(\.rows)
+            XCTAssertEqual(rows.map(\.id), ["old-question", "old-answer", "promoted", localID, "another-input", "first-chunk"])
+            XCTAssertTrue(store.queuedMessages(for: "session").isEmpty)
+            XCTAssertNil(store.transcriptSendPin(for: "other"))
+            let pin = try XCTUnwrap(store.transcriptSendPin(for: "session"))
+            XCTAssertNil(pin.take(in: before), "Only consume when the matched row is rendered")
+            XCTAssertTrue(scroll.update(rows: rows, pinTo: pin.take(in: rows)))
+            XCTAssertEqual(scroll.intent, .turn(localID))
+            await store.poll()
+            XCTAssertNil(store.transcriptSendPin(for: "session"))
+            XCTAssertNil(pin.take(in: rows), "Coalesced/repeated updates cannot reuse a consumed pin")
+        }
+    }
+
+    func testLegacyTurnOnlyPinsAnUnambiguousReconciledRowFromTheAcknowledgedOperation() async throws {
+        let history = [message("old-identical"), message("tail", role: "assistant")]
+        let queued = message("previously-queued")
+        let appended = [queued, message("ours"), message("first-chunk", role: "assistant")]
+        let cases: [(messages: [RemoteJSON], operation: String, pins: Bool)] = [
+            (history + appended, "sent-operation", true),
+            (history + [queued, message("unknown-identical"), message("ours")], "sent-operation", false),
+            (history + appended, "replacement-operation", false),
+            (appended, "sent-operation", false)
+        ]
+        for value in cases {
+            let transport = ActionReadinessTransport(), store = try makeStore(transport)
+            await ready(store, transport, snapshot: snapshot(messages: history, pending: [queued]))
+            await transport.setSnapshot(snapshot(operation: value.operation, messages: value.messages))
+            store.drafts["session"] = "Same text"
+            await store.send()
+
+            let pin = store.transcriptSendPin(for: "session")
+            if value.pins {
+                let rows = TranscriptItem.project(store.displaySnapshot).flatMap(\.rows)
+                let rowID = try XCTUnwrap(pin?.take(in: rows))
+                XCTAssertEqual(rows[3].id, rowID, "Skip old and previously queued identical input")
+                XCTAssertTrue(rowID.hasPrefix("local-"), "Keep the reconciled identity")
+            } else {
+                XCTAssertNil(pin, "Incomplete or ambiguous legacy reconciliation cannot authorize a jump")
+            }
+        }
+    }
+
+    func testMissingExactDeliveryDoesNotPinASimilarRowOrReplayOnALaterRead() async throws {
+        let transport = ActionReadinessTransport(), store = try makeStore(transport)
+        await ready(store, transport)
+        await transport.setTurnMessageID("ours")
+        await transport.setSnapshot(snapshot(operation: "sent-operation", messages: [message("unrelated")]))
+        store.drafts["session"] = "Same text"
+        await store.send()
+        XCTAssertNil(store.transcriptSendPin(for: "session"))
+
+        await transport.setSnapshot(snapshot(operation: "sent-operation", messages: [message("ours"), message("unrelated")]))
+        await store.poll()
+        XCTAssertEqual(store.snapshot["messages"].array.first?.id, "ours")
+        XCTAssertNil(store.transcriptSendPin(for: "session"), "An omitted row must not pin when later history restores it")
+    }
+
+    func testEarlierPageCannotAuthorizeAnExactReceiptOnReadback() async throws {
+        let transport = ActionReadinessTransport(), store = try makeStore(transport)
+        await ready(store, transport)
+        await transport.setTurnMessageID("ours")
+        await transport.hold("POST", turns)
+        store.drafts["session"] = "Same text"
+        let sending = try XCTUnwrap(store.beginSend()); defer { sending.cancel() }
+        try await until { await transport.waiting("POST", self.turns) }
+
+        let suffix = snapshot(operation: "sent-operation", messages: [message("reply", role: "assistant")])
+        await transport.setSyncPage(sync, snapshot: suffix, offset: 1, total: 2, reset: true)
+        await store.open("session").value
+        XCTAssertTrue(store.hasEarlierMessages)
+        await transport.setSyncPage(sync + "?before=reply", snapshot: snapshot(messages: [message("ours")]),
+                                    offset: 0, total: 2, reset: false)
+        await store.loadEarlier()
+        XCTAssertEqual(store.snapshot["messages"].array.map(\.id), ["ours", "reply"])
+        await transport.setSyncPage(sync + "?after=reply&prefix=" + ActionReadinessTransport.syncPrefix,
+                                    snapshot: suffix, offset: 1, total: 2, reset: false)
+        await transport.release("POST", turns)
+        await sending.value
+
+        XCTAssertNil(store.error)
+        XCTAssertEqual(store.snapshot["messages"].array.map(\.id), ["ours", "reply"])
+        XCTAssertNil(store.transcriptSendPin(for: "session"), "Readback must not pin a row loaded as older history")
+    }
+
+    func testLeavingAndReopeningDropsEvenAnUnconsumedSendPin() async throws {
+        for deliveryBeforeLeaving in [false, true] {
+            let transport = ActionReadinessTransport(), store = try makeStore(transport)
+            await ready(store, transport)
+            await transport.setTurnMessageID("ours")
+            await transport.hold("POST", turns)
+            store.drafts["session"] = "Same text"
+            let sending = try XCTUnwrap(store.beginSend()); defer { sending.cancel() }
+            try await until { await transport.waiting("POST", self.turns) }
+            await transport.setSnapshot(snapshot(operation: "sent-operation", messages: [message("ours")]))
+            var stalePin: TranscriptSendPin?
+            if deliveryBeforeLeaving {
+                await transport.release("POST", turns)
+                await sending.value
+                stalePin = try XCTUnwrap(store.transcriptSendPin(for: "session"))
+            }
+            store.selected = "other"
+            await store.open("session").value
+            if !deliveryBeforeLeaving {
+                await transport.release("POST", turns)
+                await sending.value
+            }
+            let rows = TranscriptItem.project(store.displaySnapshot).flatMap(\.rows)
+            XCTAssertEqual(rows.count, 1)
+            XCTAssertNil(stalePin?.take(in: rows))
+            XCTAssertNil(store.transcriptSendPin(for: "session"))
+        }
     }
 
     func testProviderFailedTurnAllowsAnExplicitNewTurn() async throws {
@@ -449,6 +602,7 @@ actor ActionBufferClock {
             await store.send()
             let queued = try XCTUnwrap(store.pendingMessage)
             let path = steering ? steer : turns
+            await transport.setTurnMessageID("sent-message")
             await transport.setSnapshot(snapshot(operation: steering ? "original" : nil))
             await transport.hold("GET", sync)
             await transport.hold("POST", path)
@@ -491,6 +645,7 @@ actor ActionBufferClock {
             await store.poll()
             try await until { !store.awaitingSendSnapshot }
             XCTAssertEqual(TranscriptItem.project(store.displaySnapshot).map(\.id), [queued.rowID])
+            XCTAssertNil(store.transcriptSendPin(for: "session"), "A buffered send never pins, even when it starts a turn")
             XCTAssertTrue(store.queuedMessages(for: "session").isEmpty)
             XCTAssertEqual(store.snapshot["messages"].array.first?["id"].string, "sent-message")
             let commands = await transport.commands

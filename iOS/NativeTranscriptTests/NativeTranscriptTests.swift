@@ -191,6 +191,54 @@ import ExecRemote
         XCTAssertEqual(table.contentSize.height - table.contentOffset.y, end, accuracy: 1)
     }
 
+    func testQueuedPromotionKeepsReadingOffsetOrFollowsTheBottom() async throws {
+        for reading in [true, false] {
+            let (window, table, coordinator) = mount()
+            defer { coordinator.detach(table); window.isHidden = true }
+            let history = snapshot()["messages"].array
+            let queuedID = "local-queued"
+            let queued: RemoteJSON = .object(["id": .string(queuedID), "role": .string("user"), "text": .string("Queued input")])
+            let reply: RemoteJSON = .object(["id": .string("reply"), "role": .string("assistant"), "text": .string("First chunk")])
+            func publish(messages: [RemoteJSON], pending: [RemoteJSON], clearance: CGFloat) {
+                table.contentInset.bottom = clearance
+                coordinator.update(conversationID: "fixture", snapshot: .object([
+                    "id": .string("fixture"), "messages": .array(messages), "pendingInput": .array(pending)
+                ]), showsThinkingIndicator: false, descriptiveShellTitles: false,
+                   viewState: TranscriptViewState(generation: 0), table: table)
+            }
+            publish(messages: history, pending: [queued], clearance: 170)
+            try await settle(table)
+            XCTAssertNil(table.rowTop?(queuedID))
+            let before: TranscriptViewportAnchor?
+            if reading {
+                table.beginReaderScroll()
+                table.scrollToRow(at: IndexPath(row: 7, section: 0), at: .top, animated: false)
+                table.layoutIfNeeded()
+                table.setContentOffset(CGPoint(x: 0, y: table.contentOffset.y + 12), animated: false)
+                table.layoutIfNeeded()
+                table.endReaderScroll()
+                try await settle(table)
+                before = try XCTUnwrap(table.readingPosition?())
+            } else { before = nil }
+            publish(messages: history + [queued, reply], pending: [], clearance: 90)
+            try await settle(table)
+
+            XCTAssertNotNil(table.rowTop?(queuedID))
+            XCTAssertNil(table.scrollState.reservedTurnID)
+            if let before {
+                XCTAssertEqual(table.scrollState.intent, .reading)
+                let after = try XCTUnwrap(table.readingPosition?())
+                XCTAssertEqual(after.rowID, before.rowID)
+                XCTAssertEqual(after.offset, before.offset, accuracy: 1)
+            } else {
+                XCTAssertEqual(table.scrollState.intent, .latest)
+                let bottom = TranscriptScrollGeometry.bottom(contentHeight: table.contentSize.height, viewportHeight: table.bounds.height,
+                                                              topInset: table.adjustedContentInset.top, bottomInset: table.adjustedContentInset.bottom)
+                XCTAssertEqual(table.contentOffset.y, bottom, accuracy: 1)
+            }
+        }
+    }
+
     func testThinkingLayersStayExactBlueAcrossTintAndAppearanceChanges() async throws {
         let (window, table, coordinator) = mount()
         defer { coordinator.detach(table); window.isHidden = true }
