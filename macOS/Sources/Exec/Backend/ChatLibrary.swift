@@ -15,6 +15,10 @@ import Observation
     private var navigationError: String?
     private var modelRefreshError: String?
     private var savedSummaries: [SessionSummary] = []
+    private var unreadCompletionIDs: Set<UUID> = []
+    // The catalog and resident can see the same completion in either order, even
+    // after a visit or eviction. Remember it for the lifetime of this session.
+    @ObservationIgnored private var observedCompletionIDs: [UUID: Set<UUID>] = [:]
     private var sidebarOrder: [UUID] = []
     private var pendingSidebarOrder: [UUID]?
     var isReorderingSessions: Bool { pendingSidebarOrder != nil }
@@ -242,6 +246,30 @@ import Observation
         return savedSummaries.first { $0.id == id }?.awaitingApproval == true
     }
     func needsAttention(_ id: UUID) -> Bool { conversation(id).map { $0.error != nil || $0.hasUnsavedChanges } == true }
+    func showsUnreadCompletion(_ id: UUID) -> Bool {
+        unreadCompletionIDs.contains(id) && !isSessionRunning(id)
+    }
+
+    private func recordCompletion(_ operationID: UUID, in id: UUID, hadBaseline: Bool) {
+        guard observedCompletionIDs[id, default: []].insert(operationID).inserted,
+              hadBaseline, id != currentSessionID, !detachedSessionIDs.contains(id),
+              !unreadCompletionIDs.contains(id) else { return }
+        unreadCompletionIDs.insert(id)
+    }
+
+    private func readCompletion(in conversation: ChatStore) {
+        guard let id = conversation.currentSessionID else { return }
+        if unreadCompletionIDs.contains(id) { unreadCompletionIDs.remove(id) }
+        if let operationID = conversation.completedTurnID {
+            recordCompletion(operationID, in: id, hadBaseline: false)
+        }
+    }
+
+    private func forgetCompletions(in id: UUID) {
+        if unreadCompletionIDs.contains(id) { unreadCompletionIDs.remove(id) }
+        observedCompletionIDs.removeValue(forKey: id)
+    }
+
     func send(in destination: ChatStore? = nil) {
         guard canModify else { return }
         (destination ?? current).send()
@@ -459,6 +487,7 @@ import Observation
             }
             remember(conversation)
             detachedSessionIDs.insert(id)
+            readCompletion(in: conversation)
             if conversation === current { activate(replacement) }
             present(conversation)
         }
@@ -787,6 +816,12 @@ import Observation
             try await self.refreshCatalog()
             if conversation === self.current { self.persistSelection() }
         }
+        conversation.didObserveCompletion = { [weak self, weak conversation] operationID, hadSnapshot in
+            guard let self, let conversation, let id = conversation.currentSessionID,
+                  self.openConversations.contains(where: { $0 === conversation }) else { return }
+            // An in-flight cold open is not a visit; only activation can mark it read.
+            self.recordCompletion(operationID, in: id, hadBaseline: hadSnapshot)
+        }
         conversation.didFinish = { [weak self, weak conversation] in
             guard let self, let conversation else { return }
             self.applyModels(to: conversation)
@@ -822,6 +857,7 @@ import Observation
         applyModels(to: conversation)
         remember(conversation)
         current = conversation
+        readCompletion(in: conversation)
         openConversations.removeAll { $0 === conversation }
         openConversations.append(conversation) // Oldest visit first, most recent last.
         // An untouched blank isn't an open document.
@@ -857,7 +893,7 @@ import Observation
         })
         let summaries = try await sessions.list()
         guard request == catalogRequest else { return false }
-        applyCatalog(summaries)
+        applyCatalog(summaries, observedResidentIDs: Set(observedResidents.values))
         try reconcileMissingResidents(observedResidents)
         return true
     }
@@ -901,9 +937,17 @@ import Observation
         }
     }
 
-    private func applyCatalog(_ summaries: [SessionSummary]) {
+    private func applyCatalog(_ summaries: [SessionSummary], observedResidentIDs: Set<UUID>) {
         let persisted = Set(summaries.map(\.id))
         let resident = Set(conversations.compactMap(\.currentSessionID))
+        let missing = observedResidentIDs.union(savedSummaries.map(\.id)).subtracting(persisted)
+        for id in missing where !registeringIDs.contains(id) { forgetCompletions(in: id) }
+        let known = observedResidentIDs.union(savedSummaries.lazy.filter { !$0.unreadable }.map(\.id))
+        for summary in summaries {
+            if let operationID = summary.completedTurnID {
+                recordCompletion(operationID, in: summary.id, hadBaseline: known.contains(summary.id))
+            }
+        }
         // New unsaved sessions retain their creation position until their
         // first checkpoint. Resident LRU ordering is unrelated to the sidebar.
         let pending = sidebarOrder.filter {

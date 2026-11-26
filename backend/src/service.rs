@@ -1657,6 +1657,7 @@ mod change_tests {
         record.operation = Some(Operation {
             id: operation_id.clone(),
             state: OperationState::Interrupted,
+            kind: None,
             error: None,
         });
         record.pending_input.push(Message::User {

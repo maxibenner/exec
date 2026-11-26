@@ -191,6 +191,8 @@ import CryptoKit
     enum CatalogPresence { case present, removed, superseded }
     var confirmPresence: (() async throws -> CatalogPresence)?
     var didFinish: (() -> Void)?
+    var didObserveCompletion: ((_ operationID: UUID, _ hadSnapshot: Bool) -> Void)?
+    var completedTurnID: UUID? { snapshot?.completedTurnID }
     private var task: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
     private var observer: Task<Void, Never>?
@@ -511,6 +513,7 @@ import CryptoKit
     func apply(_ value: AgentSnapshot, preserveSettings: Bool = false) throws {
         if let id = currentSessionID, id != value.id { throw ExecError("The backend returned a different conversation.") }
         let wasActive = operationActive
+        let hadSnapshot = snapshot != nil
         // Reproject on queue/row changes, not each presentation read or streamed text update.
         let queuedInputChanged = snapshot?.pendingInput != value.pendingInput ||
             (!value.pendingInput.isEmpty && (snapshot?.messages.count != value.messages.count ||
@@ -539,6 +542,9 @@ import CryptoKit
         updateSleepActivity()
         loadImages()
         if !operationActive { drainCommands() }
+        if let completionID = value.completedTurnID, !deletedRemotely, !deletionPending, !commandsClosed {
+            didObserveCompletion?(completionID, hadSnapshot)
+        }
         if wasActive && !operationActive {
             didFinish?()
             Task { [weak self] in

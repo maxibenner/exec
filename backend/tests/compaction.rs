@@ -401,6 +401,7 @@ async fn manual_compaction_consumes_queued_input_once_with_incomplete_context() 
     let operation = support::complete(run).await;
     assert_eq!(operation.id, operation_id);
     assert_eq!(operation.state, OperationState::Completed);
+    assert_eq!(operation.kind, Some(OperationKind::Turn));
     assert!(c.snapshot().pending_input.is_empty());
     assert_eq!(&c.snapshot().messages[..original.len()], &original);
     assert_eq!(
@@ -601,9 +602,17 @@ async fn manual_compaction_api_receipt_and_opaque_checkpoint_survive_restart() {
 async fn repeated_compaction_excludes_activity_and_serializes_its_schema() {
     let p = Arc::new(Provider::default());
     let c = support::conversation(p.clone(), vec![]);
-    support::complete(c.submit("first".into()).unwrap()).await;
-    support::complete(c.compact().unwrap()).await;
+    let turn = support::complete(c.submit("first".into()).unwrap()).await;
+    assert_eq!(turn.kind, Some(OperationKind::Turn));
+    let compact = support::complete(c.compact().unwrap()).await;
+    assert_eq!(compact.state, OperationState::Completed);
+    let summary = serde_json::to_value(c.summary()).unwrap();
+    assert_eq!(summary["operation"]["kind"], "compaction");
     let snapshot = c.snapshot();
+    assert_eq!(
+        snapshot.operation.as_ref().unwrap().kind,
+        Some(OperationKind::Compaction)
+    );
     let call = &snapshot.messages[snapshot.messages.len() - 2];
     let row = snapshot.messages.last().unwrap().clone();
     let json = serde_json::to_value(&row).unwrap();

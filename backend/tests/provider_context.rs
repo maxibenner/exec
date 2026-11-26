@@ -177,6 +177,7 @@ async fn long_thinking_continuation_remains_restorable_after_crossing_256_tool_s
     record.operation = Some(Operation {
         id: new_id(),
         state: OperationState::Completed,
+        kind: None,
         error: None,
     });
     record.messages.push(Message::User {

@@ -178,6 +178,8 @@ struct SessionChildRowContent: View {
                 } else if store.isSessionWaiting(child.id) {
                     SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
                         .accessibilityLabel("Waiting")
+                } else if store.showsUnreadCompletion(child.id) {
+                    UnreadCompletionIndicator()
                 }
             }
             // Match the parent's trailing status slot without insetting the row.
@@ -250,6 +252,15 @@ private struct SessionStatusIndicator: View {
     }
 }
 
+private struct UnreadCompletionIndicator: View {
+    var body: some View {
+        SessionStatusIndicator(symbol: "exclamationmark.circle")
+            .foregroundStyle(AppColors.blue)
+            .help("Unread completion")
+            .accessibilityLabel("Unread completion")
+    }
+}
+
 /// Give AppKit the resolved appearance explicitly: SwiftUI's sidebar spinner
 /// otherwise retains its light-appearance gray when the surrounding row is dark.
 private struct SidebarProgressSpinner: NSViewRepresentable {
@@ -298,6 +309,23 @@ struct SessionRow: View {
     let rename: () -> Void
     let delete: () -> Void
 
+    @ViewBuilder private var status: some View {
+        if needsApproval {
+            SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
+                .help("Approval required").accessibilityLabel("Approval required")
+        } else if needsAttention {
+            SessionStatusIndicator(symbol: "exclamationmark.circle").foregroundStyle(.orange)
+                .help("Conversation needs attention").accessibilityLabel("Conversation needs attention")
+        } else if store.isSessionWaiting(session.id) {
+            SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
+                .accessibilityLabel("Waiting")
+        } else if store.isSessionResponding(session.id) {
+            SessionStatusIndicator().accessibilityLabel("Running")
+        } else if !session.unreadable && store.showsUnreadCompletion(session.id) {
+            UnreadCompletionIndicator()
+        }
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Text(verbatim: session.title).font(.body.weight(.regular)).lineLimit(2)
@@ -305,20 +333,7 @@ struct SessionRow: View {
             // Reserve horizontal space only. Indicators may overflow vertically,
             // but must never increase a single-line title's layout height.
             Color.clear.frame(width: 16, height: 0)
-                .overlay {
-                    if needsApproval {
-                        SessionStatusIndicator(symbol: "hand.raised").foregroundStyle(.orange)
-                            .help("Approval required").accessibilityLabel("Approval required")
-                    } else if needsAttention {
-                        SessionStatusIndicator(symbol: "exclamationmark.circle").foregroundStyle(.orange)
-                            .help("Conversation needs attention").accessibilityLabel("Conversation needs attention")
-                    } else if store.isSessionWaiting(session.id) {
-                        SessionStatusIndicator(symbol: "stopwatch").foregroundStyle(.green)
-                            .accessibilityLabel("Waiting")
-                    } else if store.isSessionResponding(session.id) {
-                        SessionStatusIndicator().accessibilityLabel("Running")
-                    }
-                }
+                .overlay { status }
         }
         .padding(.top, 5)
         .padding(.bottom, 4)
