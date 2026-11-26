@@ -12,8 +12,8 @@ struct AttachmentRemoveButton: View {
 struct ChatRemoveButton: View {
     let label: String
     var role: ButtonRole? = nil
+    var delaysDimming = false
     let action: () -> Void
-    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         Button(role: role, action: action) {
@@ -31,11 +31,24 @@ struct ChatRemoveButton: View {
                 .padding(6)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RemoveButtonStyle(delaysDimming: delaysDimming))
         .fixedSize()
-        .opacity(isEnabled ? 1 : 0.5)
         .help(label)
         .accessibilityLabel(label)
+    }
+}
+
+private struct RemoveButtonStyle: ButtonStyle {
+    let delaysDimming: Bool
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(isEnabled ? 1 : 0.5)
+            // The button is disabled immediately, but ignore short queue locks visually.
+            .animation(delaysDimming && !isEnabled ? .easeIn(duration: 0.12).delay(0.18) : nil,
+                       value: isEnabled)
+            .opacity(isEnabled && configuration.isPressed ? 0.75 : 1)
     }
 }
 
