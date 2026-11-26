@@ -23,6 +23,8 @@ struct ToolApprovalView: View {
                     if canResolve() { executor.resolveApproval(id: approval.id, approved: false) }
                 }
                 .buttonStyle(.bordered)
+                .tint(nil)
+                .accentColor(nil)
                 // Deliberately not the default Return action: approval must be explicit.
                 Button("Approve Once") {
                     if canResolve() { executor.resolveApproval(id: approval.id, approved: true) }
