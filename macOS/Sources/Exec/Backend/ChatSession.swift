@@ -384,6 +384,8 @@ import CryptoKit
                     disabledTools: desiredDisabledTools.sorted()))
                 try apply(value.decoded(AgentSnapshot.self), preserveSettings: true)
             }
+            // Auto follows the acknowledgement, so it isn't a local edit to save again.
+            desiredSettings.autoApprove = autoApproveTools
             settingsDirty = settings != desiredSettings || selectedModel != desiredModel || disabledTools != desiredDisabledTools
             hasUnsavedChanges = false
             if settingsDirty { try await persistConfiguration() }
