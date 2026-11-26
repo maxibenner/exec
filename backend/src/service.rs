@@ -1316,7 +1316,10 @@ async fn handle(
                     }
                     other => ApiError::from(other),
                 })?;
-            Ok(json_response(202, json!({"operationID":run.operation_id})))
+            Ok(json_response(
+                202,
+                json!({"operationID":run.operation_id,"messageID":run.message_id}),
+            ))
         }
         ("POST", Some("compact")) => {
             let _: Empty = body(request, &request_cancel).await?;

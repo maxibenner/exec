@@ -259,6 +259,7 @@ import Foundation
             ("Sent-turn scrolling survives resize, remount and manual reading", { try TranscriptTurnScrollTests().preservesReadingAndSupportsExplicitFollowing() }),
             ("Downward scrolling to the bottom resumes transcript tracking, not streaming growth", { try TranscriptTurnScrollTests().resumesFollowingOnlyAfterScrollingDownToBottom() }),
             ("First sends anchor before the viewport is laid out", { try TranscriptTurnScrollTests().anchorsBeforeInitialLayout() }),
+            ("Queued send viewport preserves reading and bottom following through promotion", { try await TranscriptTurnScrollTests().queuedPromotionPreservesReadingAndBottomFollowing() }),
             ("Streaming visual growth coalesces and stays bounded", { try TranscriptScrollTests().growthCoalescesWithoutMovingLogicalGeometry() }),
             ("Completion preserves only identical rendering and passive hit tests are inert", { try TranscriptScrollTests().completionPreservesOnlyIdenticalRendering() }),
             ("Streaming pins every measured pass and respects manual opt-out", { try TranscriptScrollTests().pinsEveryMeasuredPassAndRespectsManualOptOut() }),

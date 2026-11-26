@@ -173,7 +173,7 @@ async fn files_are_shell_readable_owned_and_retained_until_last_fork_is_deleted(
         );
     }
     assert_eq!(provider.count(), 0);
-    client
+    let receipt = client
         .call(
             "POST",
             &route,
@@ -182,6 +182,10 @@ async fn files_are_shell_readable_owned_and_retained_until_last_fork_is_deleted(
         .await
         .unwrap();
     let snapshot = terminal(&client, &c.id).await;
+    assert_eq!(
+        receipt["messageID"].as_str(),
+        Some(snapshot.messages[0].id())
+    );
     assert_eq!(snapshot.operation.unwrap().state, OperationState::Completed);
     assert!(snapshot.metadata.title.unwrap().chars().count() <= 80);
     assert!(

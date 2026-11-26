@@ -318,7 +318,7 @@ The server bounds TCP connections to 64 and separately admits at most 64 non-GET
 | POST | `/v1/conversations/:id/fork` | `{}` → `201` independent saved snapshot of the transcript, including during an active turn |
 | DELETE | `/v1/conversations/:id` | No body → `200 {deleted:true}` after cancelling and settling active work, then durably deleting the session and descendants; conflicting mutations return 409 |
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
-| POST | `/v1/conversations/:id/turns` | `{text,images?,files?:[assetID]}` → `202 {operationID}` |
+| POST | `/v1/conversations/:id/turns` | `{text,images?,files?:[assetID]}` → `202 {operationID,messageID}` for the newly submitted user message |
 | POST | `/v1/conversations/:id/steer` | `{operationID,text,images?,files?:[assetID]}` → `202 {operationID,messageID}` |
 | POST | `/v1/conversations/:id/cancel-input` | `{operationID,messageID}` → `200 {messageID}` after checkpointing the removal |
 | POST | `/v1/conversations/:id/cancel` | `{operationID}` → `202 {accepted:true,operationID}` |

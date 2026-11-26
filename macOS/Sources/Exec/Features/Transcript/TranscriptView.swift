@@ -9,6 +9,8 @@ import Observation
     var trailingInset: CGFloat = 0
     @ObservationIgnored weak var scrollView: TranscriptScrollView?
     @ObservationIgnored var anchor: TranscriptLayout.Anchor?
+    // Keep a consumed receipt from retriggering a jump on updates or remounts.
+    @ObservationIgnored var handledImmediateSendID: UUID?
     // Reserve a viewport for a newly sent turn, including across view remounts.
     @ObservationIgnored var sentMessageID: UUID?
     @ObservationIgnored var layout = TranscriptLayout()
@@ -29,9 +31,10 @@ struct TranscriptView: View {
     let state: TranscriptState
     var bottomInset: CGFloat = 0
     var showsThinkingIndicator = false
+    var immediateSendID: UUID?
     var body: some View {
         VirtualTranscript(messages: messages, state: state, jumpRequest: state.jumpRequest, bottomInset: bottomInset,
-                          showsThinkingIndicator: showsThinkingIndicator)
+                          showsThinkingIndicator: showsThinkingIndicator, immediateSendID: immediateSendID)
             .ignoresSafeArea(.container, edges: .top)
             .focusedSceneValue(\.transcriptNavigation, messages.contains { $0.role == .user } ? state : nil)
     }
@@ -43,10 +46,11 @@ private struct VirtualTranscript: NSViewRepresentable {
     let jumpRequest: Int
     let bottomInset: CGFloat
     let showsThinkingIndicator: Bool
+    let immediateSendID: UUID?
     func makeNSView(context: Context) -> TranscriptScrollView { TranscriptScrollView(state: state) }
     func updateNSView(_ view: TranscriptScrollView, context: Context) {
         view.update(messages: messages, jumpRequest: jumpRequest, bottomInset: bottomInset,
-                    showsThinkingIndicator: showsThinkingIndicator)
+                    showsThinkingIndicator: showsThinkingIndicator, immediateSendID: immediateSendID)
     }
     static func dismantleNSView(_ view: TranscriptScrollView, coordinator: ()) { view.detach() }
 }
@@ -163,7 +167,7 @@ private struct VirtualTranscript: NSViewRepresentable {
     }
 
     func update(messages: [Message], jumpRequest: Int, bottomInset: CGFloat = 0,
-                showsThinkingIndicator: Bool = false) {
+                showsThinkingIndicator: Bool = false, immediateSendID: UUID? = nil) {
         guard !detached else { return }
         if showsThinkingIndicator {
             if thinkingFooter == nil { insertThinkingFooter() }
@@ -183,14 +187,15 @@ private struct VirtualTranscript: NSViewRepresentable {
            !preservesCompletedRendering(from: self.messages, to: filtered) {
             cancelGrowthMotion()
         }
-        // Look for the latest user row, not the last visible row: the first
-        // response chunk may arrive in the same SwiftUI update as the send.
-        if hasReceivedMessages, let sent = filtered.last(where: { $0.role == .user }),
-           !self.messages.contains(where: { $0.id == sent.id }) {
+        // A receipt or its snapshot may arrive first. Anchor only this exact
+        // local send, even when other user rows arrive in the same update.
+        if let id = immediateSendID, id != state.handledImmediateSendID,
+           filtered.contains(where: { $0.id == id && $0.role == .user }) {
+            state.handledImmediateSendID = id
             beginSendAnimation()
-            state.sentMessageID = sent.id
+            state.sentMessageID = id
             state.followsLatest = false
-            navigationAnchor = TranscriptLayout.Anchor(id: sent.id, offset: -Self.navigationPadding)
+            navigationAnchor = TranscriptLayout.Anchor(id: id, offset: -Self.navigationPadding)
             requestedScroll = true
         }
         if hasReceivedMessages {

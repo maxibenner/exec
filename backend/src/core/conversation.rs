@@ -223,6 +223,8 @@ impl Drop for IdleReservation {
 
 pub struct Submission {
     pub operation_id: String,
+    /// The new user row for a turn; compaction does not submit input.
+    pub message_id: Option<String>,
     /// Dropping the receipt only detaches. Use Conversation::cancel to stop work.
     pub completion: oneshot::Receiver<Operation>,
 }
@@ -1115,8 +1117,9 @@ impl Conversation {
         });
         let pending = std::mem::take(&mut s.record.pending_input);
         s.record.messages.extend(pending);
+        let message_id = new_id();
         s.record.messages.push(Message::User {
-            id: new_id(),
+            id: message_id.clone(),
             text,
             images,
             files,
@@ -1130,6 +1133,7 @@ impl Conversation {
         });
         Ok(Submission {
             operation_id,
+            message_id: Some(message_id),
             completion,
         })
     }
@@ -1166,6 +1170,7 @@ impl Conversation {
         });
         Ok(Submission {
             operation_id,
+            message_id: None,
             completion,
         })
     }

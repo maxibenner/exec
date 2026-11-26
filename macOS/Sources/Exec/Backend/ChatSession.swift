@@ -26,6 +26,8 @@ import CryptoKit
     var requestModelID: String { selectedModel }
     private(set) var messages: [Message] = []
     private(set) var queuedMessages: [Message] = []
+    // Presentation intent from a local /turns receipt, never from queue or history snapshots.
+    private(set) var latestImmediateSendID: UUID?
     private(set) var deletedRemotely = false { didSet { updateThinkingIndicator() } }
     var draft = ""
     var draftImages: [ImageAttachment] = []
@@ -690,6 +692,7 @@ import CryptoKit
                     struct Turn: Encodable { let text: String; let images: [AgentImage]; let files: [String] }
                     let receipt = try await api.send("POST", AgentAPI.path(id, "/turns"), body: Turn(text: text, images: images, files: files))
                     acceptedOperationID = receipt["operationID"].string.flatMap(UUID.init(uuidString:))
+                    latestImmediateSendID = receipt["messageID"].string.flatMap(UUID.init(uuidString:))
                 }
                 if draft == originalDraft { draft = "" }
                 if draftImages == inputImages { draftImages = [] }
