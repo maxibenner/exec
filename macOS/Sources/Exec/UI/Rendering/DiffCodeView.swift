@@ -13,6 +13,8 @@ struct DiffCodeView: NSViewRepresentable {
 }
 
 @MainActor final class DiffCodeSurface: NSView {
+    static let codeInset: CGFloat = 10
+
     private final class DocumentView: NSView {
         override var isFlipped: Bool { true }
     }
@@ -50,9 +52,11 @@ struct DiffCodeView: NSViewRepresentable {
         guard let layout = code.layoutManager, let container = code.textContainer else { return }
         layout.ensureLayout(for: container)
         let used = layout.usedRect(for: container)
-        let documentSize = CGSize(width: ceil(used.width) + 20, height: ceil(used.height) + 20)
+        let inset = Self.codeInset
+        let codeWidth = ceil(used.width), codeHeight = ceil(used.height)
+        let documentSize = CGSize(width: codeWidth + 2 * inset, height: codeHeight + 2 * inset)
         content.setFrameSize(documentSize)
-        code.frame = NSRect(x: 10, y: 10, width: documentSize.width - 20, height: documentSize.height - 20)
+        code.frame = NSRect(x: inset, y: inset, width: codeWidth, height: codeHeight)
         gutter.update(diff)
         codeSize = CGSize(width: documentSize.width + gutter.width, height: documentSize.height)
         needsLayout = true

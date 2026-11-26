@@ -5,14 +5,25 @@ struct AttachmentRemoveButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        ChatRemoveButton(label: "Remove \(name)", action: action)
+    }
+}
+
+struct ChatRemoveButton: View {
+    let label: String
+    var role: ButtonRole? = nil
+    let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button(role: role, action: action) {
             Circle()
-                .fill(.black.opacity(0.8))
+                .fill(.gray)
                 .frame(width: 13, height: 13)
                 .overlay {
                     // Draw around the same center as the circle, without symbol
                     // alignment metrics shifting the tiny mark at 1× scale.
-                    AttachmentRemoveMark()
+                    RemoveMark()
                         .stroke(.white, style: StrokeStyle(lineWidth: 1, lineCap: .round))
                         .frame(width: 5, height: 5)
                 }
@@ -20,12 +31,14 @@ struct AttachmentRemoveButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Remove \(name)")
-        .accessibilityLabel("Remove \(name)")
+        .fixedSize()
+        .opacity(isEnabled ? 1 : 0.5)
+        .help(label)
+        .accessibilityLabel(label)
     }
 }
 
-private struct AttachmentRemoveMark: Shape {
+private struct RemoveMark: Shape {
     func path(in rect: CGRect) -> Path {
         Path { path in
             path.move(to: CGPoint(x: rect.minX, y: rect.minY))

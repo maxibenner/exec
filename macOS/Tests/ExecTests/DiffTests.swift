@@ -30,10 +30,8 @@ struct DiffTests {
         try expect(cache.value(for: source) === rendered)
         try expect(rendered.text.string == " context\n  let value = \"👩🏾‍💻old\"\n  let value = \"👩🏾‍💻new\"\n"
                    + "++counter\ntail\n\n    only\n\\ No newline at end of file\n[Diff preview truncated; not a complete patch.]")
-        let approval = cache.value(for: source, showsPatchHeaders: true)
+        let approval = cache.value(for: source, showsLaterHunkHeaders: true)
         try expect(approval.text.string == """
-        \(headers)
-        @@ -132,3 +132,4 @@
          context
           let value = "👩🏾‍💻old"
           let value = "👩🏾‍💻new"

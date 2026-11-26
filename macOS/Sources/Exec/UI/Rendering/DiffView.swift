@@ -3,27 +3,39 @@ import SwiftUI
 
 struct DiffView: View {
     let source: String
-    var showsPatchHeaders = false
+    var isApprovalPreview = false
 
     static let lineHeight: CGFloat = 22
     @State private var cache = RenderCache()
 
-    var body: some View {
-        DiffCodeView(diff: cache.value(for: source, showsPatchHeaders: showsPatchHeaders))
+    @ViewBuilder var body: some View {
+        let diff = cache.value(for: source, showsLaterHunkHeaders: isApprovalPreview)
+        let code = DiffCodeView(diff: diff)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
+        if isApprovalPreview {
+            let height = CGFloat(diff.lineCount) * Self.lineHeight + 2 * DiffCodeSurface.codeInset
+            // Keep horizontal scrolling inside the inset, with a pinned gutter.
+            ScrollView(.vertical) {
+                code.padding(.horizontal, DiffCodeSurface.codeInset)
+            }
+            .defaultScrollAnchor(.topLeading)
+            .frame(height: min(220, max(60, height)))
+        } else {
+            code
+        }
     }
 
     @MainActor final class RenderCache {
         private var source: String?
-        private var showsPatchHeaders = false
+        private var showsLaterHunkHeaders = false
         private var rendered: RenderedDiff?
 
-        func value(for source: String, showsPatchHeaders: Bool = false) -> RenderedDiff {
-            if self.source == source, self.showsPatchHeaders == showsPatchHeaders, let rendered { return rendered }
-            let value = RenderedDiff(source, showsPatchHeaders: showsPatchHeaders)
+        func value(for source: String, showsLaterHunkHeaders: Bool = false) -> RenderedDiff {
+            if self.source == source, self.showsLaterHunkHeaders == showsLaterHunkHeaders, let rendered { return rendered }
+            let value = RenderedDiff(source, showsLaterHunkHeaders: showsLaterHunkHeaders)
             self.source = source
-            self.showsPatchHeaders = showsPatchHeaders
+            self.showsLaterHunkHeaders = showsLaterHunkHeaders
             rendered = value
             return value
         }
@@ -47,9 +59,11 @@ struct DiffView: View {
         // Keys are UTF-16 offsets in the selectable code, not in the raw patch.
         let gutter: [Int: GutterEntry]
         let numberDigits: Int
+        let lineCount: Int
 
-        init(_ source: String, showsPatchHeaders: Bool = false) {
-            let lines = DiffDocument(source, showsPatchHeaders: showsPatchHeaders).lines
+        init(_ source: String, showsLaterHunkHeaders: Bool = false) {
+            let lines = DiffDocument(source, showsLaterHunkHeaders: showsLaterHunkHeaders).lines
+            lineCount = lines.count
             let styled = NSMutableAttributedString(string: "")
             let paragraph = NSMutableParagraphStyle()
             paragraph.minimumLineHeight = DiffView.lineHeight

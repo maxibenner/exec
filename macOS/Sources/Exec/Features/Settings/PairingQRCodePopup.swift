@@ -6,8 +6,7 @@ struct PairingQRCodePopup: View {
     let dismiss: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Pairing QR Code").font(.headline)
+        VStack(spacing: 8) {
             Image(nsImage: code.image)
                 .interpolation(.none)
                 .resizable()
@@ -16,11 +15,11 @@ struct PairingQRCodePopup: View {
                 .frame(maxWidth: .infinity)
                 .background(.white, in: RoundedRectangle(cornerRadius: 12))
                 .accessibilityLabel("Pairing QR code")
-            HStack {
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
                 Button("Cancel", role: .cancel, action: dismiss)
                     .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("Copy", action: copyToClipboard)
+                Button("Copy to clipboard", action: copyToClipboard)
                     .buttonStyle(.borderedProminent)
                     .tint(AppColors.blue)
             }

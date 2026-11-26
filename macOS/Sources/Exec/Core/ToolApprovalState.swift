@@ -9,6 +9,7 @@ import Observation
         let kind: Kind
         let content: String
         let directory: URL
+        let filePath: String?
         var timeoutSeconds: Int?
     }
     private(set) var pendingApproval: Approval?
@@ -28,15 +29,21 @@ import Observation
         default: .other
         }
         let content: String
+        var filePath: String?
         var timeout: Int?
         if kind == .shell {
             // Rust already prepared/validated the exact action. Interpret only its display fields.
             content = approval.call.arguments["command"].string ?? approval.description
             timeout = approval.call.arguments["timeout_seconds"].number.map(Int.init) ?? 120
-        } else if kind == .edit { content = approval.details?["diff"].string ?? approval.description }
-        else { content = approval.description }
+        } else if kind == .edit {
+            content = approval.details?["diff"].string ?? approval.description
+            filePath = approval.details?["path"].string ?? approval.call.arguments["path"].string
+        } else {
+            content = approval.description
+        }
         pendingApproval = Approval(id: approval.id, kind: kind, content: content,
-                                   directory: URL(fileURLWithPath: approval.workspace), timeoutSeconds: timeout)
+                                   directory: URL(fileURLWithPath: approval.workspace),
+                                   filePath: filePath, timeoutSeconds: timeout)
     }
     func resolveApproval(id: UUID, approved: Bool) {
         guard !resolving, pendingApproval?.id == id, let operationID, let resolve else { return }

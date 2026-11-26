@@ -35,15 +35,8 @@ struct UserMessageBubble: View {
         if let queuedAction {
             HStack(alignment: .center, spacing: 8) {
                 messageContents
-                Button(role: .destructive, action: queuedAction.cancel) {
-                    Label("Cancel queued message", systemImage: "xmark")
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .fixedSize()
-                .help("Cancel queued message")
-                .disabled(!queuedAction.isEnabled)
+                ChatRemoveButton(label: "Cancel queued message", role: .destructive, action: queuedAction.cancel)
+                    .disabled(!queuedAction.isEnabled)
             }
         } else {
             messageContents
