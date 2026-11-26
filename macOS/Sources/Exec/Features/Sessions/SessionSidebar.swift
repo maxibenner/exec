@@ -1,6 +1,6 @@
 import SwiftUI
 
-private struct SidebarSessionGroup: Identifiable, Equatable {
+private struct SidebarSessionGroup: Identifiable {
     let session: SessionSummary
     let children: [SessionSummary]
     var id: UUID { session.id }
@@ -26,21 +26,8 @@ struct SessionSidebar: View {
     private var rowAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.25) }
     private var groups: [SidebarSessionGroup] { SidebarSessionGroup.snapshot(store) }
 
-    // Give asynchronous catalog changes a transaction before List reconciles its
-    // native rows. The family keeps its parent ID when children come and go.
-    @State private var displayedGroups: [SidebarSessionGroup]
-    // List recycles rows; an existing child must not fade again when scrolled back.
-    @State private var revealedChildIDs: Set<UUID>
-
-    init(store: ChatLibrary, open: @escaping (UUID) -> Void,
-         delete: @escaping (SessionSummary) -> Void) {
-        self.store = store
-        self.open = open
-        self.delete = delete
-        let initial = SidebarSessionGroup.snapshot(store)
-        _displayedGroups = State(initialValue: initial)
-        _revealedChildIDs = State(initialValue: Set(initial.flatMap { $0.children.map(\.id) }))
-    }
+    // Native drags already animate their drop. Suppress a second animation for that order.
+    @State private var nativeDropOrder: [UUID]? = nil
 
     private func activate(_ id: UUID) {
         guard store.canNavigate else { return }
@@ -57,10 +44,11 @@ struct SessionSidebar: View {
 
     var body: some View {
         let sessions = groups
-        let shortcutIDs = displayedGroups.prefix(9).map(\.id)
+        let rootIDs = sessions.map(\.id)
+        let shortcutIDs = rootIDs.prefix(9)
         // The library paints grey selection; native table selection stays empty.
         List {
-            ForEach(displayedGroups) { group in
+            ForEach(sessions) { group in
                 let session = group.session
                 VStack(alignment: .leading, spacing: 0) {
                     SessionRow(session: session, store: store,
@@ -68,7 +56,7 @@ struct SessionSidebar: View {
                         .onTapGesture { activate(session.id) }
                         .accessibilityAction { activate(session.id) }
                         .accessibilityAddTraits(store.sidebarSelectionID == session.id ? [.isSelected] : [])
-                    ForEach(group.children) { child in
+                    SidebarChildRows(children: group.children, animation: rowAnimation) { child in
                         SessionChildRowContent(child: child, store: store)
                             // Include the native row gutters in the background, then
                             // cancel that padding so the connector/text do not move.
@@ -79,10 +67,6 @@ struct SessionSidebar: View {
                                     .fill(store.sidebarSelectionID == child.id ? Color.primary.opacity(0.08) : Color.clear)
                             }
                             .padding(.horizontal, -16)
-                            .modifier(SidebarChildAppearance(visible: revealedChildIDs.contains(child.id), animation: rowAnimation) {
-                                revealedChildIDs.insert(child.id)
-                            })
-                            .transition(.opacity)
                             .onTapGesture { activate(child.id) }
                             .accessibilityAction { activate(child.id) }
                             .accessibilityAction(named: "Delete Sub-agent") {
@@ -116,26 +100,60 @@ struct SessionSidebar: View {
                 .moveDisabled(!store.canReorderSessions)
             }
             .onMove { offsets, destination in
-                guard displayedGroups.map(\.id) == store.sidebarSessions.map(\.id) else { return }
+                guard rootIDs == store.sidebarSessions.map(\.id) else { return }
                 store.moveSidebarSessions(from: offsets, to: destination)
-                // Publish synchronously in the native drop transaction.
-                displayedGroups = groups
-                revealedChildIDs.formIntersection(displayedGroups.flatMap { $0.children.map(\.id) })
+                let dropped = store.sidebarSessions.map(\.id)
+                if dropped != rootIDs { nativeDropOrder = dropped }
             }
         }
         .listStyle(.sidebar)
+        // Animate the catalog change where List consumes it. Republishing an
+        // onChange mirror can leave native rows snapping in a real window scene.
+        .animation(rootIDs == nativeDropOrder ? nil : rowAnimation, value: rootIDs)
         .padding(.horizontal, 10)
         .focusable(false)
-        .onChange(of: sessions) { _, updated in
-            guard displayedGroups != updated else { return }
-            let previousStructure = displayedGroups.map { [$0.id] + $0.children.map(\.id) }
-            let nextStructure = updated.map { [$0.id] + $0.children.map(\.id) }
-            withAnimation(previousStructure != nextStructure ? rowAnimation : nil) {
-                revealedChildIDs.formIntersection(updated.flatMap { $0.children.map(\.id) })
-                displayedGroups = updated
-            }
+        .onChange(of: rootIDs) { _, current in
+            if let nativeDropOrder, nativeDropOrder != current { self.nativeDropOrder = nil }
         }
         .background(WindowReference { renamePrompt.window = $0 })
+    }
+}
+
+/// Inside a retained native row, child transitions still need their own update.
+private struct SidebarChildRows<Row: View>: View {
+    let children: [SessionSummary]
+    let animation: Animation?
+    private let row: (SessionSummary) -> Row
+    @State private var displayed: [SessionSummary]
+    @State private var revealed: Set<UUID>
+
+    init(children: [SessionSummary], animation: Animation?, @ViewBuilder row: @escaping (SessionSummary) -> Row) {
+        self.children = children
+        self.animation = animation
+        self.row = row
+        // Remounting a recycled family must not replay existing child fades.
+        _displayed = State(initialValue: children)
+        _revealed = State(initialValue: Set(children.map(\.id)))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(displayed) { child in
+                row(child)
+                    .modifier(SidebarChildAppearance(visible: revealed.contains(child.id), animation: animation) {
+                        revealed.insert(child.id)
+                    })
+                    .transition(.opacity)
+            }
+        }
+        .onChange(of: children) { _, updated in
+            guard displayed != updated else { return }
+            let updatedIDs = updated.map(\.id)
+            withAnimation(displayed.map(\.id) == updatedIDs ? nil : animation) {
+                revealed.formIntersection(updatedIDs)
+                displayed = updated
+            }
+        }
     }
 }
 
