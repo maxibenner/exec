@@ -6,6 +6,27 @@
         <description>Stable updates for Exec on macOS.</description>
         <language>en</language>
         <item>
+            <title>0.1.14</title>
+            <pubDate>Thu, 26 Nov 2026 14:21:40 +0100</pubDate>
+            <link>https://github.com/maxibenner/exec</link>
+            <sparkle:version>17</sparkle:version>
+            <sparkle:shortVersionString>0.1.14</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[## Features
+- New queued message visualization
+- New edit tool call diff style
+
+## Fixes
+- Toggling auto-mode now takes effect on the next tool call
+- Made sidebar animations happen consistently
+
+## Updates
+- Approval promts now use native buttons and follow light/dark mode
+]]></description>
+            <enclosure url="https://github.com/maxibenner/exec/releases/download/v0.1.14/Exec-0.1.14-macOS-arm64.zip" length="14544189" type="application/octet-stream" sparkle:edSignature="QGRvDJRyrodmelBqPfEBcvqf3zpuUI1v9A6XwZqtgzAso+U2JMZy7QS7lsoJx3IOTZB+irn8pEUZgYkxMYnMDQ=="/>
+        </item>
+        <item>
             <title>0.1.13</title>
             <pubDate>Wed, 25 Nov 2026 17:13:52 +0100</pubDate>
             <link>https://github.com/maxibenner/exec</link>
