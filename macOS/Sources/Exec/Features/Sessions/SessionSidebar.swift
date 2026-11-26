@@ -26,9 +26,6 @@ struct SessionSidebar: View {
     private var rowAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.25) }
     private var groups: [SidebarSessionGroup] { SidebarSessionGroup.snapshot(store) }
 
-    // Native drags already animate their drop. Suppress a second animation for that order.
-    @State private var nativeDropOrder: [UUID]? = nil
-
     private func activate(_ id: UUID) {
         guard store.canNavigate else { return }
         open(id)
@@ -102,19 +99,14 @@ struct SessionSidebar: View {
             .onMove { offsets, destination in
                 guard rootIDs == store.sidebarSessions.map(\.id) else { return }
                 store.moveSidebarSessions(from: offsets, to: destination)
-                let dropped = store.sidebarSessions.map(\.id)
-                if dropped != rootIDs { nativeDropOrder = dropped }
             }
         }
         .listStyle(.sidebar)
-        // Animate the catalog change where List consumes it. Republishing an
-        // onChange mirror can leave native rows snapping in a real window scene.
-        .animation(rootIDs == nativeDropOrder ? nil : rowAnimation, value: rootIDs)
+        // Use the same List transaction for a drop and an external catalog change.
+        // A matching persistence echo does not change the IDs or animate again.
+        .animation(rowAnimation, value: rootIDs)
         .padding(.horizontal, 10)
         .focusable(false)
-        .onChange(of: rootIDs) { _, current in
-            if let nativeDropOrder, nativeDropOrder != current { self.nativeDropOrder = nil }
-        }
         .background(WindowReference { renamePrompt.window = $0 })
     }
 }

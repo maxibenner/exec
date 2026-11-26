@@ -247,6 +247,27 @@ struct SidebarProbeMarker: NSViewRepresentable {
     }
 }
 
+/// Capture the real List callback in the generated copy. Calling it exercises
+/// drop reconciliation, not AppKit's pointer tracking or drag preview.
+@MainActor enum SidebarProbeMove {
+    private static var drop: ((IndexSet, Int) -> Void)?
+
+    static func capture(_ action: @escaping (IndexSet, Int) -> Void) -> (IndexSet, Int) -> Void {
+        drop = action
+        return action
+    }
+
+    static func perform(from offsets: IndexSet, to destination: Int, library: ChatLibrary) throws {
+        if CommandLine.arguments.contains("--native-list-control") {
+            library.moveSidebarSessions(from: offsets, to: destination)
+        } else if let drop {
+            drop(offsets, destination)
+        } else {
+            throw ExecError("The sidebar did not register its drop callback")
+        }
+    }
+}
+
 /// A deliberately small native List control: no family height, child appearance,
 /// composer, selection, or production row modifiers. Same synthetic catalog/transactions.
 private struct SidebarNativeListControl: View {
@@ -1354,7 +1375,14 @@ private struct ProbeWindow: View {
                   library.sidebarSessions.count == 6 else { throw ExecError("Synthetic creation did not finish: \(library.error ?? "no error")") }
         })
         phases.append(try await measure("parent-move-and-echo", host: host) {
-            library.moveSidebarSessions(from: IndexSet(integer: 1), to: library.sidebarSessions.count)
+            let offsets = IndexSet(integer: 1)
+            var expected = library.sidebarSessions.map(\.id)
+            let destination = expected.count
+            expected.move(fromOffsets: offsets, toOffset: destination)
+            try SidebarProbeMove.perform(from: offsets, to: destination, library: library)
+            guard library.sidebarSessions.map(\.id) == expected else { throw ExecError("Drop order wasn't applied synchronously") }
+            await library.waitForNavigation()
+            guard library.sidebarSessions.map(\.id) == expected else { throw ExecError("Persistence echo changed the drop order") }
         })
         phases.append(try await measure("parent-delete-and-focus", host: host) {
             if let id = library.currentSessionID { library.deleteSession(id) }

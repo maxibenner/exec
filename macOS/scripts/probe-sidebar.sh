@@ -27,7 +27,8 @@ for hook in '@Environment(\.accessibilityReduceMotion) private var reduceMotion'
     'accessibilityAddTraits(store.sidebarSelectionID == session.id' \
     '.frame(height: 22, alignment: .center)' \
     '.padding(.top, 3).padding(.bottom, 5)' \
-    '.modifier(SidebarAnimatedHeight(animation: rowAnimation))'; do
+    '.modifier(SidebarAnimatedHeight(animation: rowAnimation))' \
+    '.onMove { offsets, destination in'; do
     require_once "$hook" "$sidebar"
 done
 # Group marker must measure allocated layout height, outside the height modifier;
@@ -42,6 +43,10 @@ sed \
                         .background(SidebarProbeMarker(id: session.id, role: "footer"))' \
   -e '/modifier(SidebarAnimatedHeight/a\
                 .background(SidebarProbeMarker(id: session.id, role: "group"))' \
+  -e '/[.]onMove { offsets, destination in/,/^            }$/ {
+    s/[.]onMove {/.onMove(perform: SidebarProbeMove.capture {/
+    s/^            }$/            })/
+  }' \
   "$sidebar" > .build/ProbeSessionSidebar.swift
 for role in parent child footer group; do
     require_once "role: \"$role\"" .build/ProbeSessionSidebar.swift
