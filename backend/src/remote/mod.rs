@@ -403,7 +403,7 @@ pub(crate) fn permits(method: &str, path: &str) -> bool {
             "GET" => parts[4] == "sync",
             "POST" => matches!(
                 parts[4],
-                "turns" | "steer" | "cancel" | "approvals" | "clear"
+                "turns" | "steer" | "cancel-input" | "cancel" | "approvals" | "clear"
             ),
             "PUT" => matches!(parts[4], "settings" | "model" | "title" | "workspace"),
             _ => false,

@@ -18,8 +18,10 @@ final class OptimisticMessageTests: XCTestCase {
         var display = RemoteOptimisticMessages()
         let localID = display.begin(text: "Hello", snapshot: initial, id: "local-already-visible-queue")
         XCTAssertEqual(localID, "local-already-visible-queue")
-        XCTAssertTrue(RemoteMessageSubmission.isActive(display.project(initial)))
-        XCTAssertEqual(RemoteTranscriptRow.project(display.project(initial)).map(\.id), ["earlier", localID])
+        let projected = display.project(initial)
+        XCTAssertTrue(RemoteMessageSubmission.isActive(projected))
+        XCTAssertEqual(projected["pendingInput"].array.compactMap { $0["id"].string }, [localID])
+        XCTAssertEqual(RemoteTranscriptRow.project(projected).map(\.id), ["earlier"])
         display.accept(localID, response: acceptance())
         display.reconcile(initial) // An old poll must not match the earlier identical text.
         XCTAssertTrue(display.awaitingSnapshot)
@@ -39,7 +41,8 @@ final class OptimisticMessageTests: XCTestCase {
         XCTAssertTrue(display.awaitingSnapshot)
         let queued = snapshot("running", pending: [user("queued")])
         display.reconcile(queued)
-        XCTAssertEqual(RemoteTranscriptRow.project(display.project(queued)).map(\.id), [id])
+        XCTAssertTrue(display.project(queued)["pendingInput"].array.contains { $0["id"].string == id })
+        XCTAssertTrue(RemoteTranscriptRow.project(display.project(queued)).isEmpty)
         let injected = snapshot("running", messages: [user("queued")], pending: [user("queued")])
         XCTAssertEqual(RemoteTranscriptRow.project(display.project(injected)).map(\.id), [id])
     }
@@ -51,11 +54,11 @@ final class OptimisticMessageTests: XCTestCase {
         display.accept(id, response: acceptance())
         XCTAssertTrue(display.awaitingSnapshot)
         XCTAssertTrue(RemoteMessageSubmission.isActive(display.project(initial)))
-        XCTAssertEqual(RemoteTranscriptRow.project(display.project(initial)).count, 1)
+        XCTAssertEqual(display.project(initial)["pendingInput"].array.compactMap { $0["id"].string }, [id])
         display.remove(id)
         XCTAssertFalse(display.awaitingSnapshot)
         XCTAssertFalse(RemoteMessageSubmission.isActive(display.project(initial)))
-        XCTAssertTrue(RemoteTranscriptRow.project(display.project(initial)).isEmpty)
+        XCTAssertTrue(display.project(initial)["pendingInput"].array.isEmpty)
     }
 
     func testTerminalHostStateRemovesSpinnerEvenForFastTurnsAndErrors() {

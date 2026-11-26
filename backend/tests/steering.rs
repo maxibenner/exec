@@ -193,6 +193,74 @@ async fn steering_keeps_live_executor_and_remaining_calls_in_the_batch() {
 }
 
 #[tokio::test]
+async fn cancel_pending_input_removes_only_the_target_during_a_tool_batch() {
+    let entered = CancellationToken::new();
+    let release = CancellationToken::new();
+    let ready = entered.clone();
+    let held = release.clone();
+    let provider = FakeProvider::new(vec![
+        response(vec![call("a"), call("b"), ProviderEvent::Done]),
+        answer(),
+    ]);
+    let c = conversation(
+        provider.clone(),
+        vec![tool(None, move |context| {
+            let ready = ready.clone();
+            let held = held.clone();
+            async move {
+                ready.cancel();
+                held.cancelled().await;
+                assert!(!context.cancel.is_cancelled());
+                Ok(format!("{} completed", context.call_id))
+            }
+        })],
+    );
+    let run = c.submit("original".into()).unwrap();
+    let op = run.operation_id.clone();
+    tokio::time::timeout(std::time::Duration::from_secs(3), entered.cancelled())
+        .await
+        .unwrap();
+    let before = c.steer(&op, "before".into()).unwrap();
+    let removed = c.steer(&op, "discard".into()).unwrap();
+    let after = c.steer(&op, "after".into()).unwrap();
+    let (_, mut events) = c.subscribe();
+    assert!(c.cancel_pending_input(&op, &removed).await.unwrap());
+    let event = events.try_recv().unwrap();
+    let ServiceEvent::Snapshot { snapshot } = event.as_ref() else {
+        panic!("expected pending input removal snapshot");
+    };
+    assert_eq!(snapshot.active_tool_call_id.as_deref(), Some("a"));
+    assert_eq!(
+        snapshot
+            .pending_input
+            .iter()
+            .map(Message::id)
+            .collect::<Vec<_>>(),
+        [before.as_str(), after.as_str()]
+    );
+
+    release.cancel();
+    assert_eq!(complete(run).await.state, OperationState::Completed);
+    assert_eq!(
+        outcomes(&c),
+        [ToolOutcome::Completed, ToolOutcome::Completed]
+    );
+    assert_eq!(
+        provider.requests.lock().unwrap()[1]
+            .messages
+            .iter()
+            .filter_map(|message| match message {
+                ContextMessage::User { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        ["original", "before", "after"]
+    );
+    assert!(!c.cancel_pending_input(&op, &before).await.unwrap());
+    assert!(c.snapshot().messages.iter().any(|m| m.id() == before));
+}
+
+#[tokio::test]
 async fn cancelled_and_recovered_pending_input_never_replays_itself() {
     let entered = CancellationToken::new();
     let p = FakeProvider::new(vec![waiting(entered.clone())]);

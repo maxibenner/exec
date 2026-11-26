@@ -25,6 +25,10 @@ import CryptoKit
     var hasUsableModel: Bool { model != nil && provider.isModelAvailable(selectedModel) && !hasUnsavedChanges && !deletedRemotely }
     var requestModelID: String { selectedModel }
     private(set) var messages: [Message] = []
+    var queuedMessages: [Message] {
+        guard !deletedRemotely, let snapshot else { return [] }
+        return snapshot.queuedMessages(images: imageCache)
+    }
     private(set) var deletedRemotely = false { didSet { updateThinkingIndicator() } }
     var draft = ""
     var draftImages: [ImageAttachment] = []
@@ -192,6 +196,7 @@ import CryptoKit
     private var observer: Task<Void, Never>?
     private var transcriptReader: AgentTranscriptReader?
     private var observerGeneration = UUID()
+    private var resynchronizingGeneration: UUID?
     private var observationLost = false
     private var deletionPending = false
     private var settingsDirty = false
@@ -283,6 +288,44 @@ import CryptoKit
                   currentSessionID == id else { return }
             do { try await resynchronize(id) }
             catch { self.error = self.error ?? "Could not confirm Auto mode: \(error.localizedDescription)" }
+        }
+    }
+    private var canReconcileQueuedInput: Bool {
+        canRequestCommands && !deletedRemotely && !deletionPending && !isStopping
+    }
+    var canCancelQueuedInput: Bool {
+        canReconcileQueuedInput && !hasUnsavedChanges && !observationLost && resynchronizingGeneration != observerGeneration &&
+            task == nil && compactionTask == nil && !isSaving && saveTask == nil && commandTask == nil && clearTask == nil &&
+            currentSessionID != nil && snapshot?.operation != nil && !queuedMessages.isEmpty
+    }
+    func cancelQueuedInput(_ messageID: UUID) {
+        guard canCancelQueuedInput, let id = currentSessionID, let operationID = snapshot?.operation?.id,
+              queuedMessages.contains(where: { $0.id == messageID }) else { return }
+        isSaving = true
+        saveTask = Task {
+            defer { isSaving = false; saveTask = nil; drainCommands() }
+            guard canReconcileQueuedInput, currentSessionID == id, snapshot?.operation?.id == operationID,
+                  queuedMessages.contains(where: { $0.id == messageID }) else { return }
+            var cancellationError: String?
+            do {
+                let receipt = try await api.request("POST", AgentAPI.path(id, "/cancel-input"), .object([
+                    "operationID": .string(operationID.uuidString.lowercased()), "messageID": .string(messageID.uuidString.lowercased())]))
+                guard receipt["messageID"].string.flatMap(UUID.init(uuidString:)) == messageID else {
+                    throw ExecError("The backend did not confirm the queued message ID.")
+                }
+            } catch {
+                cancellationError = "Could not cancel queued message: \(error.localizedDescription)"
+            }
+            // The input may have been promoted, or the reply may have been lost
+            // after cancellation. Only a snapshot changes the queue or transcript.
+            guard canReconcileQueuedInput, currentSessionID == id else { return }
+            if let cancellationError { error = cancellationError }
+            do { try await resynchronize(id) }
+            catch {
+                if canReconcileQueuedInput, currentSessionID == id {
+                    self.error = cancellationError ?? "Could not refresh queued messages: \(error.localizedDescription)"
+                }
+            }
         }
     }
     func scheduleSave(force: Bool = false) {
@@ -388,7 +431,11 @@ import CryptoKit
     private func resynchronize(_ id: UUID) async throws {
         pauseObservation()
         let generation = observerGeneration
-        defer { if observerGeneration == generation { observe() } }
+        resynchronizingGeneration = generation
+        defer {
+            if resynchronizingGeneration == generation { resynchronizingGeneration = nil }
+            if observerGeneration == generation { observe() }
+        }
         let reader = api.transcriptReader(id)
         let value = try await reader.read()
         guard observerGeneration == generation, !Task.isCancelled else {

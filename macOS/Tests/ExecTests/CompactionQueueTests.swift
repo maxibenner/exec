@@ -103,10 +103,12 @@ private actor CompactionQueueTransport: AgentTransport {
                 }
                 await store.waitUntilIdle()
                 try expect(store.draft == "Keep this newer draft" && store.error == nil)
-                try expect(store.messages.filter { $0.id == Self.queuedID }.count == 1)
+                try expect(store.queuedMessages.map(\.id) == [Self.queuedID])
+                try expect(!store.messages.contains { $0.id == Self.queuedID })
                 for state in ["completed", "interrupted", "failed"] {
                     try store.apply(snapshot(state, queued: true).decoded(AgentSnapshot.self))
                     try store.apply(snapshot(state, queued: true).decoded(AgentSnapshot.self))
+                    try expect(store.queuedMessages.map(\.id) == [Self.queuedID])
                 }
                 for _ in 0..<5 { await Task.yield() }
                 let writes = await transport.requests.requests.filter { $0.method != "GET" }

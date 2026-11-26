@@ -399,14 +399,13 @@ actor ActionBufferClock {
                 await store.send()
                 let queued = try XCTUnwrap(store.pendingMessage)
                 presentation.update(store.displaySnapshot)
-                let items = TranscriptItem.project(presentation.snapshot, queuedMessage: queued.transcriptMessage)
-                XCTAssertEqual(items.count, 1)
-                XCTAssertEqual(items[0].id, queued.rowID)
+                XCTAssertTrue(TranscriptItem.project(presentation.snapshot).isEmpty, "Buffered input must not enter the transcript")
+                let bubbles = store.queuedMessages(for: "session")
+                XCTAssertEqual(bubbles.map(\.id), [queued.rowID])
+                let bubble = try XCTUnwrap(bubbles.first)
                 XCTAssertTrue(queued.rowID.hasPrefix("local-"))
-                XCTAssertTrue(items[0].isQueued)
-                XCTAssertFalse(items[0].isToolGroup)
-                XCTAssertEqual(items[0].rows[0].message["role"].string, "user")
-                XCTAssertEqual(items[0].rows[0].message["text"].string, queued.text)
+                XCTAssertEqual(bubble["role"].string, "user")
+                XCTAssertEqual(bubble["text"].string, queued.text)
                 XCTAssertEqual(presentation.snapshot, baseline, "Never retain a fake cold snapshot or queued row")
                 XCTAssertEqual(store.snapshot, baseline)
                 XCTAssertFalse(store.active)
@@ -420,7 +419,7 @@ actor ActionBufferClock {
                     try await until { store.pendingMessage == nil }
                 } else { store.cancelPendingMessage(rowID: queued.rowID) }
                 presentation.update(store.displaySnapshot)
-                XCTAssertTrue(TranscriptItem.project(presentation.snapshot).isEmpty, "No cold or cached ghost bubble")
+                XCTAssertTrue(store.queuedMessages(for: "session").isEmpty, "No cold or cached ghost bubble")
                 XCTAssertEqual(store.drafts["session"], queued.text + "\n\nNewer")
                 XCTAssertNil(store.error, "Cancel and expiry restore input without a new error")
                 XCTAssertNil(store.visibleError, "Returning queued input must not display a draft notice")
@@ -462,17 +461,17 @@ actor ActionBufferClock {
             await reconnect.value
             try await until { await transport.waiting("POST", path) }
             XCTAssertNil(store.pendingMessage)
-            var rows = TranscriptItem.project(store.displaySnapshot)
-            XCTAssertEqual(rows.map(\.id), [queued.rowID])
-            XCTAssertFalse(rows[0].isQueued, "Dispatch, not acknowledgement, makes the same bubble opaque")
+            XCTAssertTrue(TranscriptItem.project(store.displaySnapshot).isEmpty)
+            XCTAssertEqual(store.queuedMessages(for: "session").map(\.id), [queued.rowID])
             XCTAssertFalse(store.canStop, "No actual operation is known before the acknowledgement")
             await transport.hold("GET", sync)
             await transport.release("POST", path)
             try await until { await transport.waiting("GET", self.sync) }
             XCTAssertTrue(store.canStop)
             XCTAssertTrue(store.awaitingSendSnapshot)
-            XCTAssertEqual(TranscriptItem.project(store.displaySnapshot).map(\.id), [queued.rowID])
-            // A still-open menu from the accepted row must not touch a dependent queue.
+            XCTAssertTrue(TranscriptItem.project(store.displaySnapshot).isEmpty)
+            XCTAssertEqual(store.queuedMessages(for: "session").map(\.id), [queued.rowID])
+            // A stale cancellation for the earlier row must not touch a dependent queue.
             store.connected = false
             store.drafts["session"] = "Dependent"
             await store.send()
@@ -491,9 +490,8 @@ actor ActionBufferClock {
             await transport.release("GET", sync)
             await store.poll()
             try await until { !store.awaitingSendSnapshot }
-            rows = TranscriptItem.project(store.displaySnapshot)
-            XCTAssertEqual(rows.map(\.id), [queued.rowID])
-            XCTAssertFalse(rows[0].isQueued)
+            XCTAssertEqual(TranscriptItem.project(store.displaySnapshot).map(\.id), [queued.rowID])
+            XCTAssertTrue(store.queuedMessages(for: "session").isEmpty)
             XCTAssertEqual(store.snapshot["messages"].array.first?["id"].string, "sent-message")
             let commands = await transport.commands
             XCTAssertEqual(commands.map(\.path), [path], "Reads and reconnect must never replay a mutation")

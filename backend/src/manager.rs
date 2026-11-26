@@ -1026,6 +1026,16 @@ impl AgentManager {
         self.get(id)?
             .steer_attachments(operation_id, text, images, files)
     }
+    pub async fn cancel_pending_input(
+        &self,
+        id: &str,
+        operation_id: &str,
+        message_id: &str,
+    ) -> Result<bool> {
+        self.get(id)?
+            .cancel_pending_input(operation_id, message_id)
+            .await
+    }
     async fn resolve_files(&self, id: &str, ids: Vec<String>) -> Result<Vec<FileRef>> {
         if ids.is_empty() {
             return Ok(vec![]);

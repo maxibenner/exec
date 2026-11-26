@@ -27,18 +27,19 @@ final class TranscriptGroupingTests: XCTestCase {
         let image: RemoteJSON = .object(["id": .string("image"), "role": .string("assistant"),
                                          "images": .array([.object(["id": .string("attachment")])])])
         let steering: RemoteJSON = .object(["id": .string("steering"), "role": .string("user"), "text": .string("Next")])
-        let rows = RemoteTranscriptRow.project(snapshot([
+        let history = [
             assistant("first", calls: ["a", "b", "speculative"]), result("a"), result("b"),
             assistant("second", calls: ["c"]), result("c"),
             assistant("commentary", text: "Checking another file", calls: ["d"]), result("d"),
             image, assistant("third", calls: ["e"]), result("e")
-        ], pending: [steering]))
+        ]
+        let rows = RemoteTranscriptRow.project(snapshot(history, pending: [steering]))
 
         XCTAssertEqual(rows.map(\.id), ["tool:first:a", "tool:first:b", "tool:second:c", "commentary",
-                                       "tool:commentary:d", "image", "tool:third:e", "steering"])
+                                       "tool:commentary:d", "image", "tool:third:e"])
         XCTAssertEqual(rows.filter { $0.call != nil }.map { [$0.roundsTop, $0.roundsBottom] },
                        [[true, false], [false, false], [false, true], [true, true], [true, true]])
-        XCTAssertEqual(rows.last?.message, steering)
+        XCTAssertEqual(RemoteTranscriptRow.project(snapshot(history + [steering])).last?.message, steering)
     }
 
     func testPagingAndGroupGrowthReconfigureNeighborsWithoutChangingIdentity() throws {

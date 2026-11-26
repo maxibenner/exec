@@ -61,13 +61,12 @@ final class SessionPresentationTests: XCTestCase {
         XCTAssertNil(RemoteMessageSubmission(conversationID: "a", snapshot: missingOperationID, text: "Hello"))
     }
 
-    func testQueuedMessagesRemainVisibleWithStableIdentity() {
+    func testPendingMessagesEnterTranscriptOnlyAfterPromotion() {
         let message: RemoteJSON = .object(["id": .string("queued-message"), "role": .string("user"), "text": .string("Next question")])
         let pending = RemoteTranscriptRow.project(.object(["pendingInput": .array([message])]))
-        let injected = RemoteTranscriptRow.project(.object(["messages": .array([message])]))
-        XCTAssertEqual(pending, injected)
-        XCTAssertEqual(pending.count, 1)
-        XCTAssertEqual(RemoteTranscriptRow.project(.object(["messages": .array([message]), "pendingInput": .array([message])])).count, 1)
+        let injected = RemoteTranscriptRow.project(.object(["messages": .array([message]), "pendingInput": .array([message])]))
+        XCTAssertTrue(pending.isEmpty)
+        XCTAssertEqual(injected.map(\.id), ["queued-message"])
     }
 
     func testSessionsGroupByLocalDayAndSortNewestFirstAcrossDST() throws {

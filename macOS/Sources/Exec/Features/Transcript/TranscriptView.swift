@@ -18,6 +18,12 @@ import Observation
     func jumpToLatest() { followsLatest = true; jumpRequest += 1 }
 }
 
+// Shared by the native transcript and overlays aligned to its viewport.
+enum TranscriptColumn {
+    static let maxWidth: CGFloat = 820
+    static let horizontalInset: CGFloat = 20
+}
+
 struct TranscriptView: View {
     let messages: [Message]
     let state: TranscriptState
@@ -575,7 +581,7 @@ private struct VirtualTranscript: NSViewRepresentable {
         updating = true
         refreshNeeded = false
         defer { updating = false }
-        let width = max(1, min(820, size.width - 40))
+        let width = max(1, min(TranscriptColumn.maxWidth, size.width - 2 * TranscriptColumn.horizontalInset))
         if requestedScroll && state.followsLatest { navigationAnchor = nil }
         if let navigationAnchor, !messages.contains(where: { $0.id == navigationAnchor.id }) {
             self.navigationAnchor = nil
@@ -845,27 +851,7 @@ private struct MessageView: View, Equatable {
                             isActive: message.status == .streaming,
                             state: state, messageID: message.id, roundsTop: roundsTop, roundsBottom: roundsBottom)
         } else if message.role == .user {
-            HStack {
-                Spacer(minLength: 40)
-                VStack(alignment: .trailing, spacing: 8) {
-                    if !message.images.isEmpty {
-                        AttachmentStrip(images: message.images, scrollsWithTranscript: true)
-                    }
-                    if !message.files.isEmpty {
-                        FileAttachmentStrip(files: message.files, scrollsWithTranscript: true)
-                    }
-                    if !message.text.isEmpty {
-                        LinkedText(source: AttributedString(message.text), foregroundColor: .white)
-                    }
-                }
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .foregroundStyle(.white)
-                .background(AppColors.systemAccent, in: RoundedRectangle(cornerRadius: 10))
-                .frame(maxWidth: 600, alignment: .trailing)
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("You: \(message.text)")
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            UserMessageBubble(message: message)
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 if message.status == .failed {

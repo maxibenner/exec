@@ -15,8 +15,6 @@ struct NativeTranscript: UIViewControllerRepresentable {
     let conversationID: String?
     let snapshot: RemoteJSON
     let showsThinkingIndicator: Bool
-    let queuedMessage: RemoteJSON
-    let cancelQueuedMessage: (String) -> Void
     let descriptiveShellTitles: Bool
     let viewState: TranscriptViewState?
     let saveViewState: (String, TranscriptViewState) -> Void
@@ -53,7 +51,6 @@ struct NativeTranscript: UIViewControllerRepresentable {
         table.configureEarlierHistory(conversationID: conversationID, hasEarlier: hasEarlier,
                                       isLoadingEarlier: isLoadingEarlier, loadEarlier: loadEarlier)
         context.coordinator.update(conversationID: conversationID, snapshot: snapshot,
-                                   queuedMessage: queuedMessage, cancelQueuedMessage: cancelQueuedMessage,
                                    showsThinkingIndicator: showsThinkingIndicator, descriptiveShellTitles: descriptiveShellTitles,
                                    viewState: viewState, table: table)
     }
@@ -65,8 +62,6 @@ struct NativeTranscript: UIViewControllerRepresentable {
             let conversationID: String?
             let snapshot: RemoteJSON
             let showsThinkingIndicator: Bool
-            let queuedMessage: RemoteJSON
-            let cancelQueuedMessage: (String) -> Void
             let descriptiveShellTitles: Bool
             let viewState: TranscriptViewState?
         }
@@ -169,8 +164,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
                 }
                 guard let cell = table.dequeueReusableCell(withIdentifier: "message", for: path) as? MessageCell else { return UITableViewCell() }
                 cell.accessibilityIdentifier = "transcript-message-\(id)"
-                cell.configure(item.rows[0].message, width: max(100, table.bounds.width - 32),
-                               cancelQueuedMessage: item.isQueued ? { [weak self] in self?.currentUpdate?.cancelQueuedMessage(id) } : nil)
+                cell.configure(item.rows[0].message, width: TranscriptMessageStyle.contentWidth(in: table.bounds.width))
                 return cell
             }
         }
@@ -187,12 +181,11 @@ struct NativeTranscript: UIViewControllerRepresentable {
             dirtyGroups.insert(group)
             scheduleUpdate(table)
         }
-        func update(conversationID: String?, snapshot: RemoteJSON, queuedMessage: RemoteJSON,
-                    cancelQueuedMessage: @escaping (String) -> Void, showsThinkingIndicator: Bool, descriptiveShellTitles: Bool,
+        func update(conversationID: String?, snapshot: RemoteJSON,
+                    showsThinkingIndicator: Bool, descriptiveShellTitles: Bool,
                     viewState: TranscriptViewState?, table: TranscriptTableView) {
             pendingUpdate = Update(conversationID: conversationID, snapshot: snapshot,
-                                   showsThinkingIndicator: showsThinkingIndicator, queuedMessage: queuedMessage,
-                                   cancelQueuedMessage: cancelQueuedMessage,
+                                   showsThinkingIndicator: showsThinkingIndicator,
                                    descriptiveShellTitles: descriptiveShellTitles, viewState: viewState)
             scheduleUpdate(table)
         }
@@ -212,7 +205,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
             pendingUpdate = nil
             let changedConversation = conversationID != update.conversationID || presentation?.generation != update.viewState?.generation
             let changedDisplay = descriptiveShellTitles != update.descriptiveShellTitles
-            let projected = TranscriptItem.project(update.snapshot, queuedMessage: update.queuedMessage)
+            let projected = TranscriptItem.project(update.snapshot)
             let next = Dictionary(uniqueKeysWithValues: projected.map { ($0.id, $0) })
             let dirty = dirtyGroups
             dirtyGroups.removeAll()
@@ -228,7 +221,6 @@ struct NativeTranscript: UIViewControllerRepresentable {
             }
             let initial = changedConversation || currentUpdate == nil
             let opening = changedConversation || !table.hasPresentedContent
-            let previousQueuedID = changedConversation ? nil : currentUpdate?.queuedMessage["id"].string
             currentUpdate = update
             table.beginContentUpdate()
             table.setThinkingIndicator(update.showsThinkingIndicator)
@@ -243,14 +235,10 @@ struct NativeTranscript: UIViewControllerRepresentable {
                 }
                 table.restorePresentation(presentation, rows: rows)
             } else if validSnapshot && !hasSnapshot {
-                // The first real history is a loading baseline, even after a cold
-                // queue was displayed. Keep a still-present local turn pinned.
+                // The first real history establishes the scroll baseline.
                 table.scrollState.restoreRows(rows)
             } else {
                 _ = table.scrollState.update(rows: rows)
-            }
-            if let queuedID = update.queuedMessage["id"].string, queuedID != previousQueuedID {
-                table.scrollState.submitted(queuedID)
             }
             hasSnapshot = hasSnapshot || validSnapshot
             let previousIDs = Set(source.snapshot().itemIdentifiers)
@@ -270,10 +258,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
             source.apply(snapshot, animatingDifferences: false) { [weak self, weak table] in
                 guard let self, let table, self.attached else { return }
                 self.applying = false
-                // After a cold queue disappears, an empty table is still a ready
-                // projection. Lay it out and clear its old turn reservation too.
-                table.finishContentUpdate(initial: opening,
-                    ready: self.hasSnapshot || update.queuedMessage != .null || table.hasPresentedContent)
+                table.finishContentUpdate(initial: opening, ready: self.hasSnapshot)
                 if self.pendingUpdate != nil || !self.dirtyGroups.isEmpty { self.scheduleUpdate(table) }
             }
         }
@@ -827,6 +812,109 @@ private struct MobileToolCard: View {
     }
 }
 
+/// Shared by sent transcript bubbles and the separate composer queue.
+enum TranscriptMessageStyle {
+    static let rowInset: CGFloat = 16
+    static let fontStyle: UIFont.TextStyle = .body
+    static let outgoingInsets = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+
+    static func contentWidth(in rowWidth: CGFloat) -> CGFloat { max(100, rowWidth - 2 * rowInset) }
+    static func outgoingWidth(in contentWidth: CGFloat) -> CGFloat { contentWidth * 0.85 }
+
+    static func plainText(_ message: RemoteJSON) -> String {
+        let text = message["text"].string ?? ""
+        return message["images"].array.isEmpty ? text : text + "\n[Image attachment]"
+    }
+
+    @MainActor static func configure(_ text: UITextView) {
+        text.isEditable = false; text.isSelectable = true; text.isScrollEnabled = false
+        text.adjustsFontForContentSizeCategory = true
+        text.textContainer.lineFragmentPadding = 0
+        text.dataDetectorTypes = []
+        text.layer.cornerRadius = 10
+        text.layer.cornerCurve = .continuous
+    }
+}
+
+struct QueuedMessageBubbles: View {
+    let messages: [RemoteJSON]
+    let canCancel: (String) -> Bool
+    let cancel: (String) -> Void
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            bubbles.fixedSize(horizontal: false, vertical: true)
+            ScrollView { bubbles }
+                .scrollDismissesKeyboard(.never)
+        }
+        .frame(maxHeight: 200)
+    }
+
+    private struct Row: Identifiable {
+        let id: String
+        let message: RemoteJSON
+    }
+
+    private var bubbles: some View {
+        let rows = messages.compactMap { message in message["id"].string.map { Row(id: $0, message: message) } }
+        return VStack(spacing: 8) {
+            ForEach(rows) { row in
+                let isCancellable = canCancel(row.id)
+                QueuedMessageText(message: row.message, rowID: row.id, isCancellable: isCancellable)
+                    .overlay(alignment: .topTrailing) {
+                        if isCancellable {
+                            Button(role: .destructive) { cancel(row.id) } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+                                    .frame(width: QueuedMessageText.cancelWidth, height: 36)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Cancel Queued Message")
+                            .accessibilityIdentifier("cancel-queued-message-\(row.id)")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+    }
+}
+
+private struct QueuedMessageText: UIViewRepresentable {
+    static let cancelWidth: CGFloat = 44
+    let message: RemoteJSON
+    let rowID: String
+    let isCancellable: Bool
+
+    func makeUIView(context: Context) -> UITextView {
+        let text = UITextView()
+        TranscriptMessageStyle.configure(text)
+        text.backgroundColor = .systemGray5
+        text.font = UIFont.preferredFont(forTextStyle: TranscriptMessageStyle.fontStyle)
+        text.textColor = .label
+        text.tintColor = AppColors.nativeBlue
+        text.accessibilityHint = "Queued message"
+        return text
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        var insets = TranscriptMessageStyle.outgoingInsets
+        if isCancellable { insets.right = Self.cancelWidth }
+        if view.textContainerInset != insets { view.textContainerInset = insets }
+        let content = TranscriptMessageStyle.plainText(message)
+        if view.text != content { view.text = content }
+        view.accessibilityIdentifier = "queued-message-\(rowID)"
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        guard let contentWidth = proposal.width, contentWidth.isFinite else { return nil }
+        let width = TranscriptMessageStyle.outgoingWidth(in: contentWidth)
+        let height = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        return CGSize(width: width, height: height)
+    }
+}
+
 @MainActor private final class MessageCell: UITableViewCell, UITextViewDelegate {
     static let verticalContentInset: CGFloat = 10
     private let text = UITextView()
@@ -838,17 +926,11 @@ private struct MobileToolCard: View {
     private var isUser = false
     private var blocks: [MarkdownBlock] = []
     private var renderedWidth: CGFloat = 0
-    private var cancelQueuedMessage: (() -> Void)?
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
-        text.isEditable = false; text.isSelectable = true; text.isScrollEnabled = false
+        TranscriptMessageStyle.configure(text)
         text.backgroundColor = .clear; text.delegate = self
-        text.adjustsFontForContentSizeCategory = true
-        text.textContainer.lineFragmentPadding = 0
-        text.dataDetectorTypes = []
         text.translatesAutoresizingMaskIntoConstraints = false
-        text.layer.cornerRadius = 10
-        text.layer.cornerCurve = .continuous
         body.axis = .vertical
         body.translatesAutoresizingMaskIntoConstraints = false
         body.addArrangedSubview(text); body.addArrangedSubview(markdownBody)
@@ -856,40 +938,35 @@ private struct MobileToolCard: View {
         contentView.addSubview(body)
         textWidth = body.widthAnchor.constraint(equalToConstant: 100)
         NSLayoutConstraint.activate([
-            body.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 16),
-            body.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            body.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: TranscriptMessageStyle.rowInset),
+            body.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -TranscriptMessageStyle.rowInset),
             body.topAnchor.constraint(equalTo: contentView.topAnchor, constant: Self.verticalContentInset),
             body.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -Self.verticalContentInset),
             textWidth
         ])
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (cell: MessageCell, _: UITraitCollection) in
             // The Markdown body handles its own attributed-font trait changes.
-            if !cell.markdown { cell.render(width: max(100, cell.contentView.bounds.width - 32)) }
+            if !cell.markdown { cell.render(width: TranscriptMessageStyle.contentWidth(in: cell.contentView.bounds.width)) }
         }
     }
     required init?(coder: NSCoder) { fatalError("Use init(style:reuseIdentifier:)") }
     override func prepareForReuse() {
         super.prepareForReuse()
         sourceText = nil; blocks = []
-        setQueuedAction(nil)
         text.attributedText = nil; text.selectedRange = NSRange(location: 0, length: 0)
         markdownBody.reset()
     }
     override func layoutSubviews() {
-        let width = max(100, contentView.bounds.width - 32)
+        let width = TranscriptMessageStyle.contentWidth(in: contentView.bounds.width)
         if sourceText != nil, abs(width - renderedWidth) > 1 {
             renderedWidth = width
-            textWidth.constant = isUser ? width * 0.85 : width
+            textWidth.constant = isUser ? TranscriptMessageStyle.outgoingWidth(in: width) : width
             if markdown { markdownBody.setLayoutWidth(width) }
         }
         super.layoutSubviews()
     }
-    func configure(_ message: RemoteJSON, width: CGFloat, cancelQueuedMessage: (() -> Void)? = nil) {
-        // Acceptance can change only queue state, not text. Update before the
-        // rendering fast path; dim just the bubble, never its reusable cell.
-        setQueuedAction(message["role"].string == "user" ? cancelQueuedMessage : nil)
-        var content = message["text"].string ?? ""
-        if !message["images"].array.isEmpty { content += "\n[Image attachment]" }
+    func configure(_ message: RemoteJSON, width: CGFloat) {
+        let content = TranscriptMessageStyle.plainText(message)
         let useMarkdown = message["role"].string == "assistant"
         let user = message["role"].string == "user"
         guard sourceText != content || markdown != useMarkdown || isUser != user else { return }
@@ -899,37 +976,21 @@ private struct MobileToolCard: View {
         if !useMarkdown { markdownBody.reset() }
         text.backgroundColor = user ? AppColors.nativeBlue : .clear
         text.tintColor = user ? .white : AppColors.nativeBlue
-        text.textContainerInset = user ? UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12) : .zero
+        text.textContainerInset = user ? TranscriptMessageStyle.outgoingInsets : .zero
         render(width: width)
     }
     private func render(width: CGFloat) {
         guard let sourceText else { return }
-        renderedWidth = max(100, width)
-        textWidth.constant = isUser ? renderedWidth * 0.85 : renderedWidth
+        renderedWidth = width
+        textWidth.constant = isUser ? TranscriptMessageStyle.outgoingWidth(in: width) : width
         if markdown {
             markdownBody.update(blocks, source: sourceText, width: renderedWidth)
         } else {
             text.attributedText = NSAttributedString(string: sourceText, attributes: [
-                .font: UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection),
+                .font: UIFont.preferredFont(forTextStyle: TranscriptMessageStyle.fontStyle, compatibleWith: traitCollection),
                 .foregroundColor: isUser ? UIColor.white : UIColor.label
             ])
         }
-    }
-    private func setQueuedAction(_ action: (() -> Void)?) {
-        cancelQueuedMessage = action
-        text.alpha = action == nil ? 1 : 0.68
-        text.accessibilityCustomActions = action.map { cancel in
-            [UIAccessibilityCustomAction(name: "Cancel Queued Message") { _ in cancel(); return true }]
-        }
-    }
-    func textView(_ textView: UITextView, editMenuForTextIn range: NSRange,
-                  suggestedActions: [UIMenuElement]) -> UIMenu? {
-        guard let cancelQueuedMessage else { return UIMenu(children: suggestedActions) }
-        let cancel = UIAction(title: "Cancel Queued Message", image: UIImage(systemName: "xmark"), attributes: .destructive) { _ in
-            cancelQueuedMessage()
-        }
-        // Preserve TextKit selection and every native Copy/selection action.
-        return UIMenu(children: suggestedActions + [cancel])
     }
     func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
         MarkdownDocument.allowsLink(URL)

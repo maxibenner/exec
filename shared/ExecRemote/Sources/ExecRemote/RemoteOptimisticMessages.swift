@@ -102,6 +102,15 @@ public struct RemoteOptimisticMessages {
             || (operation == input.operationID && !RemoteMessageSubmission.isActive(snapshot))
     }
 
+    /// Resolve a displayed row against an unprojected host snapshot. An ACK's
+    /// mapping alone does not establish that the message is still queued.
+    public func pendingMessageID(for rowID: String, in snapshot: RemoteJSON) -> String? {
+        snapshot["pendingInput"].array.lazy.compactMap { $0["id"].string }.first { id in
+            (rowIDs[id] ?? id) == rowID
+                && !snapshot["messages"].array.contains { $0["id"].string == id }
+        }
+    }
+
     public func project(_ snapshot: RemoteJSON) -> RemoteJSON {
         guard case .object(var value) = snapshot else { return snapshot }
         for key in ["messages", "pendingInput"] {

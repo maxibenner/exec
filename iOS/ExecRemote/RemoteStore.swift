@@ -47,6 +47,7 @@ extension RelayClient: RemoteTransport {}
     var visibleError: String? { connectionError ? nil : error }
     private enum MutationScope: Hashable {
         case library, creation, conversation(String), request(String)
+        case inputCancellation(conversation: String, request: UUID)
     }
     private var mutations: Set<MutationScope> = []
     private var sending: [String: UUID] = [:]
@@ -61,7 +62,12 @@ extension RelayClient: RemoteTransport {}
     var isCreatingSession: Bool { mutations.contains(.creation) }
     var isSavingLibrary: Bool { mutations.contains(.library) }
     var canEditSharedSettings: Bool { connected && hasLoadedLibrary && !isSavingLibrary }
-    func isUpdatingConversation(_ id: String) -> Bool { mutations.contains(.conversation(id)) }
+    func isUpdatingConversation(_ id: String) -> Bool {
+        mutations.contains(.conversation(id)) || mutations.contains {
+            if case .inputCancellation(let conversation, _) = $0 { return conversation == id }
+            return false
+        }
+    }
 
     struct PendingMessage: Identifiable {
         let id = UUID()
@@ -227,7 +233,7 @@ extension RelayClient: RemoteTransport {}
     }
     private func updateThinking(_ value: RemoteJSON) {
         let id = value["id"].string ?? ""
-        thinking.update(value, suppressed: !connected || cancellingOperations[id] != nil || isUpdatingConversation(id))
+        thinking.update(value, suppressed: !connected || cancellingOperations[id] != nil || mutations.contains(.conversation(id)))
     }
     var active: Bool { RemoteMessageSubmission.isActive(snapshot) || currentOperationID != nil }
     private var currentOperationID: String? {
@@ -246,7 +252,7 @@ extension RelayClient: RemoteTransport {}
     }
     var canStop: Bool {
         guard connected, let id = selected, currentOperationID != nil, sending[id] == nil else { return false }
-        return !isUpdatingConversation(id) && !isCancelling(id)
+        return !mutations.contains(.conversation(id)) && !isCancelling(id)
     }
     /// The immutable approval the user actually saw, never a lookup at task entry.
     struct ApprovalTarget: Equatable, Sendable {
@@ -269,7 +275,7 @@ extension RelayClient: RemoteTransport {}
               ApprovalTarget(snapshot: snapshot) == target,
               snapshot["operation"]["id"].string == target.operationID,
               snapshot["operation"]["state"].string == "awaiting_approval" else { return false }
-        return !isUpdatingConversation(target.conversationID) && !isCancelling(target.conversationID)
+        return !mutations.contains(.conversation(target.conversationID)) && !isCancelling(target.conversationID)
     }
     func canDeleteConversation(_ value: RemoteJSON) -> Bool {
         connected && !isUpdatingConversation(value.id) && sending[value.id] == nil
@@ -936,7 +942,11 @@ extension RelayClient: RemoteTransport {}
         let scope = scope(for: path), generation = hostGeneration, connection = connectionGeneration
         guard connected, !mutations.contains(scope) else { return }
         if scope == .library, !canEditSharedSettings { return }
-        if case .conversation(let id) = scope, sending[id] != nil { return }
+        if case .conversation(let id) = scope {
+            // A queued-input save must not prevent explicit Stop or approval.
+            let controlsActiveRun = method == "POST" && (path.hasSuffix("/cancel") || path.hasSuffix("/approvals"))
+            if sending[id] != nil || (!controlsActiveRun && isUpdatingConversation(id)) { return }
+        }
         mutations.insert(scope); error = nil
         do {
             let value = try await client.request(method, path, body: body)
@@ -1106,6 +1116,92 @@ extension RelayClient: RemoteTransport {}
         let newer = drafts[id] ?? ""
         drafts[id] = newer.isEmpty ? text : text + "\n\n" + newer
     }
+    func queuedMessages(for conversationID: String) -> [RemoteJSON] {
+        guard selected == conversationID else { return [] }
+        let value = displaySnapshot
+        var rows = value.id == conversationID ? value["pendingInput"].array : []
+        if let pendingMessage, pendingMessage.conversationID == conversationID {
+            rows.append(pendingMessage.transcriptMessage)
+        }
+        guard !rows.isEmpty else { return [] }
+        var seen = Set(value.id == conversationID ? value["messages"].array.map(\.id) : [])
+        return rows.filter { !$0.id.isEmpty && seen.insert($0.id).inserted }
+    }
+
+    private var queuedInputUnsupportedConnection: Int?
+
+    private func queuedInputTarget(rowID: String, conversationID id: String) -> (operationID: String, messageID: String)? {
+        guard selected == id, snapshot.id == id, host != nil, connected, !sceneIsBackground,
+              conversationConnections[id] == connectionGeneration,
+              queuedInputUnsupportedConnection != connectionGeneration,
+              !isUpdatingConversation(id), !isCancelling(id), sending[id] == nil,
+              acceptedOperations[id] == nil, !deferredHistoryRefreshes.contains(id),
+              snapshot["storageError"] == .null,
+              let operationID = snapshot["operation"]["id"].string, UUID(uuidString: operationID) != nil,
+              let messageID = (optimisticMessages[id] ?? RemoteOptimisticMessages())
+                .pendingMessageID(for: rowID, in: snapshot),
+              UUID(uuidString: messageID) != nil else { return nil }
+        return (operationID, messageID)
+    }
+
+    func canCancelQueuedMessage(rowID: String, conversationID: String) -> Bool {
+        guard selected == conversationID else { return false }
+        if pendingMessage?.conversationID == conversationID, pendingMessage?.rowID == rowID { return true }
+        return queuedInputTarget(rowID: rowID, conversationID: conversationID) != nil
+    }
+
+    func cancelQueuedMessage(rowID: String, conversationID: String) async {
+        guard !Task.isCancelled, selected == conversationID else { return }
+        if pendingMessage?.conversationID == conversationID, pendingMessage?.rowID == rowID {
+            cancelPendingMessage(rowID: rowID)
+            return
+        }
+        guard let target = queuedInputTarget(rowID: rowID, conversationID: conversationID) else { return }
+        let scope = MutationScope.inputCancellation(conversation: conversationID, request: UUID())
+        let generation = hostGeneration, connection = connectionGeneration
+        mutations.insert(scope)
+        var failure: (any Error)?
+        do {
+            let response = try await client.request("POST", "/v1/conversations/\(conversationID)/cancel-input", body: .object([
+                "operationID": .string(target.operationID), "messageID": .string(target.messageID)
+            ]))
+            guard response["messageID"].string == target.messageID else {
+                throw RemoteFailure("The host did not confirm the requested message ID.")
+            }
+        } catch {
+            failure = error
+        }
+        mutations.remove(scope)
+        guard generation == hostGeneration, connection == connectionGeneration else { return }
+        // Neither a reply nor a failure edits the queue locally. Discard reads
+        // spanning the command, and require a fresh read before another cancel.
+        snapshotGeneration += 1
+        deferredHistoryRefreshes.insert(conversationID)
+        if let failure {
+            let remote = failure as? RemoteFailure
+            // Older paired hosts deny this route at the allowlist, before lookup.
+            if let status = remote?.statusCode, [403, 405, 501].contains(status) {
+                queuedInputUnsupportedConnection = connection
+            }
+            let stale = remote?.statusCode == 409 && remote?.kind == .rejected
+            if !stale, !Task.isCancelled, !(failure is CancellationError), selected == conversationID {
+                self.error = (remote?.kind ?? .uncertain) == .uncertain
+                    ? "Could not confirm the queued message was canceled. \(failure.localizedDescription)"
+                    : failure.localizedDescription
+            }
+        }
+        scheduleBufferedMessage()
+        // A canceled waiter may have detached from a dispatched POST. Recovery
+        // still reads on the same peer, and never replays the command.
+        await Task {
+            if let failure { await recordDisconnectedFailure(failure, connection: connection) }
+            guard generation == hostGeneration, connection == connectionGeneration,
+                  connected, !sceneIsBackground, recentConversations.contains(conversationID) else { return }
+            do { try await refreshConversation(conversationID) }
+            catch { await recordDisconnectedFailure(error, connection: connection) }
+        }.value
+    }
+
     // Menus can outlive their row or its acceptance. Never cancel a replacement.
     func cancelPendingMessage(rowID: String) {
         guard pendingMessage?.rowID == rowID else { return }
@@ -1146,6 +1242,9 @@ extension RelayClient: RemoteTransport {}
                           let pending = pendingMessage, pending.id == message.id,
                           selected == pending.conversationID,
                           let value = syncStates[pending.conversationID]?.snapshot else { return }
+                    // A conversation mutation may have started while this read was
+                    // pending. Leave the unsent intent for its completion to schedule.
+                    guard !isUpdatingConversation(pending.conversationID) else { return }
                     guard bufferNow() < pending.expiresAt else { cancelPendingMessage(); return }
                     var target = pending.target
                     if target == .unresolved, !RemoteMessageSubmission.isActive(value) { target = .newTurn }

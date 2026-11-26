@@ -93,14 +93,13 @@ private actor FileQueueTransport: AgentTransport {
             try expect(body["text"].string == "" && body["files"].array.first?.string == assetID.uuidString.lowercased())
             try expect(store.draftFiles == (finishesDuringUpload ? [file] : []))
             try expect((store.error != nil) == finishesDuringUpload)
-            // File cards restore without downloading the original into the transcript.
+            // Queued file cards restore without downloading the original.
             guard case .object(var object) = running else { throw CheckFailure(description: "Invalid fixture") }
             object["pendingInput"] = .array([.object(["id": .string(UUID().uuidString), "role": .string("user"), "text": .string(""), "files": .array([ref])])])
             let snapshot = try AgentJSON.object(object).decoded(AgentSnapshot.self)
-            var pendingIDs: [String: UUID] = [:]
-            let transcript = try snapshot.transcript(images: [:], pendingIDs: &pendingIDs)
-            try expect(transcript.last?.files.first?.id == assetID)
-            try expect(transcript.last?.files.first?.data.isEmpty == true)
+            let queued = snapshot.queuedMessages(images: [:])
+            try expect(queued.first?.files.first?.id == assetID)
+            try expect(queued.first?.files.first?.data.isEmpty == true)
         }
     }
 }

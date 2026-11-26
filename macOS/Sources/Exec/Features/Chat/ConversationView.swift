@@ -83,6 +83,17 @@ struct ConversationView: View {
                         .disabled(!panel.canNavigate).layoutPriority(1)
                 }
                 if let error { errorView(error).background(.background) }
+                let destination = panel.current
+                let queuedMessages = destination.queuedMessages
+                if !queuedMessages.isEmpty {
+                    QueuedMessagesView(messages: queuedMessages,
+                                       canCancel: panel.canNavigate && destination.canCancelQueuedInput) { messageID in
+                        guard panel.canNavigate, panel.current === destination, destination.canCancelQueuedInput,
+                              destination.queuedMessages.contains(where: { $0.id == messageID }) else { return }
+                        destination.cancelQueuedInput(messageID)
+                    }
+                    .layoutPriority(-1) // Approval, errors, and the editor keep their space first.
+                }
                 ChatComposer(store: panel, focused: $composerFocused, focusRequest: composerFocusRequest,
                              editingState: presentation.composerEditingState)
                     .disabled(panel.navigating)

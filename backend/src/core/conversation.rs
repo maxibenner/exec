@@ -1415,6 +1415,58 @@ impl Conversation {
         self.input_arrived.notify_one();
         Ok(id)
     }
+    /// Remove only input that has not crossed the runner's promotion boundary.
+    /// The operation may already be terminal with retained input.
+    pub async fn cancel_pending_input(
+        self: &Arc<Self>,
+        operation_id: &str,
+        message_id: &str,
+    ) -> Result<bool> {
+        {
+            let mut s = self.state();
+            if s.disposed || s.updating {
+                return Err(Error::Busy);
+            }
+            if s.record
+                .operation
+                .as_ref()
+                .is_none_or(|op| op.id != operation_id)
+            {
+                return Ok(false);
+            }
+            let Some(index) = s
+                .record
+                .pending_input
+                .iter()
+                .position(|m| m.id() == message_id)
+            else {
+                return Ok(false);
+            };
+            if s.storage_error.is_some() {
+                return Err(Error::Storage);
+            }
+            s.updating = true;
+            s.record.pending_input.remove(index);
+        }
+        // Reserve against submission and other record mutations until this ordered
+        // save settles, even if the caller disconnects. Never requeue on failure.
+        let conversation = self.clone();
+        tokio::spawn(async move {
+            let saved = AssertUnwindSafe(conversation.checkpoint(None))
+                .catch_unwind()
+                .await
+                .unwrap_or(Err(Error::Storage));
+            let mut state = conversation.state();
+            state.updating = false;
+            if saved.is_err() {
+                state.storage_error = Some(Error::Storage.to_string());
+            }
+            conversation.publish_snapshot(&state);
+            saved.map(|()| true)
+        })
+        .await
+        .map_err(|_| Error::Internal)?
+    }
     fn inject_pending_input(&self, s: &mut State) {
         let pending = std::mem::take(&mut s.record.pending_input);
         if !pending.is_empty() {

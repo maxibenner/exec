@@ -5,16 +5,11 @@ import ExecRemote
 /// their own identities even though UIKit measures the entire run in one host.
 struct TranscriptItem: Equatable {
     let rows: [RemoteTranscriptRow]
-    var isQueued = false
     var id: String { rows[0].id }
     var isToolGroup: Bool { rows[0].call != nil }
 
-    // Queue projection lives here, not in ConversationPresentation or a cache.
-    // It works without a snapshot and disappears immediately on expiry/cancel.
-    static func project(_ snapshot: RemoteJSON, queuedMessage: RemoteJSON = .null) -> [Self] {
-        let queuedID = queuedMessage["id"].string
-        let rows = RemoteTranscriptRow.project(snapshot) + RemoteTranscriptRow.project(
-            .object(["pendingInput": .array(queuedID == nil ? [] : [queuedMessage])]))
+    static func project(_ snapshot: RemoteJSON) -> [Self] {
+        let rows = RemoteTranscriptRow.project(snapshot)
         var items: [Self] = []
         var tools: [RemoteTranscriptRow] = []
         var seen: Set<String> = []
@@ -23,7 +18,7 @@ struct TranscriptItem: Equatable {
                 tools.append(row)
             } else {
                 if !tools.isEmpty { items.append(Self(rows: tools)); tools = [] }
-                items.append(Self(rows: [row], isQueued: row.id == queuedID))
+                items.append(Self(rows: [row]))
             }
         }
         if !tools.isEmpty { items.append(Self(rows: tools)) }
@@ -41,8 +36,8 @@ struct TranscriptScrollState {
     private var lastUserID: String?
     private var initialized = false
 
-    /// Returns true only for a newly delivered user turn, not a history page,
-    /// cached initial snapshot, or acknowledgement of an optimistic local row.
+    /// Returns true when a newly delivered user turn should be followed, not for
+    /// a history page, initial snapshot, or acknowledgement of a visible row.
     mutating func update(rows: [RemoteTranscriptRow]) -> Bool {
         let ids = Set(rows.map(\.id))
         let user = rows.last { $0.message["role"].string == "user" }
@@ -60,12 +55,6 @@ struct TranscriptScrollState {
         lastUserID = user?.id
         initialized = true
         return shouldFollow
-    }
-
-    /// Explicit local input also pins when a cold page has no history baseline.
-    mutating func submitted(_ rowID: String) {
-        intent = .turn(rowID)
-        reservedTurnID = rowID
     }
 
     /// Reopening adopts the current cached history without replaying messages

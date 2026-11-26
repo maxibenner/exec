@@ -144,7 +144,22 @@ extension AgentSnapshot {
                 ($0.role == "tool" && $0.outcome == "running") }
     }
 
-    /// Reconcile by stable message ID; pending cards are projections, never a second tool runner.
+    func queuedMessages(images: [UUID: ImageAttachment]) -> [Message] {
+        guard !pendingInput.isEmpty else { return [] }
+        let promoted = Set(messages.map(\.id))
+        return pendingInput.compactMap { message in
+            guard message.role == "user", !promoted.contains(message.id) else { return nil }
+            return userMessage(message, images: images)
+        }
+    }
+
+    private func userMessage(_ message: AgentMessage, images: [UUID: ImageAttachment]) -> Message {
+        Message(id: message.id, role: .user, text: message.text,
+                images: (message.images ?? []).compactMap { images[$0.id] },
+                files: (message.files ?? []).map { FileAttachment(id: $0.id, name: $0.name, path: $0.path) })
+    }
+
+    /// Reconcile tool cards by stable message ID; pending cards never run tools locally.
     func transcript(images: [UUID: ImageAttachment], pendingIDs: inout [String: UUID]) throws -> [Message] {
         var calls: [String: ToolCall] = [:]
         for message in messages { for call in message.calls ?? [] { calls[call.id] = try call.presentation() } }
@@ -152,12 +167,10 @@ extension AgentSnapshot {
         // mean the executor has settled. Keep activity separate from row presence.
         let represented = Set(messages.filter { $0.role == "tool" }.compactMap(\.callID))
         var result: [Message] = []
-        for message in messages + pendingInput.filter({ pending in !messages.contains { $0.id == pending.id } }) {
+        for message in messages {
             switch message.role {
             case "user":
-                let attachments = (message.images ?? []).compactMap { images[$0.id] }
-                result.append(Message(id: message.id, role: .user, text: message.text, images: attachments,
-                                      files: (message.files ?? []).map { FileAttachment(id: $0.id, name: $0.name, path: $0.path) }))
+                result.append(userMessage(message, images: images))
             case "assistant":
                 let status: Message.Status = switch message.status {
                 case "streaming": .streaming

@@ -339,8 +339,9 @@ struct ConversationScreen: View {
     let conversationID: String
     @AppStorage(ToolDisplayPreferences.descriptiveShellTitlesKey) private var descriptiveShellTitles = false
     @State private var showsLoadingSpinner = false
-    @State private var composerHeight: CGFloat = 68
+    @State private var bottomOverlayHeight: CGFloat = 68
     @State private var presentation: ConversationPresentation
+    private let bottomOverlayInset: CGFloat = 12
 
     init(store: RemoteStore, conversationID: String) {
         self.store = store
@@ -357,22 +358,21 @@ struct ConversationScreen: View {
 
     var body: some View {
         let current = currentPresentation
-        let queued = store.pendingMessage.flatMap { $0.conversationID == conversationID ? $0.transcriptMessage : nil } ?? .null
+        let queued = store.queuedMessages(for: conversationID)
         let isLoading = current.snapshot == .null && store.selected == conversationID
             && store.loadingConversations.contains(conversationID)
         ZStack {
             NativeTranscript(conversationID: conversationID, snapshot: current.snapshot,
                              showsThinkingIndicator: store.thinking.visible.contains(conversationID),
-                             queuedMessage: queued, cancelQueuedMessage: { store.cancelPendingMessage(rowID: $0) },
                              descriptiveShellTitles: descriptiveShellTitles,
                              viewState: store.transcriptViewState(for: conversationID),
                              saveViewState: { id, value in store.saveTranscriptViewState(value, for: id) },
-                             bottomPadding: composerHeight, hasEarlier: store.connected && store.selected == conversationID && store.hasEarlierMessages,
+                             bottomPadding: bottomOverlayHeight, hasEarlier: store.connected && store.selected == conversationID && store.hasEarlierMessages,
                              isLoadingEarlier: store.selected == conversationID && store.isLoadingEarlierMessages,
                              loadEarlier: { Task { if store.selected == conversationID { await store.loadEarlier() } } })
                 // Replace only the empty UIKit transcript, not the composer's
                 // focus-owning overlay, when a cold session receives history.
-                .id(current.snapshot == .null && queued == .null)
+                .id(current.snapshot == .null)
             if isLoading && showsLoadingSpinner {
                 ProgressView()
                     .tint(.secondary)
@@ -432,12 +432,20 @@ struct ConversationScreen: View {
                     .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
                     .disabled(target.map { store.canApprove($0) } != true)
                 }
+                if !queued.isEmpty {
+                    QueuedMessageBubbles(messages: queued,
+                        canCancel: { store.canCancelQueuedMessage(rowID: $0, conversationID: conversationID) },
+                        cancel: { rowID in
+                            Task { await store.cancelQueuedMessage(rowID: rowID, conversationID: conversationID) }
+                        })
+                        .padding(.horizontal, TranscriptMessageStyle.rowInset - bottomOverlayInset)
+                }
                 RemoteChatComposer(store: store)
             }
             .disabled(store.selected != conversationID)
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            // Restored multiline drafts must update the transcript's scroll clearance.
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
+            .padding(.horizontal, bottomOverlayInset).padding(.vertical, 8)
+            // The queue and restored multiline drafts both affect scroll clearance.
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bottomOverlayHeight = $0 }
         }
         .overlay(alignment: .bottom) {
             SessionNotice(message: Binding(get: { store.visibleError }, set: { store.error = $0 })).padding(.bottom, 72)

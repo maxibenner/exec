@@ -39,12 +39,7 @@ public struct RemoteTranscriptRow: Equatable, Sendable {
                 }
             }
         }
-        // Accepted steering messages remain visible while the current operation
-        // reaches an input boundary. Keep their identity when they enter messages.
-        let displayed = Set(rows.map(\.id))
-        for message in snapshot["pendingInput"].array where !displayed.contains(identifier(message)) {
-            rows.append(Self(id: identifier(message), message: message))
-        }
+        // Pending input belongs to the queue, not to delivered transcript rows.
         // Join only adjacent displayed tools. Keep each row's identity/disclosure,
         // and include boundaries in equality so existing neighbors reconfigure.
         for index in rows.indices where rows[index].call != nil {

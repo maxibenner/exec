@@ -37,8 +37,8 @@ import ExecRemote
         return (window, table, coordinator)
     }
     private func update(_ coordinator: NativeTranscript.Coordinator, _ table: TranscriptTableView, lines: Int = 50, thinking: Bool = false) {
-        coordinator.update(conversationID: "fixture", snapshot: snapshot(lines: lines), queuedMessage: .null,
-                           cancelQueuedMessage: { _ in }, showsThinkingIndicator: thinking, descriptiveShellTitles: false,
+        coordinator.update(conversationID: "fixture", snapshot: snapshot(lines: lines),
+                           showsThinkingIndicator: thinking, descriptiveShellTitles: false,
                            viewState: TranscriptViewState(generation: 0), table: table)
     }
     private func settle(_ table: TranscriptTableView) async throws {
@@ -129,8 +129,8 @@ import ExecRemote
                                             "messages": .array([older] + snapshot()["messages"].array)])
         table.configureEarlierHistory(conversationID: "fixture", hasEarlier: false,
                                       isLoadingEarlier: false, loadEarlier: {})
-        coordinator.update(conversationID: "fixture", snapshot: prepended, queuedMessage: .null,
-                           cancelQueuedMessage: { _ in }, showsThinkingIndicator: false, descriptiveShellTitles: false,
+        coordinator.update(conversationID: "fixture", snapshot: prepended,
+                           showsThinkingIndicator: false, descriptiveShellTitles: false,
                            viewState: TranscriptViewState(generation: 0), table: table)
         try await settle(table)
         XCTAssertFalse(refresh.isRefreshing)

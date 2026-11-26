@@ -320,6 +320,7 @@ The server bounds TCP connections to 64 and separately admits at most 64 non-GET
 | GET | `/v1/conversations/:id/events` | Live NDJSON |
 | POST | `/v1/conversations/:id/turns` | `{text,images?,files?:[assetID]}` → `202 {operationID}` |
 | POST | `/v1/conversations/:id/steer` | `{operationID,text,images?,files?:[assetID]}` → `202 {operationID,messageID}` |
+| POST | `/v1/conversations/:id/cancel-input` | `{operationID,messageID}` → `200 {messageID}` after checkpointing the removal |
 | POST | `/v1/conversations/:id/cancel` | `{operationID}` → `202 {accepted:true,operationID}` |
 | POST | `/v1/conversations/:id/approvals` | `{operationID,approvalID,approved:boolean}` → `{resolved:true}` |
 
@@ -332,6 +333,14 @@ when `offset` is zero. The iOS client fetches older pages only on an explicit pu
 at the top, not merely when scrolling near it.
 
 Images may be uploaded while a turn is active, then queued through `/steer` as conversation-owned image references. Steering accepts text, images, or both, with the same eight-image/16 MiB limits as a new turn. Input is incorporated at the next safe runner boundary, not retroactively added to an in-flight provider request. The operation ID remains fixed across uploads: if that operation finishes or is cancelled, a rejected steering request must not be retried as a new turn. Accepted pending images survive cancellation/restart without automatically resuming inference.
+
+`/cancel-input` is available to local and paired clients. It accepts exactly two UUID
+strings, `operationID` and `messageID` (malformed bodies or IDs return 400). It removes
+only the matching message from `pendingInput`, including retained input for a terminal
+operation. An operation mismatch or an input that is absent, already removed, or already
+promoted into the transcript returns 409. The removal is checkpointed and published in a
+snapshot before success is acknowledged. It does not stop the operation, resolve approvals,
+change the transcript, or release conversation-owned attachments.
 
 Image uploads are fully decoded and validated (PNG/JPEG, nonempty, at most 8 MiB, bounded dimensions/allocation) before reserving or checkpointing a resource. Invalid data or names return 400 without changing the conversation or creating assets. Image preparation admits at most two validation workers and returns 409 instead of queueing excess work. File upload names, size and complete references are also validated before ownership is checkpointed. Once a prepared upload crosses the write boundary, a storage failure returns 500 and retains its reserved reference: a failed response does not prove that publication did not occur. Inspect state rather than automatically resubmitting the upload.
 

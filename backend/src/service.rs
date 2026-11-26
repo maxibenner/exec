@@ -538,6 +538,17 @@ struct Steer {
     #[serde(default)]
     files: Vec<String>,
 }
+// An untagged struct variant requires a JSON object, not positional fields.
+#[derive(Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum CancelInput {
+    Pending {
+        #[serde(rename = "operationID")]
+        operation_id: String,
+        #[serde(rename = "messageID")]
+        message_id: String,
+    },
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cancel {
@@ -1099,6 +1110,7 @@ async fn handle(
                 "settings",
                 "auto-approve",
                 "steer",
+                "cancel-input",
                 "title",
                 "model",
                 "workspace",
@@ -1365,6 +1377,28 @@ async fn handle(
                 json!({"operationID":input.operation_id,"messageID":id}),
             ))
         }
+        ("POST", Some("cancel-input")) => {
+            let CancelInput::Pending {
+                operation_id,
+                message_id,
+            } = body(request, &request_cancel).await?;
+            identifier(&operation_id)?;
+            identifier(&message_id)?;
+            if host.stop.is_cancelled() {
+                return Err(ApiError::rejected(503, "Service is stopping."));
+            }
+            if !options
+                .manager
+                .cancel_pending_input(parts[0], &operation_id, &message_id)
+                .await?
+            {
+                return Err(ApiError::rejected(
+                    409,
+                    "Input is no longer pending for this operation.",
+                ));
+            }
+            Ok(json_response(200, json!({"messageID":message_id})))
+        }
         ("POST", Some("cancel")) => {
             let cancel: Cancel = body(request, &request_cancel).await?;
             identifier(&cancel.operation_id)?;
@@ -1599,6 +1633,94 @@ mod change_tests {
             conversation.snapshot().metadata.title.as_deref(),
             Some("accepted")
         );
+        manager.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn paired_cancel_input_validates_and_saves_retained_input_removal() {
+        use crate::storage::ConversationStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonConversationStore::open(dir.path()).await.unwrap();
+        let provider = Arc::new(NoInference);
+        let mut record = Conversation::new(
+            ConversationOptions::new(provider.clone(), "test", "/test"),
+            None,
+        )
+        .unwrap()
+        .record();
+        let message_id = new_id();
+        let operation_id = new_id();
+        record.operation = Some(Operation {
+            id: operation_id.clone(),
+            state: OperationState::Interrupted,
+            error: None,
+        });
+        record.pending_input.push(Message::User {
+            id: message_id.clone(),
+            text: "retained input".into(),
+            images: vec![],
+            files: vec![],
+        });
+        store.save(record.clone()).await.unwrap();
+        let manager = AgentManager::open(store.clone(), |_| (provider.clone(), vec![]))
+            .await
+            .unwrap();
+        let host = Arc::new(Host {
+            options: ServiceOptions {
+                manager: manager.clone(),
+                provider,
+                tools: vec![],
+                address: "127.0.0.1:0".parse().unwrap(),
+                access: HttpAccess::externally_secured(None).unwrap(),
+            },
+            remote: None,
+            stop: CancellationToken::new(),
+            handlers: tokio_util::task::TaskTracker::new(),
+            mutations: Arc::new(tokio::sync::Semaphore::new(1)),
+        });
+        let route = format!("/v1/conversations/{}/cancel-input", record.id);
+        let post = |value: serde_json::Value| {
+            Request::builder()
+                .method("POST")
+                .uri(&route)
+                .header("Content-Type", "application/json")
+                .body(Body::from(value.to_string()))
+                .unwrap()
+        };
+        assert!(!crate::remote::permits("GET", &route));
+        assert!(!crate::remote::permits("POST", &format!("{route}/extra")));
+        for invalid in [
+            json!({"operationID":"bad","messageID":message_id}),
+            json!({"operationID":operation_id,"messageID":"bad"}),
+            json!({"operationID":operation_id,"messageID":1}),
+            json!({"operationID":operation_id}),
+            json!({"operationID":operation_id,"messageID":message_id,"extra":true}),
+            json!([operation_id, message_id]),
+        ] {
+            assert_eq!(
+                remote_request(host.clone(), post(invalid)).await.status(),
+                400
+            );
+        }
+        let stale = post(json!({"operationID":new_id(),"messageID":message_id}));
+        assert_eq!(remote_request(host.clone(), stale).await.status(), 409);
+        assert_eq!(store.load().await.unwrap(), vec![record.clone()]);
+
+        let input = json!({"operationID":operation_id,"messageID":message_id});
+        let response = remote_request(host.clone(), post(input.clone())).await;
+        assert_eq!(response.status(), 200);
+        let reply: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(reply, json!({"messageID":message_id}));
+        assert_eq!(
+            dispatch(host, post(input), CancellationToken::new())
+                .await
+                .status(),
+            409
+        );
+        record.pending_input.clear();
+        assert_eq!(store.load().await.unwrap(), vec![record]);
         manager.close().await.unwrap();
     }
 
