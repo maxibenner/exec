@@ -461,6 +461,7 @@ fn validation_rejects_orphan_duplicate_and_unpaired_terminal_results() {
     record.operation = Some(Operation {
         id: new_id(),
         state: OperationState::Running,
+        kind: None,
         error: None,
     });
     record.messages = vec![

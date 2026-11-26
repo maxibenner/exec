@@ -90,8 +90,19 @@ struct AgentMessage: Decodable, Sendable, Equatable {
 struct AgentOperation: Decodable, Sendable, Equatable {
     let id: UUID
     let state: String
+    let kind: String?
     let error: String?
     var active: Bool { ["running", "awaiting_approval", "cancelling"].contains(state) }
+    var completedTurnID: UUID? { state == "completed" && kind == "turn" && error == nil ? id : nil }
+
+    init?(_ value: AgentJSON) {
+        guard let id = value["id"].string.flatMap(UUID.init(uuidString:)),
+              let state = value["state"].string else { return nil }
+        self.id = id
+        self.state = state
+        kind = value["kind"].string
+        error = value["error"].string
+    }
 }
 struct AgentApproval: Decodable, Sendable, Equatable {
     let id: UUID
@@ -136,6 +147,8 @@ struct AgentSnapshot: Decodable, Sendable, Equatable {
 }
 
 extension AgentSnapshot {
+    var completedTurnID: UUID? { storageError == nil ? operation?.completedTurnID : nil }
+
     /// Empty streaming placeholders cover reasoning and the gaps between tool rounds.
     /// A nonempty streaming message is active text output; do not infer pauses with timers.
     var showsThinkingIndicator: Bool {

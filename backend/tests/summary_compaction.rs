@@ -1349,6 +1349,7 @@ async fn chunk_failure_keeps_durable_conversation_summary_usage_and_transcript_u
     record.operation = Some(Operation {
         id: new_id(),
         state: OperationState::Completed,
+        kind: None,
         error: None,
     });
     let before = record.clone();
@@ -1414,6 +1415,7 @@ async fn compaction_does_not_resolve_unavailable_images_in_retained_turns() {
     record.operation = Some(Operation {
         id: new_id(),
         state: OperationState::Completed,
+        kind: None,
         error: None,
     });
     let boundary = record.messages[1].id().to_owned();

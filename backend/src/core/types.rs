@@ -686,10 +686,19 @@ impl OperationState {
         )
     }
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationKind {
+    Turn,
+    Compaction,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Operation {
     pub id: String,
     pub state: OperationState,
+    /// Older saved operations do not distinguish replies from compaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<OperationKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

@@ -1113,6 +1113,7 @@ impl Conversation {
         s.record.operation = Some(Operation {
             id: operation_id.clone(),
             state: OperationState::Running,
+            kind: Some(OperationKind::Turn),
             error: None,
         });
         let pending = std::mem::take(&mut s.record.pending_input);
@@ -1160,6 +1161,7 @@ impl Conversation {
         s.record.operation = Some(Operation {
             id: operation_id.clone(),
             state: OperationState::Running,
+            kind: Some(OperationKind::Compaction),
             error: None,
         });
         let runner = self.clone();
@@ -1641,6 +1643,7 @@ impl Conversation {
                         false
                     } else {
                         s.active.as_mut().unwrap().compact_only = false;
+                        s.record.operation.as_mut().unwrap().kind = Some(OperationKind::Turn);
                         true
                     }
                 };
@@ -2450,6 +2453,7 @@ mod tests {
             s.record.operation = Some(Operation {
                 id: new_id(),
                 state: OperationState::Completed,
+                kind: None,
                 error: None,
             });
         }

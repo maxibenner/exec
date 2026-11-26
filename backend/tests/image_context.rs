@@ -111,6 +111,7 @@ fn history(images: &[ImageRef; 4]) -> ConversationRecord {
     record.operation = Some(Operation {
         id: new_id(),
         state: OperationState::Completed,
+        kind: None,
         error: None,
     });
     record.resources = images

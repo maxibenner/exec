@@ -11,6 +11,7 @@ struct SessionSummary: Identifiable, Equatable, Sendable {
     let parent: AgentSessionParent?
     let operationState: String?
     let activeToolName: String?
+    let completedTurnID: UUID?
     var awaitingApproval: Bool { operationState == "awaiting_approval" }
     var isRunning: Bool { ["running", "awaiting_approval", "cancelling"].contains(operationState ?? "") }
     var isWaiting: Bool { operationState == "running" && activeToolName == "wait" }
@@ -21,8 +22,11 @@ struct SessionSummary: Identifiable, Equatable, Sendable {
         unreadable = value["unreadable"].bool
         let metadata = value["metadata"]
         parent = metadata["parent"] == .null ? nil : try metadata["parent"].decoded(AgentSessionParent.self)
-        operationState = value["operation"]["state"].string
+        let operation = value["operation"]
+        operationState = operation["state"].string
         activeToolName = value["activeToolName"].string
+        completedTurnID = !unreadable && operationState == "completed" && value["storageError"] == .null
+            ? AgentOperation(operation)?.completedTurnID : nil
         title = unreadable ? "Unreadable conversation" : metadata["title"].string ?? "Untitled"
         customTitle = metadata["title"].string
         isTitleManuallySet = metadata["manuallyNamed"].bool
@@ -34,6 +38,7 @@ struct SessionSummary: Identifiable, Equatable, Sendable {
         parent = snapshot.metadata.parent
         operationState = snapshot.operation?.state
         activeToolName = snapshot.activeToolName
+        completedTurnID = snapshot.completedTurnID
         title = snapshot.metadata.title ?? "Untitled"
         customTitle = snapshot.metadata.title
         isTitleManuallySet = snapshot.metadata.manuallyNamed
