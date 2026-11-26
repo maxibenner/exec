@@ -1,5 +1,9 @@
 import SwiftUI
 
+public enum ToolCardAppearance {
+    public static var fill: some ShapeStyle { HierarchicalShapeStyle.quaternary.opacity(0.25) }
+}
+
 /// Shared tool disclosure/header. Its owner keeps expansion state by stable row
 /// identity, so both AppKit and UIKit virtualized lists may recycle the view.
 public struct ToolCard<Content: View>: View {
@@ -38,7 +42,7 @@ public struct ToolCard<Content: View>: View {
         }
         .disclosureGroupStyle(InstantToolDisclosureStyle())
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
-        .background(.quaternary.opacity(showsBackground ? 0.25 : 0), in: UnevenRoundedRectangle(
+        .background(ToolCardAppearance.fill.opacity(showsBackground ? 1 : 0), in: UnevenRoundedRectangle(
             topLeadingRadius: roundsTop ? 8 : 0,
             bottomLeadingRadius: roundsBottom ? 8 : 0,
             bottomTrailingRadius: roundsBottom ? 8 : 0,

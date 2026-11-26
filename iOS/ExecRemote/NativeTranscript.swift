@@ -159,7 +159,7 @@ struct NativeTranscript: UIViewControllerRepresentable {
                         }
                         .coordinateSpace(name: "tool-group")
                         .fixedSize(horizontal: false, vertical: true)
-                        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+                        .background(ToolCardAppearance.fill, in: RoundedRectangle(cornerRadius: 8))
                         .transaction { $0.animation = nil; $0.disablesAnimations = true }
                     }.margins(.horizontal, 16).margins(.vertical, 6)
                     return cell
@@ -860,7 +860,13 @@ struct QueuedMessageBubbles: View {
         return VStack(spacing: 8) {
             ForEach(rows) { row in
                 let isCancellable = canCancel(row.id)
+                let shape = RoundedRectangle(cornerRadius: 10)
                 QueuedMessageText(message: row.message, rowID: row.id, isCancellable: isCancellable)
+                    .background {
+                        shape.fill(Color(uiColor: .systemBackground))
+                            .overlay { shape.fill(ToolCardAppearance.fill) }
+                            .overlay { shape.strokeBorder(Color(uiColor: .separator)) }
+                    }
                     .overlay(alignment: .trailing) {
                         if isCancellable {
                             Button(role: .destructive) { cancel(row.id) } label: {
@@ -890,7 +896,7 @@ private struct QueuedMessageText: UIViewRepresentable {
     func makeUIView(context: Context) -> UITextView {
         let text = UITextView()
         TranscriptMessageStyle.configure(text)
-        text.backgroundColor = .systemGray5
+        text.backgroundColor = .clear
         text.font = UIFont.preferredFont(forTextStyle: TranscriptMessageStyle.fontStyle)
         text.textColor = .label
         text.tintColor = AppColors.nativeBlue
