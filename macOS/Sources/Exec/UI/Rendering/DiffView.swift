@@ -4,12 +4,13 @@ import SwiftUI
 struct DiffView: View {
     let source: String
     var isApprovalPreview = false
+    var isFileRead = false
 
     static let lineHeight: CGFloat = 22
     @State private var cache = RenderCache()
 
     @ViewBuilder var body: some View {
-        let diff = cache.value(for: source, showsLaterHunkHeaders: isApprovalPreview)
+        let diff = cache.value(for: source, showsLaterHunkHeaders: isApprovalPreview, isFileRead: isFileRead)
         let code = DiffCodeView(diff: diff)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -29,13 +30,17 @@ struct DiffView: View {
     @MainActor final class RenderCache {
         private var source: String?
         private var showsLaterHunkHeaders = false
+        private var isFileRead = false
         private var rendered: RenderedDiff?
 
-        func value(for source: String, showsLaterHunkHeaders: Bool = false) -> RenderedDiff {
-            if self.source == source, self.showsLaterHunkHeaders == showsLaterHunkHeaders, let rendered { return rendered }
-            let value = RenderedDiff(source, showsLaterHunkHeaders: showsLaterHunkHeaders)
+        func value(for source: String, showsLaterHunkHeaders: Bool = false, isFileRead: Bool = false) -> RenderedDiff {
+            if self.source == source, self.showsLaterHunkHeaders == showsLaterHunkHeaders,
+               self.isFileRead == isFileRead, let rendered { return rendered }
+            let value = isFileRead ? RenderedDiff(fileRead: source)
+                : RenderedDiff(source, showsLaterHunkHeaders: showsLaterHunkHeaders)
             self.source = source
             self.showsLaterHunkHeaders = showsLaterHunkHeaders
+            self.isFileRead = isFileRead
             rendered = value
             return value
         }
@@ -60,11 +65,40 @@ struct DiffView: View {
         let gutter: [Int: GutterEntry]
         let numberDigits: Int
         let lineCount: Int
+        let showsChangeMarkers: Bool
 
         static let interlineSpacing = max(0, DiffView.lineHeight - NSLayoutManager().defaultLineHeight(for: font))
 
-        init(_ source: String, showsLaterHunkHeaders: Bool = false) {
-            let lines = DiffDocument(source, showsLaterHunkHeaders: showsLaterHunkHeaders).lines
+        convenience init(_ source: String, showsLaterHunkHeaders: Bool = false) {
+            self.init(lines: DiffDocument(source, showsLaterHunkHeaders: showsLaterHunkHeaders).lines,
+                      showsChangeMarkers: true)
+        }
+
+        convenience init(fileRead output: String) {
+            var rows = output.components(separatedBy: "\n")
+            if rows.last == "" { rows.removeLast() }
+            let hasRevision = rows.first?.hasPrefix("Revision: ") == true
+            var previous: Int?
+            var readingNumberedRows = hasRevision
+            let lines = rows.dropFirst(hasRevision ? 1 : 0).map { row -> DiffDocument.Line in
+                let raw = row.last == "\r" ? String(row.dropLast()) : row
+                if readingNumberedRows, let colon = raw.firstIndex(of: ":"),
+                   let number = Int(raw[..<colon]), number > 0,
+                   previous.map({ number > $0 && number - $0 == 1 }) ?? true {
+                    previous = number
+                    let body = raw[raw.index(after: colon)...]
+                    // Only remove the one space added by the backend, not file indentation.
+                    let text = body.first == " " ? body.dropFirst() : body
+                    return .init(text: String(text), kind: .context, number: number)
+                }
+                readingNumberedRows = false
+                return .init(text: raw, kind: .note, number: nil)
+            }
+            self.init(lines: lines, showsChangeMarkers: false)
+        }
+
+        private init(lines: [DiffDocument.Line], showsChangeMarkers: Bool) {
+            self.showsChangeMarkers = showsChangeMarkers
             lineCount = lines.count
             let styled = NSMutableAttributedString(string: "")
             let paragraph = NSMutableParagraphStyle()

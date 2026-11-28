@@ -76,10 +76,10 @@ struct ToolMessageView: View {
                             MarkdownView(source: presentation.output.isEmpty ? "No output" : presentation.output,
                                          cache: state.markdown)
                         }
+                    } else if call.name == "read_file", presentation.output.hasPrefix("Revision: ") {
+                        DiffView(source: presentation.output, isFileRead: true)
                     } else if result != nil, presentation.showsOutput {
                         ToolTextSection(title: presentation.outputTitle, text: presentation.output, emptyText: "No output")
-                            // Match the inner code inset used by edit diffs.
-                            .padding(call.name == "read_file" ? 10 : 0)
                     }
                 }
             }

@@ -96,7 +96,7 @@ struct DiffCodeView: NSViewRepresentable {
             rows = diff.gutter
             let digits = String(repeating: "0", count: diff.numberDigits) as NSString
             let numberWidth = ceil(digits.size(withAttributes: numberAttributes).width)
-            width = rows.isEmpty ? 0 : numberWidth + spacing + markerWidth
+            width = rows.isEmpty ? 0 : numberWidth + (diff.showsChangeMarkers ? spacing + markerWidth : 0)
             needsDisplay = true
         }
 
