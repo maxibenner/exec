@@ -1,10 +1,22 @@
 import AppKit
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
-    weak var store: ChatLibrary?
+    private let sessionNotifications = SessionNotifications()
+    weak var store: ChatLibrary? {
+        didSet {
+            guard store !== oldValue else { return }
+            oldValue?.didApplyCatalog = nil
+            // ExecApp hands off the library after restore, so launch history is silent.
+            store?.didApplyCatalog = sessionNotifications.catalogDidChange
+        }
+    }
     private var waitingToQuit = false
     private var readyToQuit = false
     var shutdownBackend: (@MainActor () async -> Void)?
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        sessionNotifications.requestAuthorizationIfNeeded()
+    }
 
     // Keep presentation and the final AppKit request injectable so unit tests
     // never quit their host process or interact with the user's windows.
