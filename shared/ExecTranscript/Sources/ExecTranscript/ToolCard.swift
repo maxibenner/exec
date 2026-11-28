@@ -2,6 +2,14 @@ import SwiftUI
 
 public enum ToolCardAppearance {
     public static var fill: some ShapeStyle { HierarchicalShapeStyle.quaternary.opacity(0.25) }
+
+    fileprivate static var outline: Color {
+        #if os(macOS)
+        Color(nsColor: .separatorColor)
+        #else
+        Color(uiColor: .separator)
+        #endif
+    }
 }
 
 /// Shared tool disclosure/header. Its owner keeps expansion state by stable row
@@ -27,7 +35,7 @@ public struct ToolCard<Content: View>: View {
         self.content = content()
     }
     public var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) { content } label: {
+        let disclosure = DisclosureGroup(isExpanded: $isExpanded) { content } label: {
             HStack(spacing: 8) {
                 ToolCallHeader(presentation: presentation)
                 Color.clear.frame(width: 16, height: 16).overlay {
@@ -40,13 +48,31 @@ public struct ToolCard<Content: View>: View {
                 }
             }
         }
-        .disclosureGroupStyle(InstantToolDisclosureStyle())
+        .disclosureGroupStyle(InstantToolDisclosureStyle(showsBackground: showsBackground))
+
+        Group {
+            if showsBackground {
+                disclosure.clipShape(shape).overlay {
+                    shape.strokeBorder(ToolCardAppearance.outline)
+                        // The preceding card already draws the shared edge.
+                        .padding(.top, roundsTop ? 0 : -1)
+                        .clipped()
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            } else {
+                disclosure
+            }
+        }
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
-        .background(ToolCardAppearance.fill.opacity(showsBackground ? 1 : 0), in: UnevenRoundedRectangle(
+    }
+
+    private var shape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
             topLeadingRadius: roundsTop ? 8 : 0,
             bottomLeadingRadius: roundsBottom ? 8 : 0,
             bottomTrailingRadius: roundsBottom ? 8 : 0,
-            topTrailingRadius: roundsTop ? 8 : 0))
+            topTrailingRadius: roundsTop ? 8 : 0)
     }
 }
 
@@ -77,6 +103,8 @@ private struct ToolHeaderButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { configuration.label }
 }
 private struct InstantToolDisclosureStyle: DisclosureGroupStyle {
+    let showsBackground: Bool
+
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -91,8 +119,19 @@ private struct InstantToolDisclosureStyle: DisclosureGroupStyle {
                 .frame(maxWidth: .infinity, alignment: .leading).padding(12).contentShape(Rectangle())
             }
             .buttonStyle(ToolHeaderButtonStyle())
+            .background {
+                if showsBackground { Rectangle().fill(ToolCardAppearance.fill) }
+            }
             .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
-            if configuration.isExpanded { configuration.content }
+            if configuration.isExpanded {
+                if showsBackground {
+                    Rectangle().fill(ToolCardAppearance.outline)
+                        .frame(height: 1)
+                        .padding(.horizontal, 1)
+                        .accessibilityHidden(true)
+                }
+                configuration.content.padding(.top, showsBackground ? 12 : 0)
+            }
         }
     }
 }

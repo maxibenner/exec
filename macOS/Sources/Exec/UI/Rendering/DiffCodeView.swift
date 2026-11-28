@@ -125,7 +125,7 @@ struct DiffCodeView: NSViewRepresentable {
                 let isAddition = row.kind == .added
                 let mark = (isAddition ? "+" : "−") as NSString
                 let attributes: [NSAttributedString.Key: Any] = [
-                    .font: markerFont, .foregroundColor: isAddition ? RenderedDiff.addition : RenderedDiff.removal
+                    .font: markerFont, .foregroundColor: NSColor.labelColor
                 ]
                 let x = markerLeft + (markerWidth - mark.size(withAttributes: attributes).width) / 2
                 mark.draw(at: NSPoint(x: x, y: baseline - layout.defaultBaselineOffset(for: markerFont)),
