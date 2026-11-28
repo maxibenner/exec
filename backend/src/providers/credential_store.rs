@@ -16,9 +16,7 @@ pub struct DeepSeekCredentials {
     writer: Arc<tokio::sync::Mutex<()>>,
 }
 fn failure() -> Error {
-    Error::Invalid(
-        "Credential storage is unavailable or insecure. Inspect the private JSON file; no retry was made.",
-    )
+    Error::Invalid("Credential storage is unavailable or insecure. Inspect the private JSON file.")
 }
 fn validate_key(value: &str) -> Result<String> {
     super::credentials::api_key(value)

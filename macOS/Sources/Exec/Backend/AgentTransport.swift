@@ -148,7 +148,7 @@ private final class AgentHTTPConnection: @unchecked Sendable {
         request.append(body)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             connection.send(content: request, completion: .contentProcessed { error in
-                if error != nil { continuation.resume(throwing: ExecError("Could not reach the Exec backend. The request was not retried.")) }
+                if error != nil { continuation.resume(throwing: ExecError("Could not reach the Exec backend.")) }
                 else { continuation.resume() }
             })
         }
@@ -162,7 +162,7 @@ private final class AgentHTTPConnection: @unchecked Sendable {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, complete, error in
                 if let data, !data.isEmpty { continuation.resume(returning: data) }
                 else if complete && error == nil { continuation.resume(returning: Data()) }
-                else { continuation.resume(throwing: ExecError("The backend connection was interrupted. The request was not retried.")) }
+                else { continuation.resume(throwing: ExecError("The backend connection was interrupted.")) }
             }
         }
     }

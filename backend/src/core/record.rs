@@ -435,7 +435,7 @@ pub fn finish_missing_results(messages: &mut Vec<Message>, intent: Option<&str>)
             *outcome = ToolOutcome::Interrupted;
             append_delegation_notice(
                 text,
-                "Delegation interrupted before all results were returned. Do not retry without a new user request.",
+                "Delegation interrupted before all results were returned.",
             );
         }
     }
@@ -465,8 +465,8 @@ pub fn finish_missing_results(messages: &mut Vec<Message>, intent: Option<&str>)
     for call_id in missing {
         let uncertain = intent == Some(call_id.as_str());
         messages.push(Message::Tool{id:new_id(),call_id,details:None,text: if uncertain {
-            "Execution was interrupted before a durable result was recorded; it may have had effects. Do not retry without a new user request."
-        } else { "Not executed: operation interrupted before this action started. Do not retry without a new user request." }.into(),
+            "Execution was interrupted before a durable result was recorded; it may have had effects."
+        } else { "Not executed: operation interrupted before this action started." }.into(),
             outcome:if uncertain {ToolOutcome::Interrupted} else {ToolOutcome::NotExecuted}});
     }
 }

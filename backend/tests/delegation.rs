@@ -582,7 +582,7 @@ async fn failed_or_cancelled_children_return_failed_tool_results_and_are_removed
         } else {
             "failed"
         };
-        assert!(parent.snapshot().messages.iter().any(|m| matches!(m, Message::Tool { text, outcome: ToolOutcome::Failed, .. } if text.contains("Sub-agent session") && text.contains(reason) && text.contains("Do not retry"))));
+        assert!(parent.snapshot().messages.iter().any(|m| matches!(m, Message::Tool { text, outcome: ToolOutcome::Failed, .. } if text.contains("Sub-agent session") && text.contains(reason) && text.contains("may have had effects") && !text.contains("Do not retry"))));
         assert_eq!(provider.count(), 3);
     }
 }

@@ -7,7 +7,7 @@ use std::{
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 
-pub(super) const INTERRUPTED: &str = "Operation interrupted. No retry was made.";
+pub(super) const INTERRUPTED: &str = "Operation interrupted.";
 
 pub(super) struct Signals {
     pub(super) cancel: CancellationToken,

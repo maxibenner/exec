@@ -1686,7 +1686,7 @@ impl Conversation {
             if let Err(error) = &result
                 && (!cancel.is_cancelled() || *error == Error::Storage)
             {
-                s.record.operation.as_mut().unwrap().error = Some(match error { Error::Provider(_) | Error::ProviderDetailed { .. } | Error::Storage | Error::Invalid("Agent step limit reached. No further request was sent.") => error.to_string(), _ => "Provider operation failed or returned an incomplete response. It was not retried.".into() });
+                s.record.operation.as_mut().unwrap().error = Some(match error { Error::Provider(_) | Error::ProviderDetailed { .. } | Error::Storage | Error::Invalid("Agent step limit reached. No further request was sent.") => error.to_string(), _ => "Provider operation failed or returned an incomplete response.".into() });
             }
             // Invalidate before mutating any incomplete historical messages/results.
             if let Some(index) = s.record.messages.iter().position(|m| {
@@ -2124,15 +2124,13 @@ impl Conversation {
         for call in calls {
             let mut outcome = ToolOutcome::NotExecuted;
             let mut details = None;
-            let mut text =
-                "Not executed: operation interrupted. Do not retry without a new user request."
-                    .to_string();
+            let mut text = "Not executed: operation interrupted.".to_string();
             // Finish calls from the current response before injecting steering.
             // Input must not invalidate preparation, approval or execution in flight.
             if !cancel.is_cancelled() {
                 if !self.state().record.metadata.tool_enabled(&call.name) {
                     outcome = ToolOutcome::NotExecuted;
-                    text = "Tool is disabled for this session. Nothing was executed. Do not retry without a new user request.".into();
+                    text = "Tool is disabled for this session. Nothing was executed.".into();
                 } else if let Some(tool) = self.tools.get(&call.name) {
                     let mut started = false;
                     let action = AssertUnwindSafe(async {
@@ -2157,7 +2155,7 @@ impl Conversation {
                             }
                         };
                         if !tool.available(&context) {
-                            return Ok((ToolOutcome::NotExecuted, "Tool is currently unavailable. Nothing was executed. Do not retry without a new user request.".into()));
+                            return Ok((ToolOutcome::NotExecuted, "Tool is currently unavailable. Nothing was executed.".into()));
                         }
                         let prepared = tool.prepare(call.arguments.clone(), context).await?;
                         check_cancel(cancel)?;
@@ -2166,7 +2164,7 @@ impl Conversation {
                         let asks_approval = !auto_approve && prepared.approval().is_some();
                         let approved = if let Some(description) = prepared.approval().filter(|_| !auto_approve) { self.ask(call,description.into(),prepared.details(),cancel).await? } else { true };
                         check_cancel(cancel)?;
-                        if !approved { return Ok((ToolOutcome::Denied,"User denied this action. Nothing was executed. Do not retry without a new user request.".into())); }
+                        if !approved { return Ok((ToolOutcome::Denied,"User denied this action. Nothing was executed.".into())); }
                         if asks_approval { prepared.approval_granted()?; }
                         {
                             let resources = prepared.resources(); let mut s = self.state();
@@ -2239,11 +2237,11 @@ impl Conversation {
                                 ToolOutcome::Failed
                             };
                             text = if let Error::Tool(safe) = error {
-                                format!("{safe}\nDo not retry without a new user request.")
+                                safe
                             } else if started {
-                                "Action failed or was interrupted after execution began; it may have had effects. Do not retry without a new user request.".into()
+                                "Action failed or was interrupted after execution began; it may have had effects.".into()
                             } else {
-                                "Action did not execute. Preparation failed or the operation was interrupted. Do not retry without a new user request.".into()
+                                "Action did not execute. Preparation failed or the operation was interrupted.".into()
                             };
                         }
                     }

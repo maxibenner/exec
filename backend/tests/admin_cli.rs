@@ -851,7 +851,7 @@ fn unknown_login(text: &str) {
     assert!(text.contains("may still be active or credentials may have been saved"));
     assert!(text.contains("providers login-status"));
     assert!(text.contains("providers status before another login"));
-    assert!(text.contains("No retry was made"));
+    assert!(!text.contains("No retry was made"));
     assert!(!text.contains("settled as interrupted"));
     assert!(!text.contains("\"connected\": true"));
 }
@@ -1086,7 +1086,7 @@ async fn invalid_mutation_acknowledgements_warn_about_effects_without_replay() {
         no_secrets(&output);
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(error.contains("may have taken effect"));
-        assert!(error.contains("No retry was made"));
+        assert!(!error.contains("No retry was made"));
         assert!(error.contains("Inspect service state before continuing"));
         assert_eq!(fake.seen().len(), 1);
     }

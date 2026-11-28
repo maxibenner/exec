@@ -14,7 +14,7 @@ use std::{
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-const UNKNOWN_LOGIN: &str = "Login outcome is unknown; the attempt may still be active or credentials may have been saved. No retry was made. Run exec-agent-admin providers login-status and exec-agent-admin providers status before another login. Cancel only the exact observed attempt ID; do not replay a cancellation blindly.";
+const UNKNOWN_LOGIN: &str = "Login outcome is unknown; the attempt may still be active or credentials may have been saved. Run exec-agent-admin providers login-status and exec-agent-admin providers status before another login. Cancel only the exact observed attempt ID.";
 
 #[derive(Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -149,7 +149,7 @@ fn settled(state: State) -> Result<()> {
     match state {
         State::Completed => output(&json!({"id":"openai","connected":true,"state":"completed"})),
         State::Failed => Err(
-            "OpenAI connection attempt settled as failed. No retry was made. Run exec-agent-admin providers status before another login.",
+            "OpenAI connection attempt settled as failed. Run exec-agent-admin providers status before another login.",
         ),
         State::Interrupted => Err(
             "OpenAI connection attempt settled as interrupted. Run exec-agent-admin providers status before another login.",
