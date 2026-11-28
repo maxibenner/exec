@@ -177,11 +177,10 @@ private struct VirtualTranscript: NSViewRepresentable {
             thinkingFooter = nil
         }
         self.bottomInset = max(0, bottomInset)
-        // Empty inference placeholders have no visible content, but mounting them
-        // adds row spacing and moves the bottom anchor between every tool result.
+        // Blank assistant steps must not add rows or move the bottom anchor.
         // Keep terminal error labels visible even when no text arrived.
         let filtered = messages.filter {
-            $0.compaction != nil || $0.role != .assistant || !$0.text.isEmpty || $0.status == .failed
+            $0.compaction != nil || $0.role != .assistant || $0.status == .failed || Message.hasNonWhitespaceText($0.text)
         }
         streamingGrowthPending = initialized && Self.isStreamingGrowth(from: self.messages, to: filtered)
         if self.messages != filtered, !streamingGrowthPending, growthMotion.isActive,
@@ -864,7 +863,9 @@ private struct MessageView: View, Equatable {
                     Label("Failed", systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.red)
                 }
-                if !message.text.isEmpty { MarkdownView(source: message.text, cache: state.markdown, isStreaming: message.status == .streaming) }
+                if Message.hasNonWhitespaceText(message.text) {
+                    MarkdownView(source: message.text, cache: state.markdown, isStreaming: message.status == .streaming)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityLabel("Assistant reply")

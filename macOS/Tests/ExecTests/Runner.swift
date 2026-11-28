@@ -90,6 +90,7 @@ import Foundation
             ("Provider removal leaves unrelated running sessions alone", { try await ProviderRemovalTests().unrelatedRunningSessionsDoNotPromptOrStop() }),
             ("Thinking footer follows response gaps and terminal states", { try ThinkingIndicatorTests().responseActivity() }),
             ("Thinking footer belongs to transcript geometry", { try await ThinkingIndicatorTests().documentFooter() }),
+            ("Thinking skips whitespace-only steps without changing streamed Markdown", { try ThinkingIndicatorTests().whitespaceOnlySteps() }),
             ("Thinking timing follows background session observation", { try await ThinkingIndicatorTests().backgroundObservation() }),
             ("Thinking delay survives navigation and cancels on activity or teardown", { try await ThinkingIndicatorTests().delayLifecycle() }),
             ("Single-line and wrapped sidebar titles use consistent padding", { try SidebarTitleLayoutTests().singleAndWrappedTitlesUseTheSamePadding() }),

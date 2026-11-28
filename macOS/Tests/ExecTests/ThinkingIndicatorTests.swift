@@ -19,7 +19,9 @@ import AppKit
         }
         assistant("", status: "streaming")
         try expect(visible()) // Initial reasoning placeholder.
-        assistant("Answer", status: "streaming")
+        assistant(" \t\r\n\u{00A0}", status: "streaming")
+        try expect(visible()) // Whitespace isn't visible output and must not reset the delay.
+        assistant("\n\n    Answer", status: "streaming")
         try expect(!visible())
         assistant("Answer", status: "completed")
         try expect(visible()) // Between completed output and the next round.
@@ -74,6 +76,54 @@ import AppKit
         try expect(view.documentView!.frame.height == originalHeight)
     }
 
+    func whitespaceOnlySteps() throws {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        let state = TranscriptState()
+        let view = TranscriptScrollView(state: state)
+        window.contentView = view
+        defer { view.detach(); window.contentView = nil }
+
+        let call = ToolCall(id: "edit", name: "edit_file", arguments: "{}")
+        var result = ToolResult(call: call, text: "Edited Example.swift")
+        result.edit = .init(path: "Example.swift", diff: "@@ -1 +1 @@\n-let value = 1\n+let value = 2")
+        let edit = Message(role: .tool, text: result.text, toolResult: result)
+        func update(_ messages: [Message], thinking: Bool) {
+            view.update(messages: messages, jumpRequest: 0, bottomInset: 140, showsThinkingIndicator: thinking)
+            view.layoutSubtreeIfNeeded()
+        }
+        update([edit], thinking: true)
+        guard let footer = view.thinkingIndicatorFrame else {
+            throw CheckFailure(description: "Missing footer after edit")
+        }
+        var blank = Message(role: .assistant, text: " ")
+        var next = Message(role: .assistant, text: "\n\n    ", status: .streaming)
+        update([edit, blank, next], thinking: true)
+        try expect(state.layout.ids == [edit.id])
+        try expect(view.thinkingIndicatorFrame == footer) // No gap or scroll needed after the edit.
+
+        // Those first four spaces become code indentation once text arrives.
+        // An internal hard break, paragraph break, and nested code indent must also survive.
+        next.text += "let value = 1\n\nFirst line.  \nSecond line.\n\n```swift\n    let nested = 2\n```"
+        update([edit, blank, next], thinking: false)
+        try expect(state.layout.ids == [edit.id, next.id] && view.thinkingIndicatorFrame == nil)
+        func text(in view: NSView) -> LinkedText.TextView? {
+            (view as? LinkedText.TextView) ?? view.subviews.lazy.compactMap { text(in: $0) }.first
+        }
+        guard let rendered = view.documentView?.subviews.compactMap({ text(in: $0) })
+            .first(where: { $0.string.contains("First line.") }) else {
+            throw CheckFailure(description: "Missing streamed Markdown")
+        }
+        try expect(rendered.textStorage?.attribute(MarkdownText.codeSnippet, at: 0, effectiveRange: nil) != nil)
+        try expect(rendered.string.contains("First line.\nSecond line."))
+        try expect(rendered.string.contains("    let nested = 2"))
+
+        blank.status = .failed
+        update([edit, blank], thinking: false)
+        try expect(state.layout.ids == [edit.id, blank.id] && state.layout.heights.last! > 1)
+    }
+
     private func snapshotJSON(text: String = "", state: String = "running",
                               operationID: UUID = AgentIntegrationTests.operationID) throws -> AgentJSON {
         guard case .object(var fields) = try AgentIntegrationTests.fixture(state: state) else {
@@ -108,7 +158,7 @@ import AppKit
         try expect(first.thinkingIndicatorFrame == nil)
         try await Task.sleep(for: .milliseconds(300))
         first.detach() // Navigation does not close the session or reset its gap.
-        try store.apply(snapshot()) // Repeated background state must not restart the delay.
+        try store.apply(snapshot(text: "\n  ")) // Whitespace delivered in the background must not restart the delay.
         try await Task.sleep(for: .milliseconds(300))
         let returned = mount()
         try expect(returned.thinkingIndicatorFrame != nil)

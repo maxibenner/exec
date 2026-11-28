@@ -149,11 +149,11 @@ struct AgentSnapshot: Decodable, Sendable, Equatable {
 extension AgentSnapshot {
     var completedTurnID: UUID? { storageError == nil ? operation?.completedTurnID : nil }
 
-    /// Empty streaming placeholders cover reasoning and the gaps between tool rounds.
-    /// A nonempty streaming message is active text output; do not infer pauses with timers.
+    /// Empty or whitespace-only streaming bodies cover reasoning and the gaps between tool rounds.
+    /// Visible streaming text is active output; do not infer pauses with timers.
     var showsThinkingIndicator: Bool {
         operation?.state == "running" && approval == nil && activeToolCallID == nil && activeToolName == nil &&
-            !messages.contains { ($0.role == "assistant" && $0.status == "streaming" && !$0.text.isEmpty) ||
+            !messages.contains { ($0.role == "assistant" && $0.status == "streaming" && Message.hasNonWhitespaceText($0.text)) ||
                 ($0.role == "tool" && $0.outcome == "running") }
     }
 

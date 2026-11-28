@@ -30,6 +30,11 @@ struct Message: Identifiable, Codable, Sendable, Equatable {
         self.compaction = compaction
     }
 
+    /// Classify the whole message for presentation without changing its Markdown or provider history.
+    static func hasNonWhitespaceText(_ text: String) -> Bool {
+        !text.allSatisfy(\.isWhitespace)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id, role, text, status, toolCalls, toolResult, images, files, pendingTool, compaction
     }
