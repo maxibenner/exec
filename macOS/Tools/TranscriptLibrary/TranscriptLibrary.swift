@@ -46,6 +46,17 @@ private struct TranscriptGallery: View {
                             }
                         }
                     }
+                    section("Connected Tool Calls") {
+                        let calls = fixtures.connectedTools
+                        VStack(spacing: 0) {
+                            ForEach(calls.indices, id: \.self) { index in
+                                MessageView(message: calls[index], state: fixtures.state,
+                                            roundsTop: index == calls.startIndex,
+                                            roundsBottom: index == calls.index(before: calls.endIndex))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
                     section("Tool Calls") {
                         rows(fixtures.tools)
                     }

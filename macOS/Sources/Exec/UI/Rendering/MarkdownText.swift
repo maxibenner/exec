@@ -1,4 +1,5 @@
 import AppKit
+import ExecTranscript
 import SwiftUI
 
 /// Render a reply into one TextKit document so selection can cross every block.
@@ -151,7 +152,7 @@ import SwiftUI
                         }
                         cell.verticalAlignment = .top
                         if row.kind == .tableHeaderRow {
-                            cell.backgroundColor = .quaternarySystemFill
+                            cell.backgroundColor = ToolCardAppearance.nativeHeaderFill
                         }
                         // Give each shared edge one owner so separate-border layout
                         // keeps the same stroke thickness inside and around the table.

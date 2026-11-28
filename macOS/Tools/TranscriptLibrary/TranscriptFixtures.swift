@@ -3,6 +3,7 @@ import AppKit
 @MainActor struct TranscriptFixtures {
     let state = TranscriptState()
     let messages: [Message]
+    let connectedTools: [Message]
     let tools: [Message]
     let approvals: [ToolApprovalState.Approval]
     let activity: [Message]
@@ -28,6 +29,18 @@ import AppKit
         let delegate = Self.call("delegate", #"{"tasks":[{"title":"Review route notes","task":"Check the route descriptions for clarity."},{"title":"Review packing list","task":"Suggest one item for a windy day at the coast."}]}"#)
         let pending = Self.call("shell", #"{"command":"wc -l guides/coastal-trails.md"}"#)
         let wait = Self.call("wait", #"{"duration_seconds":15,"description":"Wait for the preview to refresh","wake_prompt":"Inspect the updated guide preview."}"#)
+        let trailRead = Self.result(.init(
+            call: Self.call("read_file", #"{"path":"guides/packing-list.md","start_line":8,"end_line":10}"#),
+            text: "Revision: 1234abcd\n8: ## Windy days\n9: - Pack a light windbreaker.\n10: - Bring a dry layer for the overlook.\n"))
+        connectedTools = [
+            Self.result(.init(call: Self.call("list_files", #"{"path":"guides"}"#),
+                              text: "coastal-trails.md\npacking-list.md\nroute-map.png")),
+            trailRead,
+            Self.result(.init(call: Self.call("search_text", #"{"path":"guides","query":"windbreaker"}"#),
+                              text: "guides/packing-list.md:9:- Pack a light windbreaker.")),
+        ]
+        // Start with a mix of connected collapsed and expanded cards.
+        state.expanded[trailRead.id] = true
         tools = [
             Self.result(.init(call: Self.call("shell", #"{"command":"wc -w guides/coastal-trails.md","description":"Count guide words"}"#),
                               text: "     248 guides/coastal-trails.md")),

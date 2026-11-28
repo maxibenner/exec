@@ -1,7 +1,24 @@
 import SwiftUI
 
 public enum ToolCardAppearance {
-    public static var fill: some ShapeStyle { HierarchicalShapeStyle.quaternary.opacity(0.25) }
+    public static var fill: some ShapeStyle {
+        #if os(macOS)
+        Color(nsColor: nativeHeaderFill)
+        #else
+        HierarchicalShapeStyle.quaternary.opacity(0.25)
+        #endif
+    }
+
+    #if os(macOS)
+    public static let nativeHeaderFill = NSColor(name: nil) { appearance in
+        var fill = NSColor.clear
+        appearance.performAsCurrentDrawingAppearance {
+            let color = NSColor.quaternaryLabelColor
+            fill = color.withAlphaComponent(color.alphaComponent * 0.25)
+        }
+        return fill
+    }
+    #endif
 
     public static var outline: Color {
         #if os(macOS)
