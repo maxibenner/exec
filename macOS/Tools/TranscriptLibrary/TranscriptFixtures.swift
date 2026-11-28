@@ -10,6 +10,7 @@ import AppKit
     let queued = Message(role: .user, text: "Please add a short caption for the cover illustration.")
 
     init() {
+        state.workspaceRoot = Bundle.main.resourceURL?.appendingPathComponent("PreviewWorkspace", isDirectory: true)
         let cover = Self.image(name: "coastal-trails.png", screenshot: false)
         messages = [
             Message(role: .user, text: "Could you turn these notes into a field guide for the coastal trails?",

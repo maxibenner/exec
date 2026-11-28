@@ -7,6 +7,7 @@ import Observation
     var followsLatest = true
     var jumpRequest = 0
     var trailingInset: CGFloat = 0
+    var workspaceRoot: URL?
     @ObservationIgnored weak var scrollView: TranscriptScrollView?
     @ObservationIgnored var anchor: TranscriptLayout.Anchor?
     // Keep a consumed receipt from retriggering a jump on updates or remounts.

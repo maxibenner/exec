@@ -74,6 +74,9 @@ struct ConversationView: View {
                        showsThinkingIndicator: panel.current.showsThinkingIndicator,
                        immediateSendID: panel.current.latestImmediateSendID)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onChange(of: panel.workspace?.root, initial: true) { _, root in
+                presentation.workspaceRoot = root
+            }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 0) {
                     let destination = panel.current

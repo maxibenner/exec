@@ -20,6 +20,7 @@ swiftc -swift-version 6 -parse-as-library -whole-module-optimization "${exec_tra
     "${sources[@]}" "$staging/TranscriptView.swift" Tools/TranscriptLibrary/*.swift \
     -o "$bundle/Contents/MacOS/TranscriptComponentLibrary"
 copy_exec_transcript_resources "$bundle/Contents/Resources"
+ditto Tools/TranscriptLibrary/PreviewWorkspace "$bundle/Contents/Resources/PreviewWorkspace"
 cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -44,13 +44,35 @@ struct ToolMessageView: View {
         }
     }
 
+    private func fileLink(presentation: ToolPresentation) -> ToolFileLink? {
+        guard !isRunning, let result, let root = state.workspaceRoot else { return nil }
+        let path: String?
+        switch call.name {
+        case "read_file":
+            // Successful reads contain the revision envelope followed by numbered lines.
+            guard ReadFileSummary(result)?.lines != nil else { return nil }
+            path = presentation.summary
+        case "edit_file":
+            path = result.edit?.path
+        default:
+            return nil
+        }
+        guard let path, let target = ToolFileTarget(path: path) else { return nil }
+        return ToolFileLink(directory: target.directory, filename: target.filename, color: AppColors.blue) {
+            guard let url = target.openableURL(in: root), NSWorkspace.shared.open(url) else {
+                NSSound.beep()
+                return
+            }
+        }
+    }
+
     private var card: some View {
         let presentation = ToolPresentation(call: call, result: result, descriptiveShellTitles: descriptiveShellTitles)
         return ToolCard(presentation: presentation, isExpanded: Binding(get: { isExpanded }, set: { value in
             state.followsLatest = false
             state.expanded[messageID] = value
             expanded = value
-        }), isRunning: isRunning, roundsTop: roundsTop, roundsBottom: roundsBottom) {
+        }), isRunning: isRunning, roundsTop: roundsTop, roundsBottom: roundsBottom, fileLink: fileLink(presentation: presentation)) {
             VStack(alignment: .leading, spacing: 12) {
                 if let generated = result?.generatedImage {
                     ForEach(presentation.inputs.indices, id: \.self) { index in

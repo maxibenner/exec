@@ -40,15 +40,17 @@ public struct ToolCard<Content: View>: View {
     let roundsBottom: Bool
     let showsBackground: Bool
     let content: Content
+    let fileLink: ToolFileLink?
     public init(presentation: ToolPresentation, isExpanded: Binding<Bool>, awaitingApproval: Bool = false, isRunning: Bool = false,
                 roundsTop: Bool = true, roundsBottom: Bool = true, showsBackground: Bool = true,
-                @ViewBuilder content: () -> Content) {
+                fileLink: ToolFileLink? = nil, @ViewBuilder content: () -> Content) {
         self.presentation = presentation; _isExpanded = isExpanded
         self.awaitingApproval = awaitingApproval
         self.isRunning = isRunning || presentation.isRunning
         self.roundsTop = roundsTop
         self.roundsBottom = roundsBottom
         self.showsBackground = showsBackground
+        self.fileLink = fileLink
         self.content = content()
     }
     public var body: some View {
@@ -66,7 +68,8 @@ public struct ToolCard<Content: View>: View {
             }
         }
         .disclosureGroupStyle(InstantToolDisclosureStyle(
-            headerShape: showsBackground ? shape(roundsBottom: roundsBottom && !isExpanded) : nil))
+            headerShape: showsBackground ? shape(roundsBottom: roundsBottom && !isExpanded) : nil,
+            presentation: presentation, fileLink: fileLink))
 
         Group {
             if showsBackground {
@@ -95,13 +98,27 @@ public struct ToolCard<Content: View>: View {
     }
 }
 
+/// Optional file action supplied by the host that owns the local workspace.
+public struct ToolFileLink {
+    let directory: String
+    let filename: String
+    let color: Color
+    let open: @MainActor () -> Void
+
+    public init(directory: String, filename: String, color: Color, open: @escaping @MainActor () -> Void) {
+        self.directory = directory
+        self.filename = filename
+        self.color = color
+        self.open = open
+    }
+}
+
 public struct ToolCallHeader: View {
     let presentation: ToolPresentation
     public init(presentation: ToolPresentation) { self.presentation = presentation }
     public var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: presentation.icon).frame(width: 16)
-            Text(verbatim: presentation.title).fontWeight(.medium).fixedSize()
+            title
             if let summary = presentation.singleLineSummary {
                 Text(verbatim: summary).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     #if os(macOS)
@@ -116,6 +133,11 @@ public struct ToolCallHeader: View {
         .font(.callout)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    @ViewBuilder fileprivate var title: some View {
+        Image(systemName: presentation.icon).frame(width: 16)
+        Text(verbatim: presentation.title).fontWeight(.medium).fixedSize()
+    }
 }
 
 private struct ToolHeaderButtonStyle: ButtonStyle {
@@ -123,10 +145,13 @@ private struct ToolHeaderButtonStyle: ButtonStyle {
 }
 private struct InstantToolDisclosureStyle: DisclosureGroupStyle {
     let headerShape: UnevenRoundedRectangle?
+    let presentation: ToolPresentation
+    let fileLink: ToolFileLink?
 
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            ToolDisclosureHeader(label: configuration.label, isExpanded: configuration.isExpanded, shape: headerShape) {
+            ToolDisclosureHeader(label: configuration.label, isExpanded: configuration.isExpanded, shape: headerShape,
+                                 presentation: presentation, fileLink: fileLink) {
                 var transaction = Transaction(animation: nil); transaction.disablesAnimations = true
                 withTransaction(transaction) { configuration.isExpanded.toggle() }
             }
@@ -141,18 +166,26 @@ private struct ToolDisclosureHeader<Label: View>: View {
     let label: Label
     let isExpanded: Bool
     let shape: UnevenRoundedRectangle?
+    let presentation: ToolPresentation
+    let fileLink: ToolFileLink?
     let toggle: () -> Void
 
     var body: some View {
-        Button(action: toggle) {
-            HStack(spacing: 8) {
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.caption).foregroundStyle(.secondary).frame(width: 12)
-                label
+        Group {
+            if let fileLink {
+                linkedHeader(fileLink)
+            } else {
+                Button(action: toggle) {
+                    HStack(spacing: 8) {
+                        chevron
+                        label
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(12).contentShape(Rectangle())
+                }
+                .buttonStyle(ToolHeaderButtonStyle())
+                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
             }
-            .frame(maxWidth: .infinity, alignment: .leading).padding(12).contentShape(Rectangle())
         }
-        .buttonStyle(ToolHeaderButtonStyle())
         .background {
             if let shape { shape.fill(ToolCardAppearance.fill) }
         }
@@ -166,6 +199,66 @@ private struct ToolDisclosureHeader<Label: View>: View {
                     .accessibilityHidden(true)
             }
         }
-        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+    }
+
+    private var chevron: some View {
+        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+            .font(.caption).foregroundStyle(.secondary).frame(width: 12)
+    }
+
+    private func linkedHeader(_ link: ToolFileLink) -> some View {
+        HStack(spacing: 0) {
+            Button(action: toggle) {
+                HStack(spacing: 8) {
+                    chevron
+                    ToolCallHeader(presentation: presentation).title
+                    if !link.directory.isEmpty {
+                        Text(verbatim: link.directory)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                .padding(.trailing, link.directory.isEmpty ? 8 : 0)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(ToolHeaderButtonStyle())
+            .accessibilityLabel(Text(verbatim: presentation.title))
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+
+            Button(action: link.open) {
+                filenameLabel(link)
+            }
+            .buttonStyle(ToolHeaderButtonStyle())
+            .accessibilityRemoveTraits(.isButton)
+            .accessibilityAddTraits(.isLink)
+            .layoutPriority(1)
+
+            if let detail = presentation.detail {
+                Text(verbatim: detail).font(.caption).foregroundStyle(.secondary).fixedSize()
+                    .padding(.leading, 8)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.callout)
+        .padding(12)
+    }
+
+    @ViewBuilder private func filenameLabel(_ link: ToolFileLink) -> some View {
+        let text = Text(verbatim: link.filename)
+            .foregroundStyle(link.color)
+            .lineLimit(1).truncationMode(.middle)
+            .contentShape(Rectangle())
+        #if os(macOS)
+        if #available(macOS 15, *) {
+            text.pointerStyle(.link)
+        } else {
+            text.onHover { hovering in
+                if hovering { NSCursor.pointingHand.set() }
+                else if NSCursor.current == .pointingHand { NSCursor.arrow.set() }
+            }
+        }
+        #else
+        text
+        #endif
     }
 }
