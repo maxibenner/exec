@@ -105,6 +105,8 @@ import Foundation
             ("Sidebar unread completion deduplicates resident and catalog reads", { try await SidebarUnreadCompletionTests().residentCompletionsAndCatalogEchoes() }),
             ("Sidebar unread completion clears only on successful visits or confirmed removal", { try await SidebarUnreadCompletionTests().catalogCompletionsClearIndependentlyAfterSuccessfulVisit() }),
             ("Sidebar unread completion ignores non-reply terminal operations", { try await SidebarUnreadCompletionTests().nonreplyTerminalsDoNotSetBadges() }),
+            ("Session notifications use the correct titles and do not replay foreground or startup history", { try await SessionNotificationTests().backgroundCatalogTransitions() }),
+            ("Session notifications distinguish storage failures from successful turns", { try await SessionNotificationTests().storageErrorsAreNotCompletions() }),
             ("Navigation completion runs after cleanup and permits reentry", { try await NavigationCompletionTests().successRunsAfterCleanupAndAllowsReentry() }),
             ("Navigation completion never publishes failed opens or forks", { try await NavigationCompletionTests().failuresNeverPublishSuccess() }),
             ("Navigation completion ignores cancellation and superseded requests", { try await NavigationCompletionTests().cancellationAndSupersessionNeverPublishSuccess() }),

@@ -15,6 +15,7 @@ import Observation
     private var navigationError: String?
     private var modelRefreshError: String?
     private var savedSummaries: [SessionSummary] = []
+    @ObservationIgnored var didApplyCatalog: (@MainActor ([SessionSummary], [SessionSummary]) -> Void)?
     private var unreadCompletionIDs: Set<UUID> = []
     // The catalog and resident can see the same completion in either order, even
     // after a visit or eviction. Remember it for the lifetime of this session.
@@ -954,7 +955,9 @@ import Observation
             resident.contains($0) && (!persisted.contains($0) || registeringIDs.contains($0))
         }
         sidebarOrder = pending + summaries.map(\.id).filter { !pending.contains($0) }
+        let previous = savedSummaries
         savedSummaries = summaries
+        didApplyCatalog?(previous, summaries)
     }
 
     private func selectCurrent() async throws {
