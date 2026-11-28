@@ -89,20 +89,18 @@ impl fmt::Display for Error {
             Self::ProviderDetailed { reason, .. } => return Self::Provider(*reason).fmt(f),
             Self::Provider(code) => match code {
                 ProviderFailure::Authentication => {
-                    "Provider authentication failed. Check the configured credential. No retry was made."
+                    "Provider authentication failed. Check the configured credential."
                 }
-                ProviderFailure::Quota => {
-                    "Provider balance or quota is insufficient. No retry was made."
-                }
-                ProviderFailure::RateLimit => "Provider rate limit reached. No retry was made.",
+                ProviderFailure::Quota => "Provider balance or quota is insufficient.",
+                ProviderFailure::RateLimit => "Provider rate limit reached.",
                 ProviderFailure::Request => {
-                    "Provider request was rejected. Check the model and input configuration. No retry was made."
+                    "Provider request was rejected. Check the model and input configuration."
                 }
                 ProviderFailure::Timeout => {
-                    "Provider request timed out; it may have been processed. No retry was made."
+                    "Provider request timed out; it may have been processed."
                 }
                 ProviderFailure::Transport => {
-                    "Provider connection failed; the request may have been processed. No retry was made."
+                    "Provider connection failed; the request may have been processed."
                 }
                 ProviderFailure::Response
                 | ProviderFailure::EmptyResponse
@@ -111,10 +109,10 @@ impl fmt::Display for Error {
                 | ProviderFailure::StreamEnded
                 | ProviderFailure::MalformedResponse
                 | ProviderFailure::UnexpectedContentType => {
-                    "Provider returned an invalid or incomplete response. No retry was made."
+                    "Provider returned an invalid or incomplete response."
                 }
                 ProviderFailure::Unsupported => {
-                    "The provider returned an unsupported response mode. No retry was made."
+                    "The provider returned an unsupported response mode."
                 }
             },
         };

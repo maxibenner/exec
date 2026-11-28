@@ -333,7 +333,7 @@ actor ActionBufferClock {
 
     func testProviderFailedTurnAllowsAnExplicitNewTurn() async throws {
         let transport = ActionReadinessTransport(), store = try makeStore(transport)
-        let failure = "Provider connection failed; the request may have been processed. No retry was made."
+        let failure = "Provider connection failed; the request may have been processed."
         let failed: RemoteJSON = .object([
             "id": .string("session"), "messages": .array([]),
             "operation": .object(["id": .string("failed-operation"), "state": .string("failed"),

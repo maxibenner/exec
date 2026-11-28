@@ -131,7 +131,7 @@ impl PreparedTool for Capture {
                 })
             }
             NativePayload::Failed => Err(failure(
-                "Native capture failed or OS permission was denied. No retry or fallback was attempted.",
+                "Native capture failed or OS permission was denied.",
             )),
         }
     }

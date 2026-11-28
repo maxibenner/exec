@@ -12,9 +12,7 @@ use tokio_util::sync::CancellationToken;
 const BODY_LIMIT: usize = 1024 * 1024;
 const TEXT_LIMIT: usize = 24000;
 fn failure() -> Error {
-    Error::Tool(
-        "Content fetch failed or the public page was unsupported. No retry was made.".into(),
-    )
+    Error::Tool("Content fetch failed or the public page was unsupported.".into())
 }
 
 pub fn public_address(ip: IpAddr) -> bool {

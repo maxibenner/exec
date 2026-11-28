@@ -268,7 +268,7 @@ fn invitation(value: Invitation) -> Result<()> {
 }
 
 fn output(value: &impl Serialize) -> Result<()> {
-    const FAILED: &str = "Cannot write command output; the operation may have taken effect. Inspect service state before continuing; do not replay it blindly.";
+    const FAILED: &str = "Cannot write command output; the operation may have taken effect. Inspect service state before continuing.";
     let mut stdout = std::io::stdout().lock();
     serde_json::to_writer_pretty(&mut stdout, value).map_err(|_| FAILED)?;
     writeln!(stdout).map_err(|_| FAILED)

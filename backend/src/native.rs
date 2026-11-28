@@ -490,7 +490,7 @@ impl NativeHub {
             hub: self,
             id: request.id.clone(),
         };
-        let result = tokio::select! {biased;_=context.cancel.cancelled()=>Err(Error::Cancelled),r=tokio::time::timeout(Duration::from_secs(60),rx)=>r.map_err(|_|Error::Invalid("Native capture timed out; no retry was made.")).and_then(|r|r.map_err(|_|Error::Invalid("Native frontend disconnected or permission was withdrawn.")))};
+        let result = tokio::select! {biased;_=context.cancel.cancelled()=>Err(Error::Cancelled),r=tokio::time::timeout(Duration::from_secs(60),rx)=>r.map_err(|_|Error::Invalid("Native capture timed out.")).and_then(|r|r.map_err(|_|Error::Invalid("Native frontend disconnected or permission was withdrawn.")))};
         result
     }
 }

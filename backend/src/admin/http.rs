@@ -5,8 +5,9 @@ use serde_json::Value;
 use std::time::Duration;
 
 const MAX_RESPONSE: usize = 65536;
-const REQUEST_FAILED: &str = "Local HTTP request failed; it may have taken effect. No retry was made. Inspect service state before continuing.";
-pub(super) const INVALID_RESPONSE: &str = "The local service returned an invalid response; the operation may have taken effect. No retry was made. Inspect service state before continuing.";
+const REQUEST_FAILED: &str =
+    "Local HTTP request failed; it may have taken effect. Inspect service state before continuing.";
+pub(super) const INVALID_RESPONSE: &str = "The local service returned an invalid response; the operation may have taken effect. Inspect service state before continuing.";
 
 pub(super) struct Api {
     client: Client,
@@ -76,7 +77,7 @@ impl Api {
                 401 | 403 => "The local service rejected administrator authentication or access.",
                 404 => "The requested operation is unavailable on the local service.",
                 409 => {
-                    "The local service is busy or the operation is no longer active. No retry was made. Inspect service state before continuing."
+                    "The local service is busy or the operation is no longer active. Inspect service state before continuing."
                 }
                 _ => REQUEST_FAILED,
             });

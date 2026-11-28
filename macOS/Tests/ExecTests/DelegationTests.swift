@@ -149,7 +149,7 @@ import SwiftUI
 
     func delegationPresentationPreservesTaskAndFailure() throws {
         let call = ToolCall(id: "delegate-one", name: "delegate", arguments: #"{"task":"Inspect the parser\nReport edge cases"}"#)
-        var result = ToolResult(call: call, text: "Sub-agent was interrupted. Do not retry without a new user request.")
+        var result = ToolResult(call: call, text: "Sub-agent was interrupted.")
         result.outcome = "failed"
         let presentation = ToolPresentation(call: call, result: result)
         try expect(presentation.title == "Sub-agent")

@@ -186,14 +186,12 @@ impl Tool for Delegate {
                                 let text = match &result {
                                     Ok(text) => text.clone(),
                                     Err(Error::Cancelled) => format!(
-                                        "Sub-agent session {} was cancelled before starting. No child request was sent. Do not retry without a new user request.",
+                                        "Sub-agent session {} was cancelled before starting. No child request was sent.",
                                         child.id
                                     ),
-                                    Err(Error::Tool(message)) => {
-                                        format!("{message}\nDo not retry without a new user request.")
-                                    }
+                                    Err(Error::Tool(message)) => message.clone(),
                                     Err(_) => format!(
-                                        "Sub-agent session {} failed or was interrupted; it may have had effects. Do not retry without a new user request.",
+                                        "Sub-agent session {} failed or was interrupted; it may have had effects.",
                                         child.id
                                     ),
                                 };

@@ -617,7 +617,8 @@ async fn failure_or_individual_cancellation_publishes_early_without_cancelling_s
                 ToolOutcome::Failed
             }
         );
-        assert!(partial[0].text.contains("Do not retry"));
+        assert!(partial[0].text.contains("may have had effects"));
+        assert!(!partial[0].text.contains("Do not retry"));
         pending(&mut run, &provider, 3, &parent);
         assert_eq!(
             manager

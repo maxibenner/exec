@@ -35,5 +35,5 @@ enum ScreenshotTool {
         return request
     }
 
-    static let interrupted = "Screenshot operation failed or was interrupted. No capture result was shared. Do not retry without a new user request."
+    static let interrupted = "Screenshot operation failed or was interrupted. No capture result was shared."
 }

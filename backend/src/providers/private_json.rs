@@ -26,7 +26,7 @@ fn shared_lock(path: &Path) -> Arc<Lock> {
 }
 fn error() -> Error {
     Error::Invalid(
-        "Private JSON storage is unavailable or insecure. Inspect the file before continuing; no retry was made.",
+        "Private JSON storage is unavailable or insecure. Inspect the file before continuing.",
     )
 }
 fn directory(path: &Path) -> Result<(&Path, Metadata)> {

@@ -132,7 +132,7 @@ import Darwin
     func request(_ method: String, _ path: String, _ body: AgentJSON? = nil) async throws -> AgentJSON {
         let data = try await transport.request(method, path, body: try body.map { try JSONEncoder().encode($0) })
         do { return try JSONDecoder().decode(AgentJSON.self, from: data) }
-        catch { throw ExecError("The backend returned an invalid response. The request was not retried.") }
+        catch { throw ExecError("The backend returned an invalid response.") }
     }
     func send<T: Encodable>(_ method: String, _ path: String, body: T) async throws -> AgentJSON {
         let data = try await transport.request(method, path, body: JSONEncoder().encode(body))
