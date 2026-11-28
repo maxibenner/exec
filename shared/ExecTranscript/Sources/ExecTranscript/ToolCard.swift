@@ -3,7 +3,7 @@ import SwiftUI
 public enum ToolCardAppearance {
     public static var fill: some ShapeStyle { HierarchicalShapeStyle.quaternary.opacity(0.25) }
 
-    fileprivate static var outline: Color {
+    public static var outline: Color {
         #if os(macOS)
         Color(nsColor: .separatorColor)
         #else
@@ -48,12 +48,14 @@ public struct ToolCard<Content: View>: View {
                 }
             }
         }
-        .disclosureGroupStyle(InstantToolDisclosureStyle(showsBackground: showsBackground))
+        .disclosureGroupStyle(InstantToolDisclosureStyle(
+            headerShape: showsBackground ? shape(roundsBottom: roundsBottom && !isExpanded) : nil))
 
         Group {
             if showsBackground {
-                disclosure.clipShape(shape).overlay {
-                    shape.strokeBorder(ToolCardAppearance.outline)
+                let outline = shape(roundsBottom: roundsBottom)
+                disclosure.clipShape(outline).overlay {
+                    outline.strokeBorder(ToolCardAppearance.outline)
                         // The preceding card already draws the shared edge.
                         .padding(.top, roundsTop ? 0 : -1)
                         .clipped()
@@ -67,7 +69,7 @@ public struct ToolCard<Content: View>: View {
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
 
-    private var shape: UnevenRoundedRectangle {
+    private func shape(roundsBottom: Bool) -> UnevenRoundedRectangle {
         UnevenRoundedRectangle(
             topLeadingRadius: roundsTop ? 8 : 0,
             bottomLeadingRadius: roundsBottom ? 8 : 0,
@@ -103,35 +105,50 @@ private struct ToolHeaderButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { configuration.label }
 }
 private struct InstantToolDisclosureStyle: DisclosureGroupStyle {
-    let showsBackground: Bool
+    let headerShape: UnevenRoundedRectangle?
 
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button {
+            ToolDisclosureHeader(label: configuration.label, isExpanded: configuration.isExpanded, shape: headerShape) {
                 var transaction = Transaction(animation: nil); transaction.disablesAnimations = true
                 withTransaction(transaction) { configuration.isExpanded.toggle() }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption).foregroundStyle(.secondary).frame(width: 12)
-                    configuration.label
-                }
-                .frame(maxWidth: .infinity, alignment: .leading).padding(12).contentShape(Rectangle())
             }
-            .buttonStyle(ToolHeaderButtonStyle())
-            .background {
-                if showsBackground { Rectangle().fill(ToolCardAppearance.fill) }
-            }
-            .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
             if configuration.isExpanded {
-                if showsBackground {
-                    Rectangle().fill(ToolCardAppearance.outline)
-                        .frame(height: 1)
-                        .padding(.horizontal, 1)
-                        .accessibilityHidden(true)
-                }
-                configuration.content.padding(.top, showsBackground ? 12 : 0)
+                configuration.content.padding(.top, headerShape == nil ? 0 : 12)
             }
         }
+    }
+}
+
+private struct ToolDisclosureHeader<Label: View>: View {
+    let label: Label
+    let isExpanded: Bool
+    let shape: UnevenRoundedRectangle?
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 8) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.caption).foregroundStyle(.secondary).frame(width: 12)
+                label
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(12).contentShape(Rectangle())
+        }
+        .buttonStyle(ToolHeaderButtonStyle())
+        .background {
+            if let shape { shape.fill(ToolCardAppearance.fill) }
+        }
+        .overlay(alignment: .bottom) {
+            if shape != nil && isExpanded {
+                // Match the collapsed outline, drawn inside the header's bottom edge.
+                Rectangle().fill(ToolCardAppearance.outline)
+                    .frame(height: 1)
+                    .padding(.horizontal, 1)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
     }
 }

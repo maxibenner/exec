@@ -61,9 +61,7 @@ struct ToolMessageView: View {
                         GeneratedImageView(attachment: generated)
                     }
                 } else if let screenshot = result?.screenshot, let image = NSImage(data: screenshot.data) {
-                    Image(nsImage: image).resizable().scaledToFit()
-                        .frame(maxHeight: 480)
-                        .accessibilityLabel("Captured screenshot")
+                    ToolImageView(image: image, accessibilityTitle: "Captured screenshot")
                 } else if let edit = result?.edit {
                     DiffView(source: edit.diff)
                 } else {

@@ -1,3 +1,4 @@
+import ExecTranscript
 import SwiftUI
 
 /// Tool-like presentation for local activity, not an executable agent tool.
@@ -14,7 +15,12 @@ struct CompactionMessageView: View {
         .font(.callout)
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+        .background(ToolCardAppearance.fill, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8).strokeBorder(ToolCardAppearance.outline)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         .accessibilityElement(children: .combine)
     }
 }

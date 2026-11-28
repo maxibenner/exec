@@ -14,7 +14,7 @@ struct DiffView: View {
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
         if isApprovalPreview {
-            let height = CGFloat(diff.lineCount) * Self.lineHeight + 2 * DiffCodeSurface.codeInset
+            let height = CGFloat(diff.lineCount) * Self.lineHeight - RenderedDiff.interlineSpacing + 2 * DiffCodeSurface.codeInset
             // Keep horizontal scrolling inside the inset, with a pinned gutter.
             ScrollView(.vertical) {
                 code.padding(.horizontal, DiffCodeSurface.codeInset)
@@ -61,12 +61,15 @@ struct DiffView: View {
         let numberDigits: Int
         let lineCount: Int
 
+        static let interlineSpacing = max(0, DiffView.lineHeight - NSLayoutManager().defaultLineHeight(for: font))
+
         init(_ source: String, showsLaterHunkHeaders: Bool = false) {
             let lines = DiffDocument(source, showsLaterHunkHeaders: showsLaterHunkHeaders).lines
             lineCount = lines.count
             let styled = NSMutableAttributedString(string: "")
             let paragraph = NSMutableParagraphStyle()
-            paragraph.minimumLineHeight = DiffView.lineHeight
+            // Put extra leading between rows, not above the first glyphs.
+            paragraph.paragraphSpacing = Self.interlineSpacing
             var gutter: [Int: GutterEntry] = [:]
             var highestNumber = 0
             for (index, line) in lines.enumerated() {

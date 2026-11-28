@@ -18,7 +18,7 @@ struct ChatRemoveButton: View {
     var body: some View {
         Button(role: role, action: action) {
             Circle()
-                .fill(.gray)
+                .fill(.black.opacity(0.42))
                 .frame(width: 13, height: 13)
                 .overlay {
                     // Draw around the same center as the circle, without symbol
