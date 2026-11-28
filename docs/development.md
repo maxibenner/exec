@@ -30,6 +30,17 @@ Highlighting falls back to plain text above 128 KiB per block, on parser timeout
 
 App packaging resources live in `macOS/Resources/`: `Info.plist` and the layered `Glass_Icon.icon` document. `build-app.sh` compiles the icon and bundles/signs the helper and Sparkle framework. These are packaging resources outside the SwiftPM executable target, not copied source assets.
 
+### Transcript component library
+
+From `macOS/`, build and open the standalone gallery:
+
+```sh
+./scripts/build-transcript-library.sh
+open "dist/Transcript Component Library.app"
+```
+
+The gallery uses the production transcript views with fixture content and a Light/Dark switch. It does not start the agent or execute the sample tool calls.
+
 ### Stable signing
 
 Use an existing stable signing certificate so app/helper identity stays consistent across rebuilds:
