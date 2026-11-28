@@ -2,10 +2,11 @@ import SwiftUI
 
 struct AttachmentRemoveButton: View {
     let name: String
+    var overlaysImage = false
     let action: () -> Void
 
     var body: some View {
-        ChatRemoveButton(label: "Remove \(name)", action: action)
+        ChatRemoveButton(label: "Remove \(name)", overlaysImage: overlaysImage, action: action)
     }
 }
 
@@ -13,12 +14,19 @@ struct ChatRemoveButton: View {
     let label: String
     var role: ButtonRole? = nil
     var delaysDimming = false
+    var overlaysImage = false
     let action: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var circleFill: Color {
+        // Keep a dark scrim over photos, where light pixels could hide the white mark.
+        colorScheme == .dark && !overlaysImage ? .white.opacity(0.20) : .black.opacity(0.42)
+    }
 
     var body: some View {
         Button(role: role, action: action) {
             Circle()
-                .fill(.black.opacity(0.42))
+                .fill(circleFill)
                 .frame(width: 13, height: 13)
                 .overlay {
                     // Draw around the same center as the circle, without symbol

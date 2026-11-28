@@ -12,7 +12,7 @@ struct AttachmentStrip: View {
                     AttachmentThumbnail(attachment: image)
                         .overlay(alignment: .topTrailing) {
                             if let remove {
-                                AttachmentRemoveButton(name: image.name) { remove(image.id) }
+                                AttachmentRemoveButton(name: image.name, overlaysImage: true) { remove(image.id) }
                             }
                         }
                 }
